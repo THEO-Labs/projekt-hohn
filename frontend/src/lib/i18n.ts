@@ -19,6 +19,11 @@ export const t = {
   delete: "Loeschen",
   edit: "Bearbeiten",
   back: "Zurueck",
+  lookup: "Suchen",
+  lookupPlaceholder: "ISIN oder Ticker",
+  lookupNotFound: "Keine Daten gefunden",
+  lookupError: "Lookup nicht verfügbar",
+  invalidIsin: "Ungueltiges ISIN-Format",
 };
 
 export const terms = {

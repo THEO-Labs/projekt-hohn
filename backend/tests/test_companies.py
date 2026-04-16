@@ -48,3 +48,10 @@ def test_delete_company(client, db):
     response = client.delete(f"/api/companies/{cid}")
     assert response.status_code == 204
     assert client.get(f"/api/portfolios/{pid}/companies").json() == []
+
+
+def test_create_company_with_invalid_isin_returns_422(client, db):
+    _user, pid = _login_with_portfolio(client, db)
+    response = client.post(f"/api/portfolios/{pid}/companies",
+                           json={"name": "Apple", "ticker": "AAPL", "isin": "US0378331006", "currency": "USD"})
+    assert response.status_code == 422

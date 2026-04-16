@@ -1,17 +1,19 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.auth.deps import current_user
 from app.auth.models import User
+from app.companies.lookup import lookup_by_isin, lookup_by_ticker
 from app.companies.models import Company
-from app.companies.schemas import CompanyCreate, CompanyOut, CompanyUpdate
+from app.companies.schemas import CompanyCreate, CompanyLookupOut, CompanyOut, CompanyUpdate
 from app.db import get_db
 from app.portfolios.models import Portfolio
 
 portfolio_scoped = APIRouter(prefix="/api/portfolios/{portfolio_id}/companies", tags=["companies"])
 company_router = APIRouter(prefix="/api/companies", tags=["companies"])
+lookup_router = APIRouter(prefix="/api/company-lookup", tags=["companies"])
 
 
 def _get_owned_portfolio(db: Session, user: User, portfolio_id: UUID) -> Portfolio:
@@ -83,3 +85,24 @@ def delete_company(
     company = _get_owned_company(db, user, company_id)
     db.delete(company)
     db.commit()
+
+
+@lookup_router.get("", response_model=CompanyLookupOut)
+async def company_lookup(
+    isin: str | None = Query(default=None),
+    ticker: str | None = Query(default=None),
+    user: User = Depends(current_user),
+) -> CompanyLookupOut:
+    if (isin is None) == (ticker is None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Exactly one of 'isin' or 'ticker' must be provided",
+        )
+    if isin:
+        result = await lookup_by_isin(isin)
+    else:
+        result = await lookup_by_ticker(ticker)
+
+    if result is None:
+        return CompanyLookupOut(name=None, ticker=None, isin=None, currency=None)
+    return CompanyLookupOut(**result)

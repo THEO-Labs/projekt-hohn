@@ -3,6 +3,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { PortfolioListPage } from "@/pages/PortfolioListPage";
 import { PortfolioDetailPage } from "@/pages/PortfolioDetailPage";
 import { useAuth } from "@/hooks/useAuth";
+import { Toaster } from "@/components/ui/sonner";
 
 export default function App() {
   const { user, loading, login } = useAuth();
@@ -16,6 +17,8 @@ export default function App() {
   }
 
   return (
+    <>
+    <Toaster />
     <BrowserRouter>
       <Routes>
         {!user ? (
@@ -32,5 +35,6 @@ export default function App() {
         )}
       </Routes>
     </BrowserRouter>
+    </>
   );
 }

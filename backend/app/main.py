@@ -29,9 +29,10 @@ def create_app() -> FastAPI:
     from app.portfolios.routes import router as portfolios_router
     app.include_router(portfolios_router)
 
-    from app.companies.routes import portfolio_scoped, company_router
+    from app.companies.routes import portfolio_scoped, company_router, lookup_router
     app.include_router(portfolio_scoped)
     app.include_router(company_router)
+    app.include_router(lookup_router)
 
     from pathlib import Path
     from fastapi import HTTPException

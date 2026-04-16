@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, Plus, Building2, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
@@ -12,9 +13,11 @@ import {
   createCompany,
   deleteCompany,
   listCompanies,
+  lookupCompany,
   type Company,
 } from "@/api/companies";
 import { t } from "@/lib/i18n";
+import { isValidIsinFormat } from "@/lib/isin";
 
 export function PortfolioDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -22,6 +25,8 @@ export function PortfolioDetailPage() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: "", ticker: "", isin: "", currency: "EUR" });
+  const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   const refresh = () => {
     if (id) listCompanies(id).then(setCompanies);
@@ -31,9 +36,38 @@ export function PortfolioDetailPage() {
     refresh();
   }, [id]);
 
+  const isinInvalid = form.isin.length > 0 && !isValidIsinFormat(form.isin);
+
+  const handleLookup = async () => {
+    const q = lookupQuery.trim();
+    if (!q) return;
+    setLookupLoading(true);
+    try {
+      const isIsin = /^[A-Z]{2}/.test(q) && q.length === 12;
+      const result = isIsin
+        ? await lookupCompany({ isin: q })
+        : await lookupCompany({ ticker: q });
+
+      if (!result.name && !result.ticker && !result.isin && !result.currency) {
+        toast.info(t.lookupNotFound);
+      } else {
+        setForm((prev) => ({
+          name: result.name ?? prev.name,
+          ticker: result.ticker ?? prev.ticker,
+          isin: result.isin ?? prev.isin,
+          currency: result.currency ?? prev.currency,
+        }));
+      }
+    } catch {
+      toast.error(t.lookupError);
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!id) return;
+    if (!id || isinInvalid) return;
     await createCompany(id, {
       name: form.name,
       ticker: form.ticker,
@@ -41,6 +75,7 @@ export function PortfolioDetailPage() {
       isin: form.isin || undefined,
     });
     setForm({ name: "", ticker: "", isin: "", currency: "EUR" });
+    setLookupQuery("");
     setOpen(false);
     refresh();
   };
@@ -75,7 +110,7 @@ export function PortfolioDetailPage() {
               Unternehmen in diesem Portfolio verwalten.
             </p>
           </div>
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); } }}>
             <DialogTrigger render={
               <Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20 transition-all hover:shadow-primary/30" />
             }>
@@ -87,17 +122,43 @@ export function PortfolioDetailPage() {
                 <DialogTitle>{t.newCompany}</DialogTitle>
               </DialogHeader>
               <form onSubmit={submit} className="space-y-4">
+                {/* Lookup section */}
+                <div className="space-y-1.5">
+                  <Label className="text-sm text-muted-foreground">{t.lookupPlaceholder}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={lookupQuery}
+                      onChange={(e) => setLookupQuery(e.target.value)}
+                      placeholder={t.lookupPlaceholder}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleLookup(); } }}
+                    />
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleLookup}
+                      disabled={lookupLoading || !lookupQuery.trim()}
+                    >
+                      {t.lookup}
+                    </Button>
+                  </div>
+                </div>
+
                 <Field label={t.companyName} value={form.name}
                        onChange={(v) => setForm({ ...form, name: v })} required />
                 <Field label={t.ticker} value={form.ticker}
                        onChange={(v) => setForm({ ...form, ticker: v })} required />
-                <Field label={t.isin} value={form.isin}
-                       onChange={(v) => setForm({ ...form, isin: v })} />
+                <div className="space-y-1.5">
+                  <Label className="text-sm text-muted-foreground">{t.isin}</Label>
+                  <Input value={form.isin} onChange={(e) => setForm({ ...form, isin: e.target.value })} />
+                  {isinInvalid && (
+                    <p className="text-xs text-destructive">{t.invalidIsin}</p>
+                  )}
+                </div>
                 <Field label={t.currency} value={form.currency}
                        onChange={(v) => setForm({ ...form, currency: v.toUpperCase() })} required />
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t.cancel}</Button>
-                  <Button type="submit">{t.save}</Button>
+                  <Button type="submit" disabled={isinInvalid}>{t.save}</Button>
                 </div>
               </form>
             </DialogContent>
