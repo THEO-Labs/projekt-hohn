@@ -1,3 +1,4 @@
+import app.auth  # noqa: F401  # Modelle registrieren
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
