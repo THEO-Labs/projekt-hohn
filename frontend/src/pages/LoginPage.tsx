@@ -28,27 +28,27 @@ export function LoginPage({ onLogin }: Props) {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background">
-      {/* Radial gradient glow */}
+      {/* Soft emerald glow from top */}
       <div
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse 80% 50% at 50% -10%, oklch(0.6 0.15 155.56 / 18%) 0%, transparent 70%)",
+            "radial-gradient(ellipse 70% 45% at 50% -5%, oklch(0.52 0.14 155.56 / 12%) 0%, transparent 65%)",
         }}
       />
-      {/* Subtle grid pattern */}
+      {/* Subtle grid pattern (dark lines on light bg) */}
       <div
-        className="pointer-events-none absolute inset-0 opacity-[0.025]"
+        className="pointer-events-none absolute inset-0 opacity-[0.04]"
         style={{
           backgroundImage:
-            "linear-gradient(oklch(1 0 0) 1px, transparent 1px), linear-gradient(90deg, oklch(1 0 0) 1px, transparent 1px)",
+            "linear-gradient(oklch(0.2 0 0) 1px, transparent 1px), linear-gradient(90deg, oklch(0.2 0 0) 1px, transparent 1px)",
           backgroundSize: "40px 40px",
         }}
       />
 
       <form
         onSubmit={submit}
-        className="relative z-10 w-full max-w-sm space-y-5 rounded-xl border border-border/60 bg-card/90 p-8 shadow-2xl shadow-black/40 backdrop-blur-sm"
+        className="relative z-10 w-full max-w-sm space-y-5 rounded-2xl border border-border bg-card p-8 shadow-xl shadow-black/5"
       >
         {/* Brand mark */}
         <div className="mb-6 flex flex-col items-center gap-3 text-center">
