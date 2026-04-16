@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { Plus, FolderOpen, ChevronRight, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,13 +44,22 @@ export function PortfolioListPage() {
   if (!user) return null;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       <AppHeader email={user.email} onLogout={logout} />
-      <main className="mx-auto max-w-4xl p-6">
-        <div className="mb-6 flex items-center justify-between">
-          <h2 className="text-2xl font-semibold">{t.portfolios}</h2>
+      <main className="mx-auto max-w-6xl px-6 py-10">
+        {/* Hero area */}
+        <div className="mb-8 flex items-end justify-between">
+          <div>
+            <h2 className="text-3xl font-semibold tracking-tight text-foreground">{t.portfolios}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Verwalte deine Investmentportfolios und Unternehmenspositionen.
+            </p>
+          </div>
           <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger render={<Button />}>
+            <DialogTrigger render={
+              <Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20 transition-all hover:shadow-primary/30" />
+            }>
+              <Plus className="h-4 w-4" />
               {t.newPortfolio}
             </DialogTrigger>
             <DialogContent>
@@ -57,7 +67,7 @@ export function PortfolioListPage() {
                 <DialogTitle>{t.newPortfolio}</DialogTitle>
               </DialogHeader>
               <form onSubmit={submit} className="space-y-4">
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <Label htmlFor="pname">{t.portfolioName}</Label>
                   <Input id="pname" value={name} onChange={(e) => setName(e.target.value)} required />
                 </div>
@@ -72,21 +82,52 @@ export function PortfolioListPage() {
           </Dialog>
         </div>
 
-        <ul className="divide-y rounded-lg border bg-white">
-          {portfolios.map((p) => (
-            <li key={p.id} className="flex items-center justify-between px-4 py-3">
-              <Link to={`/portfolios/${p.id}`} className="font-medium hover:underline">
-                {p.name}
-              </Link>
-              <Button variant="ghost" size="sm" onClick={() => remove(p.id)}>
-                {t.delete}
-              </Button>
-            </li>
-          ))}
-          {portfolios.length === 0 && (
-            <li className="px-4 py-8 text-center text-sm text-slate-500">Noch keine Portfolios</li>
-          )}
-        </ul>
+        {portfolios.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-card/30 px-8 py-20 text-center">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-muted/60">
+              <FolderOpen className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <p className="mb-1 text-sm font-medium text-foreground">Noch keine Portfolios</p>
+            <p className="text-xs text-muted-foreground">
+              Erstelle dein erstes Portfolio mit dem Button oben rechts.
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {portfolios.map((p) => (
+              <div
+                key={p.id}
+                className="group relative rounded-xl border border-border/60 bg-card transition-all duration-200 hover:border-border hover:bg-card/80 hover:shadow-lg hover:shadow-black/10"
+              >
+                <Link
+                  to={`/portfolios/${p.id}`}
+                  className="flex items-start gap-3 p-5"
+                >
+                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                    <FolderOpen className="h-4 w-4 text-primary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-foreground group-hover:text-primary transition-colors">
+                      {p.name}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Portfolio</p>
+                  </div>
+                  <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                </Link>
+                <div className="absolute right-3 top-3 opacity-0 transition-opacity group-hover:opacity-100">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => remove(p.id)}
+                    className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </main>
     </div>
   );

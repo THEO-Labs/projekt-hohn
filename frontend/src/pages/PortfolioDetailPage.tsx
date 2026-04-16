@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { ChevronLeft, Plus, Building2, Trash2 } from "lucide-react";
 
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
@@ -52,16 +53,35 @@ export function PortfolioDetailPage() {
   if (!user) return null;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       <AppHeader email={user.email} onLogout={logout} />
-      <main className="mx-auto max-w-4xl p-6">
-        <div className="mb-4">
-          <Link to="/" className="text-sm text-slate-600 hover:underline">{t.back}</Link>
+      <main className="mx-auto max-w-6xl px-6 py-10">
+        {/* Breadcrumb back nav */}
+        <div className="mb-6">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            {t.portfolios}
+          </Link>
         </div>
-        <div className="mb-6 flex items-center justify-between">
-          <h2 className="text-2xl font-semibold">{t.companies}</h2>
+
+        {/* Page header */}
+        <div className="mb-8 flex items-end justify-between">
+          <div>
+            <h2 className="text-3xl font-semibold tracking-tight text-foreground">{t.companies}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Unternehmen in diesem Portfolio verwalten.
+            </p>
+          </div>
           <Dialog open={open} onOpenChange={setOpen}>
-            <DialogTrigger render={<Button />}>{t.newCompany}</DialogTrigger>
+            <DialogTrigger render={
+              <Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20 transition-all hover:shadow-primary/30" />
+            }>
+              <Plus className="h-4 w-4" />
+              {t.newCompany}
+            </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>{t.newCompany}</DialogTitle>
@@ -84,20 +104,53 @@ export function PortfolioDetailPage() {
           </Dialog>
         </div>
 
-        <ul className="divide-y rounded-lg border bg-white">
-          {companies.map((c) => (
-            <li key={c.id} className="flex items-center justify-between px-4 py-3">
-              <div>
-                <div className="font-medium">{c.name}</div>
-                <div className="text-sm text-slate-600">{c.ticker} - {c.currency}</div>
+        {companies.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-card/30 px-8 py-20 text-center">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-muted/60">
+              <Building2 className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <p className="mb-1 text-sm font-medium text-foreground">Noch keine Firmen</p>
+            <p className="text-xs text-muted-foreground">
+              Fuege die erste Firma mit dem Button oben rechts hinzu.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
+            {companies.map((c, i) => (
+              <div
+                key={c.id}
+                className={`group flex items-center justify-between px-5 py-4 transition-colors hover:bg-muted/30 ${
+                  i > 0 ? "border-t border-border/40" : ""
+                }`}
+              >
+                <div className="flex items-center gap-4">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted/60">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-foreground">{c.name}</p>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <span className="tabular rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-primary">
+                        {c.ticker}
+                      </span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                        {c.currency}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => remove(c.id)}
+                  className="h-8 w-8 p-0 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:text-destructive"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => remove(c.id)}>{t.delete}</Button>
-            </li>
-          ))}
-          {companies.length === 0 && (
-            <li className="px-4 py-8 text-center text-sm text-slate-500">Noch keine Firmen</li>
-          )}
-        </ul>
+            ))}
+          </div>
+        )}
       </main>
     </div>
   );
@@ -107,8 +160,8 @@ function Field({
   label, value, onChange, required,
 }: { label: string; value: string; onChange: (v: string) => void; required?: boolean }) {
   return (
-    <div className="space-y-2">
-      <Label>{label}</Label>
+    <div className="space-y-1.5">
+      <Label className="text-sm text-muted-foreground">{label}</Label>
       <Input value={value} onChange={(e) => onChange(e.target.value)} required={required} />
     </div>
   );

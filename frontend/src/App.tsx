@@ -7,7 +7,13 @@ import { useAuth } from "@/hooks/useAuth";
 export default function App() {
   const { user, loading, login } = useAuth();
 
-  if (loading) return <div className="p-8">Lade...</div>;
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
 
   return (
     <BrowserRouter>
