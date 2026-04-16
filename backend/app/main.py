@@ -33,6 +33,23 @@ def create_app() -> FastAPI:
     app.include_router(portfolio_scoped)
     app.include_router(company_router)
 
+    from pathlib import Path
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.exists():
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        @app.get("/{full_path:path}")
+        def spa_fallback(full_path: str) -> FileResponse:
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404)
+            return FileResponse(static_dir / "index.html")
+
     return app
 
 
