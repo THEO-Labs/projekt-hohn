@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: hohn_dev
       POSTGRES_DB: hohn
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - hohn_db:/var/lib/postgresql/data
 
