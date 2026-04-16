@@ -674,19 +674,21 @@ from app.main import app
 @pytest.fixture(scope="session")
 def engine():
     eng = create_engine(os.environ["DATABASE_URL"], future=True)
-    Base.metadata.drop_all(eng)
-    Base.metadata.create_all(eng)
     yield eng
-    Base.metadata.drop_all(eng)
 
 
 @pytest.fixture
 def db(engine):
+    # Jedes Test-Verfahren bekommt eine frische Schema-Reinstellung -
+    # Tests commiten bewusst (Transaction/Cookie-Flow), also rollback reicht nicht.
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
     TestSession = sessionmaker(bind=engine, future=True)
     session = TestSession()
-    yield session
-    session.rollback()
-    session.close()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 @pytest.fixture
@@ -786,6 +788,8 @@ class UserOut(BaseModel):
 - [ ] **Step 5: `backend/app/auth/deps.py`**
 
 ```python
+from uuid import UUID
+
 from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -803,7 +807,11 @@ def current_user(
     payload = decode_token(access_token)
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = db.query(User).filter(User.id == payload["sub"]).one_or_none()
+    try:
+        user_id = UUID(payload["sub"])
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    user = db.query(User).filter(User.id == user_id).one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     return user
@@ -1475,12 +1483,12 @@ npm create vite@latest frontend -- --template react-ts
 cd frontend && npm install
 ```
 
-- [ ] **Step 2: Tailwind installieren**
+- [ ] **Step 2: Tailwind v3 installieren (v4 hat anderes API - bewusst pinnen)**
 
 Run:
 ```bash
 cd frontend
-npm install -D tailwindcss@latest postcss autoprefixer
+npm install -D "tailwindcss@^3" postcss autoprefixer
 npx tailwindcss init -p
 ```
 
@@ -2336,8 +2344,8 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 
-COPY backend/pyproject.toml backend/uv.lock* ./
-RUN uv sync --frozen --no-dev || uv sync --no-dev
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv sync --frozen --no-dev
 
 COPY backend/ ./
 COPY --from=frontend-build /frontend/dist ./static
@@ -2420,16 +2428,17 @@ Expected: alle gruen.
 
 - [ ] **Step 3: README ergaenzen mit "User anlegen"**
 
-Vor "Backend / Frontend" einfuegen:
+Vor "Backend / Frontend"-Block in `README.md` einfuegen (achte auf 4-Backtick-Outer-Fences damit die nested code-blocks korrekt rendern):
 
-```markdown
+````markdown
 ## Ersten User anlegen
 
 Nach `alembic upgrade head`:
+
 ```bash
 cd backend && uv run python -m scripts.create_user --email du@example.com
 ```
-```
+````
 
 - [ ] **Step 4: Final-Commit + Tag**
 
