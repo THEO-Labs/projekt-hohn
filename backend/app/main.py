@@ -1,4 +1,5 @@
 import app.auth  # noqa: F401  # Modelle registrieren
+import app.portfolios  # noqa: F401
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,6 +24,9 @@ def create_app() -> FastAPI:
 
     from app.auth.routes import router as auth_router
     app.include_router(auth_router)
+
+    from app.portfolios.routes import router as portfolios_router
+    app.include_router(portfolios_router)
 
     return app
 
