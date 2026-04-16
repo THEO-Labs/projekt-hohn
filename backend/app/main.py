@@ -21,6 +21,9 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    from app.auth.routes import router as auth_router
+    app.include_router(auth_router)
+
     return app
 
 
