@@ -172,7 +172,7 @@ export function PortfolioDetailPage() {
             </div>
             <p className="mb-1 text-sm font-medium text-foreground">Noch keine Firmen</p>
             <p className="text-xs text-muted-foreground">
-              Fuege die erste Firma mit dem Button oben rechts hinzu.
+              Füge die erste Firma mit dem Button oben rechts hinzu.
             </p>
           </div>
         ) : (

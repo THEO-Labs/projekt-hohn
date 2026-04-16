@@ -16,14 +16,14 @@ export const t = {
   currency: "Currency",
   save: "Speichern",
   cancel: "Abbrechen",
-  delete: "Loeschen",
+  delete: "Löschen",
   edit: "Bearbeiten",
-  back: "Zurueck",
+  back: "Zurück",
   lookup: "Suchen",
   lookupPlaceholder: "ISIN oder Ticker",
   lookupNotFound: "Keine Daten gefunden",
   lookupError: "Lookup nicht verfügbar",
-  invalidIsin: "Ungueltiges ISIN-Format",
+  invalidIsin: "Ungültiges ISIN-Format",
 };
 
 export const terms = {
