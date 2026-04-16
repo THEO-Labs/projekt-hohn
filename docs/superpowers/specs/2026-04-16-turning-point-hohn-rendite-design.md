@@ -49,6 +49,8 @@ Statisch per Seed-Migration. `value_definitions`-Tabelle haelt den Katalog.
 Jeder Wert hat einen `source_type`: USER_INPUT, API, CALCULATED oder QUALITATIVE.
 Berechnete Werte werden zur Request-Zeit kalkuliert, nicht persistiert.
 
+**Hinweis zu mehrfach genannten Werten:** "Dividend return" und "EPS Growth" tauchen in mehreren Kategorien oben auf, weil sie Bestandteil mehrerer Hohn-Rendite-Formelgruppen sind. Im Katalog (`value_definitions`) gibt es trotzdem nur **einen** Eintrag pro Wert mit **einer** Hauptkategorie (Zuordnung mit Dr. Ludes klaeren). Alternativ kann der Katalog spaeter eine n:m-Beziehung zu Kategorien bekommen, falls zwingend doppelte Anzeige gewuenscht.
+
 ## Tech-Stack
 
 - **Backend:** FastAPI (Python 3.12), SQLAlchemy 2.x, Alembic, pydantic-settings
@@ -125,7 +127,7 @@ company_values   # Ein Eintrag pro (company, value_key, period_year, is_forecast
   is_forecast (bool, default false),
   numeric_value (numeric, nullable),
   text_value (text, nullable),
-  source_name (z.B. "Yahoo Finance" / "Manuell" / "Claude+Gemini"),
+  source_name (text, kontrolliertes Vokabular - siehe unten),
   source_link (optional URL),
   fetched_at,
   manually_overridden (bool),
@@ -153,6 +155,13 @@ jobs
   error (text, nullable),
   created_at, finished_at
 ```
+
+**Kontrolliertes Vokabular fuer `source_name`** (Konstante im Backend, kein DB-Enum damit neue Provider ohne Migration moeglich sind):
+- `"<Provider-Name>"` - Wert kommt aus einem registrierten API-Provider (z.B. `"Yahoo Finance"`, `"Alpha Vantage"`)
+- `"User Input"` - vom Nutzer beim Anlegen eingetragen (Transaction-Daten)
+- `"Manual Override"` - User hat einen API/berechneten Wert manuell ueberschrieben
+- `"Claude+Gemini"` - Auto-Recherche mit Konsens
+- `"Manual via Claude Chat"` - vom User aus Chat uebernommen
 
 **Zeit-Dimension fuer Werte:**
 
@@ -215,10 +224,11 @@ Optional: "Gemini reviewen lassen" -> GEMINI_REVIEW-Job,
 
 ```
 User waehlt "FY2024" oder Range "2022-2026"
-Frontend State, kein API-Call
-Tabelle re-rendert: passende period_year-Spalten + Snapshots
-POST /api/companies/{id}/calculate?years=2022,2023,2024,2025,2026
+Frontend: re-rendert Tabelle aus bereits geladenen company_values
+          (kein API-Call fuer die Wert-Anzeige)
+Frontend triggert separat: POST /api/companies/{id}/calculate?years=2022,...,2026
 -> Server-seitige Berechnung: Hohn-Rendite pro Jahr als Reihe
+-> Ergebnis wird in der Bottom-Zeile/Footer der Tabelle angezeigt
 ```
 
 ## Komponenten
@@ -248,7 +258,6 @@ backend/
       registry.py        # Priority-Mapping pro value_key
       yahoo.py
       alpha_vantage.py
-      manual.py          # fuer USER_INPUT-Werte
     calculations/
       hohn_rendite.py    # Formeln basic 1, basic 2, adjusted
       routes.py          # POST /calculate
@@ -355,10 +364,15 @@ auto_research(company, value_key):
 
 gemini_review(conversation_id):
   1. Gemini bekommt Claude-Output + Original-Prompt
-  2. Gibt Review zurueck: "Stimme zu / Widerspruch / Ergaenzung" + Score-Bestaetigung
+  2. Gibt Review strukturiert zurueck (JSON):
+     { "verdict": "agree" | "disagree" | "refine",
+       "score": int, "notes": string, "refined_value": ... }
   3. Haengt Review als message (role=gemini) an
-  4. Konsens -> schreibt finalen Wert in company_values
-     Dissens -> wartet auf User-Entscheidung im Chat
+  4. Konsens-Regel (Phase 1, simpel):
+     - verdict == "agree" UND abs(score_claude - score_gemini) <= 1
+       -> schreibt finalen Wert in company_values (source_name = "Claude+Gemini")
+     - sonst -> Wert wird NICHT geschrieben, User muss im Chat entscheiden
+       (Frontend zeigt Hinweis "Gemini weicht ab - bitte pruefen")
 ```
 
 ### On-Demand Chat
