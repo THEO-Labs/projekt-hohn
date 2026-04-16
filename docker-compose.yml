@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hohn
+      POSTGRES_PASSWORD: hohn_dev
+      POSTGRES_DB: hohn
+    ports:
+      - "5432:5432"
+    volumes:
+      - hohn_db:/var/lib/postgresql/data
+
+volumes:
+  hohn_db:
