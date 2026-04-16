@@ -1,0 +1,29 @@
+export const t = {
+  appTitle: "Hohn-Rendite Tool",
+  login: "Anmelden",
+  logout: "Abmelden",
+  email: "E-Mail",
+  password: "Passwort",
+  loginFailed: "Anmeldung fehlgeschlagen",
+  portfolios: "Portfolios",
+  newPortfolio: "Neues Portfolio",
+  portfolioName: "Portfolio-Name",
+  companies: "Firmen",
+  newCompany: "Neue Firma",
+  companyName: "Firmenname",
+  ticker: "Ticker",
+  isin: "ISIN",
+  currency: "Currency",
+  save: "Speichern",
+  cancel: "Abbrechen",
+  delete: "Loeschen",
+  edit: "Bearbeiten",
+  back: "Zurueck",
+};
+
+export const terms = {
+  marketCap: "Market Cap",
+  ebitda: "EBITDA",
+  fcfYield: "FCF Yield",
+  hohnRendite: "Hohn-Rendite",
+};
