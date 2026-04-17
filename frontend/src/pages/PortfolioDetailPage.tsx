@@ -17,7 +17,6 @@ import {
   type Company,
 } from "@/api/companies";
 import { t } from "@/lib/i18n";
-import { isValidIsinFormat } from "@/lib/isin";
 
 export function PortfolioDetailPage() {
   const { pid: id } = useParams<{ pid: string }>();
@@ -27,6 +26,7 @@ export function PortfolioDetailPage() {
   const [form, setForm] = useState({ name: "", ticker: "", isin: "", currency: "EUR" });
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookedUp, setLookedUp] = useState(false);
 
   const refresh = () => {
     if (id) listCompanies(id).then(setCompanies);
@@ -36,7 +36,6 @@ export function PortfolioDetailPage() {
     refresh();
   }, [id]);
 
-  const isinInvalid = form.isin.length > 0 && !isValidIsinFormat(form.isin);
 
   const handleLookup = async () => {
     const q = lookupQuery.trim();
@@ -57,6 +56,7 @@ export function PortfolioDetailPage() {
           isin: result.isin ?? prev.isin,
           currency: result.currency ?? prev.currency,
         }));
+        setLookedUp(true);
       }
     } catch {
       toast.error(t.lookupError);
@@ -67,7 +67,7 @@ export function PortfolioDetailPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!id || isinInvalid) return;
+    if (!id || !lookedUp) return;
     await createCompany(id, {
       name: form.name,
       ticker: form.ticker,
@@ -76,6 +76,7 @@ export function PortfolioDetailPage() {
     });
     setForm({ name: "", ticker: "", isin: "", currency: "EUR" });
     setLookupQuery("");
+    setLookedUp(false);
     setOpen(false);
     refresh();
   };
@@ -122,14 +123,14 @@ export function PortfolioDetailPage() {
                 <DialogTitle>{t.newCompany}</DialogTitle>
               </DialogHeader>
               <form onSubmit={submit} className="space-y-4">
-                {/* Lookup section */}
                 <div className="space-y-1.5">
-                  <Label className="text-sm text-muted-foreground">{t.lookupPlaceholder}</Label>
+                  <Label className="text-sm text-muted-foreground">ISIN eingeben</Label>
                   <div className="flex gap-2">
                     <Input
                       value={lookupQuery}
-                      onChange={(e) => setLookupQuery(e.target.value)}
-                      placeholder={t.lookupPlaceholder}
+                      onChange={(e) => setLookupQuery(e.target.value.toUpperCase())}
+                      placeholder="z.B. US92826C8394"
+                      className="font-mono"
                       onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleLookup(); } }}
                     />
                     <Button
@@ -138,27 +139,40 @@ export function PortfolioDetailPage() {
                       onClick={handleLookup}
                       disabled={lookupLoading || !lookupQuery.trim()}
                     >
-                      {t.lookup}
+                      {lookupLoading ? "..." : t.lookup}
                     </Button>
                   </div>
                 </div>
 
-                <Field label={t.companyName} value={form.name}
-                       onChange={(v) => setForm({ ...form, name: v })} required />
-                <Field label={t.ticker} value={form.ticker}
-                       onChange={(v) => setForm({ ...form, ticker: v })} required />
-                <div className="space-y-1.5">
-                  <Label className="text-sm text-muted-foreground">{t.isin}</Label>
-                  <Input value={form.isin} onChange={(e) => setForm({ ...form, isin: e.target.value })} />
-                  {isinInvalid && (
-                    <p className="text-xs text-destructive">{t.invalidIsin}</p>
-                  )}
-                </div>
-                <Field label={t.currency} value={form.currency}
-                       onChange={(v) => setForm({ ...form, currency: v.toUpperCase() })} required />
+                {lookedUp && (
+                  <div className="space-y-3">
+                    <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
+                      <p className="text-xs font-medium text-green-800">Firma gefunden</p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Name</span>
+                        <span className="font-medium text-foreground">{form.name}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Ticker</span>
+                        <span className="font-mono font-medium text-foreground">{form.ticker}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">ISIN</span>
+                        <span className="font-mono font-medium text-foreground">{form.isin}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Currency</span>
+                        <span className="font-mono font-medium text-foreground">{form.currency}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t.cancel}</Button>
-                  <Button type="submit" disabled={isinInvalid}>{t.save}</Button>
+                  <Button type="submit" disabled={!lookedUp}>{t.save}</Button>
                 </div>
               </form>
             </DialogContent>
@@ -213,17 +227,6 @@ export function PortfolioDetailPage() {
           </div>
         )}
       </main>
-    </div>
-  );
-}
-
-function Field({
-  label, value, onChange, required,
-}: { label: string; value: string; onChange: (v: string) => void; required?: boolean }) {
-  return (
-    <div className="space-y-1.5">
-      <Label className="text-sm text-muted-foreground">{label}</Label>
-      <Input value={value} onChange={(e) => onChange(e.target.value)} required={required} />
     </div>
   );
 }
