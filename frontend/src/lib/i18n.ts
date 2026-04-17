@@ -24,6 +24,16 @@ export const t = {
   lookupNotFound: "Keine Daten gefunden",
   lookupError: "Lookup nicht verfügbar",
   invalidIsin: "Ungültiges ISIN-Format",
+  dashboard: "Dashboard",
+  period: "Zeitraum",
+  displayCurrency: "Währung",
+  snapshot: "Snapshot",
+  calculate: "Berechnen",
+  source: "Quelle",
+  fetchedAt: "Abgerufen am",
+  manualOverride: "Manuell überschrieben",
+  noValue: "\u2014",
+  allValues: "Alle Werte berechnen",
 };
 
 export const terms = {
