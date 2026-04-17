@@ -1,10 +1,10 @@
 SEED_VALUES = [
     # TRANSACTION
     {"key": "stock_price", "label_de": "Aktueller Aktienkurs", "label_en": "Actual Stock Price", "category": "TRANSACTION", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 1},
-    {"key": "next_earnings", "label_de": "Naechste Earnings", "label_en": "Next Earnings", "category": "TRANSACTION", "source_type": "API", "data_type": "TEXT", "unit": None, "sort_order": 2},
+    {"key": "next_earnings", "label_de": "Nächste Earnings", "label_en": "Next Earnings", "category": "TRANSACTION", "source_type": "API", "data_type": "TEXT", "unit": None, "sort_order": 2},
     {"key": "dividends", "label_de": "Dividenden", "label_en": "Dividends", "category": "TRANSACTION", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 3},
     {"key": "dividend_return", "label_de": "Dividendenrendite", "label_en": "Dividend Return", "category": "TRANSACTION", "source_type": "API", "data_type": "NUMERIC", "unit": "%", "sort_order": 4},
-    {"key": "analysts_target", "label_de": "Analysteneinschaetzung", "label_en": "Analysts Target", "category": "TRANSACTION", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 5},
+    {"key": "analysts_target", "label_de": "Analysteneinschätzung", "label_en": "Analysts Target", "category": "TRANSACTION", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 5},
 
     # BASIC_COMPANY
     {"key": "market_cap", "label_de": "Marktkapitalisierung", "label_en": "Market Cap", "category": "BASIC_COMPANY", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 10},
@@ -26,7 +26,7 @@ SEED_VALUES = [
     {"key": "eps_ttm", "label_de": "EPS TTM", "label_en": "EPS TTM", "category": "HOHN_BASIC_1", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 30},
     {"key": "eps_forward", "label_de": "EPS Forward", "label_en": "EPS Forward", "category": "HOHN_BASIC_1", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 31},
     {"key": "eps_growth", "label_de": "EPS Wachstum", "label_en": "EPS Growth", "category": "HOHN_BASIC_1", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 32},
-    {"key": "buybacks", "label_de": "Aktienrueckkaeufe", "label_en": "Buybacks", "category": "HOHN_BASIC_1", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 33},
+    {"key": "buybacks", "label_de": "Aktienrückkäufe", "label_en": "Buybacks", "category": "HOHN_BASIC_1", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 33},
     {"key": "buyback_return", "label_de": "Buyback-Rendite", "label_en": "Buyback Return", "category": "HOHN_BASIC_1", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 34},
     {"key": "hohn_rendite_basic_1", "label_de": "Hohn-Rendite (Basic 1)", "label_en": "Hohn Return (Basic 1)", "category": "HOHN_BASIC_1", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 35},
 
@@ -38,13 +38,13 @@ SEED_VALUES = [
     {"key": "pe_ttm", "label_de": "KGV TTM", "label_en": "PE TTM", "category": "VALUATION_ADJ", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 50},
     {"key": "pe_forward", "label_de": "KGV Forward", "label_en": "PE Forward", "category": "VALUATION_ADJ", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 51},
     {"key": "pe_target_analysts", "label_de": "KGV Ziel Analysten", "label_en": "PE Target Analysts", "category": "VALUATION_ADJ", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 52},
-    {"key": "upside_potential", "label_de": "Aufwaertspotenzial", "label_en": "Upside Potential", "category": "VALUATION_ADJ", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 53},
+    {"key": "upside_potential", "label_de": "Aufwärtspotenzial", "label_en": "Upside Potential", "category": "VALUATION_ADJ", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 53},
     {"key": "ev_ebitda", "label_de": "EV/EBITDA", "label_en": "EV/EBITDA", "category": "VALUATION_ADJ", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 54},
     {"key": "peg", "label_de": "PEG Ratio", "label_en": "PEG", "category": "VALUATION_ADJ", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 55},
     {"key": "judgement", "label_de": "Bewertungsurteil", "label_en": "Judgement", "category": "VALUATION_ADJ", "source_type": "QUALITATIVE", "data_type": "TEXT", "unit": None, "sort_order": 56},
 
     # RISK_ADJ
-    {"key": "risk_business_model", "label_de": "Geschaeftsmodell-Risiko", "label_en": "Business Model", "category": "RISK_ADJ", "source_type": "QUALITATIVE", "data_type": "FACTOR", "unit": None, "sort_order": 60},
+    {"key": "risk_business_model", "label_de": "Geschäftsmodell-Risiko", "label_en": "Business Model", "category": "RISK_ADJ", "source_type": "QUALITATIVE", "data_type": "FACTOR", "unit": None, "sort_order": 60},
     {"key": "risk_regulatory", "label_de": "Regulatorisches Risiko", "label_en": "Regulatory", "category": "RISK_ADJ", "source_type": "QUALITATIVE", "data_type": "FACTOR", "unit": None, "sort_order": 61},
     {"key": "risk_macro", "label_de": "Makro-Risiko", "label_en": "Macro", "category": "RISK_ADJ", "source_type": "QUALITATIVE", "data_type": "FACTOR", "unit": None, "sort_order": 62},
     {"key": "risk_factor", "label_de": "Risikofaktor", "label_en": "Risk Factor", "category": "RISK_ADJ", "source_type": "CALCULATED", "data_type": "FACTOR", "unit": None, "sort_order": 63},

@@ -247,9 +247,9 @@ class YahooFinanceProvider:
             else:
                 parts = []
                 if buys:
-                    parts.append(f"{buys} Kauf" if buys == 1 else f"{buys} Kaeufe")
+                    parts.append(f"{buys} Kauf" if buys == 1 else f"{buys} Käufe")
                 if sales:
-                    parts.append(f"{sales} Verkauf" if sales == 1 else f"{sales} Verkaeufe")
+                    parts.append(f"{sales} Verkauf" if sales == 1 else f"{sales} Verkäufe")
                 summary = ", ".join(parts) + " (letzte 6 Monate)"
         except Exception:
             return None

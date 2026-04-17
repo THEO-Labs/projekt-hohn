@@ -27,7 +27,7 @@ def test_insider_transactions_buy_sell_summary(provider):
         result = provider.fetch("AAPL", "insider_transactions")
 
     assert result is not None
-    assert "2 Kaeufe" in result.value
+    assert "2 Käufe" in result.value
     assert "1 Verkauf" in result.value
     assert "letzte 6 Monate" in result.value
 
