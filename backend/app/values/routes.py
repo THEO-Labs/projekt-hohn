@@ -159,13 +159,13 @@ def refresh_company_values(
             vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
             if vd and vd.source_type.value in ("API",) and settings.anthropic_api_key:
                 label = f"{vd.label_en} ({vd.label_de})"
-                research_val, research_source = research_value(company.name, ticker, label, company.currency)
+                research_val, research_source, research_url = research_value(company.name, ticker, label, company.currency)
                 if research_val is not None:
                     from app.providers.base import ProviderResult
                     result = ProviderResult(
                         value=research_val,
                         source_name=research_source or "Claude-Recherche",
-                        source_link=None,
+                        source_link=research_url,
                         currency=company.currency,
                     )
             if result is None:

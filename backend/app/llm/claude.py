@@ -56,14 +56,18 @@ die nicht über die API verfügbar war. Recherchiere den Wert basierend auf dein
 Antworte NUR in diesem Format:
 WERT: [Zahl]
 EINHEIT: [z.B. USD, EUR, %, keine]
-QUELLE: [Woher du den Wert hast, z.B. Geschäftsbericht 2024, Analystenschätzung]
+QUELLE: [Kurze Beschreibung der Quelle]
+QUELLE_URL: [Direkte URL zur Quelle, z.B. https://www.allianz.com/en/investor_relations/ oder https://finance.yahoo.com/quote/ALV.DE/ oder https://www.wsj.com/... ]
 ZEITRAUM: [z.B. FY2024, TTM, aktuell]
 KONFIDENZ: [hoch/mittel/niedrig]
 
 Wenn du den Wert nicht findest, antworte mit:
 WERT: NICHT_GEFUNDEN
 
-Wichtig: Gib nur verifizierbare Zahlen an. Im Zweifel NICHT_GEFUNDEN."""
+Wichtig:
+- Gib nur verifizierbare Zahlen an. Im Zweifel NICHT_GEFUNDEN.
+- Die QUELLE_URL muss eine echte, existierende URL sein (Investor Relations Seite, Yahoo Finance, Bloomberg, Reuters, etc.)
+- Keine erfundenen URLs."""
 
 
 def extract_research_value(text: str) -> Decimal | None:
@@ -92,13 +96,15 @@ def research_value(company_name: str, ticker: str, value_label: str, currency: s
         content = response.content[0].text
         value = extract_research_value(content)
         if value is None:
-            return None, None
+            return None, None, None
         source_match = re.search(r"QUELLE:\s*(.+)", content)
         source = source_match.group(1).strip() if source_match else "Claude-Recherche"
-        return value, f"Claude-Recherche: {source}"
+        url_match = re.search(r"QUELLE_URL:\s*(https?://\S+)", content)
+        source_url = url_match.group(1).strip() if url_match else None
+        return value, f"Claude-Recherche: {source}", source_url
     except Exception as e:
         logger.warning("Claude research failed for %s/%s: %s", ticker, value_label, e)
-        return None, None
+        return None, None, None
 
 
 def call_claude(messages: list[dict[str, str]], company_context: str) -> tuple[str, Decimal | None]:
