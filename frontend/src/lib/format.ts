@@ -1,9 +1,11 @@
 export function formatValue(
-  value: number | null,
+  rawValue: number | string | null,
   unit: string | null,
   _currency: string | null
 ): string {
-  if (value == null) return "\u2014";
+  if (rawValue == null) return "\u2014";
+  const value = typeof rawValue === "string" ? parseFloat(rawValue) : rawValue;
+  if (isNaN(value)) return "\u2014";
 
   if (unit === "%") {
     const pct = Math.abs(value) < 1 ? value * 100 : value;
