@@ -106,22 +106,25 @@ export function CompanyDashboardPage() {
 
   const loadAllValues = useCallback(async () => {
     if (!pid || companies.length === 0) return;
+    const qualitativeKeys = new Set(
+      definitions.filter((d) => d.source_type === "QUALITATIVE").map((d) => d.key)
+    );
     const map = new Map<string, CompanyValue[]>();
     await Promise.all(
       companies.map(async (c) => {
-        const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
+        const periodVals = await getCompanyValues(c.id, period.value, period.year);
         if (period.value !== "SNAPSHOT") {
-          const periodVals = await getCompanyValues(c.id, period.value, period.year);
+          const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
           const periodKeys = new Set(periodVals.map((v) => v.value_key));
-          const fallbackVals = snapshotVals.filter((v) => !periodKeys.has(v.value_key));
-          map.set(c.id, [...periodVals, ...fallbackVals]);
+          const qualVals = snapshotVals.filter((v) => qualitativeKeys.has(v.value_key) && !periodKeys.has(v.value_key));
+          map.set(c.id, [...periodVals, ...qualVals]);
         } else {
-          map.set(c.id, snapshotVals);
+          map.set(c.id, periodVals);
         }
       })
     );
     setValuesMap(map);
-  }, [pid, companies, period.value, period.year]);
+  }, [pid, companies, period.value, period.year, definitions]);
 
   useEffect(() => {
     getValueDefinitions().then(setDefinitions);
@@ -276,7 +279,7 @@ export function CompanyDashboardPage() {
             <>
               <span className="text-xs text-muted-foreground">|</span>
               <span className="text-xs italic text-amber-600">
-                Keine historischen Daten vorhanden → aktuelle Werte als Fallback
+                Qualitative Bewertungen aus heutiger Sicht · Leere Zellen = keine Daten für diesen Zeitraum
               </span>
             </>
           )}
