@@ -287,7 +287,7 @@ export function CompanyDashboardPage() {
           const confidence = cv.manually_overridden
             ? { label: "Manuell überschrieben", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Pencil }
             : def.source_type === "API"
-            ? { label: "Hohe Sicherheit (API)", color: "bg-green-100 text-green-800 border-green-300", icon: ShieldCheck }
+            ? { label: "Verifizierte Datenquelle", color: "bg-green-100 text-green-800 border-green-300", icon: ShieldCheck }
             : def.source_type === "CALCULATED"
             ? { label: "Berechnet", color: "bg-blue-100 text-blue-800 border-blue-300", icon: Calculator }
             : def.source_type === "QUALITATIVE"
