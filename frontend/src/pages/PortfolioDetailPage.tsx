@@ -87,10 +87,18 @@ export function PortfolioDetailPage() {
     }
   };
 
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   const remove = async (cid: string) => {
+    if (deleting) return;
     if (!window.confirm("Firma wirklich löschen?")) return;
-    await deleteCompany(cid);
-    refresh();
+    setDeleting(cid);
+    try {
+      await deleteCompany(cid);
+      refresh();
+    } finally {
+      setDeleting(null);
+    }
   };
 
   if (!user) return null;
@@ -225,6 +233,7 @@ export function PortfolioDetailPage() {
                   variant="ghost"
                   size="sm"
                   onClick={() => remove(c.id)}
+                  disabled={deleting === c.id}
                   className="h-8 w-8 p-0 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:text-destructive"
                 >
                   <Trash2 className="h-3.5 w-3.5" />

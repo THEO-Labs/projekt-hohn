@@ -68,6 +68,7 @@ export function AnalysisDrawer({
   const [inputText, setInputText] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -303,10 +304,15 @@ export function AnalysisDrawer({
         <footer className="shrink-0 border-t border-border px-4 py-3">
           {messages.length > 0 ? (
             <button
-              onClick={() => onAcceptScore(sliderValue)}
-              className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+              onClick={async () => {
+                if (accepting) return;
+                setAccepting(true);
+                try { await onAcceptScore(sliderValue); } finally { setAccepting(false); }
+              }}
+              disabled={accepting}
+              className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
             >
-              {t.acceptScore} ({sliderValue.toFixed(2)})
+              {accepting ? "..." : `${t.acceptScore} (${sliderValue.toFixed(2)})`}
             </button>
           ) : (
             !historyLoaded || analyzing ? null : (

@@ -43,10 +43,18 @@ export function PortfolioListPage() {
     }
   };
 
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   const remove = async (id: string) => {
+    if (deleting) return;
     if (!window.confirm("Portfolio und alle enthaltenen Firmen wirklich löschen?")) return;
-    await deletePortfolio(id);
-    refresh();
+    setDeleting(id);
+    try {
+      await deletePortfolio(id);
+      refresh();
+    } finally {
+      setDeleting(null);
+    }
   };
 
   if (!user) return null;
@@ -127,6 +135,7 @@ export function PortfolioListPage() {
                     variant="ghost"
                     size="sm"
                     onClick={() => remove(p.id)}
+                    disabled={deleting === p.id}
                     className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
