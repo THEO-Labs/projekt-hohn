@@ -28,6 +28,12 @@ function formatTime(iso: string) {
   }
 }
 
+function toNum(v: unknown): number {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") return parseFloat(v);
+  return 0;
+}
+
 function parseMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
@@ -48,7 +54,7 @@ export function AnalysisDrawer({
   onAcceptScore,
 }: AnalysisDrawerProps) {
   const [messages, setMessages] = useState<LlmMessage[]>([]);
-  const [sliderValue, setSliderValue] = useState<number>(currentScore ?? 1.0);
+  const [sliderValue, setSliderValue] = useState<number>(typeof currentScore === "string" ? parseFloat(currentScore) : currentScore ?? 1.0);
   const [inputText, setInputText] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
@@ -65,7 +71,7 @@ export function AnalysisDrawer({
           .reverse()
           .find((m) => m.score_suggestion != null);
         if (lastSuggestion?.score_suggestion != null) {
-          setSliderValue(lastSuggestion.score_suggestion);
+          setSliderValue(toNum(lastSuggestion.score_suggestion));
         } else if (currentScore != null) {
           setSliderValue(currentScore);
         }
@@ -86,7 +92,7 @@ export function AnalysisDrawer({
       const res = await analyzeValue(companyId, valueKey);
       setMessages((prev) => [...prev, res.message]);
       if (res.message.score_suggestion != null) {
-        setSliderValue(res.message.score_suggestion);
+        setSliderValue(toNum(res.message.score_suggestion));
       }
     } finally {
       setAnalyzing(false);
@@ -102,7 +108,7 @@ export function AnalysisDrawer({
       const res = await sendChatMessage(companyId, valueKey, text);
       setMessages((prev) => [...prev, res.message]);
       if (res.message.score_suggestion != null) {
-        setSliderValue(res.message.score_suggestion);
+        setSliderValue(toNum(res.message.score_suggestion));
       }
     } finally {
       setSending(false);
@@ -235,7 +241,7 @@ export function AnalysisDrawer({
                       </span>
                       {msg.score_suggestion != null && (
                         <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
-                          Score: {msg.score_suggestion.toFixed(2)}
+                          Score: {toNum(msg.score_suggestion).toFixed(2)}
                         </span>
                       )}
                     </div>
