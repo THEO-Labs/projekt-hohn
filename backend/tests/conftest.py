@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://hohn:hohn_dev@localhost:5433/hohn_test")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("COOKIE_SECURE", "false")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import pytest
 from fastapi.testclient import TestClient

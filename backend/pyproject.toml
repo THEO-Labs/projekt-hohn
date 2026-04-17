@@ -17,6 +17,7 @@ dependencies = [
     "yfinance>=0.2.40",
     "cachetools>=7.0.5",
     "slowapi>=0.1.9",
+    "anthropic>=0.40",
 ]
 
 [dependency-groups]

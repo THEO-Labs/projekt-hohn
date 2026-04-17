@@ -9,6 +9,7 @@ import app.auth  # noqa: F401
 import app.portfolios  # noqa: F401
 import app.companies  # noqa: F401
 import app.values  # noqa: F401
+import app.llm  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

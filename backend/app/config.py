@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     jwt_ttl_minutes: int = 120
     cookie_secure: bool = True
     allowed_origins: str = ""
+    anthropic_api_key: str = ""
 
     @property
     def origins_list(self) -> list[str]:
