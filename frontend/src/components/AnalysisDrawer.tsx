@@ -123,10 +123,8 @@ export function AnalysisDrawer({
     }
   };
 
-  if (!open) return null;
-
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex justify-end">
+    <div className={`fixed inset-0 z-[200] flex justify-end transition-opacity duration-200 ${open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}>
       <div
         className="absolute inset-0 bg-black/30"
         onClick={onClose}

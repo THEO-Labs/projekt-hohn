@@ -97,6 +97,7 @@ export function CompanyDashboardPage() {
     valueLabel: string;
     currentScore: number | null;
   } | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const period = PERIOD_OPTIONS[periodIdx];
 
@@ -319,13 +320,16 @@ export function CompanyDashboardPage() {
                       return (
                         <td key={`${company.id}-${d.key}`}
                           className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : ""}`}
-                          onClick={isQualitative ? () => setDrawer({
-                            companyId: company.id,
-                            valueKey: d.key,
-                            companyName: company.name,
-                            valueLabel: d.label_de,
-                            currentScore: raw,
-                          }) : undefined}
+                          onClick={isQualitative ? () => {
+                            setDrawer({
+                              companyId: company.id,
+                              valueKey: d.key,
+                              companyName: company.name,
+                              valueLabel: d.label_de,
+                              currentScore: raw,
+                            });
+                            setDrawerOpen(true);
+                          } : undefined}
                         >
                           <div className="flex items-center gap-1.5">
                             {isQualitative && (
@@ -372,8 +376,8 @@ export function CompanyDashboardPage() {
 
         {drawer && (
           <AnalysisDrawer
-            open={!!drawer}
-            onClose={() => setDrawer(null)}
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
             companyId={drawer.companyId}
             companyName={drawer.companyName}
             valueKey={drawer.valueKey}
@@ -387,7 +391,7 @@ export function CompanyDashboardPage() {
                 next.set(drawer.companyId, updated);
                 return next;
               });
-              setDrawer(null);
+              setDrawerOpen(false);
             }}
           />
         )}
