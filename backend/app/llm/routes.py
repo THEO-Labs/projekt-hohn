@@ -34,7 +34,8 @@ def _get_or_create_conversation(db: Session, company_id: UUID, value_key: str) -
     conv = (
         db.query(LlmConversation)
         .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == value_key)
-        .one_or_none()
+        .order_by(LlmConversation.created_at.desc())
+        .first()
     )
     if conv:
         return conv
@@ -166,7 +167,8 @@ def get_chat_history(
     conv = (
         db.query(LlmConversation)
         .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == value_key)
-        .one_or_none()
+        .order_by(LlmConversation.created_at.desc())
+        .first()
     )
     if not conv:
         conv = _get_or_create_conversation(db, company_id, value_key)
