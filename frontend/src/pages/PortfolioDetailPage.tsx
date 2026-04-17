@@ -94,11 +94,11 @@ export function PortfolioDetailPage() {
         {/* Breadcrumb back nav */}
         <div className="mb-6">
           <Link
-            to="/"
+            to={`/portfolios/${id}`}
             className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
-            {t.portfolios}
+            {t.dashboard}
           </Link>
         </div>
 

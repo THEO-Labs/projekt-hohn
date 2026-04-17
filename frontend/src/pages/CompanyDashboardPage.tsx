@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, RefreshCw, Info, X, ShieldCheck, Calculator, MessageSquare, Pencil } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
+import { listCompanies, type Company } from "@/api/companies";
 import {
   getValueDefinitions,
   getCompanyValues,
@@ -16,14 +17,8 @@ import {
 } from "@/api/values";
 
 const CATEGORY_ORDER = [
-  "TRANSACTION",
-  "BASIC_COMPANY",
-  "HOHN_BASIC_1",
-  "HOHN_BASIC_2",
-  "VALUATION_ADJ",
-  "RISK_ADJ",
-  "MGMT_ADJ",
-  "TOTAL_ADJ",
+  "TRANSACTION", "BASIC_COMPANY", "HOHN_BASIC_1", "HOHN_BASIC_2",
+  "VALUATION_ADJ", "RISK_ADJ", "MGMT_ADJ", "TOTAL_ADJ",
 ];
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -61,87 +56,119 @@ const PERIOD_OPTIONS = [
   { label: "FY 2020", value: "FY", year: 2020 },
 ];
 
-const FX_RATES: Record<string, number> = {
-  USD: 1,
-  EUR: 0.92,
-  GBP: 0.79,
-  CHF: 0.88,
-};
-
+const FX_RATES: Record<string, number> = { USD: 1, EUR: 0.92, GBP: 0.79, CHF: 0.88 };
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF"];
 
+type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
+
 export function CompanyDashboardPage() {
-  const { pid, cid } = useParams<{ pid: string; cid: string }>();
+  const { pid } = useParams<{ pid: string }>();
   const { user, logout } = useAuth();
 
   const [definitions, setDefinitions] = useState<ValueDefinition[]>([]);
-  const [values, setValues] = useState<CompanyValue[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [valuesMap, setValuesMap] = useState<Map<string, CompanyValue[]>>(new Map());
   const [periodIdx, setPeriodIdx] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
-  const [tooltip, setTooltip] = useState<{ key: string; x: number; y: number } | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [tooltip, setTooltip] = useState<TooltipState>(null);
 
   const period = PERIOD_OPTIONS[periodIdx];
 
-  const loadValues = useCallback(() => {
-    if (!cid) return;
-    getCompanyValues(cid, period.value, period.year).then(setValues);
-  }, [cid, period.value, period.year]);
+  const loadAllValues = useCallback(async () => {
+    if (!pid || companies.length === 0) return;
+    const map = new Map<string, CompanyValue[]>();
+    await Promise.all(
+      companies.map(async (c) => {
+        const vals = await getCompanyValues(c.id, period.value, period.year);
+        map.set(c.id, vals);
+      })
+    );
+    setValuesMap(map);
+  }, [pid, companies, period.value, period.year]);
 
   useEffect(() => {
     getValueDefinitions().then(setDefinitions);
   }, []);
 
   useEffect(() => {
-    loadValues();
-  }, [loadValues]);
+    if (pid) listCompanies(pid).then(setCompanies);
+  }, [pid]);
 
-  const handleRefresh = async (keys: string[]) => {
-    if (!cid) return;
-    setLoadingKeys((prev) => new Set([...prev, ...keys]));
+  useEffect(() => {
+    loadAllValues();
+  }, [loadAllValues]);
+
+  const toggleCategory = (cat: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(cat) ? next.delete(cat) : next.add(cat);
+      return next;
+    });
+  };
+
+  const handleRefreshColumn = async (key: string) => {
+    const loadKey = key;
+    setLoadingKeys((prev) => new Set([...prev, loadKey]));
     try {
-      const updated = await refreshValues(cid, keys, period.value, period.year);
-      setValues((prev) => {
-        const map = new Map(prev.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
-        for (const u of updated) {
-          map.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
-        }
-        return Array.from(map.values());
-      });
+      await Promise.all(
+        companies.map(async (c) => {
+          const updated = await refreshValues(c.id, [key], period.value, period.year);
+          setValuesMap((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(c.id) ?? [];
+            const merged = new Map(existing.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
+            for (const u of updated) merged.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
+            next.set(c.id, Array.from(merged.values()));
+            return next;
+          });
+        })
+      );
     } finally {
-      setLoadingKeys((prev) => {
-        const next = new Set(prev);
-        for (const k of keys) next.delete(k);
-        return next;
-      });
+      setLoadingKeys((prev) => { const n = new Set(prev); n.delete(loadKey); return n; });
     }
   };
 
-  const handleRefreshAll = () => {
-    const apiKeys = definitions
-      .filter((d) => d.source_type === "API")
-      .map((d) => d.key);
-    handleRefresh(apiKeys);
+  const handleRefreshAll = async () => {
+    const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
+    setLoadingKeys(new Set(apiKeys));
+    try {
+      await Promise.all(
+        companies.map(async (c) => {
+          const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
+          setValuesMap((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(c.id) ?? [];
+            const merged = new Map(existing.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
+            for (const u of updated) merged.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
+            next.set(c.id, Array.from(merged.values()));
+            return next;
+          });
+        })
+      );
+    } finally {
+      setLoadingKeys(new Set());
+    }
   };
 
-  const getValueForKey = (key: string): CompanyValue | undefined =>
-    values.find((v) => v.value_key === key);
+  const getVal = (companyId: string, key: string): CompanyValue | undefined =>
+    (valuesMap.get(companyId) ?? []).find((v) => v.value_key === key);
 
-  const convertCurrency = (val: number | null, fromCurrency: string | null): number | null => {
-    if (val == null || !fromCurrency) return val;
-    const from = FX_RATES[fromCurrency] ?? 1;
-    const to = FX_RATES[displayCurrency] ?? 1;
-    if (from === to) return val;
-    return (val / from) * to;
+  const convertCurrency = (val: number | null, from: string | null): number | null => {
+    if (val == null || !from) return val;
+    const f = FX_RATES[from] ?? 1;
+    const t = FX_RATES[displayCurrency] ?? 1;
+    return f === t ? val : (val / f) * t;
   };
 
   const grouped = CATEGORY_ORDER.map((cat) => ({
     category: cat,
     label: CATEGORY_LABELS[cat],
-    defs: definitions
-      .filter((d) => d.category === cat)
-      .sort((a, b) => a.sort_order - b.sort_order),
+    defs: definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order),
   })).filter((g) => g.defs.length > 0);
+
+  const visibleDefs = grouped.flatMap((g) => collapsed.has(g.category) ? [] : g.defs);
 
   if (!user) return null;
 
@@ -150,45 +177,32 @@ export function CompanyDashboardPage() {
       <AppHeader email={user.email} onLogout={logout} />
       <main className="p-6">
         <div className="mb-4">
-          <Link
-            to={`/portfolios/${pid}`}
-            className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
-          >
+          <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground">
             <ChevronLeft className="h-3.5 w-3.5" />
-            {t.back}
+            {t.portfolios}
           </Link>
         </div>
 
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">
-            {t.dashboard}
-          </h2>
+          <h2 className="text-2xl font-semibold tracking-tight text-foreground">{t.dashboard}</h2>
           <div className="flex items-center gap-3">
             <Button variant="outline" size="sm" onClick={handleRefreshAll}>
               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
               {t.allValues}
             </Button>
-            <select
-              value={periodIdx}
-              onChange={(e) => setPeriodIdx(Number(e.target.value))}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
-            >
-              {PERIOD_OPTIONS.map((p, i) => (
-                <option key={i} value={i}>
-                  {p.label}
-                </option>
-              ))}
+            <Link to={`/portfolios/${pid}/manage`}>
+              <Button variant="outline" size="sm">
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                {t.companies}
+              </Button>
+            </Link>
+            <select value={periodIdx} onChange={(e) => setPeriodIdx(Number(e.target.value))}
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
+              {PERIOD_OPTIONS.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
             </select>
-            <select
-              value={displayCurrency}
-              onChange={(e) => setDisplayCurrency(e.target.value)}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground"
-            >
-              {CURRENCIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
+            <select value={displayCurrency} onChange={(e) => setDisplayCurrency(e.target.value)}
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
+              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
         </div>
@@ -196,91 +210,126 @@ export function CompanyDashboardPage() {
         <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
           <table className="w-full text-sm">
             <thead>
+              {/* Category header row */}
               <tr>
+                <th className="sticky left-0 z-20 border-b border-r bg-card px-3 py-2 text-left text-xs font-semibold text-foreground" rowSpan={2}>
+                  Firma
+                </th>
                 {grouped.map((g) => (
                   <th
                     key={g.category}
-                    colSpan={g.defs.length}
-                    className={`border-b border-r px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider ${CATEGORY_COLORS[g.category]}`}
+                    colSpan={collapsed.has(g.category) ? 1 : g.defs.length}
+                    className={`cursor-pointer select-none border-b border-r px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider transition-colors hover:opacity-80 ${CATEGORY_COLORS[g.category]}`}
+                    onClick={() => toggleCategory(g.category)}
                   >
-                    {g.label}
+                    <div className="flex items-center justify-center gap-1.5">
+                      {collapsed.has(g.category)
+                        ? <ChevronRight className="h-3.5 w-3.5" />
+                        : <ChevronDown className="h-3.5 w-3.5" />
+                      }
+                      <span>{g.label}</span>
+                    </div>
                   </th>
                 ))}
               </tr>
+              {/* Value column headers (only for expanded categories) */}
               <tr>
-                {grouped.flatMap((g) =>
-                  g.defs.map((d) => (
-                    <th
-                      key={d.key}
-                      className="whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground"
-                    >
+                {grouped.flatMap((g) => {
+                  if (collapsed.has(g.category)) {
+                    return [
+                      <th key={`${g.category}-collapsed`}
+                        className="border-b border-r border-border/40 px-2 py-1.5 text-center text-[10px] text-muted-foreground">
+                        {g.defs.length} Werte
+                      </th>
+                    ];
+                  }
+                  return g.defs.map((d) => (
+                    <th key={d.key}
+                      className="whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                       <div className="flex items-center gap-1">
-                        <span className="truncate" title={d.label_de}>
-                          {d.label_en}
-                        </span>
+                        <span className="truncate" title={d.label_de}>{d.label_en}</span>
                         {d.source_type === "API" && (
-                          <button
-                            onClick={() => handleRefresh([d.key])}
+                          <button onClick={() => handleRefreshColumn(d.key)}
                             disabled={loadingKeys.has(d.key)}
                             className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
-                            title={t.calculate}
-                          >
-                            <RefreshCw
-                              className={`h-3 w-3 ${loadingKeys.has(d.key) ? "animate-spin" : ""}`}
-                            />
+                            title={t.calculate}>
+                            <RefreshCw className={`h-3 w-3 ${loadingKeys.has(d.key) ? "animate-spin" : ""}`} />
                           </button>
                         )}
                       </div>
                     </th>
-                  ))
-                )}
+                  ));
+                })}
               </tr>
             </thead>
             <tbody>
-              <tr>
-                {grouped.flatMap((g) =>
-                  g.defs.map((d) => {
-                    const cv = getValueForKey(d.key);
-                    const raw = cv?.numeric_value ?? null;
-                    const shouldConvert = d.unit !== "%" && d.data_type === "NUMERIC" && cv?.currency;
-                    const displayVal = shouldConvert
-                      ? convertCurrency(raw, cv?.currency ?? null)
-                      : raw;
+              {companies.map((company) => (
+                <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">
+                  <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 font-medium text-foreground">
+                    <div>
+                      <span>{company.name}</span>
+                      <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">
+                        {company.ticker}
+                      </span>
+                    </div>
+                  </td>
+                  {grouped.flatMap((g) => {
+                    if (collapsed.has(g.category)) {
+                      return [
+                        <td key={`${company.id}-${g.category}-collapsed`}
+                          className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">
+                          ...
+                        </td>
+                      ];
+                    }
+                    return g.defs.map((d) => {
+                      const cv = getVal(company.id, d.key);
+                      const raw = cv?.numeric_value ?? null;
+                      const shouldConvert = d.unit !== "%" && d.data_type === "NUMERIC" && cv?.currency;
+                      const displayVal = shouldConvert ? convertCurrency(raw, cv?.currency ?? null) : raw;
 
-                    return (
-                      <td
-                        key={d.key}
-                        className="whitespace-nowrap border-r border-border/40 px-3 py-2 tabular"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-sm text-foreground">
-                            {d.data_type === "TEXT" || d.data_type === "FACTOR"
-                              ? cv?.text_value ?? cv?.numeric_value?.toString() ?? t.noValue
-                              : formatValue(displayVal, d.unit, displayCurrency)}
-                          </span>
-                          {cv && (
-                            <button
-                              onClick={(e) => {
-                                const rect = (e.target as HTMLElement).getBoundingClientRect();
-                                setTooltip(tooltip?.key === d.key ? null : { key: d.key, x: rect.left, y: rect.bottom + 6 });
-                              }}
-                              className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-                            >
-                              <Info className="h-3 w-3" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    );
-                  })
-                )}
-              </tr>
+                      return (
+                        <td key={`${company.id}-${d.key}`}
+                          className="whitespace-nowrap border-r border-border/40 px-3 py-2 tabular">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-sm text-foreground">
+                              {d.data_type === "TEXT" || d.data_type === "FACTOR"
+                                ? cv?.text_value ?? cv?.numeric_value?.toString() ?? t.noValue
+                                : formatValue(displayVal, d.unit, displayCurrency)}
+                            </span>
+                            {cv && (
+                              <button
+                                onClick={(e) => {
+                                  const rect = (e.target as HTMLElement).getBoundingClientRect();
+                                  const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id;
+                                  setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6 });
+                                }}
+                                className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground">
+                                <Info className="h-3 w-3" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    });
+                  })}
+                </tr>
+              ))}
+              {companies.length === 0 && (
+                <tr>
+                  <td colSpan={visibleDefs.length + grouped.filter((g) => collapsed.has(g.category)).length + 1}
+                    className="px-6 py-12 text-center text-sm text-muted-foreground">
+                    Noch keine Firmen in diesem Portfolio.{" "}
+                    <Link to={`/portfolios/${pid}/manage`} className="text-primary hover:underline">Firma hinzufügen</Link>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
 
         {tooltip && (() => {
-          const cv = getValueForKey(tooltip.key);
+          const cv = getVal(tooltip.companyId, tooltip.key);
           const def = definitions.find((d) => d.key === tooltip.key);
           if (!cv || !def) return null;
 
@@ -299,22 +348,18 @@ export function CompanyDashboardPage() {
           return createPortal(
             <>
               <div className="fixed inset-0 z-[99]" onClick={() => setTooltip(null)} />
-              <div
-                className="fixed z-[100] w-72 rounded-xl border border-border bg-card p-4 shadow-2xl shadow-black/10"
-                style={{ left: Math.min(tooltip.x, window.innerWidth - 300), top: Math.min(tooltip.y, window.innerHeight - 250) }}
-              >
+              <div className="fixed z-[100] w-72 rounded-xl border border-border bg-card p-4 shadow-2xl shadow-black/10"
+                style={{ left: Math.min(tooltip.x, window.innerWidth - 300), top: Math.min(tooltip.y, window.innerHeight - 250) }}>
                 <div className="mb-3 flex items-center justify-between">
                   <span className="text-xs font-semibold text-foreground">{def.label_en}</span>
                   <button onClick={() => setTooltip(null)} className="rounded p-0.5 hover:bg-muted">
                     <X className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
                 </div>
-
                 <div className={`mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 ${confidence.color}`}>
                   <ConfIcon className="h-4 w-4 shrink-0" />
                   <span className="text-xs font-medium">{confidence.label}</span>
                 </div>
-
                 <dl className="space-y-2 text-xs">
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">{t.source}</dt>
@@ -325,16 +370,14 @@ export function CompanyDashboardPage() {
                       <dt className="text-muted-foreground">Link</dt>
                       <dd className="text-right">
                         <a href={cv.source_link} target="_blank" rel="noreferrer" className="text-primary hover:underline truncate max-w-[140px] inline-block">
-                          {new URL(cv.source_link).hostname}
+                          {(() => { try { return new URL(cv.source_link).hostname; } catch { return cv.source_link; } })()}
                         </a>
                       </dd>
                     </div>
                   )}
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">{t.fetchedAt}</dt>
-                    <dd className="text-foreground">
-                      {cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}
-                    </dd>
+                    <dd className="text-foreground">{cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}</dd>
                   </div>
                   {cv.currency && (
                     <div className="flex justify-between">

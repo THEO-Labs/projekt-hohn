@@ -30,8 +30,8 @@ export default function App() {
         ) : (
           <>
             <Route path="/" element={<PortfolioListPage />} />
-            <Route path="/portfolios/:id" element={<PortfolioDetailPage />} />
-            <Route path="/portfolios/:pid/companies/:cid" element={<CompanyDashboardPage />} />
+            <Route path="/portfolios/:pid" element={<CompanyDashboardPage />} />
+            <Route path="/portfolios/:pid/manage" element={<PortfolioDetailPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </>
         )}
