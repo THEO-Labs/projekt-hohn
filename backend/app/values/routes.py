@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.deps import current_user
 from app.auth.models import User
+from app.calculations.engine import CALCULATED_KEYS, calculate_all
 from app.companies.models import Company
 from app.db import get_db
 from app.portfolios.models import Portfolio
@@ -16,6 +17,68 @@ from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest,
 
 catalog_router = APIRouter(prefix="/api/value-definitions", tags=["values"])
 values_router = APIRouter(prefix="/api/companies", tags=["values"])
+
+
+def _run_and_persist_calculations(
+    db: Session,
+    company_id: UUID,
+    period_type: str,
+    period_year: int | None,
+) -> list[CompanyValue]:
+    existing_rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.period_type == period_type,
+            CompanyValue.period_year == period_year,
+        )
+        .all()
+    )
+
+    values_map: dict[str, Decimal | None] = {}
+    for row in existing_rows:
+        if row.numeric_value is not None:
+            values_map[row.value_key] = row.numeric_value
+
+    calc_results = calculate_all(values_map)
+
+    by_key = {row.value_key: row for row in existing_rows}
+    updated: list[CompanyValue] = []
+
+    for key, value in calc_results.items():
+        if key not in CALCULATED_KEYS:
+            continue
+
+        existing = by_key.get(key)
+        if existing and existing.manually_overridden:
+            updated.append(existing)
+            continue
+
+        if value is None and existing is None:
+            continue
+
+        if existing:
+            existing.numeric_value = value
+            existing.source_name = "Calculated"
+            existing.source_link = None
+            existing.fetched_at = datetime.now(timezone.utc)
+            updated.append(existing)
+        else:
+            cv = CompanyValue(
+                id=uuid4(),
+                company_id=company_id,
+                value_key=key,
+                period_type=period_type,
+                period_year=period_year,
+                numeric_value=value,
+                source_name="Calculated",
+                source_link=None,
+                fetched_at=datetime.now(timezone.utc),
+            )
+            db.add(cv)
+            updated.append(cv)
+
+    return updated
 
 
 def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
@@ -131,9 +194,29 @@ def refresh_company_values(
             updated.append(cv)
 
     db.commit()
+
+    _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
+    db.commit()
+
     for cv in updated:
         db.refresh(cv)
     return updated
+
+
+@values_router.post("/{company_id}/values/calculate", response_model=list[CompanyValueOut])
+def calculate_company_values(
+    company_id: UUID,
+    period_type: str = Query(default="SNAPSHOT"),
+    period_year: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[CompanyValue]:
+    _get_owned_company(db, user, company_id)
+    calc_updated = _run_and_persist_calculations(db, company_id, period_type, period_year)
+    db.commit()
+    for cv in calc_updated:
+        db.refresh(cv)
+    return calc_updated
 
 
 @values_router.post("/{company_id}/values/{value_key}/override", response_model=CompanyValueOut)

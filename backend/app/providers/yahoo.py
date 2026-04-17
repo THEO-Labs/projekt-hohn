@@ -33,7 +33,7 @@ PERCENT_KEYS = {"dividend_return", "op_margin"}
 
 class YahooFinanceProvider:
     name = "Yahoo Finance"
-    supported_keys = set(INFO_KEY_MAP.keys()) | {"next_earnings", "buybacks", "sales_growth", "op_profit"}
+    supported_keys = set(INFO_KEY_MAP.keys()) | {"next_earnings", "buybacks", "sales_growth", "op_profit", "insider_transactions"}
 
     def __init__(self) -> None:
         self._ticker_cache: dict[str, yfinance.Ticker] = {}
@@ -81,6 +81,9 @@ class YahooFinanceProvider:
 
         if key == "sales_growth":
             return self._fetch_sales_growth(ticker, source_link)
+
+        if key == "insider_transactions":
+            return self._fetch_insider_transactions(ticker, source_link)
 
         return None
 
@@ -194,6 +197,65 @@ class YahooFinanceProvider:
             return None
         return ProviderResult(
             value=value * Decimal("100"),
+            source_name=self.name,
+            source_link=source_link,
+            currency=None,
+        )
+
+    def _fetch_insider_transactions(self, ticker: str, source_link: str) -> ProviderResult | None:
+        t = self._get_ticker(ticker)
+        try:
+            df = t.insider_transactions
+            if df is None or (hasattr(df, "empty") and df.empty):
+                return None
+            if not hasattr(df, "iterrows"):
+                return None
+
+            text_col = None
+            for col in df.columns:
+                if "text" in str(col).lower() or "transaction" in str(col).lower():
+                    text_col = col
+                    break
+
+            shares_col = None
+            for col in df.columns:
+                if "shares" in str(col).lower():
+                    shares_col = col
+                    break
+
+            buys = 0
+            sales = 0
+            for _, row in df.iterrows():
+                if text_col is not None:
+                    desc = str(row.get(text_col, "")).lower()
+                    if "sale" in desc or "sold" in desc:
+                        sales += 1
+                    elif "purchase" in desc or "buy" in desc or "bought" in desc:
+                        buys += 1
+                elif shares_col is not None:
+                    val = row.get(shares_col)
+                    try:
+                        if float(val) > 0:
+                            buys += 1
+                        elif float(val) < 0:
+                            sales += 1
+                    except (TypeError, ValueError):
+                        pass
+
+            if buys == 0 and sales == 0:
+                summary = f"{len(df)} Transaktionen (letzte 6 Monate)"
+            else:
+                parts = []
+                if buys:
+                    parts.append(f"{buys} Kauf" if buys == 1 else f"{buys} Kaeufe")
+                if sales:
+                    parts.append(f"{sales} Verkauf" if sales == 1 else f"{sales} Verkaeufe")
+                summary = ", ".join(parts) + " (letzte 6 Monate)"
+        except Exception:
+            return None
+
+        return ProviderResult(
+            value=summary,
             source_name=self.name,
             source_link=source_link,
             currency=None,
