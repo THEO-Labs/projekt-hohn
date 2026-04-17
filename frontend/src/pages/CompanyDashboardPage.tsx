@@ -215,10 +215,13 @@ export function CompanyDashboardPage() {
               className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
               {PERIOD_OPTIONS.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
             </select>
-            <select value={displayCurrency} onChange={(e) => setDisplayCurrency(e.target.value)}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
-              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
+            <div className="flex items-center gap-1.5">
+              <select value={displayCurrency} onChange={(e) => setDisplayCurrency(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
+                {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <span className="text-xs text-muted-foreground">(Richtwerte, nicht live)</span>
+            </div>
           </div>
         </div>
 

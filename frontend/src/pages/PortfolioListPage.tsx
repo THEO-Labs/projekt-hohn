@@ -37,6 +37,7 @@ export function PortfolioListPage() {
   };
 
   const remove = async (id: string) => {
+    if (!window.confirm("Portfolio und alle enthaltenen Firmen wirklich löschen?")) return;
     await deletePortfolio(id);
     refresh();
   };

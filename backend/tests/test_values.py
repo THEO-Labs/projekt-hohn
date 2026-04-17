@@ -51,8 +51,16 @@ def _login_with_company(client, db, email="t@example.com", ticker="AAPL"):
     return user, pid, c["id"]
 
 
+def _login(client, db, email="catalog@example.com"):
+    user = User(email=email, password_hash=hash_password("pw1234"))
+    db.add(user)
+    db.commit()
+    client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
+
+
 def test_get_value_definitions_returns_catalog(client, db):
     _seed_catalog(db)
+    _login(client, db)
     response = client.get("/api/value-definitions")
     assert response.status_code == 200
     data = response.json()
@@ -64,6 +72,7 @@ def test_get_value_definitions_returns_catalog(client, db):
 
 def test_get_value_definitions_ordered(client, db):
     _seed_catalog(db)
+    _login(client, db)
     response = client.get("/api/value-definitions")
     data = response.json()
     orders = [item["sort_order"] for item in data]

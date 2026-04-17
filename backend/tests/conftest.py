@@ -37,6 +37,13 @@ def db(engine):
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    from app.auth.routes import limiter
+    limiter.reset()
+    yield
+
+
 @pytest.fixture
 def client(db):
     def override_get_db():

@@ -82,6 +82,7 @@ export function PortfolioDetailPage() {
   };
 
   const remove = async (cid: string) => {
+    if (!window.confirm("Firma wirklich löschen?")) return;
     await deleteCompany(cid);
     refresh();
   };
@@ -203,7 +204,7 @@ export function PortfolioDetailPage() {
                     <Building2 className="h-4 w-4 text-muted-foreground" />
                   </div>
                   <div>
-                    <Link to={`/portfolios/${id}/companies/${c.id}`} className="font-medium text-foreground hover:text-primary transition-colors hover:underline">{c.name}</Link>
+                    <span className="font-medium text-foreground">{c.name}</span>
                     <div className="mt-0.5 flex items-center gap-2">
                       <span className="tabular rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-primary">
                         {c.ticker}

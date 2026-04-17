@@ -1,9 +1,12 @@
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.auth.deps import current_user
 from app.auth.models import User
@@ -92,7 +95,10 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
 
 
 @catalog_router.get("", response_model=list[ValueDefinitionOut])
-def list_value_definitions(db: Session = Depends(get_db)) -> list[ValueDefinition]:
+def list_value_definitions(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[ValueDefinition]:
     return (
         db.query(ValueDefinition)
         .order_by(ValueDefinition.sort_order)
@@ -140,7 +146,8 @@ def refresh_company_values(
                 result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
                 if result is not None:
                     break
-            except Exception:
+            except Exception as e:
+                logger.warning("Provider fetch failed for %s/%s: %s", ticker, key, e)
                 continue
 
         if result is None:
@@ -224,6 +231,8 @@ def override_company_value(
     company_id: UUID,
     value_key: str,
     payload: OverrideRequest,
+    period_type: str = Query(default="SNAPSHOT"),
+    period_year: int | None = Query(default=None),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> CompanyValue:
@@ -234,8 +243,8 @@ def override_company_value(
         .filter(
             CompanyValue.company_id == company_id,
             CompanyValue.value_key == value_key,
-            CompanyValue.period_type == "SNAPSHOT",
-            CompanyValue.period_year == None,  # noqa: E711
+            CompanyValue.period_type == period_type,
+            CompanyValue.period_year == period_year,  # noqa: E711
         )
         .one_or_none()
     )
@@ -256,8 +265,8 @@ def override_company_value(
         id=uuid4(),
         company_id=company_id,
         value_key=value_key,
-        period_type="SNAPSHOT",
-        period_year=None,
+        period_type=period_type,
+        period_year=period_year,
         numeric_value=payload.numeric_value,
         text_value=payload.text_value,
         source_name=payload.source_name,

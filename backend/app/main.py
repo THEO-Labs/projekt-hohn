@@ -1,3 +1,4 @@
+import logging
 import app.auth  # noqa: F401  # Modelle registrieren
 import app.portfolios  # noqa: F401
 import app.companies  # noqa: F401
@@ -9,6 +10,8 @@ from app.config import settings
 
 
 def create_app() -> FastAPI:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
     app = FastAPI(title="Hohn-Rendite Tool")
 
     if settings.origins_list:
@@ -24,7 +27,11 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    from app.auth.routes import router as auth_router
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from app.auth.routes import router as auth_router, limiter
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.include_router(auth_router)
 
     from app.portfolios.routes import router as portfolios_router
@@ -55,7 +62,7 @@ def create_app() -> FastAPI:
             if full_path.startswith("api/"):
                 raise HTTPException(status_code=404)
             candidate = static_dir / full_path
-            if candidate.is_file() and static_dir in candidate.resolve().parents:
+            if candidate.is_file() and candidate.resolve().is_relative_to(static_dir.resolve()):
                 return FileResponse(candidate)
             return FileResponse(static_dir / "index.html")
 

@@ -8,8 +8,7 @@ export function formatValue(
   if (isNaN(value)) return "\u2014";
 
   if (unit === "%") {
-    const pct = Math.abs(value) < 1 ? value * 100 : value;
-    return `${pct.toFixed(2)}%`;
+    return `${value.toFixed(2)}%`;
   }
 
   if (Math.abs(value) >= 1_000_000_000) {

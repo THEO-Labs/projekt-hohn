@@ -1,8 +1,12 @@
+import logging
 from decimal import Decimal, InvalidOperation
 
 import yfinance
+from cachetools import TTLCache
 
 from app.providers.base import ProviderResult
+
+logger = logging.getLogger(__name__)
 
 INFO_KEY_MAP = {
     "stock_price": "currentPrice",
@@ -36,8 +40,8 @@ class YahooFinanceProvider:
     supported_keys = set(INFO_KEY_MAP.keys()) | {"next_earnings", "buybacks", "sales_growth", "op_profit", "insider_transactions"}
 
     def __init__(self) -> None:
-        self._ticker_cache: dict[str, yfinance.Ticker] = {}
-        self._info_cache: dict[str, dict] = {}
+        self._ticker_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
+        self._info_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
 
     def _get_ticker(self, ticker: str) -> yfinance.Ticker:
         if ticker not in self._ticker_cache:
