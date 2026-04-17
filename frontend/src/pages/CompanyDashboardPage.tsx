@@ -106,12 +106,23 @@ export function CompanyDashboardPage() {
     const map = new Map<string, CompanyValue[]>();
     await Promise.all(
       companies.map(async (c) => {
-        const vals = await getCompanyValues(c.id, period.value, period.year);
-        map.set(c.id, vals);
+        const periodVals = await getCompanyValues(c.id, period.value, period.year);
+        if (period.value !== "SNAPSHOT") {
+          const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
+          const qualitativeKeys = new Set(
+            definitions.filter((d) => d.source_type === "QUALITATIVE").map((d) => d.key)
+          );
+          const qualVals = snapshotVals.filter((v) => qualitativeKeys.has(v.value_key));
+          const periodKeys = new Set(periodVals.map((v) => v.value_key));
+          const merged = [...periodVals, ...qualVals.filter((v) => !periodKeys.has(v.value_key))];
+          map.set(c.id, merged);
+        } else {
+          map.set(c.id, periodVals);
+        }
       })
     );
     setValuesMap(map);
-  }, [pid, companies, period.value, period.year]);
+  }, [pid, companies, period.value, period.year, definitions]);
 
   useEffect(() => {
     getValueDefinitions().then(setDefinitions);
@@ -208,7 +219,7 @@ export function CompanyDashboardPage() {
           </Link>
         </div>
 
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
           <h2 className="text-2xl font-semibold tracking-tight text-foreground">{t.dashboard}</h2>
           <div className="flex items-center gap-3">
             <Button variant="outline" size="sm" onClick={handleRefreshAll}>
@@ -233,6 +244,27 @@ export function CompanyDashboardPage() {
               <span className="text-xs text-muted-foreground">(Richtwerte, nicht live)</span>
             </div>
           </div>
+        </div>
+
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <div className="h-2.5 w-2.5 rounded-full bg-primary" />
+            <span className="text-sm font-medium text-foreground">
+              {period.value === "SNAPSHOT" ? "Aktuelle Werte" : period.label}
+            </span>
+          </div>
+          <span className="text-xs text-muted-foreground">|</span>
+          <span className="text-xs text-muted-foreground">
+            Finanzdaten: {period.value === "SNAPSHOT" ? "Live / letzte verfügbare" : period.value === "LTM" || period.value === "TTM" ? "Letzte 12 Monate" : `Geschäftsjahr ${period.year}`}
+          </span>
+          {period.value !== "SNAPSHOT" && (
+            <>
+              <span className="text-xs text-muted-foreground">|</span>
+              <span className="text-xs italic text-amber-600">
+                Qualitative Bewertungen immer aus heutiger Sicht
+              </span>
+            </>
+          )}
         </div>
 
         <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
@@ -317,9 +349,11 @@ export function CompanyDashboardPage() {
                       const displayVal = shouldConvert ? convertCurrency(raw, cv?.currency ?? null) : raw;
                       const isQualitative = d.source_type === "QUALITATIVE";
 
+                      const isHistoricalQual = isQualitative && period.value !== "SNAPSHOT";
+
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : ""} ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
                           onClick={isQualitative ? () => {
                             setDrawer({
                               companyId: company.id,
