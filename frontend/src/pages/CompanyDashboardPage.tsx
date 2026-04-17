@@ -90,6 +90,8 @@ export function CompanyDashboardPage() {
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
+  const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [drawer, setDrawer] = useState<{
     companyId: string;
     valueKey: string;
@@ -351,9 +353,26 @@ export function CompanyDashboardPage() {
 
                       const isHistoricalQual = isQualitative && period.value !== "SNAPSHOT";
 
+                      const isEditing = editCell?.companyId === company.id && editCell?.key === d.key;
+
+                      const handleSaveEdit = async () => {
+                        if (!editCell || saving) return;
+                        const num = parseFloat(editCell.value);
+                        if (isNaN(num)) { setEditCell(null); return; }
+                        setSaving(true);
+                        try {
+                          await overrideValue(company.id, d.key, num, "Manuell");
+                          const updated = await getCompanyValues(company.id, period.value, period.year);
+                          setValuesMap((prev) => { const n = new Map(prev); n.set(company.id, updated); return n; });
+                        } finally {
+                          setSaving(false);
+                          setEditCell(null);
+                        }
+                      };
+
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : ""} ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : "cursor-text"} ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
                           onClick={isQualitative ? () => {
                             setDrawer({
                               companyId: company.id,
@@ -364,7 +383,26 @@ export function CompanyDashboardPage() {
                             });
                             setDrawerOpen(true);
                           } : undefined}
+                          onDoubleClick={!isQualitative ? (e) => {
+                            e.stopPropagation();
+                            const currentVal = cv?.numeric_value != null ? String(cv.numeric_value) : "";
+                            setEditCell({ companyId: company.id, key: d.key, value: currentVal });
+                          } : undefined}
                         >
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              type="text"
+                              className="w-20 rounded border border-primary bg-background px-1.5 py-0.5 font-mono text-sm text-foreground outline-none"
+                              value={editCell.value}
+                              onChange={(e) => setEditCell({ ...editCell, value: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") handleSaveEdit();
+                                if (e.key === "Escape") setEditCell(null);
+                              }}
+                              onBlur={handleSaveEdit}
+                            />
+                          ) : (
                           <div className="flex items-center gap-1.5">
                             {isQualitative && (
                               <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
@@ -389,6 +427,7 @@ export function CompanyDashboardPage() {
                               </button>
                             )}
                           </div>
+                          )}
                         </td>
                       );
                     });
