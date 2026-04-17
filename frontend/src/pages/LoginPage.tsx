@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,14 +50,11 @@ export function LoginPage({ onLogin }: Props) {
         className="relative z-10 w-full max-w-sm space-y-5 rounded-2xl border border-border bg-card p-8 shadow-xl shadow-black/5"
       >
         {/* Brand mark */}
-        <div className="mb-6 flex flex-col items-center gap-3 text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/15 ring-1 ring-primary/25">
-            <TrendingUp className="h-6 w-6 text-primary" strokeWidth={2} />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-foreground">{t.appTitle}</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground">Turning Point Investments</p>
-          </div>
+        <div className="mb-8 flex flex-col items-center gap-3 text-center">
+          <img src="/logo.svg" alt="Turning Point Investments" className="h-9 w-auto" />
+          <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            {t.appTitle}
+          </p>
         </div>
 
         <div className="space-y-1.5">
