@@ -20,7 +20,7 @@ import { t } from "@/lib/i18n";
 import { isValidIsinFormat } from "@/lib/isin";
 
 export function PortfolioDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { pid: id } = useParams<{ pid: string }>();
   const { user, logout } = useAuth();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [open, setOpen] = useState(false);
