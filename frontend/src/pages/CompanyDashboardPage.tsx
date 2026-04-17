@@ -109,23 +109,19 @@ export function CompanyDashboardPage() {
     const map = new Map<string, CompanyValue[]>();
     await Promise.all(
       companies.map(async (c) => {
-        const periodVals = await getCompanyValues(c.id, period.value, period.year);
+        const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
         if (period.value !== "SNAPSHOT") {
-          const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
-          const qualitativeKeys = new Set(
-            definitions.filter((d) => d.source_type === "QUALITATIVE").map((d) => d.key)
-          );
-          const qualVals = snapshotVals.filter((v) => qualitativeKeys.has(v.value_key));
+          const periodVals = await getCompanyValues(c.id, period.value, period.year);
           const periodKeys = new Set(periodVals.map((v) => v.value_key));
-          const merged = [...periodVals, ...qualVals.filter((v) => !periodKeys.has(v.value_key))];
-          map.set(c.id, merged);
+          const fallbackVals = snapshotVals.filter((v) => !periodKeys.has(v.value_key));
+          map.set(c.id, [...periodVals, ...fallbackVals]);
         } else {
-          map.set(c.id, periodVals);
+          map.set(c.id, snapshotVals);
         }
       })
     );
     setValuesMap(map);
-  }, [pid, companies, period.value, period.year, definitions]);
+  }, [pid, companies, period.value, period.year]);
 
   useEffect(() => {
     getValueDefinitions().then(setDefinitions);
@@ -280,7 +276,7 @@ export function CompanyDashboardPage() {
             <>
               <span className="text-xs text-muted-foreground">|</span>
               <span className="text-xs italic text-amber-600">
-                Qualitative Bewertungen immer aus heutiger Sicht
+                Keine historischen Daten vorhanden → aktuelle Werte als Fallback
               </span>
             </>
           )}
