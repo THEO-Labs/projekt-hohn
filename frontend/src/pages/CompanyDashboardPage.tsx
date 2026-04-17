@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,11 @@ import {
   getValueDefinitions,
   getCompanyValues,
   refreshValues,
+  overrideValue,
   type ValueDefinition,
   type CompanyValue,
 } from "@/api/values";
+import { AnalysisDrawer } from "@/components/AnalysisDrawer";
 
 const CATEGORY_ORDER = [
   "TRANSACTION", "BASIC_COMPANY", "HOHN_BASIC_1", "HOHN_BASIC_2",
@@ -88,6 +90,13 @@ export function CompanyDashboardPage() {
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
+  const [drawer, setDrawer] = useState<{
+    companyId: string;
+    valueKey: string;
+    companyName: string;
+    valueLabel: string;
+    currentScore: number | null;
+  } | null>(null);
 
   const period = PERIOD_OPTIONS[periodIdx];
 
@@ -305,19 +314,32 @@ export function CompanyDashboardPage() {
                       const raw = cv?.numeric_value ?? null;
                       const shouldConvert = d.unit !== "%" && d.data_type === "NUMERIC" && cv?.currency;
                       const displayVal = shouldConvert ? convertCurrency(raw, cv?.currency ?? null) : raw;
+                      const isQualitative = d.source_type === "QUALITATIVE";
 
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className="whitespace-nowrap border-r border-border/40 px-3 py-2 tabular">
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                          onClick={isQualitative ? () => setDrawer({
+                            companyId: company.id,
+                            valueKey: d.key,
+                            companyName: company.name,
+                            valueLabel: d.label_de,
+                            currentScore: raw,
+                          }) : undefined}
+                        >
                           <div className="flex items-center gap-1.5">
+                            {isQualitative && (
+                              <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
+                            )}
                             <span className="font-mono text-sm text-foreground">
                               {d.data_type === "TEXT" || d.data_type === "FACTOR"
                                 ? cv?.text_value ?? cv?.numeric_value?.toString() ?? t.noValue
                                 : formatValue(displayVal, d.unit, displayCurrency)}
                             </span>
-                            {cv && (
+                            {cv && !isQualitative && (
                               <button
                                 onClick={(e) => {
+                                  e.stopPropagation();
                                   const rect = (e.target as HTMLElement).getBoundingClientRect();
                                   const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id;
                                   setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6 });
@@ -345,6 +367,28 @@ export function CompanyDashboardPage() {
             </tbody>
           </table>
         </div>
+
+        {drawer && (
+          <AnalysisDrawer
+            open={!!drawer}
+            onClose={() => setDrawer(null)}
+            companyId={drawer.companyId}
+            companyName={drawer.companyName}
+            valueKey={drawer.valueKey}
+            valueLabel={drawer.valueLabel}
+            currentScore={drawer.currentScore}
+            onAcceptScore={async (score) => {
+              await overrideValue(drawer.companyId, drawer.valueKey, score, "Claude Analysis");
+              const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
+              setValuesMap((prev) => {
+                const next = new Map(prev);
+                next.set(drawer.companyId, updated);
+                return next;
+              });
+              setDrawer(null);
+            }}
+          />
+        )}
 
         {tooltip && (() => {
           const cv = getVal(tooltip.companyId, tooltip.key);

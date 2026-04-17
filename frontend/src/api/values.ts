@@ -55,3 +55,14 @@ export const refreshValues = (
       period_year: periodYear ?? null,
     }),
   });
+
+export const overrideValue = (
+  companyId: string,
+  valueKey: string,
+  numericValue: number,
+  sourceName: string
+) =>
+  api<CompanyValue>(`/api/companies/${companyId}/values/${valueKey}/override`, {
+    method: "POST",
+    body: JSON.stringify({ numeric_value: numericValue, source_name: sourceName }),
+  });

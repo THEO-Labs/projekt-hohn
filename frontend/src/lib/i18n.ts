@@ -34,6 +34,12 @@ export const t = {
   manualOverride: "Manuell überschrieben",
   noValue: "\u2014",
   allValues: "Alle Werte berechnen",
+  analyzeStart: "Analyse starten",
+  analyzing: "Claude analysiert...",
+  acceptScore: "Score übernehmen",
+  sendMessage: "Senden",
+  chatPlaceholder: "Nachricht an Claude...",
+  scoreLabel: "Score",
 };
 
 export const terms = {
