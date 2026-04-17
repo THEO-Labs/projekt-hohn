@@ -37,8 +37,9 @@ function toNum(v: unknown): number {
 function parseMarkdown(text: string): string {
   return text
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/^(SCORE:|BEGRUENDUNG:|FAKTOREN:)/gm, "<span class=\"font-semibold text-primary\">$1</span>")
-    .replace(/^- (.+)$/gm, "<li class=\"ml-4 list-disc\">$1</li>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" class="text-primary underline hover:opacity-80">$1</a>')
+    .replace(/^(SCORE:|BEGRÜNDUNG:|FAKTOREN:|QUELLEN:|BEGRUENDUNG:)/gim, '<span class="font-semibold text-primary">$1</span>')
+    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
     .replace(/(<li[^>]*>.*<\/li>\n?)+/g, (m) => `<ul class="space-y-0.5 my-1">${m}</ul>`)
     .replace(/\n/g, "<br />");
 }

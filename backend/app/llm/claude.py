@@ -9,7 +9,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Investmentunternehmen.
-Du bewertest qualitative Faktoren fuer Unternehmen auf einer Skala von 0.5 bis 1.5.
+Du bewertest qualitative Faktoren für Unternehmen auf einer Skala von 0.5 bis 1.5.
 
 0.5 = sehr hohes Risiko / sehr schlecht
 1.0 = neutral / durchschnittlich
@@ -17,13 +17,17 @@ Du bewertest qualitative Faktoren fuer Unternehmen auf einer Skala von 0.5 bis 1
 
 Antworte immer mit:
 1. SCORE: [Dezimalzahl 0.5-1.5]
-2. BEGRUENDUNG: [2-3 Saetze]
+2. BEGRÜNDUNG: [2-3 Sätze]
 3. FAKTOREN:
    - [Stichpunkt 1]
    - [Stichpunkt 2]
    - [Stichpunkt 3]
+4. QUELLEN:
+   - [Name der Quelle](URL) - kurze Beschreibung
+   - [Name der Quelle](URL) - kurze Beschreibung
 
-Sei praezise und nutze die bereitgestellten Finanzdaten als Grundlage.
+Nutze echte, aktuelle Quellen (Geschäftsberichte, Nachrichtenartikel, Analystenbewertungen).
+Sei präzise und nutze die bereitgestellten Finanzdaten als Grundlage.
 Antworte auf Deutsch, Fachbegriffe auf Englisch."""
 
 
@@ -34,7 +38,7 @@ def get_client() -> anthropic.Anthropic:
 
 
 def extract_score(text: str) -> Decimal | None:
-    match = re.search(r"SCORE:\s*(\d+[.,]\d+)", text)
+    match = re.search(r"SCORE:\s*(\d+[.,]\d+)", text, re.IGNORECASE)
     if not match:
         return None
     try:

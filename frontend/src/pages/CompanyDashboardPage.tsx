@@ -332,8 +332,10 @@ export function CompanyDashboardPage() {
                               <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
                             )}
                             <span className="font-mono text-sm text-foreground">
-                              {d.data_type === "TEXT" || d.data_type === "FACTOR"
-                                ? cv?.text_value ?? cv?.numeric_value?.toString() ?? t.noValue
+                              {d.data_type === "TEXT"
+                                ? cv?.text_value ?? t.noValue
+                                : d.data_type === "FACTOR"
+                                ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue
                                 : formatValue(displayVal, d.unit, displayCurrency)}
                             </span>
                             {cv && !isQualitative && (
