@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
@@ -92,6 +92,7 @@ export function CompanyDashboardPage() {
   const [tooltip, setTooltip] = useState<TooltipState>(null);
   const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [notFound, setNotFound] = useState<Set<string>>(new Set());
   const [drawer, setDrawer] = useState<{
     companyId: string;
     valueKey: string;
@@ -161,6 +162,13 @@ export function CompanyDashboardPage() {
             next.set(c.id, Array.from(merged.values()));
             return next;
           });
+          const hasValue = updated.some((u) => u.value_key === key);
+          const nfKey = `${c.id}:${key}`;
+          if (!hasValue) {
+            setNotFound((prev) => new Set([...prev, nfKey]));
+          } else {
+            setNotFound((prev) => { const n = new Set(prev); n.delete(nfKey); return n; });
+          }
         })
       );
     } finally {
@@ -181,6 +189,15 @@ export function CompanyDashboardPage() {
             const merged = new Map(existing.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
             for (const u of updated) merged.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
             next.set(c.id, Array.from(merged.values()));
+            return next;
+          });
+          const returnedKeys = new Set(updated.map((u) => u.value_key));
+          setNotFound((prev) => {
+            const next = new Set(prev);
+            for (const k of apiKeys) {
+              const nfKey = `${c.id}:${k}`;
+              returnedKeys.has(k) ? next.delete(nfKey) : next.add(nfKey);
+            }
             return next;
           });
         })
@@ -407,6 +424,12 @@ export function CompanyDashboardPage() {
                             {isQualitative && (
                               <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
                             )}
+                            {!cv && notFound.has(`${company.id}:${d.key}`) ? (
+                              <div className="group/nf flex items-center gap-1.5 cursor-pointer" title="Nicht gefunden - Doppelklick zum manuellen Eintragen">
+                                <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
+                                <span className="text-xs text-red-500">Nicht gefunden</span>
+                              </div>
+                            ) : (
                             <span className="font-mono text-sm text-foreground">
                               {d.data_type === "TEXT"
                                 ? cv?.text_value ?? (cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue)
@@ -414,6 +437,7 @@ export function CompanyDashboardPage() {
                                 ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : (cv?.text_value ?? t.noValue)
                                 : formatValue(displayVal, d.unit, displayCurrency)}
                             </span>
+                            )}
                             {cv && !isQualitative && (
                               <button
                                 onClick={(e) => {
