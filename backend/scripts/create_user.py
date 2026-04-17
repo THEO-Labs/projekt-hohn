@@ -15,6 +15,8 @@ def main() -> None:
     pw2 = getpass("Repeat: ")
     if pw != pw2:
         raise SystemExit("Passwords do not match")
+    if len(pw) < 8:
+        raise SystemExit("Password must be at least 8 characters")
 
     db = SessionLocal()
     try:

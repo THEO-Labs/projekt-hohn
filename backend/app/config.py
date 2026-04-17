@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     database_url: str
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    jwt_ttl_minutes: int = 480
+    jwt_ttl_minutes: int = 120
     cookie_secure: bool = True
     allowed_origins: str = ""
 

@@ -2,7 +2,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt as pyjwt
+from jwt.exceptions import PyJWTError
 
 from app.config import settings
 
@@ -20,11 +21,11 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_access_token(subject: str, ttl: timedelta | None = None) -> str:
     expire = datetime.now(timezone.utc) + (ttl or timedelta(minutes=settings.jwt_ttl_minutes))
     payload: dict[str, Any] = {"sub": subject, "exp": expire}
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return pyjwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
 def decode_token(token: str) -> dict[str, Any] | None:
     try:
-        return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    except JWTError:
+        return pyjwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except PyJWTError:
         return None

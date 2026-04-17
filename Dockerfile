@@ -18,6 +18,9 @@ RUN uv sync --frozen --no-dev
 COPY backend/ ./
 COPY --from=frontend-build /frontend/dist ./static
 
+RUN addgroup --system app && adduser --system --ingroup app app
+USER app
+
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
