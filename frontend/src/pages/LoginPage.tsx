@@ -27,12 +27,12 @@ export function LoginPage({ onLogin }: Props) {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background">
-      {/* Soft emerald glow from top */}
+      {/* Soft blue glow from top */}
       <div
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse 70% 45% at 50% -5%, oklch(0.52 0.14 155.56 / 12%) 0%, transparent 65%)",
+            "radial-gradient(ellipse 70% 45% at 50% -5%, oklch(0.62 0.12 230 / 15%) 0%, transparent 65%)",
         }}
       />
       {/* Subtle grid pattern (dark lines on light bg) */}

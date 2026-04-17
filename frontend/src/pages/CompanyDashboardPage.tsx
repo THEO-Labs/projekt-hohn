@@ -39,12 +39,12 @@ const CATEGORY_LABELS: Record<string, string> = {
 const CATEGORY_COLORS: Record<string, string> = {
   TRANSACTION: "bg-slate-100 text-slate-700 border-slate-200",
   BASIC_COMPANY: "bg-blue-50 text-blue-700 border-blue-200",
-  HOHN_BASIC_1: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  HOHN_BASIC_1: "bg-sky-50 text-sky-700 border-sky-200",
   HOHN_BASIC_2: "bg-teal-50 text-teal-700 border-teal-200",
   VALUATION_ADJ: "bg-amber-50 text-amber-700 border-amber-200",
   RISK_ADJ: "bg-rose-50 text-rose-700 border-rose-200",
   MGMT_ADJ: "bg-violet-50 text-violet-700 border-violet-200",
-  TOTAL_ADJ: "bg-emerald-100 text-emerald-800 border-emerald-300",
+  TOTAL_ADJ: "bg-sky-100 text-sky-800 border-sky-300",
 };
 
 const PERIOD_OPTIONS = [

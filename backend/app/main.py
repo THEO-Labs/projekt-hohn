@@ -54,6 +54,9 @@ def create_app() -> FastAPI:
         def spa_fallback(full_path: str) -> FileResponse:
             if full_path.startswith("api/"):
                 raise HTTPException(status_code=404)
+            candidate = static_dir / full_path
+            if candidate.is_file() and static_dir in candidate.resolve().parents:
+                return FileResponse(candidate)
             return FileResponse(static_dir / "index.html")
 
     return app
