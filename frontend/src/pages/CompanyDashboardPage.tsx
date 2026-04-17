@@ -135,6 +135,8 @@ export function CompanyDashboardPage() {
   }, [pid]);
 
   useEffect(() => {
+    setValuesMap(new Map());
+    setNotFound(new Set());
     loadAllValues();
   }, [loadAllValues]);
 
