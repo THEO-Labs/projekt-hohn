@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, RefreshCw, Info, X } from "lucide-react";
+import { ChevronLeft, RefreshCw, Info, X, ShieldCheck, Calculator, MessageSquare, Pencil } from "lucide-react";
+import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
@@ -78,7 +79,7 @@ export function CompanyDashboardPage() {
   const [periodIdx, setPeriodIdx] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
-  const [infoKey, setInfoKey] = useState<string | null>(null);
+  const [tooltip, setTooltip] = useState<{ key: string; x: number; y: number } | null>(null);
 
   const period = PERIOD_OPTIONS[periodIdx];
 
@@ -245,12 +246,11 @@ export function CompanyDashboardPage() {
                     const displayVal = shouldConvert
                       ? convertCurrency(raw, cv?.currency ?? null)
                       : raw;
-                    const showInfo = infoKey === d.key;
 
                     return (
                       <td
                         key={d.key}
-                        className="relative whitespace-nowrap border-r border-border/40 px-3 py-2 tabular"
+                        className="whitespace-nowrap border-r border-border/40 px-3 py-2 tabular"
                       >
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono text-sm text-foreground">
@@ -260,62 +260,16 @@ export function CompanyDashboardPage() {
                           </span>
                           {cv && (
                             <button
-                              onClick={() => setInfoKey(showInfo ? null : d.key)}
+                              onClick={(e) => {
+                                const rect = (e.target as HTMLElement).getBoundingClientRect();
+                                setTooltip(tooltip?.key === d.key ? null : { key: d.key, x: rect.left, y: rect.bottom + 6 });
+                              }}
                               className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground"
                             >
                               <Info className="h-3 w-3" />
                             </button>
                           )}
                         </div>
-
-                        {showInfo && cv && (
-                          <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-lg border border-border bg-card p-3 shadow-lg">
-                            <div className="mb-2 flex items-center justify-between">
-                              <span className="text-xs font-semibold text-foreground">
-                                {t.source}
-                              </span>
-                              <button onClick={() => setInfoKey(null)}>
-                                <X className="h-3 w-3 text-muted-foreground" />
-                              </button>
-                            </div>
-                            <dl className="space-y-1 text-xs">
-                              <div>
-                                <dt className="text-muted-foreground">{t.source}</dt>
-                                <dd className="font-medium text-foreground">
-                                  {cv.source_name ?? "—"}
-                                </dd>
-                              </div>
-                              {cv.source_link && (
-                                <div>
-                                  <dt className="text-muted-foreground">Link</dt>
-                                  <dd>
-                                    <a
-                                      href={cv.source_link}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="text-primary underline"
-                                    >
-                                      {cv.source_link}
-                                    </a>
-                                  </dd>
-                                </div>
-                              )}
-                              <div>
-                                <dt className="text-muted-foreground">{t.fetchedAt}</dt>
-                                <dd className="text-foreground">
-                                  {cv.fetched_at
-                                    ? new Date(cv.fetched_at).toLocaleString("de-DE")
-                                    : "—"}
-                                </dd>
-                              </div>
-                              {cv.manually_overridden && (
-                                <div className="mt-1 rounded bg-amber-50 px-2 py-1 text-amber-700">
-                                  {t.manualOverride}
-                                </div>
-                              )}
-                            </dl>
-                          </div>
-                        )}
                       </td>
                     );
                   })
@@ -324,6 +278,76 @@ export function CompanyDashboardPage() {
             </tbody>
           </table>
         </div>
+
+        {tooltip && (() => {
+          const cv = getValueForKey(tooltip.key);
+          const def = definitions.find((d) => d.key === tooltip.key);
+          if (!cv || !def) return null;
+
+          const confidence = cv.manually_overridden
+            ? { label: "Manuell überschrieben", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Pencil }
+            : def.source_type === "API"
+            ? { label: "Hohe Sicherheit (API)", color: "bg-green-100 text-green-800 border-green-300", icon: ShieldCheck }
+            : def.source_type === "CALCULATED"
+            ? { label: "Berechnet", color: "bg-blue-100 text-blue-800 border-blue-300", icon: Calculator }
+            : def.source_type === "QUALITATIVE"
+            ? { label: "Qualitativ (Einschätzung)", color: "bg-amber-100 text-amber-800 border-amber-300", icon: MessageSquare }
+            : { label: "Nutzereingabe", color: "bg-slate-100 text-slate-700 border-slate-300", icon: Pencil };
+
+          const ConfIcon = confidence.icon;
+
+          return createPortal(
+            <>
+              <div className="fixed inset-0 z-[99]" onClick={() => setTooltip(null)} />
+              <div
+                className="fixed z-[100] w-72 rounded-xl border border-border bg-card p-4 shadow-2xl shadow-black/10"
+                style={{ left: Math.min(tooltip.x, window.innerWidth - 300), top: Math.min(tooltip.y, window.innerHeight - 250) }}
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-xs font-semibold text-foreground">{def.label_en}</span>
+                  <button onClick={() => setTooltip(null)} className="rounded p-0.5 hover:bg-muted">
+                    <X className="h-3.5 w-3.5 text-muted-foreground" />
+                  </button>
+                </div>
+
+                <div className={`mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 ${confidence.color}`}>
+                  <ConfIcon className="h-4 w-4 shrink-0" />
+                  <span className="text-xs font-medium">{confidence.label}</span>
+                </div>
+
+                <dl className="space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <dt className="text-muted-foreground">{t.source}</dt>
+                    <dd className="font-medium text-foreground text-right">{cv.source_name ?? "—"}</dd>
+                  </div>
+                  {cv.source_link && (
+                    <div className="flex justify-between">
+                      <dt className="text-muted-foreground">Link</dt>
+                      <dd className="text-right">
+                        <a href={cv.source_link} target="_blank" rel="noreferrer" className="text-primary hover:underline truncate max-w-[140px] inline-block">
+                          {new URL(cv.source_link).hostname}
+                        </a>
+                      </dd>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <dt className="text-muted-foreground">{t.fetchedAt}</dt>
+                    <dd className="text-foreground">
+                      {cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}
+                    </dd>
+                  </div>
+                  {cv.currency && (
+                    <div className="flex justify-between">
+                      <dt className="text-muted-foreground">Originalwährung</dt>
+                      <dd className="font-mono text-foreground">{cv.currency}</dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+            </>,
+            document.body
+          );
+        })()}
       </main>
     </div>
   );
