@@ -50,6 +50,57 @@ def extract_score(text: str) -> Decimal | None:
         return None
 
 
+RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Dir wird eine Finanzkennzahl für ein Unternehmen gefragt,
+die nicht über die API verfügbar war. Recherchiere den Wert basierend auf deinem Wissen.
+
+Antworte NUR in diesem Format:
+WERT: [Zahl]
+EINHEIT: [z.B. USD, EUR, %, keine]
+QUELLE: [Woher du den Wert hast, z.B. Geschäftsbericht 2024, Analystenschätzung]
+ZEITRAUM: [z.B. FY2024, TTM, aktuell]
+KONFIDENZ: [hoch/mittel/niedrig]
+
+Wenn du den Wert nicht findest, antworte mit:
+WERT: NICHT_GEFUNDEN
+
+Wichtig: Gib nur verifizierbare Zahlen an. Im Zweifel NICHT_GEFUNDEN."""
+
+
+def extract_research_value(text: str) -> Decimal | None:
+    match = re.search(r"WERT:\s*([+-]?\d[\d.,]*)", text)
+    if not match:
+        return None
+    try:
+        raw = match.group(1).replace(".", "").replace(",", ".") if "," in match.group(1) else match.group(1)
+        return Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def research_value(company_name: str, ticker: str, value_label: str, currency: str) -> tuple[Decimal | None, str | None]:
+    try:
+        client = get_client()
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            messages=[{
+                "role": "user",
+                "content": f"Unternehmen: {company_name} ({ticker}, {currency})\nGesuchte Kennzahl: {value_label}\n\nWas ist der aktuelle/letzte verfügbare Wert?"
+            }],
+        )
+        content = response.content[0].text
+        value = extract_research_value(content)
+        if value is None:
+            return None, None
+        source_match = re.search(r"QUELLE:\s*(.+)", content)
+        source = source_match.group(1).strip() if source_match else "Claude-Recherche"
+        return value, f"Claude-Recherche: {source}"
+    except Exception as e:
+        logger.warning("Claude research failed for %s/%s: %s", ticker, value_label, e)
+        return None, None
+
+
 def call_claude(messages: list[dict[str, str]], company_context: str) -> tuple[str, Decimal | None]:
     client = get_client()
 

@@ -8,12 +8,14 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+from app.config import settings
 from app.auth.deps import current_user
 from app.auth.models import User
 from app.calculations.engine import CALCULATED_KEYS, calculate_all
 from app.companies.models import Company
 from app.db import get_db
 from app.portfolios.models import Portfolio
+from app.llm.claude import research_value
 from app.providers.registry import get_providers
 from app.values.models import CompanyValue, ValueDefinition
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
@@ -154,7 +156,20 @@ def refresh_company_values(
                 continue
 
         if result is None:
-            continue
+            vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+            if vd and vd.source_type.value in ("API",) and settings.anthropic_api_key:
+                label = f"{vd.label_en} ({vd.label_de})"
+                research_val, research_source = research_value(company.name, ticker, label, company.currency)
+                if research_val is not None:
+                    from app.providers.base import ProviderResult
+                    result = ProviderResult(
+                        value=research_val,
+                        source_name=research_source or "Claude-Recherche",
+                        source_link=None,
+                        currency=company.currency,
+                    )
+            if result is None:
+                continue
 
         eq = (
             db.query(CompanyValue)

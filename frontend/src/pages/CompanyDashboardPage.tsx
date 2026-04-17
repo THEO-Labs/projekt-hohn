@@ -474,8 +474,11 @@ export function CompanyDashboardPage() {
           const def = definitions.find((d) => d.key === tooltip.key);
           if (!cv || !def) return null;
 
+          const isClaudeResearch = cv.source_name?.includes("Claude-Recherche");
           const confidence = cv.manually_overridden
             ? { label: "Manuell überschrieben", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Pencil }
+            : isClaudeResearch
+            ? { label: "KI-Recherche", color: "bg-orange-100 text-orange-800 border-orange-300", icon: Sparkles }
             : def.source_type === "API"
             ? { label: "Verifizierte Datenquelle", color: "bg-green-100 text-green-800 border-green-300", icon: ShieldCheck }
             : def.source_type === "CALCULATED"
