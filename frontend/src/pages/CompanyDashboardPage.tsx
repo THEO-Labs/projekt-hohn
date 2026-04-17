@@ -337,9 +337,9 @@ export function CompanyDashboardPage() {
                             )}
                             <span className="font-mono text-sm text-foreground">
                               {d.data_type === "TEXT"
-                                ? cv?.text_value ?? t.noValue
+                                ? cv?.text_value ?? (cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue)
                                 : d.data_type === "FACTOR"
-                                ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue
+                                ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : (cv?.text_value ?? t.noValue)
                                 : formatValue(displayVal, d.unit, displayCurrency)}
                             </span>
                             {cv && !isQualitative && (
