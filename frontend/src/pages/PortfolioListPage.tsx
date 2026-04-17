@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, FolderOpen, ChevronRight, Trash2 } from "lucide-react";
+import { Plus, FolderOpen, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -128,7 +128,6 @@ export function PortfolioListPage() {
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground">Portfolio</p>
                   </div>
-                  <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
                 </Link>
                 <div className="absolute right-3 top-3 opacity-0 transition-opacity group-hover:opacity-100">
                   <Button
