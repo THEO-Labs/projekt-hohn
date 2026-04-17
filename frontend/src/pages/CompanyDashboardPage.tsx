@@ -59,6 +59,21 @@ const PERIOD_OPTIONS = [
 const FX_RATES: Record<string, number> = { USD: 1, EUR: 0.92, GBP: 0.79, CHF: 0.88 };
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF"];
 
+const FORMULAS: Record<string, string> = {
+  net_debt: "Debt − Cash",
+  eps_growth: "(EPS Forward − EPS TTM) / |EPS TTM| × 100",
+  buyback_return: "|Buybacks| / Market Cap × 100",
+  hohn_rendite_basic_1: "Dividend Return + Buyback Return + EPS Growth",
+  fcf_yield: "Free Cash Flow / Market Cap × 100",
+  hohn_rendite_basic_2: "FCF Yield + EPS Growth",
+  pe_target_analysts: "Analysts Target / EPS Forward",
+  upside_potential: "(Analysts Target − Stock Price) / Stock Price × 100",
+  risk_factor: "Avg(Business Model, Regulatory, Macro)",
+  mgmt_factor: "Avg(Participation)",
+  total_adjustment_factor: "Risk Factor × Mgmt Factor",
+  hohn_rendite_adjusted: "Hohn Return (Basic 1) × Total Adjustment Factor",
+};
+
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
 
 export function CompanyDashboardPage() {
@@ -360,6 +375,12 @@ export function CompanyDashboardPage() {
                   <ConfIcon className="h-4 w-4 shrink-0" />
                   <span className="text-xs font-medium">{confidence.label}</span>
                 </div>
+                {FORMULAS[tooltip.key] && (
+                  <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                    <p className="text-[10px] font-medium text-blue-600 uppercase tracking-wide mb-0.5">Formel</p>
+                    <p className="text-xs font-mono text-blue-800">{FORMULAS[tooltip.key]}</p>
+                  </div>
+                )}
                 <dl className="space-y-2 text-xs">
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">{t.source}</dt>
