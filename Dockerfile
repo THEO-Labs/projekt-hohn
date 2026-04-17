@@ -18,7 +18,8 @@ RUN uv sync --frozen --no-dev
 COPY backend/ ./
 COPY --from=frontend-build /frontend/dist ./static
 
-RUN addgroup --system app && adduser --system --ingroup app app
+RUN addgroup --system app && adduser --system --home /home/app --ingroup app app
+ENV HOME=/home/app
 USER app
 
 ENV PYTHONUNBUFFERED=1
