@@ -27,6 +27,7 @@ export function PortfolioDetailPage() {
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookedUp, setLookedUp] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const refresh = () => {
     if (id) listCompanies(id).then(setCompanies);
@@ -67,18 +68,23 @@ export function PortfolioDetailPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!id || !lookedUp) return;
-    await createCompany(id, {
-      name: form.name,
-      ticker: form.ticker,
-      currency: form.currency,
-      isin: form.isin || undefined,
-    });
-    setForm({ name: "", ticker: "", isin: "", currency: "EUR" });
-    setLookupQuery("");
-    setLookedUp(false);
-    setOpen(false);
-    refresh();
+    if (!id || !lookedUp || submitting) return;
+    setSubmitting(true);
+    try {
+      await createCompany(id, {
+        name: form.name,
+        ticker: form.ticker,
+        currency: form.currency,
+        isin: form.isin || undefined,
+      });
+      setForm({ name: "", ticker: "", isin: "", currency: "EUR" });
+      setLookupQuery("");
+      setLookedUp(false);
+      setOpen(false);
+      refresh();
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const remove = async (cid: string) => {
@@ -173,7 +179,7 @@ export function PortfolioDetailPage() {
 
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t.cancel}</Button>
-                  <Button type="submit" disabled={!lookedUp}>{t.save}</Button>
+                  <Button type="submit" disabled={!lookedUp || submitting}>{t.save}</Button>
                 </div>
               </form>
             </DialogContent>

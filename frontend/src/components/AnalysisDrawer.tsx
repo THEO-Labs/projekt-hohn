@@ -34,8 +34,17 @@ function toNum(v: unknown): number {
   return 0;
 }
 
-function parseMarkdown(text: string): string {
+function escapeHtml(text: string): string {
   return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function parseMarkdown(text: string): string {
+  const escaped = escapeHtml(text);
+  return escaped
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" class="text-primary underline hover:opacity-80">$1</a>')
     .replace(/^(SCORE:|BEGRÜNDUNG:|FAKTOREN:|QUELLEN:|BEGRUENDUNG:)/gim, '<span class="font-semibold text-primary">$1</span>')

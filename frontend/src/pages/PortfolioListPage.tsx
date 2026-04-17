@@ -21,6 +21,7 @@ export function PortfolioListPage() {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([]);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const refresh = () => listPortfolios().then(setPortfolios);
 
@@ -30,10 +31,16 @@ export function PortfolioListPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await createPortfolio(name);
-    setName("");
-    setOpen(false);
-    refresh();
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await createPortfolio(name);
+      setName("");
+      setOpen(false);
+      refresh();
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const remove = async (id: string) => {
@@ -76,7 +83,7 @@ export function PortfolioListPage() {
                   <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
                     {t.cancel}
                   </Button>
-                  <Button type="submit">{t.save}</Button>
+                  <Button type="submit" disabled={submitting || !name.trim()}>{t.save}</Button>
                 </div>
               </form>
             </DialogContent>

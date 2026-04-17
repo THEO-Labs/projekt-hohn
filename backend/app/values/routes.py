@@ -28,15 +28,18 @@ def _run_and_persist_calculations(
     period_type: str,
     period_year: int | None,
 ) -> list[CompanyValue]:
-    existing_rows = (
+    q = (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company_id,
             CompanyValue.period_type == period_type,
-            CompanyValue.period_year == period_year,
         )
-        .all()
     )
+    if period_year is not None:
+        q = q.filter(CompanyValue.period_year == period_year)
+    else:
+        q = q.filter(CompanyValue.period_year.is_(None))
+    existing_rows = q.all()
 
     values_map: dict[str, Decimal | None] = {}
     for row in existing_rows:
@@ -153,16 +156,19 @@ def refresh_company_values(
         if result is None:
             continue
 
-        existing = (
+        eq = (
             db.query(CompanyValue)
             .filter(
                 CompanyValue.company_id == company_id,
                 CompanyValue.value_key == key,
                 CompanyValue.period_type == payload.period_type,
-                CompanyValue.period_year == payload.period_year,
             )
-            .one_or_none()
         )
+        if payload.period_year is not None:
+            eq = eq.filter(CompanyValue.period_year == payload.period_year)
+        else:
+            eq = eq.filter(CompanyValue.period_year.is_(None))
+        existing = eq.one_or_none()
 
         if existing and existing.manually_overridden:
             updated.append(existing)
@@ -238,16 +244,19 @@ def override_company_value(
 ) -> CompanyValue:
     _get_owned_company(db, user, company_id)
 
-    existing = (
+    oq = (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company_id,
             CompanyValue.value_key == value_key,
             CompanyValue.period_type == period_type,
-            CompanyValue.period_year == period_year,  # noqa: E711
         )
-        .one_or_none()
     )
+    if period_year is not None:
+        oq = oq.filter(CompanyValue.period_year == period_year)
+    else:
+        oq = oq.filter(CompanyValue.period_year.is_(None))
+    existing = oq.one_or_none()
 
     if existing:
         if payload.numeric_value is not None:

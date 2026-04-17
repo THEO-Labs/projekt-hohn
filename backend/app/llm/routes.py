@@ -77,6 +77,21 @@ def analyze_value(
 ) -> dict:
     company = _get_owned_company(db, user, company_id)
     conv = _get_or_create_conversation(db, company_id, value_key)
+
+    existing_messages = (
+        db.query(LlmMessage)
+        .filter(LlmMessage.conversation_id == conv.id)
+        .order_by(LlmMessage.created_at)
+        .all()
+    )
+    if existing_messages:
+        last_assistant = next(
+            (m for m in reversed(existing_messages) if m.role == "assistant"),
+            None,
+        )
+        if last_assistant:
+            return {"conversation_id": conv.id, "message": last_assistant}
+
     context = _build_company_context(db, company)
     label = _get_value_label(db, value_key)
 
