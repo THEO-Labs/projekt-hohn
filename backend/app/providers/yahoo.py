@@ -1,0 +1,200 @@
+from decimal import Decimal, InvalidOperation
+
+import yfinance
+
+from app.providers.base import ProviderResult
+
+INFO_KEY_MAP = {
+    "stock_price": "currentPrice",
+    "market_cap": "marketCap",
+    "shares_outstanding": "sharesOutstanding",
+    "dividends": "dividendRate",
+    "dividend_return": "dividendYield",
+    "analysts_target": "targetMeanPrice",
+    "eps_ttm": "trailingEps",
+    "eps_forward": "forwardEps",
+    "pe_ttm": "trailingPE",
+    "pe_forward": "forwardPE",
+    "ev": "enterpriseValue",
+    "ebitda": "ebitda",
+    "ev_ebitda": "enterpriseToEbitda",
+    "peg": "pegRatio",
+    "free_cash_flow": "freeCashflow",
+    "op_cash_flow": "operatingCashflow",
+    "cash": "totalCash",
+    "debt": "totalDebt",
+    "sales": "totalRevenue",
+    "op_margin": "operatingMargins",
+    "net_profit": "netIncomeToCommon",
+}
+
+PERCENT_KEYS = {"dividend_return", "op_margin"}
+
+
+class YahooFinanceProvider:
+    name = "Yahoo Finance"
+    supported_keys = set(INFO_KEY_MAP.keys()) | {"next_earnings", "buybacks", "sales_growth", "op_profit"}
+
+    def __init__(self) -> None:
+        self._ticker_cache: dict[str, yfinance.Ticker] = {}
+        self._info_cache: dict[str, dict] = {}
+
+    def _get_ticker(self, ticker: str) -> yfinance.Ticker:
+        if ticker not in self._ticker_cache:
+            self._ticker_cache[ticker] = yfinance.Ticker(ticker)
+        return self._ticker_cache[ticker]
+
+    def _get_info(self, ticker: str) -> dict:
+        if ticker not in self._info_cache:
+            t = self._get_ticker(ticker)
+            self._info_cache[ticker] = t.info or {}
+        return self._info_cache[ticker]
+
+    def _to_decimal(self, value) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+
+    def fetch(
+        self,
+        ticker: str,
+        key: str,
+        period_type: str = "SNAPSHOT",
+        period_year: int | None = None,
+    ) -> ProviderResult | None:
+        source_link = f"https://finance.yahoo.com/quote/{ticker}"
+
+        if key in INFO_KEY_MAP:
+            return self._fetch_from_info(ticker, key, source_link)
+
+        if key == "next_earnings":
+            return self._fetch_next_earnings(ticker, source_link)
+
+        if key == "buybacks":
+            return self._fetch_buybacks(ticker, source_link)
+
+        if key == "op_profit":
+            return self._fetch_op_profit(ticker, source_link)
+
+        if key == "sales_growth":
+            return self._fetch_sales_growth(ticker, source_link)
+
+        return None
+
+    def _fetch_from_info(self, ticker: str, key: str, source_link: str) -> ProviderResult | None:
+        info = self._get_info(ticker)
+        yf_key = INFO_KEY_MAP[key]
+        raw = info.get(yf_key)
+        if raw is None:
+            return None
+
+        currency = info.get("currency")
+        value = self._to_decimal(raw)
+        if value is None:
+            return None
+
+        if key in PERCENT_KEYS:
+            value = value * Decimal("100")
+
+        return ProviderResult(
+            value=value,
+            source_name=self.name,
+            source_link=source_link,
+            currency=currency,
+        )
+
+    def _fetch_next_earnings(self, ticker: str, source_link: str) -> ProviderResult | None:
+        t = self._get_ticker(ticker)
+        try:
+            calendar = t.calendar
+            if calendar is None:
+                return None
+            if isinstance(calendar, dict):
+                date_val = calendar.get("Earnings Date")
+                if date_val is None:
+                    return None
+                if isinstance(date_val, list) and len(date_val) > 0:
+                    date_val = date_val[0]
+                text = str(date_val)
+            else:
+                text = str(calendar)
+        except Exception:
+            return None
+
+        return ProviderResult(
+            value=text,
+            source_name=self.name,
+            source_link=source_link,
+            currency=None,
+        )
+
+    def _fetch_buybacks(self, ticker: str, source_link: str) -> ProviderResult | None:
+        t = self._get_ticker(ticker)
+        info = self._get_info(ticker)
+        currency = info.get("currency")
+        try:
+            cashflow = t.cashflow
+            if cashflow is None or cashflow.empty:
+                return None
+            matching = [
+                idx for idx in cashflow.index
+                if "repurchase" in str(idx).lower() and "capital" in str(idx).lower()
+            ]
+            if not matching:
+                matching = [
+                    idx for idx in cashflow.index
+                    if "repurchase" in str(idx).lower()
+                ]
+            if not matching:
+                return None
+            row = cashflow.loc[matching[0]]
+            val = row.iloc[0] if hasattr(row, "iloc") else row
+            value = self._to_decimal(val)
+            if value is None:
+                return None
+            value = abs(value)
+        except Exception:
+            return None
+
+        return ProviderResult(
+            value=value,
+            source_name=self.name,
+            source_link=source_link,
+            currency=currency,
+        )
+
+    def _fetch_op_profit(self, ticker: str, source_link: str) -> ProviderResult | None:
+        info = self._get_info(ticker)
+        currency = info.get("currency")
+        revenue = info.get("totalRevenue")
+        margin = info.get("operatingMargins")
+        if revenue is None or margin is None:
+            return None
+        value = self._to_decimal(revenue)
+        margin_dec = self._to_decimal(margin)
+        if value is None or margin_dec is None:
+            return None
+        return ProviderResult(
+            value=value * margin_dec,
+            source_name=self.name,
+            source_link=source_link,
+            currency=currency,
+        )
+
+    def _fetch_sales_growth(self, ticker: str, source_link: str) -> ProviderResult | None:
+        info = self._get_info(ticker)
+        raw = info.get("revenueGrowth")
+        if raw is None:
+            return None
+        value = self._to_decimal(raw)
+        if value is None:
+            return None
+        return ProviderResult(
+            value=value * Decimal("100"),
+            source_name=self.name,
+            source_link=source_link,
+            currency=None,
+        )

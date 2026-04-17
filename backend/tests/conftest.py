@@ -15,7 +15,11 @@ from app.main import app
 
 @pytest.fixture(scope="session")
 def engine():
-    eng = create_engine(os.environ["DATABASE_URL"], future=True)
+    eng = create_engine(
+        os.environ["DATABASE_URL"],
+        future=True,
+        connect_args={"prepare_threshold": 0},
+    )
     yield eng
 
 
