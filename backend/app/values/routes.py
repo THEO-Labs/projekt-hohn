@@ -18,6 +18,7 @@ from app.portfolios.models import Portfolio
 from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
 from app.values.models import CompanyValue, ValueDefinition
+from app.values.progress import cleanup_old_jobs, finish_job, get_job, start_job, update_job
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
 
 catalog_router = APIRouter(prefix="/api/value-definitions", tags=["values"])
@@ -261,6 +262,19 @@ def _process_one_key(
         db.rollback()
 
 
+@values_router.get("/{company_id}/refresh-status")
+def get_refresh_status(
+    company_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    _get_owned_company(db, user, company_id)
+    job = get_job(company_id)
+    if not job:
+        return {"status": "idle"}
+    return job
+
+
 @values_router.post("/{company_id}/values/refresh", response_model=list[CompanyValueOut])
 def refresh_company_values(
     company_id: UUID,
@@ -268,6 +282,7 @@ def refresh_company_values(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> list[CompanyValue]:
+    cleanup_old_jobs()
     company = _get_owned_company(db, user, company_id)
     ticker = company.ticker
     if company.isin:
@@ -280,25 +295,33 @@ def refresh_company_values(
                 db.flush()
     updated = []
 
-    for key in payload.keys:
-        try:
-            _process_one_key(
-                db=db,
-                key=key,
-                ticker=ticker,
-                company=company,
-                company_id=company_id,
-                payload=payload,
-                updated=updated,
-            )
-        except Exception as e:
-            logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
-            db.rollback()
+    start_job(company_id, len(payload.keys))
+    try:
+        for key in payload.keys:
+            update_job(company_id, key)
+            try:
+                _process_one_key(
+                    db=db,
+                    key=key,
+                    ticker=ticker,
+                    company=company,
+                    company_id=company_id,
+                    payload=payload,
+                    updated=updated,
+                )
+            except Exception as e:
+                logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
+                db.rollback()
 
-    db.commit()
+        db.commit()
 
-    _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
-    db.commit()
+        _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
+        db.commit()
+    except Exception:
+        finish_job(company_id, status="failed")
+        raise
+    else:
+        finish_job(company_id)
 
     for cv in updated:
         db.refresh(cv)

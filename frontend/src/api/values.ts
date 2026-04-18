@@ -56,6 +56,19 @@ export const refreshValues = (
     }),
   });
 
+export type RefreshStatus = {
+  company_id: string;
+  total: number;
+  completed: number;
+  current_key: string | null;
+  status: "running" | "done" | "failed" | "idle";
+  started_at?: string;
+  finished_at?: string | null;
+};
+
+export const getRefreshStatus = (companyId: string) =>
+  api<RefreshStatus>(`/api/companies/${companyId}/refresh-status`);
+
 export const overrideValue = (
   companyId: string,
   valueKey: string,

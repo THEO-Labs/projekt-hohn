@@ -11,12 +11,15 @@ import { listCompanies, type Company } from "@/api/companies";
 import {
   getValueDefinitions,
   getCompanyValues,
+  getRefreshStatus,
   refreshValues,
   overrideValue,
   type ValueDefinition,
   type CompanyValue,
+  type RefreshStatus,
 } from "@/api/values";
 import { AnalysisDrawer } from "@/components/AnalysisDrawer";
+import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 
 const CATEGORY_ORDER = [
   "TRANSACTION", "BASIC_COMPANY", "HOHN_BASIC_1", "HOHN_BASIC_2",
@@ -49,13 +52,11 @@ const PERIOD_OPTIONS = [
   { label: "Snapshot", value: "SNAPSHOT", year: undefined },
   { label: "LTM", value: "LTM", year: undefined },
   { label: "TTM", value: "TTM", year: undefined },
-  { label: "FY 2026", value: "FY", year: 2026 },
   { label: "FY 2025", value: "FY", year: 2025 },
   { label: "FY 2024", value: "FY", year: 2024 },
   { label: "FY 2023", value: "FY", year: 2023 },
   { label: "FY 2022", value: "FY", year: 2022 },
   { label: "FY 2021", value: "FY", year: 2021 },
-  { label: "FY 2020", value: "FY", year: 2020 },
 ];
 
 const FX_RATES: Record<string, number> = { USD: 1, EUR: 0.92, GBP: 0.79, CHF: 0.88 };
@@ -102,6 +103,7 @@ export function CompanyDashboardPage() {
     isQualitative: boolean;
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [refreshStatuses, setRefreshStatuses] = useState<Map<string, RefreshStatus>>(new Map());
 
   const period = PERIOD_OPTIONS[periodIdx];
 
@@ -127,19 +129,44 @@ export function CompanyDashboardPage() {
     setValuesMap(map);
   }, [pid, companies, period.value, period.year, definitions]);
 
+  const pollStatuses = useCallback(async (companyList: Company[]) => {
+    if (companyList.length === 0) return;
+    const entries = await Promise.all(
+      companyList.map(async (c) => {
+        try {
+          const s = await getRefreshStatus(c.id);
+          return [c.id, s] as [string, RefreshStatus];
+        } catch {
+          return [c.id, { status: "idle" } as RefreshStatus] as [string, RefreshStatus];
+        }
+      })
+    );
+    setRefreshStatuses(new Map(entries));
+  }, []);
+
   useEffect(() => {
     getValueDefinitions().then(setDefinitions);
   }, []);
 
   useEffect(() => {
-    if (pid) listCompanies(pid).then(setCompanies);
-  }, [pid]);
+    if (pid) listCompanies(pid).then((list) => {
+      setCompanies(list);
+      pollStatuses(list);
+    });
+  }, [pid, pollStatuses]);
 
   useEffect(() => {
     setValuesMap(new Map());
     setNotFound(new Set());
     loadAllValues();
   }, [loadAllValues]);
+
+  useEffect(() => {
+    const anyRunning = Array.from(refreshStatuses.values()).some((s) => s.status === "running");
+    if (!anyRunning) return;
+    const timer = setInterval(() => pollStatuses(companies), 2000);
+    return () => clearInterval(timer);
+  }, [refreshStatuses, companies, pollStatuses]);
 
   const toggleCategory = (cat: string) => {
     setCollapsed((prev) => {
@@ -181,6 +208,7 @@ export function CompanyDashboardPage() {
   const handleRefreshAll = async () => {
     const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
     setLoadingKeys(new Set(apiKeys));
+    setRefreshStatuses(new Map(companies.map((c) => [c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }])));
     try {
       for (const c of companies) {
         try {
@@ -205,6 +233,7 @@ export function CompanyDashboardPage() {
         } catch (err) {
           console.error(`Refresh failed for ${c.name}:`, err);
         }
+        await pollStatuses(companies);
       }
       await loadAllValues();
       const checkableKeys = definitions
@@ -308,6 +337,20 @@ export function CompanyDashboardPage() {
             </>
           )}
         </div>
+
+        {companies.some((c) => refreshStatuses.get(c.id)?.status === "running") && (
+          <div className="mb-4 space-y-2">
+            {companies
+              .filter((c) => refreshStatuses.get(c.id)?.status === "running")
+              .map((c) => (
+                <RefreshProgressBar
+                  key={c.id}
+                  companyName={c.name}
+                  status={refreshStatuses.get(c.id)!}
+                />
+              ))}
+          </div>
+        )}
 
         <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
           <table className="w-full text-sm">
