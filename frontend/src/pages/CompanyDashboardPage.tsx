@@ -181,8 +181,8 @@ export function CompanyDashboardPage() {
     const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
     setLoadingKeys(new Set(apiKeys));
     try {
-      await Promise.all(
-        companies.map(async (c) => {
+      for (const c of companies) {
+        try {
           const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
           setValuesMap((prev) => {
             const next = new Map(prev);
@@ -201,8 +201,10 @@ export function CompanyDashboardPage() {
             }
             return next;
           });
-        })
-      );
+        } catch (err) {
+          console.error(`Refresh failed for ${c.name}:`, err);
+        }
+      }
       await loadAllValues();
       const checkableKeys = definitions
         .filter((d) => d.source_type === "API" || d.source_type === "CALCULATED")
