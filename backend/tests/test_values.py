@@ -243,6 +243,45 @@ def test_manual_override_prevents_refresh(client, db):
     assert data[0]["manually_overridden"] is True
 
 
+def test_refresh_one_failing_provider_doesnt_crash_others(client, db):
+    """If one key's provider raises an exception, the other keys should still succeed."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="partial@example.com")
+
+    good_result = ProviderResult(
+        value=Decimal("189.50"),
+        source_name="Yahoo Finance",
+        source_link="https://finance.yahoo.com/quote/AAPL",
+        currency="USD",
+    )
+
+    call_count = 0
+
+    def side_effect(ticker, key, period_type, period_year):
+        nonlocal call_count
+        call_count += 1
+        if key == "market_cap":
+            raise RuntimeError("Simulated provider failure")
+        return good_result
+
+    with patch("app.values.routes.get_providers") as mock_get_providers:
+        mock_provider = MagicMock()
+        mock_provider.fetch.side_effect = side_effect
+        mock_get_providers.return_value = [mock_provider]
+
+        response = client.post(
+            f"/api/companies/{cid}/values/refresh",
+            json={"keys": ["stock_price", "market_cap", "eps_ttm"], "period_type": "SNAPSHOT"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    returned_keys = {item["value_key"] for item in data}
+    assert "stock_price" in returned_keys
+    assert "eps_ttm" in returned_keys
+    assert "market_cap" not in returned_keys
+
+
 def test_company_values_requires_auth(client, db):
     _seed_catalog(db)
     cid = str(uuid4())

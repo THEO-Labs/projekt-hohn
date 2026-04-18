@@ -45,26 +45,81 @@ def extract_score(text: str) -> Decimal | None:
         return None
 
 
-def extract_value(text: str) -> Decimal | None:
-    match = re.search(r"WERT:\s*([+-]?[\d.,]+(?:\s*(?:Mrd|Mio|B|M|T)\.?)?)", text, re.IGNORECASE)
-    if not match:
-        return extract_score(text)
-    raw = match.group(1).strip()
+def _parse_numeric_string(raw: str) -> Decimal | None:
+    """Parse a numeric string handling both German (1.234,56) and US (1,234.56) formats,
+    as well as plain integers, negatives, and percent signs."""
+    raw = raw.strip().rstrip(".").rstrip("%").strip()
+    if not raw:
+        return None
+
+    # Detect and extract suffix multiplier
     multiplier = Decimal("1")
-    for suffix, mult in [("Mrd", "1000000000"), ("B", "1000000000"), ("Mio", "1000000"), ("M", "1000000"), ("T", "1000")]:
-        if suffix.lower() in raw.lower():
+    for suffix, mult in [
+        ("mrd", "1000000000"),
+        ("billion", "1000000000"),
+        ("mio", "1000000"),
+        ("million", "1000000"),
+    ]:
+        if suffix in raw.lower():
             multiplier = Decimal(mult)
-            raw = re.sub(r"\s*(Mrd|Mio|B|M|T)\.?", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million)\.?", "", raw, flags=re.IGNORECASE).strip()
             break
+    else:
+        for suffix, mult in [("B", "1000000000"), ("T", "1000000000000"), ("M", "1000000"), ("K", "1000")]:
+            # Match suffix at end of string (possibly after optional whitespace), case-insensitive.
+            # The suffix must not be followed by another letter to avoid false matches.
+            if re.search(r"\s*" + re.escape(suffix) + r"\s*$", raw, re.IGNORECASE):
+                multiplier = Decimal(mult)
+                raw = re.sub(r"\s*" + re.escape(suffix) + r"\s*$", "", raw, flags=re.IGNORECASE).strip()
+                break
+
     raw = raw.strip().rstrip(".")
-    if "," in raw and "." in raw:
-        raw = raw.replace(".", "").replace(",", ".")
-    elif "," in raw:
-        raw = raw.replace(",", ".")
+
+    # Determine format: German (1.234.567,89 or 1.234,56) vs US (1,234,567.89 or 1,234.56)
+    has_dot = "." in raw
+    has_comma = "," in raw
+
+    if has_dot and has_comma:
+        # Determine which is thousands separator vs decimal separator
+        last_dot = raw.rfind(".")
+        last_comma = raw.rfind(",")
+        if last_comma > last_dot:
+            # German: 1.234,56 - dot=thousands, comma=decimal
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            # US: 1,234.56 - comma=thousands, dot=decimal
+            raw = raw.replace(",", "")
+    elif has_comma and not has_dot:
+        # Could be German decimal (14,77) or German thousands with no decimal
+        # If comma is followed by exactly 3 digits at end and no other commas → thousands sep
+        if re.match(r"^[+-]?\d{1,3}(,\d{3})+$", raw):
+            raw = raw.replace(",", "")
+        else:
+            raw = raw.replace(",", ".")
+    elif has_dot and not has_comma:
+        # Could be US decimal (14.77) or German thousands (1.234.567)
+        # If multiple dots → German thousands sep
+        if raw.count(".") > 1:
+            raw = raw.replace(".", "")
+        # Single dot: treat as decimal point (standard)
+
     try:
         return Decimal(raw) * multiplier
     except (InvalidOperation, ValueError):
         return None
+
+
+def extract_value(text: str) -> Decimal | None:
+    """Extract WERT: value from Claude chat responses. Falls back to SCORE: if no WERT: found."""
+    match = re.search(
+        r"WERT:\s*([+-]?[\d.,]+(?:\s*(?:Mrd|Milliarden|Mio|Millionen|Billion|billion|million|[BMTK])\.?)?(?:\s*%)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return extract_score(text)
+    raw = match.group(1).strip()
+    return _parse_numeric_string(raw)
 
 
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Dir wird eine Finanzkennzahl für ein Unternehmen gefragt,
@@ -93,14 +148,71 @@ Wichtig:
 
 
 def extract_research_value(text: str) -> Decimal | None:
-    match = re.search(r"WERT:\s*([+-]?\d[\d.,]*)", text)
+    """Extract WERT: from Claude research responses.
+    Handles: plain integers, German/US number formats, suffixes (Mrd/B/Mio/M),
+    negative values, percent values, and NICHT_GEFUNDEN sentinel."""
+    match = re.search(
+        r"WERT:\s*([+-]?[\d.,]+(?:\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMTK])\.?)?(?:\s*%)?|NICHT[_\s]?GEFUNDEN)",
+        text,
+        re.IGNORECASE,
+    )
     if not match:
         return None
-    try:
-        raw = match.group(1).replace(".", "").replace(",", ".") if "," in match.group(1) else match.group(1)
-        return Decimal(raw)
-    except (InvalidOperation, ValueError):
+    raw = match.group(1).strip()
+    if re.match(r"nicht.{0,2}gefunden", raw, re.IGNORECASE):
         return None
+    return _parse_numeric_string(raw)
+
+
+# Sanity ranges imported from yahoo provider to avoid duplication.
+# Maps value_key → (min, max). Values outside are rejected before storing.
+_CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
+    "stock_price": (0, 1_000_000),
+    "market_cap": (0, 15_000_000_000_000),
+    "shares_outstanding": (0, 1_000_000_000_000),
+    "dividends": (0, 10_000),
+    "dividend_return": (0, 100),       # Claude returns percent directly (e.g. 4.38)
+    "analysts_target": (0, 1_000_000),
+    "eps_ttm": (-100_000, 100_000),
+    "eps_forward": (-100_000, 100_000),
+    "pe_ttm": (0, 10_000),
+    "pe_forward": (0, 10_000),
+    "ev": (0, 15_000_000_000_000),
+    "ebitda": (-1_000_000_000_000, 5_000_000_000_000),
+    "ev_ebitda": (-1_000, 1_000),
+    "peg": (-100, 1_000),
+    "free_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
+    "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
+    "cash": (0, 5_000_000_000_000),
+    "debt": (0, 10_000_000_000_000),
+    "sales": (0, 5_000_000_000_000),
+    "op_margin": (-100, 100),
+    "net_profit": (-5_000_000_000_000, 5_000_000_000_000),
+    "sales_growth": (-100, 500),
+    "op_profit": (-5_000_000_000_000, 5_000_000_000_000),
+    "buybacks": (0, 1_000_000_000_000),
+}
+
+
+def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
+    """Check that a Claude-returned value is within the expected range for the given key.
+    Returns the value unchanged if OK, or None if it fails the sanity check."""
+    limits = _CLAUDE_SANITY_CHECKS.get(key)
+    if limits is None:
+        return value
+    lo, hi = limits
+    try:
+        fval = float(value)
+    except (ValueError, OverflowError):
+        logger.warning("Claude value sanity: cannot convert value for key=%s, dropping", key)
+        return None
+    if fval < lo or fval > hi:
+        logger.warning(
+            "Claude value sanity failed for key=%s: value=%s out of range [%s, %s], dropping",
+            key, value, lo, hi,
+        )
+        return None
+    return value
 
 
 def research_value(company_name: str, ticker: str, value_label: str, currency: str, period_type: str = "SNAPSHOT", period_year: int | None = None) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:

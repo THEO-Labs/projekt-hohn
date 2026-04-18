@@ -66,7 +66,7 @@ def test_analyze_calls_claude(client, db):
     assert response.status_code == 200
     data = response.json()
     assert data["message"]["role"] == "assistant"
-    assert data["message"]["score_suggestion"] == "1.10"
+    assert data["message"]["score_suggestion"] == "1.100000"
     assert "conversation_id" in data
 
 

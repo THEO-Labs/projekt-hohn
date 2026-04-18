@@ -9,6 +9,42 @@ from app.providers.base import ProviderResult
 
 logger = logging.getLogger(__name__)
 
+# Yahoo field unit documentation:
+# key             → yf_field              raw_unit (Yahoo returns)    stored_unit (what we store)
+# stock_price     → currentPrice          CURRENCY (e.g. 189.50)     CURRENCY (as-is)
+# market_cap      → marketCap             CURRENCY (e.g. 2.9e12)     CURRENCY (as-is)
+# shares_outstanding → sharesOutstanding  COUNT (e.g. 15.5e9)        COUNT (as-is)
+# dividends       → dividendRate          CURRENCY per share          CURRENCY (as-is)
+# dividend_return → dividendYield         DECIMAL (e.g. 0.0438=4.38%) PERCENT (Yahoo gives 0.xx, we store as-is, no *100)
+# analysts_target → targetMeanPrice       CURRENCY                    CURRENCY (as-is)
+# eps_ttm         → trailingEps           CURRENCY per share          CURRENCY (as-is)
+# eps_forward     → forwardEps            CURRENCY per share          CURRENCY (as-is)
+# pe_ttm          → trailingPE            RATIO (e.g. 28.5)           RATIO (as-is)
+# pe_forward      → forwardPE             RATIO                       RATIO (as-is)
+# ev              → enterpriseValue       CURRENCY                    CURRENCY (as-is)
+# ebitda          → ebitda                CURRENCY                    CURRENCY (as-is)
+# ev_ebitda       → enterpriseToEbitda    RATIO                       RATIO (as-is)
+# peg             → pegRatio              RATIO                       RATIO (as-is)
+# free_cash_flow  → freeCashflow          CURRENCY                    CURRENCY (as-is)
+# op_cash_flow    → operatingCashflow     CURRENCY                    CURRENCY (as-is)
+# cash            → totalCash             CURRENCY                    CURRENCY (as-is)
+# debt            → totalDebt             CURRENCY                    CURRENCY (as-is)
+# sales           → totalRevenue          CURRENCY                    CURRENCY (as-is)
+# op_margin       → operatingMargins      DECIMAL (e.g. 0.13=13%)     PERCENT (*100 → 13)
+# net_profit      → netIncomeToCommon     CURRENCY                    CURRENCY (as-is)
+#
+# Specialized fetchers:
+# next_earnings   → calendar              DATE string                 TEXT (as-is)
+# buybacks        → cashflow df           CURRENCY (negative=outflow) CURRENCY (abs value)
+# sales_growth    → revenueGrowth         DECIMAL (e.g. -0.056)       PERCENT (*100 → -5.6)
+# op_profit       → totalRevenue * operatingMargins  CURRENCY calc    CURRENCY (as-is)
+# insider_transactions → insider_transactions df      TEXT summary    TEXT (as-is)
+#
+# Historical FY data (financials/balance_sheet/cashflow DataFrames):
+# All values are absolute numbers in company currency. No percent conversion needed.
+# op_margin historical → calculated from financials: op_profit/sales * 100 → PERCENT
+# sales_growth historical → calculated from financials: (curr-prev)/prev * 100 → PERCENT
+
 INFO_KEY_MAP = {
     "stock_price": "currentPrice",
     "market_cap": "marketCap",
@@ -33,7 +69,43 @@ INFO_KEY_MAP = {
     "net_profit": "netIncomeToCommon",
 }
 
+# Keys whose raw Yahoo value is a decimal fraction (e.g. 0.13) that must be
+# multiplied by 100 before storing as a percent (13.0).
+# dividend_return (dividendYield) is NOT here: Yahoo already returns it as a
+# small decimal like 0.0438, but we store it AS-IS since the catalog unit is
+# "%" and the UI formats it with a % suffix. Multiplying would give 4.38, but
+# historically the system stored 0.0438-range values so we leave it as-is.
+# op_margin (operatingMargins) IS here: Yahoo returns 0.13 → we store 13.
 PERCENT_KEYS = {"op_margin"}
+
+# Sanity ranges per key: (min_inclusive, max_inclusive).
+# Values outside these ranges are logged as warnings and dropped (return None).
+VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
+    "stock_price": (0, 1_000_000),
+    "market_cap": (0, 15_000_000_000_000),
+    "shares_outstanding": (0, 1_000_000_000_000),
+    "dividends": (0, 10_000),
+    "dividend_return": (0, 0.5),       # stored as decimal fraction 0..0.5 (=50%)
+    "analysts_target": (0, 1_000_000),
+    "eps_ttm": (-100_000, 100_000),
+    "eps_forward": (-100_000, 100_000),
+    "pe_ttm": (0, 10_000),
+    "pe_forward": (0, 10_000),
+    "ev": (0, 15_000_000_000_000),
+    "ebitda": (-1_000_000_000_000, 5_000_000_000_000),
+    "ev_ebitda": (-1_000, 1_000),
+    "peg": (-100, 1_000),
+    "free_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
+    "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
+    "cash": (0, 5_000_000_000_000),
+    "debt": (0, 10_000_000_000_000),
+    "sales": (0, 5_000_000_000_000),
+    "op_margin": (-100, 100),          # stored as percent after *100
+    "net_profit": (-5_000_000_000_000, 5_000_000_000_000),
+    "sales_growth": (-100, 500),       # stored as percent after *100
+    "op_profit": (-5_000_000_000_000, 5_000_000_000_000),
+    "buybacks": (0, 1_000_000_000_000),
+}
 
 ALWAYS_CURRENT_KEYS = {
     "stock_price",
@@ -148,6 +220,24 @@ class YahooFinanceProvider:
             return d
         except (InvalidOperation, ValueError, TypeError):
             return None
+
+    def _sanity_check(self, key: str, value: Decimal) -> Decimal | None:
+        limits = VALUE_SANITY_CHECKS.get(key)
+        if limits is None:
+            return value
+        lo, hi = limits
+        try:
+            fval = float(value)
+        except (ValueError, OverflowError):
+            logger.warning("Sanity check: could not convert value for key=%s to float, dropping", key)
+            return None
+        if fval < lo or fval > hi:
+            logger.warning(
+                "Sanity check failed for key=%s: value=%s out of range [%s, %s], dropping",
+                key, value, lo, hi,
+            )
+            return None
+        return value
 
     def _find_year_column(self, df, year: int):
         for col in df.columns:
@@ -330,6 +420,10 @@ class YahooFinanceProvider:
         if key in PERCENT_KEYS:
             value = value * Decimal("100")
 
+        value = self._sanity_check(key, value)
+        if value is None:
+            return None
+
         return ProviderResult(
             value=value,
             source_name=self.name,
@@ -423,8 +517,12 @@ class YahooFinanceProvider:
         value = self._to_decimal(raw)
         if value is None:
             return None
+        value = value * Decimal("100")
+        value = self._sanity_check("sales_growth", value)
+        if value is None:
+            return None
         return ProviderResult(
-            value=value * Decimal("100"),
+            value=value,
             source_name=self.name,
             source_link=source_link,
             currency=None,

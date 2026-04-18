@@ -15,7 +15,7 @@ from app.calculations.engine import CALCULATED_KEYS, calculate_all
 from app.companies.models import Company
 from app.db import get_db
 from app.portfolios.models import Portfolio
-from app.llm.claude import research_value
+from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
 from app.values.models import CompanyValue, ValueDefinition
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
@@ -129,58 +129,58 @@ def list_company_values(
     return q.all()
 
 
-@values_router.post("/{company_id}/values/refresh", response_model=list[CompanyValueOut])
-def refresh_company_values(
+def _process_one_key(
+    db: Session,
+    key: str,
+    ticker: str,
+    company,
     company_id: UUID,
-    payload: RefreshRequest,
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> list[CompanyValue]:
-    company = _get_owned_company(db, user, company_id)
-    ticker = company.ticker
-    if company.isin:
-        providers = get_providers("stock_price")
-        if providers and hasattr(providers[0], "resolve_ticker_from_isin"):
-            resolved = providers[0].resolve_ticker_from_isin(company.isin)
-            if resolved and resolved != ticker:
-                ticker = resolved
-                company.ticker = ticker
-                db.flush()
-    updated = []
+    payload,
+    updated: list,
+) -> None:
+    from app.providers.base import ProviderResult
+    from app.llm.models import LlmConversation, LlmMessage
 
-    for key in payload.keys:
-        providers = get_providers(key)
-        if not providers:
+    providers = get_providers(key)
+    if not providers:
+        return
+
+    result = None
+    for provider in providers:
+        try:
+            result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
+            if result is not None:
+                break
+        except Exception as e:
+            logger.warning("Provider fetch failed for %s/%s: %s", ticker, key, e)
             continue
 
-        result = None
-        for provider in providers:
+    if result is None:
+        vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+        if vd and vd.source_type.value in ("API",) and settings.anthropic_api_key:
+            label = f"{vd.label_en} ({vd.label_de})"
             try:
-                result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
-                if result is not None:
-                    break
-            except Exception as e:
-                logger.warning("Provider fetch failed for %s/%s: %s", ticker, key, e)
-                continue
-
-        if result is None:
-            vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
-            if vd and vd.source_type.value in ("API",) and settings.anthropic_api_key:
-                label = f"{vd.label_en} ({vd.label_de})"
                 research_val, research_source, research_url, user_prompt, assistant_response = research_value(
                     company.name, ticker, label, company.currency,
                     period_type=payload.period_type, period_year=payload.period_year
                 )
-                if research_val is not None:
-                    from app.providers.base import ProviderResult
-                    result = ProviderResult(
-                        value=research_val,
-                        source_name=research_source or "Claude-Recherche",
-                        source_link=research_url,
-                        currency=company.currency,
-                    )
-                if user_prompt and assistant_response:
-                    from app.llm.models import LlmConversation, LlmMessage
+            except Exception as e:
+                logger.warning("Claude research failed for %s/%s: %s", ticker, key, e)
+                return
+
+            if research_val is not None:
+                research_val = validate_claude_value(key, research_val)
+
+            if research_val is not None:
+                result = ProviderResult(
+                    value=research_val,
+                    source_name=research_source or "Claude-Recherche",
+                    source_link=research_url,
+                    currency=company.currency,
+                )
+
+            if user_prompt and assistant_response:
+                try:
                     existing_conv = (
                         db.query(LlmConversation)
                         .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == key)
@@ -199,34 +199,38 @@ def refresh_company_values(
                             score_suggestion=research_val,
                         ))
                         db.flush()
-            if result is None:
-                continue
+                except Exception as e:
+                    logger.warning("Failed to save Claude conversation for %s/%s: %s", ticker, key, e)
 
-        eq = (
-            db.query(CompanyValue)
-            .filter(
-                CompanyValue.company_id == company_id,
-                CompanyValue.value_key == key,
-                CompanyValue.period_type == payload.period_type,
-            )
+    if result is None:
+        return
+
+    eq = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == payload.period_type,
         )
-        if payload.period_year is not None:
-            eq = eq.filter(CompanyValue.period_year == payload.period_year)
-        else:
-            eq = eq.filter(CompanyValue.period_year.is_(None))
-        existing = eq.one_or_none()
+    )
+    if payload.period_year is not None:
+        eq = eq.filter(CompanyValue.period_year == payload.period_year)
+    else:
+        eq = eq.filter(CompanyValue.period_year.is_(None))
+    existing = eq.one_or_none()
 
-        if existing and existing.manually_overridden:
-            updated.append(existing)
-            continue
+    if existing and existing.manually_overridden:
+        updated.append(existing)
+        return
 
-        numeric_value: Decimal | None = None
-        text_value: str | None = None
-        if isinstance(result.value, Decimal):
-            numeric_value = result.value
-        elif result.value is not None:
-            text_value = str(result.value)
+    numeric_value: Decimal | None = None
+    text_value: str | None = None
+    if isinstance(result.value, Decimal):
+        numeric_value = result.value
+    elif result.value is not None:
+        text_value = str(result.value)
 
+    try:
         if existing:
             existing.numeric_value = numeric_value
             existing.text_value = text_value
@@ -251,6 +255,45 @@ def refresh_company_values(
             )
             db.add(cv)
             updated.append(cv)
+        db.flush()
+    except Exception as e:
+        logger.error("DB save failed for key=%s company=%s: %s", key, ticker, e)
+        db.rollback()
+
+
+@values_router.post("/{company_id}/values/refresh", response_model=list[CompanyValueOut])
+def refresh_company_values(
+    company_id: UUID,
+    payload: RefreshRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[CompanyValue]:
+    company = _get_owned_company(db, user, company_id)
+    ticker = company.ticker
+    if company.isin:
+        providers = get_providers("stock_price")
+        if providers and hasattr(providers[0], "resolve_ticker_from_isin"):
+            resolved = providers[0].resolve_ticker_from_isin(company.isin)
+            if resolved and resolved != ticker:
+                ticker = resolved
+                company.ticker = ticker
+                db.flush()
+    updated = []
+
+    for key in payload.keys:
+        try:
+            _process_one_key(
+                db=db,
+                key=key,
+                ticker=ticker,
+                company=company,
+                company_id=company_id,
+                payload=payload,
+                updated=updated,
+            )
+        except Exception as e:
+            logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
+            db.rollback()
 
     db.commit()
 
