@@ -137,11 +137,15 @@ def refresh_company_values(
     db: Session = Depends(get_db),
 ) -> list[CompanyValue]:
     company = _get_owned_company(db, user, company_id)
-    from app.companies.lookup import _to_yahoo_ticker
-    ticker = _to_yahoo_ticker(company.ticker, None, company.isin)
-    if ticker != company.ticker:
-        company.ticker = ticker
-        db.flush()
+    ticker = company.ticker
+    if company.isin:
+        providers = get_providers("stock_price")
+        if providers and hasattr(providers[0], "resolve_ticker_from_isin"):
+            resolved = providers[0].resolve_ticker_from_isin(company.isin)
+            if resolved and resolved != ticker:
+                ticker = resolved
+                company.ticker = ticker
+                db.flush()
     updated = []
 
     for key in payload.keys:

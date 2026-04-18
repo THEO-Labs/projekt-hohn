@@ -82,6 +82,29 @@ class YahooFinanceProvider:
         self._financials_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._balance_sheet_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._cashflow_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
+        self._isin_ticker_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
+
+    def resolve_ticker_from_isin(self, isin: str) -> str | None:
+        if isin in self._isin_ticker_cache:
+            return self._isin_ticker_cache[isin]
+        try:
+            import httpx
+            r = httpx.get(
+                f"https://query2.finance.yahoo.com/v1/finance/search?q={isin}&quotesCount=3&newsCount=0",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=5.0,
+            )
+            data = r.json()
+            quotes = data.get("quotes", [])
+            for q in quotes:
+                if q.get("quoteType") == "EQUITY":
+                    symbol = q.get("symbol")
+                    if symbol:
+                        self._isin_ticker_cache[isin] = symbol
+                        return symbol
+        except Exception as e:
+            logger.warning("Yahoo ISIN search failed for %s: %s", isin, e)
+        return None
 
     def _get_ticker(self, ticker: str) -> yfinance.Ticker:
         if ticker not in self._ticker_cache:
