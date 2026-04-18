@@ -8,22 +8,35 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Investmentunternehmen.
-Du hast zwei Aufgaben:
+QUALITATIVE_SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Investmentunternehmen.
 
-1. QUALITATIVE BEWERTUNG: Bewerte qualitative Faktoren auf einer Skala von 0.5 bis 1.5.
-   0.5 = sehr hohes Risiko / sehr schlecht, 1.0 = neutral, 1.5 = sehr gut
-   Antworte mit: SCORE: [Zahl], BEGRÜNDUNG, FAKTOREN, QUELLEN
+Deine Aufgabe: Bewerte qualitative Faktoren auf einer Skala von 0.5 bis 1.5.
+0.5 = sehr hohes Risiko / sehr schlecht, 1.0 = neutral, 1.5 = sehr gut
 
-2. FINANZKENNZAHLEN RECHERCHE: Wenn nach einem konkreten Finanzkennwert gefragt wird,
-   recherchiere den Wert und antworte mit:
-   WERT: [Zahl]
-   QUELLE: [Woher der Wert stammt]
-   Erkläre kurz woher der Wert kommt.
+Antworte immer mit:
+SCORE: [Zahl zwischen 0.5 und 1.5]
+BEGRÜNDUNG: [Deine Begründung]
+FAKTOREN: [Entscheidende Faktoren]
+QUELLEN: [Verwendete Quellen]
+
+Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch.
+Wenn du unsicher bist, sei ehrlich und gib SCORE: 1.0 mit entsprechendem Hinweis."""
+
+RESEARCH_SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Investmentunternehmen.
+
+Deine Aufgabe: Recherchiere konkrete Finanzkennzahlen für Unternehmen.
+Antworte NUR mit numerischen Werten in diesem Format:
+WERT: [Zahl]
+EINHEIT: [z.B. USD, EUR, %, keine]
+QUELLE: [Woher der Wert stammt]
+QUELLE_URL: [URL zur Quelle]
+ZEITRAUM: [z.B. FY2024, TTM, aktuell]
+KONFIDENZ: [hoch/mittel/niedrig]
+
+Wenn du keinen verifizierbaren Wert findest: WERT: NICHT_GEFUNDEN
 
 Nutze echte Quellen (Geschäftsberichte, Analystenkonsens, Finanzdatenbanken).
-Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch.
-Wenn du einen Wert nicht sicher weisst, sage das ehrlich."""
+Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch."""
 
 
 def get_client() -> anthropic.Anthropic:
@@ -250,24 +263,53 @@ def research_value(company_name: str, ticker: str, value_label: str, currency: s
         return None, None, None, user_prompt, None
 
 
-def call_claude(messages: list[dict[str, str]], company_context: str) -> tuple[str, Decimal | None]:
+_RESEARCH_USER_RE = re.compile(
+    r"Unternehmen:\s*(.+?)\n.*?Gesuchte Kennzahl:\s*(.+?)(?:\n|$)",
+    re.DOTALL,
+)
+
+
+def _rewrite_research_message(content: str) -> str:
+    m = _RESEARCH_USER_RE.search(content)
+    if m:
+        company = m.group(1).strip()
+        label = m.group(2).strip()
+        return f"Frage: Welchen Wert hat {label} fuer {company}?"
+    return content
+
+
+def call_claude(messages: list[dict[str, str]], company_context: str, mode: str = "qualitative") -> tuple[str, Decimal | None]:
     client = get_client()
+
+    system_prompt = QUALITATIVE_SYSTEM_PROMPT if mode == "qualitative" else RESEARCH_SYSTEM_PROMPT
 
     user_messages = []
     for msg in messages:
-        user_messages.append({"role": msg["role"], "content": msg["content"]})
+        content = msg["content"]
+        if msg["role"] == "user" and "Unternehmen:" in content and "Gesuchte Kennzahl:" in content:
+            content = _rewrite_research_message(content)
+        user_messages.append({"role": msg["role"], "content": content})
 
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
-        system=[{
-            "type": "text",
-            "text": SYSTEM_PROMPT + "\n\n" + company_context,
-            "cache_control": {"type": "ephemeral"}
-        }],
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": company_context,
+            },
+        ],
         messages=user_messages,
     )
 
     content = response.content[0].text
-    score = extract_value(content)
+    if mode == "qualitative":
+        score = extract_score(content)
+    else:
+        score = extract_value(content)
     return content, score

@@ -72,10 +72,9 @@ export const getRefreshStatus = (companyId: string) =>
 export const overrideValue = (
   companyId: string,
   valueKey: string,
-  numericValue: number,
-  sourceName: string
+  payload: { numeric_value?: number; text_value?: string; source_name: string }
 ) =>
   api<CompanyValue>(`/api/companies/${companyId}/values/${valueKey}/override`, {
     method: "POST",
-    body: JSON.stringify({ numeric_value: numericValue, source_name: sourceName }),
+    body: JSON.stringify(payload),
   });

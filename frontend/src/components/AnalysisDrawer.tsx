@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Sparkles, Send } from "lucide-react";
+import { X, Sparkles, Send, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { t } from "@/lib/i18n";
+import { formatValue } from "@/lib/format";
 import {
   analyzeValue,
   sendChatMessage,
   getChatHistory,
   type LlmMessage,
 } from "@/api/llm";
+
+type DataType = "NUMERIC" | "TEXT" | "FACTOR";
 
 type AnalysisDrawerProps = {
   open: boolean;
@@ -17,10 +21,10 @@ type AnalysisDrawerProps = {
   valueKey: string;
   valueLabel: string;
   currentScore: number | null;
-  isQualitative?: boolean;
+  dataType?: DataType;
   periodType?: string;
   periodYear?: number;
-  onAcceptScore: (score: number) => void;
+  onAcceptScore: (score: number | null, textValue?: string) => Promise<void>;
 };
 
 function formatTime(iso: string) {
@@ -50,7 +54,7 @@ function parseMarkdown(text: string): string {
   return escaped
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" class="text-primary underline hover:opacity-80">$1</a>')
-    .replace(/^(SCORE:|BEGRÜNDUNG:|FAKTOREN:|QUELLEN:|BEGRUENDUNG:)/gim, '<span class="font-semibold text-primary">$1</span>')
+    .replace(/^(SCORE:|WERT:|EINHEIT:|QUELLE:|QUELLE_URL:|ZEITRAUM:|KONFIDENZ:|BEGRÜNDUNG:|FAKTOREN:|QUELLEN:|BEGRUENDUNG:)/gim, '<span class="font-semibold text-primary">$1</span>')
     .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
     .replace(/(<li[^>]*>.*<\/li>\n?)+/g, (m) => `<ul class="space-y-0.5 my-1">${m}</ul>`)
     .replace(/\n/g, "<br />");
@@ -64,13 +68,17 @@ export function AnalysisDrawer({
   valueKey,
   valueLabel,
   currentScore,
-  isQualitative = false,
+  dataType = "NUMERIC",
   periodType,
   periodYear,
   onAcceptScore,
 }: AnalysisDrawerProps) {
+  const isFactorType = dataType === "FACTOR";
+  const isTextType = dataType === "TEXT";
+
   const [messages, setMessages] = useState<LlmMessage[]>([]);
-  const [sliderValue, setSliderValue] = useState<number>(typeof currentScore === "string" ? parseFloat(currentScore) : currentScore ?? 1.0);
+  const [sliderValue, setSliderValue] = useState<number>(currentScore ?? 1.0);
+  const [textValue, setTextValue] = useState<string>("");
   const [inputText, setInputText] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
@@ -79,8 +87,15 @@ export function AnalysisDrawer({
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    setMessages([]);
+    setInputText("");
     setHistoryLoaded(false);
+    setSliderValue(currentScore ?? 1.0);
+    setTextValue("");
+  }, [companyId, valueKey, currentScore]);
+
+  useEffect(() => {
+    if (!open) return;
     getChatHistory(companyId, valueKey)
       .then((res) => {
         setMessages(res.messages);
@@ -95,7 +110,7 @@ export function AnalysisDrawer({
       })
       .catch(() => setMessages([]))
       .finally(() => setHistoryLoaded(true));
-  }, [open, companyId, valueKey]);
+  }, [open, companyId, valueKey, currentScore]);
 
   useEffect(() => {
     if (open) {
@@ -103,14 +118,19 @@ export function AnalysisDrawer({
     }
   }, [messages, open]);
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (force = false) => {
     setAnalyzing(true);
     try {
-      const res = await analyzeValue(companyId, valueKey, periodType, periodYear);
-      setMessages((prev) => [...prev, res.message]);
+      const res = await analyzeValue(companyId, valueKey, periodType, periodYear, force);
+      setMessages((prev) => {
+        const exists = prev.some((m) => m.id === res.message.id);
+        return exists ? prev : [...prev, res.message];
+      });
       if (res.message.score_suggestion != null) {
         setSliderValue(toNum(res.message.score_suggestion));
       }
+    } catch {
+      toast.error("Analyse fehlgeschlagen. Bitte erneut versuchen.");
     } finally {
       setAnalyzing(false);
     }
@@ -121,8 +141,9 @@ export function AnalysisDrawer({
     if (!text || sending) return;
     setInputText("");
     setSending(true);
+    const optimisticId = crypto.randomUUID();
     const optimisticUserMsg: LlmMessage = {
-      id: `temp-${Date.now()}`,
+      id: optimisticId,
       role: "user",
       content: text,
       score_suggestion: null,
@@ -130,11 +151,14 @@ export function AnalysisDrawer({
     };
     setMessages((prev) => [...prev, optimisticUserMsg]);
     try {
-      const res = await sendChatMessage(companyId, valueKey, text);
+      const res = await sendChatMessage(companyId, valueKey, text, periodType, periodYear);
       setMessages((prev) => [...prev, res.message]);
       if (res.message.score_suggestion != null) {
         setSliderValue(toNum(res.message.score_suggestion));
       }
+    } catch {
+      toast.error("Nachricht konnte nicht gesendet werden.");
+      setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
     } finally {
       setSending(false);
     }
@@ -146,6 +170,30 @@ export function AnalysisDrawer({
       handleSend();
     }
   };
+
+  const handleAccept = async () => {
+    if (accepting) return;
+    setAccepting(true);
+    try {
+      if (isTextType) {
+        await onAcceptScore(null, textValue);
+      } else {
+        await onAcceptScore(sliderValue);
+      }
+    } catch {
+      toast.error("Wert konnte nicht gespeichert werden.");
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const hasMessages = messages.length > 0;
+
+  const acceptLabel = isTextType
+    ? "Einschätzung übernehmen"
+    : isFactorType
+    ? `${t.acceptScore} (${toNum(sliderValue).toFixed(2)})`
+    : `Wert übernehmen (${formatValue(sliderValue, null, null)})`;
 
   return createPortal(
     <div className={`fixed inset-0 z-[200] flex justify-end transition-opacity duration-200 ${open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}>
@@ -177,11 +225,11 @@ export function AnalysisDrawer({
         <div className="shrink-0 border-b border-border px-5 py-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground">
-              {isQualitative ? t.scoreLabel : "Wert"}
+              {isFactorType ? t.scoreLabel : isTextType ? "Einschätzung" : "Wert"}
             </span>
-            {isQualitative ? (
+            {isFactorType ? (
               <span className="font-mono text-sm font-semibold text-primary">{toNum(sliderValue).toFixed(2)}</span>
-            ) : (
+            ) : isTextType ? null : (
               <input
                 type="text"
                 className="w-32 rounded border border-input bg-background px-2 py-1 text-right font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
@@ -194,7 +242,7 @@ export function AnalysisDrawer({
               />
             )}
           </div>
-          {isQualitative && (
+          {isFactorType && (
             <>
               <input
                 type="range"
@@ -212,7 +260,29 @@ export function AnalysisDrawer({
               </div>
             </>
           )}
+          {isTextType && (
+            <textarea
+              rows={3}
+              placeholder="Einschätzung eingeben..."
+              value={textValue}
+              onChange={(e) => setTextValue(e.target.value)}
+              className="mt-2 w-full resize-none rounded border border-input bg-background px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            />
+          )}
         </div>
+
+        {hasMessages && (
+          <div className="shrink-0 border-b border-border px-5 py-2">
+            <button
+              onClick={() => handleAnalyze(true)}
+              disabled={analyzing}
+              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3 w-3 ${analyzing ? "animate-spin" : ""}`} />
+              Neue Analyse starten
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {historyLoaded && messages.length === 0 ? (
@@ -227,7 +297,7 @@ export function AnalysisDrawer({
                 </p>
               </div>
               <button
-                onClick={handleAnalyze}
+                onClick={() => handleAnalyze(false)}
                 disabled={analyzing}
                 className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
               >
@@ -283,7 +353,9 @@ export function AnalysisDrawer({
                       </span>
                       {msg.score_suggestion != null && (
                         <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
-                          Score: {toNum(msg.score_suggestion).toFixed(2)}
+                          {isFactorType
+                            ? `Score: ${toNum(msg.score_suggestion).toFixed(2)}`
+                            : `Wert: ${formatValue(toNum(msg.score_suggestion), null, null)}`}
                         </span>
                       )}
                     </div>
@@ -337,20 +409,16 @@ export function AnalysisDrawer({
         <footer className="shrink-0 border-t border-border px-4 py-3">
           {messages.length > 0 ? (
             <button
-              onClick={async () => {
-                if (accepting) return;
-                setAccepting(true);
-                try { await onAcceptScore(sliderValue); } finally { setAccepting(false); }
-              }}
+              onClick={handleAccept}
               disabled={accepting}
               className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
             >
-              {accepting ? "..." : `${t.acceptScore} (${toNum(sliderValue).toFixed(2)})`}
+              {accepting ? "..." : acceptLabel}
             </button>
           ) : (
             !historyLoaded || analyzing ? null : (
               <button
-                onClick={handleAnalyze}
+                onClick={() => handleAnalyze(false)}
                 disabled={analyzing}
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
               >

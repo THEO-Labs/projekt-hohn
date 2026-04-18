@@ -9,6 +9,7 @@ class LlmMessageOut(BaseModel):
     role: str
     content: str
     score_suggestion: Decimal | None
+    source: str | None = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

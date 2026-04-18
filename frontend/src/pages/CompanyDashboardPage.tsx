@@ -101,6 +101,7 @@ export function CompanyDashboardPage() {
     valueLabel: string;
     currentScore: number | null;
     isQualitative: boolean;
+    dataType: string;
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [refreshStatuses, setRefreshStatuses] = useState<Map<string, RefreshStatus>>(new Map());
@@ -446,7 +447,7 @@ export function CompanyDashboardPage() {
                         if (isNaN(num)) { setEditCell(null); return; }
                         setSaving(true);
                         try {
-                          await overrideValue(company.id, d.key, num, "Manuell");
+                          await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" });
                           const updated = await getCompanyValues(company.id, period.value, period.year);
                           setValuesMap((prev) => { const n = new Map(prev); n.set(company.id, updated); return n; });
                         } finally {
@@ -470,6 +471,7 @@ export function CompanyDashboardPage() {
                               valueLabel: d.label_en,
                               currentScore: raw,
                               isQualitative,
+                              dataType: d.data_type,
                             });
                             setDrawerOpen(true);
                           } : undefined}
@@ -556,11 +558,15 @@ export function CompanyDashboardPage() {
             valueKey={drawer.valueKey}
             valueLabel={drawer.valueLabel}
             currentScore={drawer.currentScore}
-            isQualitative={drawer.isQualitative}
+            dataType={drawer.dataType as "NUMERIC" | "TEXT" | "FACTOR"}
             periodType={period.value}
             periodYear={period.year}
-            onAcceptScore={async (score) => {
-              await overrideValue(drawer.companyId, drawer.valueKey, score, "Claude Analysis");
+            onAcceptScore={async (score, textValue) => {
+              if (textValue !== undefined) {
+                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Claude Analysis" });
+              } else if (score != null) {
+                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Claude Analysis" });
+              }
               const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
               setValuesMap((prev) => {
                 const next = new Map(prev);

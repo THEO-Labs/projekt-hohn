@@ -11,9 +11,9 @@ from app.companies.models import Company
 from app.db import get_db
 from app.llm.claude import call_claude
 from app.llm.models import LlmConversation, LlmMessage
-from app.llm.schemas import AnalyzeResponse, ChatHistoryOut, ChatRequest, LlmMessageOut
+from app.llm.schemas import AnalyzeResponse, ChatHistoryOut, ChatRequest
 from app.portfolios.models import Portfolio
-from app.values.models import CompanyValue, ValueDefinition
+from app.values.models import CompanyValue, SourceType, ValueDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ def _get_or_create_conversation(db: Session, company_id: UUID, value_key: str) -
     conv = (
         db.query(LlmConversation)
         .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == value_key)
-        .order_by(LlmConversation.created_at.desc())
         .first()
     )
     if conv:
@@ -45,20 +44,36 @@ def _get_or_create_conversation(db: Session, company_id: UUID, value_key: str) -
     return conv
 
 
-def _build_company_context(db: Session, company: Company) -> str:
-    values = db.query(CompanyValue).filter(
+def _build_company_context(db: Session, company: Company, period_type: str = "SNAPSHOT", period_year: int | None = None) -> str:
+    values = db.query(CompanyValue, ValueDefinition).join(
+        ValueDefinition, CompanyValue.value_key == ValueDefinition.key, isouter=True
+    ).filter(
         CompanyValue.company_id == company.id,
         CompanyValue.period_type == "SNAPSHOT",
     ).all()
 
     data = {}
-    for v in values:
+    for v, vd in values:
+        label = vd.label_en if vd else v.value_key
         if v.numeric_value is not None:
-            data[v.value_key] = str(v.numeric_value)
+            data[label] = str(v.numeric_value)
         elif v.text_value is not None:
-            data[v.value_key] = v.text_value
+            data[label] = v.text_value
 
-    return f"Unternehmen: {company.name} ({company.ticker}, ISIN: {company.isin or 'N/A'}, Currency: {company.currency})\n\nVerfuegbare Finanzdaten:\n{json.dumps(data, indent=2, ensure_ascii=False)}"
+    if period_type == "FY" and period_year:
+        period_str = f"FY{period_year}"
+    elif period_type == "LTM":
+        period_str = "LTM"
+    elif period_type == "TTM":
+        period_str = "TTM"
+    else:
+        period_str = "aktuell"
+
+    return (
+        f"Unternehmen: {company.name} ({company.ticker}, ISIN: {company.isin or 'N/A'}, Currency: {company.currency})\n"
+        f"Aktueller Analyse-Zeitraum: {period_str}\n\n"
+        f"Verfuegbare Finanzdaten:\n{json.dumps(data, indent=2, ensure_ascii=False)}"
+    )
 
 
 def _get_value_label(db: Session, value_key: str) -> str:
@@ -74,6 +89,7 @@ def analyze_value(
     value_key: str,
     period_type: str = "SNAPSHOT",
     period_year: int | None = None,
+    force: bool = False,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -83,21 +99,21 @@ def analyze_value(
     existing_messages = (
         db.query(LlmMessage)
         .filter(LlmMessage.conversation_id == conv.id)
-        .order_by(LlmMessage.created_at)
+        .order_by(LlmMessage.created_at, LlmMessage.id)
         .all()
     )
-    if existing_messages:
+    if not force and existing_messages:
         last_assistant = next(
             (m for m in reversed(existing_messages) if m.role == "assistant"),
             None,
         )
-        if last_assistant:
+        if last_assistant and last_assistant.source != "research":
             return {"conversation_id": conv.id, "message": last_assistant}
 
-    context = _build_company_context(db, company)
+    context = _build_company_context(db, company, period_type, period_year)
     label = _get_value_label(db, value_key)
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
-    is_qualitative = vd and vd.source_type.value == "QUALITATIVE"
+    is_qualitative = vd and vd.source_type == SourceType.QUALITATIVE
 
     if period_type == "FY" and period_year:
         period_str = f"Geschäftsjahr {period_year} (FY{period_year})"
@@ -110,6 +126,7 @@ def analyze_value(
 
     if is_qualitative:
         initial_prompt = f"Bewerte den folgenden Aspekt für {company.name}:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begründung."
+        mode = "qualitative"
     else:
         unit_hint = f" (Einheit: {vd.unit})" if vd and vd.unit else ""
         initial_prompt = (
@@ -123,15 +140,17 @@ def analyze_value(
             f"3. ZEITRAUM: [Bestätigung des Zeitraums]\n"
             f"4. Kurze Erklärung (1-2 Sätze)"
         )
+        mode = "research"
 
-    user_msg = LlmMessage(conversation_id=conv.id, role="user", content=initial_prompt)
+    user_msg = LlmMessage(conversation_id=conv.id, role="user", content=initial_prompt, source="analyze")
     db.add(user_msg)
-    db.flush()
+    db.commit()
+    db.refresh(user_msg)
 
     messages = [{"role": "user", "content": initial_prompt}]
 
     try:
-        content, score = call_claude(messages, context)
+        content, score = call_claude(messages, context, mode=mode)
     except Exception as e:
         logger.error("Claude API error: %s", e)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Claude API nicht erreichbar")
@@ -141,6 +160,7 @@ def analyze_value(
         role="assistant",
         content=content,
         score_suggestion=score,
+        source="analyze",
     )
     db.add(assistant_msg)
     db.commit()
@@ -157,27 +177,34 @@ def chat_message(
     company_id: UUID,
     value_key: str,
     payload: ChatRequest,
+    period_type: str = "SNAPSHOT",
+    period_year: int | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     company = _get_owned_company(db, user, company_id)
     conv = _get_or_create_conversation(db, company_id, value_key)
-    context = _build_company_context(db, company)
+    context = _build_company_context(db, company, period_type, period_year)
 
-    user_msg = LlmMessage(conversation_id=conv.id, role="user", content=payload.message)
+    vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
+    is_qualitative = vd and vd.source_type == SourceType.QUALITATIVE
+    mode = "qualitative" if is_qualitative else "research"
+
+    user_msg = LlmMessage(conversation_id=conv.id, role="user", content=payload.message, source="chat")
     db.add(user_msg)
-    db.flush()
+    db.commit()
+    db.refresh(user_msg)
 
     existing = (
         db.query(LlmMessage)
         .filter(LlmMessage.conversation_id == conv.id)
-        .order_by(LlmMessage.created_at)
+        .order_by(LlmMessage.created_at, LlmMessage.id)
         .all()
     )
     messages = [{"role": m.role, "content": m.content} for m in existing]
 
     try:
-        content, score = call_claude(messages, context)
+        content, score = call_claude(messages, context, mode=mode)
     except Exception as e:
         logger.error("Claude API error: %s", e)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Claude API nicht erreichbar")
@@ -187,6 +214,7 @@ def chat_message(
         role="assistant",
         content=content,
         score_suggestion=score,
+        source="chat",
     )
     db.add(assistant_msg)
     db.commit()
@@ -209,7 +237,6 @@ def get_chat_history(
     conv = (
         db.query(LlmConversation)
         .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == value_key)
-        .order_by(LlmConversation.created_at.desc())
         .first()
     )
     if not conv:
@@ -219,7 +246,7 @@ def get_chat_history(
     messages = (
         db.query(LlmMessage)
         .filter(LlmMessage.conversation_id == conv.id)
-        .order_by(LlmMessage.created_at)
+        .order_by(LlmMessage.created_at, LlmMessage.id)
         .all()
     )
 

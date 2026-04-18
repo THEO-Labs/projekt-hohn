@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -22,7 +22,7 @@ class LlmConversation(Base):
     messages: Mapped[list["LlmMessage"]] = relationship(back_populates="conversation", order_by="LlmMessage.created_at")
 
     __table_args__ = (
-        # One conversation per company+value
+        UniqueConstraint("company_id", "value_key", name="uq_llm_conv"),
     )
 
 
@@ -34,6 +34,7 @@ class LlmMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     score_suggestion: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped[LlmConversation] = relationship(back_populates="messages")
