@@ -33,7 +33,7 @@ class LlmMessage(Base):
     conversation_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("llm_conversations.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    score_suggestion: Mapped[Decimal | None] = mapped_column(Numeric(4, 2), nullable=True)
+    score_suggestion: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped[LlmConversation] = relationship(back_populates="messages")
