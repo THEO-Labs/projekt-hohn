@@ -84,7 +84,12 @@ WERT: NICHT_GEFUNDEN
 Wichtig:
 - Gib nur verifizierbare Zahlen an. Im Zweifel NICHT_GEFUNDEN.
 - Die QUELLE_URL muss eine echte, existierende URL sein (Investor Relations Seite, Yahoo Finance, Bloomberg, Reuters, etc.)
-- Keine erfundenen URLs."""
+- Keine erfundenen URLs.
+- ZAHLENFORMAT: Gib Zahlen immer in vollen Zahlen in Base-Units an, NICHT in Millionen/Milliarden-Notation.
+  Beispiel: WERT: 139947000000 (statt WERT: 139,9 Mrd)
+  Beispiel: WERT: 10775000000 (statt WERT: 10,78 Mrd)
+  Beispiel: WERT: 4.38 (für Prozente, direkt als Prozentwert, nicht als Dezimal)
+- Verwende Punkt als Dezimalzeichen (z.B. 27.65), kein Komma."""
 
 
 def extract_research_value(text: str) -> Decimal | None:

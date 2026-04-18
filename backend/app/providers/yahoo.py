@@ -33,7 +33,7 @@ INFO_KEY_MAP = {
     "net_profit": "netIncomeToCommon",
 }
 
-PERCENT_KEYS = {"dividend_return", "op_margin"}
+PERCENT_KEYS = {"op_margin"}
 
 ALWAYS_CURRENT_KEYS = {
     "stock_price",
