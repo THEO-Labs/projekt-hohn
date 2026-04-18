@@ -230,11 +230,14 @@ export function CompanyDashboardPage() {
   const getVal = (companyId: string, key: string): CompanyValue | undefined =>
     (valuesMap.get(companyId) ?? []).find((v) => v.value_key === key);
 
-  const convertCurrency = (val: number | null, from: string | null): number | null => {
-    if (val == null || !from) return val;
+  const convertCurrency = (val: number | string | null, from: string | null): number | null => {
+    if (val == null) return null;
+    const num = typeof val === "string" ? parseFloat(val) : val;
+    if (isNaN(num)) return null;
+    if (!from) return num;
     const f = FX_RATES[from] ?? 1;
     const t = FX_RATES[displayCurrency] ?? 1;
-    return f === t ? val : (val / f) * t;
+    return f === t ? num : (num / f) * t;
   };
 
   const grouped = CATEGORY_ORDER.map((cat) => ({
@@ -383,9 +386,11 @@ export function CompanyDashboardPage() {
                     }
                     return g.defs.map((d) => {
                       const cv = getVal(company.id, d.key);
-                      const raw = cv?.numeric_value ?? null;
+                      const rawStr = cv?.numeric_value ?? null;
+                      const raw: number | null = rawStr == null ? null : (typeof rawStr === "string" ? parseFloat(rawStr) : rawStr);
+                      const rawValid = raw != null && !isNaN(raw) ? raw : null;
                       const shouldConvert = d.unit !== "%" && d.data_type === "NUMERIC" && cv?.currency;
-                      const displayVal = shouldConvert ? convertCurrency(raw, cv?.currency ?? null) : raw;
+                      const displayVal = shouldConvert ? convertCurrency(rawValid, cv?.currency ?? null) : rawValid;
                       const isQualitative = d.source_type === "QUALITATIVE";
 
                       const isHistoricalQual = isQualitative && period.value !== "SNAPSHOT";

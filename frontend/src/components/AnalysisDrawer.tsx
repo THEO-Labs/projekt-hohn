@@ -172,7 +172,7 @@ export function AnalysisDrawer({
               {isQualitative ? t.scoreLabel : "Wert"}
             </span>
             {isQualitative ? (
-              <span className="font-mono text-sm font-semibold text-primary">{sliderValue.toFixed(2)}</span>
+              <span className="font-mono text-sm font-semibold text-primary">{toNum(sliderValue).toFixed(2)}</span>
             ) : (
               <input
                 type="text"
@@ -337,7 +337,7 @@ export function AnalysisDrawer({
               disabled={accepting}
               className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
             >
-              {accepting ? "..." : `${t.acceptScore} (${sliderValue.toFixed(2)})`}
+              {accepting ? "..." : `${t.acceptScore} (${toNum(sliderValue).toFixed(2)})`}
             </button>
           ) : (
             !historyLoaded || analyzing ? null : (
