@@ -98,7 +98,8 @@ def extract_research_value(text: str) -> Decimal | None:
         return None
 
 
-def research_value(company_name: str, ticker: str, value_label: str, currency: str, period_type: str = "SNAPSHOT", period_year: int | None = None) -> tuple[Decimal | None, str | None, str | None]:
+def research_value(company_name: str, ticker: str, value_label: str, currency: str, period_type: str = "SNAPSHOT", period_year: int | None = None) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
+    """Returns (value, source_name, source_url, user_prompt, assistant_response)."""
     if period_type == "FY" and period_year:
         period_str = f"Geschäftsjahr {period_year} (FY{period_year})"
     elif period_type == "LTM":
@@ -107,29 +108,29 @@ def research_value(company_name: str, ticker: str, value_label: str, currency: s
         period_str = "trailing twelve months (TTM)"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
+
+    user_prompt = f"Unternehmen: {company_name} ({ticker}, {currency})\nGesuchte Kennzahl: {value_label}\nZeitraum: {period_str}\n\nWichtig: Liefere NUR den Wert für den angegebenen Zeitraum. Wenn du für {period_str} keinen verifizierbaren Wert findest, antworte mit WERT: NICHT_GEFUNDEN."
+
     try:
         client = get_client()
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
             system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            messages=[{
-                "role": "user",
-                "content": f"Unternehmen: {company_name} ({ticker}, {currency})\nGesuchte Kennzahl: {value_label}\nZeitraum: {period_str}\n\nWichtig: Liefere NUR den Wert für den angegebenen Zeitraum. Wenn du für {period_str} keinen verifizierbaren Wert findest, antworte mit WERT: NICHT_GEFUNDEN."
-            }],
+            messages=[{"role": "user", "content": user_prompt}],
         )
         content = response.content[0].text
         value = extract_research_value(content)
         if value is None:
-            return None, None, None
+            return None, None, None, user_prompt, content
         source_match = re.search(r"QUELLE:\s*(.+)", content)
         source = source_match.group(1).strip() if source_match else "Claude-Recherche"
         url_match = re.search(r"QUELLE_URL:\s*(https?://\S+)", content)
         source_url = url_match.group(1).strip() if url_match else None
-        return value, f"Claude-Recherche: {source}", source_url
+        return value, f"Claude-Recherche: {source}", source_url, user_prompt, content
     except Exception as e:
         logger.warning("Claude research failed for %s/%s: %s", ticker, value_label, e)
-        return None, None, None
+        return None, None, None, user_prompt, None
 
 
 def call_claude(messages: list[dict[str, str]], company_context: str) -> tuple[str, Decimal | None]:

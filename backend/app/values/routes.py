@@ -167,7 +167,7 @@ def refresh_company_values(
             vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
             if vd and vd.source_type.value in ("API",) and settings.anthropic_api_key:
                 label = f"{vd.label_en} ({vd.label_de})"
-                research_val, research_source, research_url = research_value(
+                research_val, research_source, research_url, user_prompt, assistant_response = research_value(
                     company.name, ticker, label, company.currency,
                     period_type=payload.period_type, period_year=payload.period_year
                 )
@@ -179,6 +179,26 @@ def refresh_company_values(
                         source_link=research_url,
                         currency=company.currency,
                     )
+                if user_prompt and assistant_response:
+                    from app.llm.models import LlmConversation, LlmMessage
+                    existing_conv = (
+                        db.query(LlmConversation)
+                        .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == key)
+                        .order_by(LlmConversation.created_at.desc())
+                        .first()
+                    )
+                    if not existing_conv:
+                        conv = LlmConversation(company_id=company_id, value_key=key)
+                        db.add(conv)
+                        db.flush()
+                        db.add(LlmMessage(conversation_id=conv.id, role="user", content=user_prompt))
+                        db.add(LlmMessage(
+                            conversation_id=conv.id,
+                            role="assistant",
+                            content=assistant_response,
+                            score_suggestion=research_val,
+                        ))
+                        db.flush()
             if result is None:
                 continue
 
