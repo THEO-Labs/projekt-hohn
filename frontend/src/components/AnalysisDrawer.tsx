@@ -121,6 +121,14 @@ export function AnalysisDrawer({
     if (!text || sending) return;
     setInputText("");
     setSending(true);
+    const optimisticUserMsg: LlmMessage = {
+      id: `temp-${Date.now()}`,
+      role: "user",
+      content: text,
+      score_suggestion: null,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimisticUserMsg]);
     try {
       const res = await sendChatMessage(companyId, valueKey, text);
       setMessages((prev) => [...prev, res.message]);

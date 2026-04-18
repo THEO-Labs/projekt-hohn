@@ -189,12 +189,18 @@ def _process_one_key(
                         .first()
                     )
                     if not existing_conv:
-                        conv = LlmConversation(company_id=company_id, value_key=key)
-                        db.add(conv)
+                        existing_conv = LlmConversation(company_id=company_id, value_key=key)
+                        db.add(existing_conv)
                         db.flush()
-                        db.add(LlmMessage(conversation_id=conv.id, role="user", content=user_prompt))
+                    msg_count = (
+                        db.query(LlmMessage)
+                        .filter(LlmMessage.conversation_id == existing_conv.id)
+                        .count()
+                    )
+                    if msg_count == 0:
+                        db.add(LlmMessage(conversation_id=existing_conv.id, role="user", content=user_prompt))
                         db.add(LlmMessage(
-                            conversation_id=conv.id,
+                            conversation_id=existing_conv.id,
                             role="assistant",
                             content=assistant_response,
                             score_suggestion=research_val,
