@@ -18,8 +18,13 @@ export type ChatHistoryResponse = {
   messages: LlmMessage[];
 };
 
-export const analyzeValue = (companyId: string, valueKey: string) =>
-  api<AnalyzeResponse>(`/api/companies/${companyId}/analyze/${valueKey}`, { method: "POST" });
+export const analyzeValue = (companyId: string, valueKey: string, periodType?: string, periodYear?: number) => {
+  const params = new URLSearchParams();
+  if (periodType) params.set("period_type", periodType);
+  if (periodYear) params.set("period_year", String(periodYear));
+  const qs = params.toString();
+  return api<AnalyzeResponse>(`/api/companies/${companyId}/analyze/${valueKey}${qs ? `?${qs}` : ""}`, { method: "POST" });
+};
 
 export const sendChatMessage = (companyId: string, valueKey: string, message: string) =>
   api<AnalyzeResponse>(`/api/companies/${companyId}/chat/${valueKey}`, {

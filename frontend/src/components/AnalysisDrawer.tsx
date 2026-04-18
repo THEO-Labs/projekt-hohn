@@ -18,6 +18,8 @@ type AnalysisDrawerProps = {
   valueLabel: string;
   currentScore: number | null;
   isQualitative?: boolean;
+  periodType?: string;
+  periodYear?: number;
   onAcceptScore: (score: number) => void;
 };
 
@@ -63,6 +65,8 @@ export function AnalysisDrawer({
   valueLabel,
   currentScore,
   isQualitative = false,
+  periodType,
+  periodYear,
   onAcceptScore,
 }: AnalysisDrawerProps) {
   const [messages, setMessages] = useState<LlmMessage[]>([]);
@@ -102,7 +106,7 @@ export function AnalysisDrawer({
   const handleAnalyze = async () => {
     setAnalyzing(true);
     try {
-      const res = await analyzeValue(companyId, valueKey);
+      const res = await analyzeValue(companyId, valueKey, periodType, periodYear);
       setMessages((prev) => [...prev, res.message]);
       if (res.message.score_suggestion != null) {
         setSliderValue(toNum(res.message.score_suggestion));

@@ -72,6 +72,8 @@ def _get_value_label(db: Session, value_key: str) -> str:
 def analyze_value(
     company_id: UUID,
     value_key: str,
+    period_type: str = "SNAPSHOT",
+    period_year: int | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -97,17 +99,28 @@ def analyze_value(
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
     is_qualitative = vd and vd.source_type.value == "QUALITATIVE"
 
+    if period_type == "FY" and period_year:
+        period_str = f"Geschäftsjahr {period_year} (FY{period_year})"
+    elif period_type == "LTM":
+        period_str = "letzte 12 Monate (LTM)"
+    elif period_type == "TTM":
+        period_str = "trailing twelve months (TTM)"
+    else:
+        period_str = "aktuell"
+
     if is_qualitative:
-        initial_prompt = f"Bewerte den folgenden Aspekt:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begründung."
+        initial_prompt = f"Bewerte den folgenden Aspekt für {company.name}:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begründung."
     else:
         unit_hint = f" (Einheit: {vd.unit})" if vd and vd.unit else ""
         initial_prompt = (
             f"Recherchiere den folgenden Finanzkennwert für {company.name} ({company.ticker}):\n\n"
-            f"Kennzahl: {label}{unit_hint}\n\n"
+            f"Kennzahl: {label}{unit_hint}\n"
+            f"Zeitraum: {period_str}\n\n"
+            f"Wichtig: Liefere NUR den Wert für {period_str}. Wenn du dafür keinen verifizierbaren Wert findest, antworte mit WERT: NICHT_GEFUNDEN.\n\n"
             f"Antworte mit:\n"
             f"1. WERT: [Zahl]\n"
             f"2. QUELLE: [Woher der Wert stammt]\n"
-            f"3. ZEITRAUM: [z.B. FY2024, TTM, aktuell]\n"
+            f"3. ZEITRAUM: [Bestätigung des Zeitraums]\n"
             f"4. Kurze Erklärung (1-2 Sätze)"
         )
 

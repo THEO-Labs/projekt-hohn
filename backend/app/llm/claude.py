@@ -98,7 +98,15 @@ def extract_research_value(text: str) -> Decimal | None:
         return None
 
 
-def research_value(company_name: str, ticker: str, value_label: str, currency: str) -> tuple[Decimal | None, str | None]:
+def research_value(company_name: str, ticker: str, value_label: str, currency: str, period_type: str = "SNAPSHOT", period_year: int | None = None) -> tuple[Decimal | None, str | None, str | None]:
+    if period_type == "FY" and period_year:
+        period_str = f"Geschäftsjahr {period_year} (FY{period_year})"
+    elif period_type == "LTM":
+        period_str = "letzte 12 Monate (LTM)"
+    elif period_type == "TTM":
+        period_str = "trailing twelve months (TTM)"
+    else:
+        period_str = "aktueller/letzter verfügbarer Wert"
     try:
         client = get_client()
         response = client.messages.create(
@@ -107,7 +115,7 @@ def research_value(company_name: str, ticker: str, value_label: str, currency: s
             system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{
                 "role": "user",
-                "content": f"Unternehmen: {company_name} ({ticker}, {currency})\nGesuchte Kennzahl: {value_label}\n\nWas ist der aktuelle/letzte verfügbare Wert?"
+                "content": f"Unternehmen: {company_name} ({ticker}, {currency})\nGesuchte Kennzahl: {value_label}\nZeitraum: {period_str}\n\nWichtig: Liefere NUR den Wert für den angegebenen Zeitraum. Wenn du für {period_str} keinen verifizierbaren Wert findest, antworte mit WERT: NICHT_GEFUNDEN."
             }],
         )
         content = response.content[0].text

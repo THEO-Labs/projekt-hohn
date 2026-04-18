@@ -408,7 +408,8 @@ export function CompanyDashboardPage() {
                       };
 
                       const isEmpty = !cv || (cv.numeric_value == null && cv.text_value == null);
-                      const canChat = isQualitative || isEmpty;
+                      const isFromYahoo = cv?.source_name === "Yahoo Finance";
+                      const canChat = isQualitative || isEmpty || !isFromYahoo;
 
                       return (
                         <td key={`${company.id}-${d.key}`}
@@ -508,6 +509,8 @@ export function CompanyDashboardPage() {
             valueLabel={drawer.valueLabel}
             currentScore={drawer.currentScore}
             isQualitative={drawer.isQualitative}
+            periodType={period.value}
+            periodYear={period.year}
             onAcceptScore={async (score) => {
               await overrideValue(drawer.companyId, drawer.valueKey, score, "Claude Analysis");
               const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
