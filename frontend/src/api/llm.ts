@@ -38,5 +38,10 @@ export const sendChatMessage = (companyId: string, valueKey: string, message: st
   });
 };
 
-export const getChatHistory = (companyId: string, valueKey: string) =>
-  api<ChatHistoryResponse>(`/api/companies/${companyId}/chat/${valueKey}/history`);
+export const getChatHistory = (companyId: string, valueKey: string, periodType?: string, periodYear?: number) => {
+  const params = new URLSearchParams();
+  if (periodType) params.set("period_type", periodType);
+  if (periodYear) params.set("period_year", String(periodYear));
+  const qs = params.toString();
+  return api<ChatHistoryResponse>(`/api/companies/${companyId}/chat/${valueKey}/history${qs ? `?${qs}` : ""}`);
+};

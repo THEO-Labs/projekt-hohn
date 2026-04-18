@@ -30,15 +30,26 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     return company
 
 
-def _get_or_create_conversation(db: Session, company_id: UUID, value_key: str) -> LlmConversation:
-    conv = (
-        db.query(LlmConversation)
-        .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == value_key)
-        .first()
+def _get_or_create_conversation(
+    db: Session, company_id: UUID, value_key: str,
+    period_type: str = "SNAPSHOT", period_year: int | None = None,
+) -> LlmConversation:
+    q = db.query(LlmConversation).filter(
+        LlmConversation.company_id == company_id,
+        LlmConversation.value_key == value_key,
+        LlmConversation.period_type == period_type,
     )
+    if period_year is None:
+        q = q.filter(LlmConversation.period_year.is_(None))
+    else:
+        q = q.filter(LlmConversation.period_year == period_year)
+    conv = q.first()
     if conv:
         return conv
-    conv = LlmConversation(company_id=company_id, value_key=value_key)
+    conv = LlmConversation(
+        company_id=company_id, value_key=value_key,
+        period_type=period_type, period_year=period_year,
+    )
     db.add(conv)
     db.flush()
     return conv
@@ -94,7 +105,7 @@ def analyze_value(
     db: Session = Depends(get_db),
 ) -> dict:
     company = _get_owned_company(db, user, company_id)
-    conv = _get_or_create_conversation(db, company_id, value_key)
+    conv = _get_or_create_conversation(db, company_id, value_key, period_type, period_year)
 
     existing_messages = (
         db.query(LlmMessage)
@@ -183,7 +194,7 @@ def chat_message(
     db: Session = Depends(get_db),
 ) -> dict:
     company = _get_owned_company(db, user, company_id)
-    conv = _get_or_create_conversation(db, company_id, value_key)
+    conv = _get_or_create_conversation(db, company_id, value_key, period_type, period_year)
     context = _build_company_context(db, company, period_type, period_year)
 
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
@@ -230,18 +241,24 @@ def chat_message(
 def get_chat_history(
     company_id: UUID,
     value_key: str,
+    period_type: str = "SNAPSHOT",
+    period_year: int | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     _get_owned_company(db, user, company_id)
-    conv = (
-        db.query(LlmConversation)
-        .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == value_key)
-        .first()
+    q = db.query(LlmConversation).filter(
+        LlmConversation.company_id == company_id,
+        LlmConversation.value_key == value_key,
+        LlmConversation.period_type == period_type,
     )
+    if period_year is None:
+        q = q.filter(LlmConversation.period_year.is_(None))
+    else:
+        q = q.filter(LlmConversation.period_year == period_year)
+    conv = q.first()
     if not conv:
-        conv = _get_or_create_conversation(db, company_id, value_key)
-        db.commit()
+        return {"conversation_id": None, "messages": []}
 
     messages = (
         db.query(LlmMessage)

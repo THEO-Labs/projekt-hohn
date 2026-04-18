@@ -182,14 +182,21 @@ def _process_one_key(
 
             if user_prompt and assistant_response:
                 try:
-                    existing_conv = (
-                        db.query(LlmConversation)
-                        .filter(LlmConversation.company_id == company_id, LlmConversation.value_key == key)
-                        .order_by(LlmConversation.created_at.desc())
-                        .first()
+                    q = db.query(LlmConversation).filter(
+                        LlmConversation.company_id == company_id,
+                        LlmConversation.value_key == key,
+                        LlmConversation.period_type == payload.period_type,
                     )
+                    if payload.period_year is None:
+                        q = q.filter(LlmConversation.period_year.is_(None))
+                    else:
+                        q = q.filter(LlmConversation.period_year == payload.period_year)
+                    existing_conv = q.first()
                     if not existing_conv:
-                        existing_conv = LlmConversation(company_id=company_id, value_key=key)
+                        existing_conv = LlmConversation(
+                            company_id=company_id, value_key=key,
+                            period_type=payload.period_type, period_year=payload.period_year,
+                        )
                         db.add(existing_conv)
                         db.flush()
                     msg_count = (

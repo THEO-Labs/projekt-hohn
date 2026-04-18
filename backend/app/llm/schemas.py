@@ -15,7 +15,7 @@ class LlmMessageOut(BaseModel):
 
 
 class ChatHistoryOut(BaseModel):
-    conversation_id: UUID
+    conversation_id: UUID | None
     messages: list[LlmMessageOut]
 
 

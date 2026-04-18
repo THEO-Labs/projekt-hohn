@@ -92,11 +92,11 @@ export function AnalysisDrawer({
     setHistoryLoaded(false);
     setSliderValue(currentScore ?? 1.0);
     setTextValue("");
-  }, [companyId, valueKey, currentScore]);
+  }, [companyId, valueKey, periodType, periodYear, currentScore]);
 
   useEffect(() => {
     if (!open) return;
-    getChatHistory(companyId, valueKey)
+    getChatHistory(companyId, valueKey, periodType, periodYear)
       .then((res) => {
         setMessages(res.messages);
         const lastSuggestion = [...res.messages]
@@ -110,7 +110,7 @@ export function AnalysisDrawer({
       })
       .catch(() => setMessages([]))
       .finally(() => setHistoryLoaded(true));
-  }, [open, companyId, valueKey, currentScore]);
+  }, [open, companyId, valueKey, periodType, periodYear, currentScore]);
 
   useEffect(() => {
     if (open) {

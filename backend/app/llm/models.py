@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -16,14 +16,15 @@ class LlmConversation(Base):
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
     company_id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     value_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    period_type: Mapped[str] = mapped_column(String(16), nullable=False, default="SNAPSHOT")
+    period_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     messages: Mapped[list["LlmMessage"]] = relationship(back_populates="conversation", order_by="LlmMessage.created_at")
 
-    __table_args__ = (
-        UniqueConstraint("company_id", "value_key", name="uq_llm_conv"),
-    )
+    # Uniqueness across (company, value, period) enforced by partial unique index
+    # in migration (COALESCE handles nullable period_year).
 
 
 class LlmMessage(Base):
