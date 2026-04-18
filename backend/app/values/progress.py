@@ -12,6 +12,7 @@ def start_job(company_id: UUID, total_keys: int) -> None:
             "company_id": str(company_id),
             "total": total_keys,
             "completed": 0,
+            "successful": 0,
             "current_key": None,
             "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -19,12 +20,21 @@ def start_job(company_id: UUID, total_keys: int) -> None:
         }
 
 
-def update_job(company_id: UUID, current_key: str, completed_delta: int = 1) -> None:
+def update_job(company_id: UUID, current_key: str, completed_delta: int = 1, success: bool = False) -> None:
     with _LOCK:
         job = _JOBS.get(company_id)
         if job:
             job["completed"] += completed_delta
             job["current_key"] = current_key
+            if success:
+                job["successful"] = job.get("successful", 0) + 1
+
+
+def mark_success(company_id: UUID) -> None:
+    with _LOCK:
+        job = _JOBS.get(company_id)
+        if job:
+            job["successful"] = job.get("successful", 0) + 1
 
 
 def finish_job(company_id: UUID, status: str = "done") -> None:

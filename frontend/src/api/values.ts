@@ -60,6 +60,7 @@ export type RefreshStatus = {
   company_id: string;
   total: number;
   completed: number;
+  successful?: number;
   current_key: string | null;
   status: "running" | "done" | "failed" | "idle";
   started_at?: string;

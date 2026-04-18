@@ -9,18 +9,19 @@ export function RefreshProgressBar({ companyName, status }: Props) {
   if (status.status !== "running") return null;
 
   const pct = status.total > 0 ? Math.round((status.completed / status.total) * 100) : 0;
+  const successful = status.successful ?? 0;
 
   return (
     <div className="rounded-lg border border-border/60 bg-card px-4 py-3">
       <div className="mb-2 flex items-center justify-between text-sm">
         <span className="font-medium text-foreground">
-          Berechne Werte fur {companyName}
+          Berechne Werte für {companyName}
           {status.current_key && (
             <span className="ml-1 text-muted-foreground">({status.current_key})</span>
           )}
         </span>
         <span className="text-muted-foreground">
-          {status.completed} / {status.total} Werte ({pct}%)
+          {status.completed} / {status.total} verarbeitet · <span className="text-green-600">{successful} befüllt</span> ({pct}%)
         </span>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-muted">

@@ -18,7 +18,7 @@ from app.portfolios.models import Portfolio
 from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
 from app.values.models import CompanyValue, ValueDefinition
-from app.values.progress import cleanup_old_jobs, finish_job, get_job, start_job, update_job
+from app.values.progress import cleanup_old_jobs, finish_job, get_job, mark_success, start_job, update_job
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
 
 catalog_router = APIRouter(prefix="/api/value-definitions", tags=["values"])
@@ -305,6 +305,7 @@ def refresh_company_values(
     try:
         for key in payload.keys:
             update_job(company_id, key)
+            before_count = len(updated)
             try:
                 _process_one_key(
                     db=db,
@@ -315,6 +316,8 @@ def refresh_company_values(
                     payload=payload,
                     updated=updated,
                 )
+                if len(updated) > before_count:
+                    mark_success(company_id)
             except Exception as e:
                 logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
                 db.rollback()
