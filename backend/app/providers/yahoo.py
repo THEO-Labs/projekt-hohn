@@ -139,7 +139,13 @@ class YahooFinanceProvider:
         if value is None:
             return None
         try:
-            return Decimal(str(value))
+            import math
+            if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                return None
+            d = Decimal(str(value))
+            if d.is_nan() or d.is_infinite():
+                return None
+            return d
         except (InvalidOperation, ValueError, TypeError):
             return None
 
