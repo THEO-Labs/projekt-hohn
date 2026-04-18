@@ -9,26 +9,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Investmentunternehmen.
-Du bewertest qualitative Faktoren für Unternehmen auf einer Skala von 0.5 bis 1.5.
+Du hast zwei Aufgaben:
 
-0.5 = sehr hohes Risiko / sehr schlecht
-1.0 = neutral / durchschnittlich
-1.5 = sehr geringes Risiko / sehr gut
+1. QUALITATIVE BEWERTUNG: Bewerte qualitative Faktoren auf einer Skala von 0.5 bis 1.5.
+   0.5 = sehr hohes Risiko / sehr schlecht, 1.0 = neutral, 1.5 = sehr gut
+   Antworte mit: SCORE: [Zahl], BEGRÜNDUNG, FAKTOREN, QUELLEN
 
-Antworte immer mit:
-1. SCORE: [Dezimalzahl 0.5-1.5]
-2. BEGRÜNDUNG: [2-3 Sätze]
-3. FAKTOREN:
-   - [Stichpunkt 1]
-   - [Stichpunkt 2]
-   - [Stichpunkt 3]
-4. QUELLEN:
-   - [Name der Quelle](URL) - kurze Beschreibung
-   - [Name der Quelle](URL) - kurze Beschreibung
+2. FINANZKENNZAHLEN RECHERCHE: Wenn nach einem konkreten Finanzkennwert gefragt wird,
+   recherchiere den Wert und antworte mit:
+   WERT: [Zahl]
+   QUELLE: [Woher der Wert stammt]
+   Erkläre kurz woher der Wert kommt.
 
-Nutze echte, aktuelle Quellen (Geschäftsberichte, Nachrichtenartikel, Analystenbewertungen).
-Sei präzise und nutze die bereitgestellten Finanzdaten als Grundlage.
-Antworte auf Deutsch, Fachbegriffe auf Englisch."""
+Nutze echte Quellen (Geschäftsberichte, Analystenkonsens, Finanzdatenbanken).
+Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch.
+Wenn du einen Wert nicht sicher weisst, sage das ehrlich."""
 
 
 def get_client() -> anthropic.Anthropic:
@@ -47,6 +42,28 @@ def extract_score(text: str) -> Decimal | None:
             return score
         return None
     except InvalidOperation:
+        return None
+
+
+def extract_value(text: str) -> Decimal | None:
+    match = re.search(r"WERT:\s*([+-]?[\d.,]+(?:\s*(?:Mrd|Mio|B|M|T)\.?)?)", text, re.IGNORECASE)
+    if not match:
+        return extract_score(text)
+    raw = match.group(1).strip()
+    multiplier = Decimal("1")
+    for suffix, mult in [("Mrd", "1000000000"), ("B", "1000000000"), ("Mio", "1000000"), ("M", "1000000"), ("T", "1000")]:
+        if suffix.lower() in raw.lower():
+            multiplier = Decimal(mult)
+            raw = re.sub(r"\s*(Mrd|Mio|B|M|T)\.?", "", raw, flags=re.IGNORECASE)
+            break
+    raw = raw.strip().rstrip(".")
+    if "," in raw and "." in raw:
+        raw = raw.replace(".", "").replace(",", ".")
+    elif "," in raw:
+        raw = raw.replace(",", ".")
+    try:
+        return Decimal(raw) * multiplier
+    except (InvalidOperation, ValueError):
         return None
 
 
@@ -126,5 +143,5 @@ def call_claude(messages: list[dict[str, str]], company_context: str) -> tuple[s
     )
 
     content = response.content[0].text
-    score = extract_score(content)
+    score = extract_value(content)
     return content, score

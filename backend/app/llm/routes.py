@@ -94,8 +94,22 @@ def analyze_value(
 
     context = _build_company_context(db, company)
     label = _get_value_label(db, value_key)
+    vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
+    is_qualitative = vd and vd.source_type.value == "QUALITATIVE"
 
-    initial_prompt = f"Bewerte den folgenden Aspekt:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begruendung."
+    if is_qualitative:
+        initial_prompt = f"Bewerte den folgenden Aspekt:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begründung."
+    else:
+        unit_hint = f" (Einheit: {vd.unit})" if vd and vd.unit else ""
+        initial_prompt = (
+            f"Recherchiere den folgenden Finanzkennwert für {company.name} ({company.ticker}):\n\n"
+            f"Kennzahl: {label}{unit_hint}\n\n"
+            f"Antworte mit:\n"
+            f"1. WERT: [Zahl]\n"
+            f"2. QUELLE: [Woher der Wert stammt]\n"
+            f"3. ZEITRAUM: [z.B. FY2024, TTM, aktuell]\n"
+            f"4. Kurze Erklärung (1-2 Sätze)"
+        )
 
     user_msg = LlmMessage(conversation_id=conv.id, role="user", content=initial_prompt)
     db.add(user_msg)

@@ -17,6 +17,7 @@ type AnalysisDrawerProps = {
   valueKey: string;
   valueLabel: string;
   currentScore: number | null;
+  isQualitative?: boolean;
   onAcceptScore: (score: number) => void;
 };
 
@@ -61,6 +62,7 @@ export function AnalysisDrawer({
   valueKey,
   valueLabel,
   currentScore,
+  isQualitative = false,
   onAcceptScore,
 }: AnalysisDrawerProps) {
   const [messages, setMessages] = useState<LlmMessage[]>([]);
@@ -162,23 +164,42 @@ export function AnalysisDrawer({
 
         <div className="shrink-0 border-b border-border px-5 py-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">{t.scoreLabel}</span>
-            <span className="font-mono text-sm font-semibold text-primary">{sliderValue.toFixed(2)}</span>
+            <span className="text-xs font-medium text-muted-foreground">
+              {isQualitative ? t.scoreLabel : "Wert"}
+            </span>
+            {isQualitative ? (
+              <span className="font-mono text-sm font-semibold text-primary">{sliderValue.toFixed(2)}</span>
+            ) : (
+              <input
+                type="text"
+                className="w-32 rounded border border-input bg-background px-2 py-1 text-right font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+                value={sliderValue || ""}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v)) setSliderValue(v);
+                  else if (e.target.value === "") setSliderValue(0);
+                }}
+              />
+            )}
           </div>
-          <input
-            type="range"
-            min={0.5}
-            max={1.5}
-            step={0.05}
-            value={sliderValue}
-            onChange={(e) => setSliderValue(Number(e.target.value))}
-            className="mt-2 w-full accent-primary"
-          />
-          <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>0.50</span>
-            <span>1.00</span>
-            <span>1.50</span>
-          </div>
+          {isQualitative && (
+            <>
+              <input
+                type="range"
+                min={0.5}
+                max={1.5}
+                step={0.05}
+                value={sliderValue}
+                onChange={(e) => setSliderValue(Number(e.target.value))}
+                className="mt-2 w-full accent-primary"
+              />
+              <div className="flex justify-between text-[10px] text-muted-foreground">
+                <span>0.50</span>
+                <span>1.00</span>
+                <span>1.50</span>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-4">

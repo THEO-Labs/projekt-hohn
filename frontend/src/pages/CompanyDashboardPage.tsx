@@ -99,6 +99,7 @@ export function CompanyDashboardPage() {
     companyName: string;
     valueLabel: string;
     currentScore: number | null;
+    isQualitative: boolean;
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -406,24 +407,28 @@ export function CompanyDashboardPage() {
                         }
                       };
 
+                      const isEmpty = !cv || (cv.numeric_value == null && cv.text_value == null);
+                      const canChat = isQualitative || isEmpty;
+
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isQualitative ? "cursor-pointer hover:bg-muted/30" : "cursor-text"} ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
-                          onClick={isQualitative ? () => {
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${canChat ? "cursor-pointer hover:bg-muted/30" : "cursor-text"} ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
+                          onClick={canChat ? () => {
                             setDrawer({
                               companyId: company.id,
                               valueKey: d.key,
                               companyName: company.name,
-                              valueLabel: d.label_de,
+                              valueLabel: d.label_en,
                               currentScore: raw,
+                              isQualitative,
                             });
                             setDrawerOpen(true);
                           } : undefined}
-                          onDoubleClick={!isQualitative ? (e) => {
+                          onDoubleClick={(e) => {
                             e.stopPropagation();
                             const currentVal = cv?.numeric_value != null ? String(cv.numeric_value) : "";
                             setEditCell({ companyId: company.id, key: d.key, value: currentVal });
-                          } : undefined}
+                          }}
                         >
                           {isEditing ? (
                             <input
@@ -502,6 +507,7 @@ export function CompanyDashboardPage() {
             valueKey={drawer.valueKey}
             valueLabel={drawer.valueLabel}
             currentScore={drawer.currentScore}
+            isQualitative={drawer.isQualitative}
             onAcceptScore={async (score) => {
               await overrideValue(drawer.companyId, drawer.valueKey, score, "Claude Analysis");
               const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
