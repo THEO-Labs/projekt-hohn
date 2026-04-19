@@ -14,6 +14,7 @@ import {
   getRefreshStatus,
   refreshValues,
   overrideValue,
+  calculateValues,
   type ValueDefinition,
   type CompanyValue,
   type RefreshStatus,
@@ -488,6 +489,7 @@ export function CompanyDashboardPage() {
                         setSaving(true);
                         try {
                           await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" }, period.value, period.year);
+                          await calculateValues(company.id, period.value, period.year);
                           const updated = await getCompanyValues(company.id, period.value, period.year);
                           setValuesMap((prev) => { const n = new Map(prev); n.set(company.id, updated); return n; });
                         } finally {
@@ -602,11 +604,14 @@ export function CompanyDashboardPage() {
             periodType={period.value}
             periodYear={period.year}
             onAcceptScore={async (score, textValue) => {
+              const savePeriodType = drawer.isQualitative ? "SNAPSHOT" : period.value;
+              const savePeriodYear = drawer.isQualitative ? undefined : period.year;
               if (textValue !== undefined) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Claude Analysis" }, period.value, period.year);
+                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Claude Analysis" }, savePeriodType, savePeriodYear);
               } else if (score != null) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Claude Analysis" }, period.value, period.year);
+                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Claude Analysis" }, savePeriodType, savePeriodYear);
               }
+              await calculateValues(drawer.companyId, period.value, period.year);
               const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
               setValuesMap((prev) => {
                 const next = new Map(prev);

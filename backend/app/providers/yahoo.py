@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 # market_cap      → marketCap             CURRENCY (e.g. 2.9e12)     CURRENCY (as-is)
 # shares_outstanding → sharesOutstanding  COUNT (e.g. 15.5e9)        COUNT (as-is)
 # dividends       → dividendRate          CURRENCY per share          CURRENCY (as-is)
-# dividend_return → dividendYield         DECIMAL (e.g. 0.0438=4.38%) PERCENT (Yahoo gives 0.xx, we store as-is, no *100)
+# dividend_return → dividendYield         INCONSISTENT: sometimes decimal (0.0438) sometimes percent (4.38)
+#                                         Normalized: if raw < 1 → multiply by 100 → PERCENT (0-50)
 # analysts_target → targetMeanPrice       CURRENCY                    CURRENCY (as-is)
 # eps_ttm         → trailingEps           CURRENCY per share          CURRENCY (as-is)
 # eps_forward     → forwardEps            CURRENCY per share          CURRENCY (as-is)
@@ -71,10 +72,7 @@ INFO_KEY_MAP = {
 
 # Keys whose raw Yahoo value is a decimal fraction (e.g. 0.13) that must be
 # multiplied by 100 before storing as a percent (13.0).
-# dividend_return (dividendYield) is NOT here: Yahoo already returns it as a
-# small decimal like 0.0438, but we store it AS-IS since the catalog unit is
-# "%" and the UI formats it with a % suffix. Multiplying would give 4.38, but
-# historically the system stored 0.0438-range values so we leave it as-is.
+# dividend_return is handled separately with normalization logic (see _fetch_from_info).
 # op_margin (operatingMargins) IS here: Yahoo returns 0.13 → we store 13.
 PERCENT_KEYS = {"op_margin"}
 
@@ -420,6 +418,9 @@ class YahooFinanceProvider:
             return None
 
         if key in PERCENT_KEYS:
+            value = value * Decimal("100")
+
+        if key == "dividend_return" and value < Decimal("1"):
             value = value * Decimal("100")
 
         value = self._sanity_check(key, value)

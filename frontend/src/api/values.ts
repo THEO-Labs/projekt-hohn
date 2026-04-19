@@ -70,6 +70,17 @@ export type RefreshStatus = {
 export const getRefreshStatus = (companyId: string) =>
   api<RefreshStatus>(`/api/companies/${companyId}/refresh-status`);
 
+export const calculateValues = (
+  companyId: string,
+  periodType?: string,
+  periodYear?: number,
+) => {
+  const params = new URLSearchParams();
+  if (periodType) params.set("period_type", periodType);
+  if (periodYear != null) params.set("period_year", String(periodYear));
+  return api<CompanyValue[]>(`/api/companies/${companyId}/values/calculate?${params}`, { method: "POST" });
+};
+
 export const overrideValue = (
   companyId: string,
   valueKey: string,

@@ -17,7 +17,7 @@ from app.db import get_db
 from app.portfolios.models import Portfolio
 from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
-from app.values.models import CompanyValue, ValueDefinition
+from app.values.models import CompanyValue, SourceType, ValueDefinition
 from app.values.progress import cleanup_old_jobs, finish_job, get_job, mark_success, start_job, update_job
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
 
@@ -48,6 +48,21 @@ def _run_and_persist_calculations(
     for row in existing_rows:
         if row.numeric_value is not None:
             values_map[row.value_key] = row.numeric_value
+
+    if period_type != "SNAPSHOT":
+        qualitative_defs = db.query(ValueDefinition).filter(
+            ValueDefinition.source_type == SourceType.QUALITATIVE
+        ).all()
+        qual_keys = {vd.key for vd in qualitative_defs}
+        snapshot_qual_rows = db.query(CompanyValue).filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.period_type == "SNAPSHOT",
+            CompanyValue.period_year.is_(None),
+            CompanyValue.value_key.in_(qual_keys),
+        ).all()
+        for row in snapshot_qual_rows:
+            if row.value_key not in values_map and row.numeric_value is not None:
+                values_map[row.value_key] = row.numeric_value
 
     calc_results = calculate_all(values_map)
 

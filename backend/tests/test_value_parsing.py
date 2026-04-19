@@ -287,13 +287,12 @@ class TestYahooSanityCheck:
         val = Decimal("99999999999")
         assert self.provider._sanity_check("unknown_key", val) == val
 
-    def test_dividend_return_fraction_valid(self):
-        # Stored as decimal fraction (0.0438 = 4.38%) for dividend_return
-        val = Decimal("0.0438")
+    def test_dividend_return_percent_valid(self):
+        val = Decimal("4.38")
         assert self.provider._sanity_check("dividend_return", val) == val
 
     def test_dividend_return_over_50pct_rejected(self):
-        assert self.provider._sanity_check("dividend_return", Decimal("0.6")) is None
+        assert self.provider._sanity_check("dividend_return", Decimal("60")) is None
 
     def test_op_margin_after_multiplication(self):
         # After *100 conversion, op_margin should be -100..100
@@ -343,13 +342,21 @@ class TestYahooFetchSanityIntegration:
         assert result is not None
         assert result.value == Decimal("13")
 
-    def test_dividend_yield_stored_as_fraction(self):
-        # Yahoo returns 0.0438 for 4.38% yield; no *100 for dividend_return
+    def test_dividend_yield_decimal_normalized_to_percent(self):
+        # Yahoo returns 0.0438 (decimal form); provider normalizes to 4.38%
         mock_info = {"dividendYield": 0.0438, "currency": "USD"}
         with patch.object(self.provider, "_get_info", return_value=mock_info):
             result = self.provider.fetch("TEST", "dividend_return")
         assert result is not None
-        assert result.value == Decimal("0.0438")
+        assert abs(result.value - Decimal("4.38")) < Decimal("0.001")
+
+    def test_dividend_yield_percent_form_unchanged(self):
+        # Yahoo returns 4.38 (already percent form); provider leaves as-is
+        mock_info = {"dividendYield": 4.38, "currency": "USD"}
+        with patch.object(self.provider, "_get_info", return_value=mock_info):
+            result = self.provider.fetch("TEST", "dividend_return")
+        assert result is not None
+        assert abs(result.value - Decimal("4.38")) < Decimal("0.001")
 
     def test_insane_op_margin_returns_none(self):
         # After *100: 150*100=15000 which is out of [-100,100]
