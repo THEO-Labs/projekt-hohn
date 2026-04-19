@@ -73,9 +73,15 @@ export const getRefreshStatus = (companyId: string) =>
 export const overrideValue = (
   companyId: string,
   valueKey: string,
-  payload: { numeric_value?: number; text_value?: string; source_name: string }
-) =>
-  api<CompanyValue>(`/api/companies/${companyId}/values/${valueKey}/override`, {
+  payload: { numeric_value?: number; text_value?: string; source_name: string },
+  periodType: string = "SNAPSHOT",
+  periodYear?: number,
+) => {
+  const params = new URLSearchParams();
+  params.set("period_type", periodType);
+  if (periodYear) params.set("period_year", String(periodYear));
+  return api<CompanyValue>(`/api/companies/${companyId}/values/${valueKey}/override?${params}`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
+};

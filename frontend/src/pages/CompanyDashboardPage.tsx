@@ -487,7 +487,7 @@ export function CompanyDashboardPage() {
                         if (isNaN(num)) { setEditCell(null); return; }
                         setSaving(true);
                         try {
-                          await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" });
+                          await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" }, period.value, period.year);
                           const updated = await getCompanyValues(company.id, period.value, period.year);
                           setValuesMap((prev) => { const n = new Map(prev); n.set(company.id, updated); return n; });
                         } finally {
@@ -603,9 +603,9 @@ export function CompanyDashboardPage() {
             periodYear={period.year}
             onAcceptScore={async (score, textValue) => {
               if (textValue !== undefined) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Claude Analysis" });
+                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Claude Analysis" }, period.value, period.year);
               } else if (score != null) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Claude Analysis" });
+                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Claude Analysis" }, period.value, period.year);
               }
               const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
               setValuesMap((prev) => {
