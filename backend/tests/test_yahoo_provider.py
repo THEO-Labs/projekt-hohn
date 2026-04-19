@@ -192,14 +192,21 @@ def test_historical_buybacks_absolute_value(provider):
     assert result.value == Decimal("3000000")
 
 
-def test_historical_dividends(provider):
+def test_historical_dividends_returns_none(provider):
     cashflow = _make_cashflow(2023)
     with patch.object(provider, "_get_cashflow", return_value=cashflow), \
          patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
         result = provider.fetch("ALV.DE", "dividends", period_type="FY", period_year=2023)
 
+    assert result is None
+
+
+def test_snapshot_dividends_from_info(provider):
+    with patch.object(provider, "_get_info", return_value={"dividendRate": 4.88, "currency": "EUR"}):
+        result = provider.fetch("ALV.DE", "dividends", period_type="SNAPSHOT")
+
     assert result is not None
-    assert result.value == Decimal("-2000000")
+    assert result.value == Decimal("4.88")
 
 
 def test_historical_op_margin(provider):

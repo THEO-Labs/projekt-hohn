@@ -21,6 +21,7 @@ type AnalysisDrawerProps = {
   valueKey: string;
   valueLabel: string;
   currentScore: number | null;
+  currentText?: string;
   dataType?: DataType;
   periodType?: string;
   periodYear?: number;
@@ -68,6 +69,7 @@ export function AnalysisDrawer({
   valueKey,
   valueLabel,
   currentScore,
+  currentText,
   dataType = "NUMERIC",
   periodType,
   periodYear,
@@ -91,8 +93,8 @@ export function AnalysisDrawer({
     setInputText("");
     setHistoryLoaded(false);
     setSliderValue(currentScore ?? 1.0);
-    setTextValue("");
-  }, [companyId, valueKey, periodType, periodYear, currentScore]);
+    setTextValue(currentText ?? "");
+  }, [companyId, valueKey, periodType, periodYear, currentScore, currentText]);
 
   useEffect(() => {
     if (!open) return;
@@ -319,49 +321,60 @@ export function AnalysisDrawer({
             </div>
           ) : (
             <div className="space-y-3">
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
+              {messages.map((msg) => {
+                if (msg.role === "system") {
+                  return (
+                    <div key={msg.id} className="flex justify-center">
+                      <span className="italic text-[11px] text-muted-foreground/70 px-3 py-1 rounded-full bg-muted/50">
+                        {msg.content}
+                      </span>
+                    </div>
+                  );
+                }
+                return (
                   <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
-                      msg.role === "user"
-                        ? "rounded-br-sm bg-primary text-primary-foreground"
-                        : "rounded-bl-sm bg-muted text-foreground"
-                    }`}
+                    key={msg.id}
+                    className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                   >
-                    {msg.role === "assistant" ? (
-                      <div
-                        className="prose-xs leading-relaxed"
-                        dangerouslySetInnerHTML={{ __html: parseMarkdown(msg.content) }}
-                      />
-                    ) : (
-                      <p className="leading-relaxed">{msg.content}</p>
-                    )}
                     <div
-                      className={`mt-1.5 flex items-center gap-2 ${
-                        msg.role === "user" ? "justify-end" : "justify-start"
+                      className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
+                        msg.role === "user"
+                          ? "rounded-br-sm bg-primary text-primary-foreground"
+                          : "rounded-bl-sm bg-muted text-foreground"
                       }`}
                     >
-                      <span
-                        className={`text-[10px] ${
-                          msg.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
+                      {msg.role === "assistant" ? (
+                        <div
+                          className="prose-xs leading-relaxed"
+                          dangerouslySetInnerHTML={{ __html: parseMarkdown(msg.content) }}
+                        />
+                      ) : (
+                        <p className="leading-relaxed">{msg.content}</p>
+                      )}
+                      <div
+                        className={`mt-1.5 flex items-center gap-2 ${
+                          msg.role === "user" ? "justify-end" : "justify-start"
                         }`}
                       >
-                        {formatTime(msg.created_at)}
-                      </span>
-                      {msg.score_suggestion != null && (
-                        <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
-                          {isFactorType
-                            ? `Score: ${toNum(msg.score_suggestion).toFixed(2)}`
-                            : `Wert: ${formatValue(toNum(msg.score_suggestion), null, null)}`}
+                        <span
+                          className={`text-[10px] ${
+                            msg.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
+                          }`}
+                        >
+                          {formatTime(msg.created_at)}
                         </span>
-                      )}
+                        {msg.score_suggestion != null && (
+                          <span className="rounded bg-primary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
+                            {isFactorType
+                              ? `Score: ${toNum(msg.score_suggestion).toFixed(2)}`
+                              : `Wert: ${formatValue(toNum(msg.score_suggestion), null, null)}`}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {(analyzing || sending) && (
                 <div className="flex justify-start">
                   <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-3">
@@ -406,26 +419,23 @@ export function AnalysisDrawer({
           </div>
         </div>
 
-        <footer className="shrink-0 border-t border-border px-4 py-3">
-          {messages.length > 0 ? (
+        <footer className="shrink-0 border-t border-border px-4 py-3 space-y-2">
+          <button
+            onClick={handleAccept}
+            disabled={accepting}
+            className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+          >
+            {accepting ? "..." : acceptLabel}
+          </button>
+          {historyLoaded && messages.filter((m) => m.role !== "system").length === 0 && !analyzing && (
             <button
-              onClick={handleAccept}
-              disabled={accepting}
-              className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+              onClick={() => handleAnalyze(false)}
+              disabled={analyzing}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
             >
-              {accepting ? "..." : acceptLabel}
+              <Sparkles className="h-4 w-4" />
+              {t.analyzeStart}
             </button>
-          ) : (
-            !historyLoaded || analyzing ? null : (
-              <button
-                onClick={() => handleAnalyze(false)}
-                disabled={analyzing}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-              >
-                <Sparkles className="h-4 w-4" />
-                {t.analyzeStart}
-              </button>
-            )
           )}
         </footer>
       </div>

@@ -101,7 +101,9 @@ export function CompanyDashboardPage() {
     companyName: string;
     valueLabel: string;
     currentScore: number | null;
+    currentText: string | undefined;
     isQualitative: boolean;
+    isAlwaysCurrent: boolean;
     dataType: string;
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -111,8 +113,10 @@ export function CompanyDashboardPage() {
 
   const loadAllValues = useCallback(async () => {
     if (!pid || companies.length === 0) return;
-    const qualitativeKeys = new Set(
-      definitions.filter((d) => d.source_type === "QUALITATIVE").map((d) => d.key)
+    const snapshotOverrideKeys = new Set(
+      definitions
+        .filter((d) => d.source_type === "QUALITATIVE" || d.always_current)
+        .map((d) => d.key)
     );
     const map = new Map<string, CompanyValue[]>();
     await Promise.all(
@@ -120,9 +124,15 @@ export function CompanyDashboardPage() {
         const periodVals = await getCompanyValues(c.id, period.value, period.year);
         if (period.value !== "SNAPSHOT") {
           const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
-          const periodKeys = new Set(periodVals.map((v) => v.value_key));
-          const qualVals = snapshotVals.filter((v) => qualitativeKeys.has(v.value_key) && !periodKeys.has(v.value_key));
-          map.set(c.id, [...periodVals, ...qualVals]);
+          const periodKeyMap = new Map(periodVals.map((v) => [v.value_key, v]));
+          const allKeys = new Set([...periodVals.map((v) => v.value_key), ...snapshotVals.map((v) => v.value_key)]);
+          const merged = [...allKeys].map((key) => {
+            if (snapshotOverrideKeys.has(key)) {
+              return snapshotVals.find((v) => v.value_key === key) ?? periodKeyMap.get(key);
+            }
+            return periodKeyMap.get(key) ?? snapshotVals.find((v) => v.value_key === key);
+          }).filter(Boolean) as CompanyValue[];
+          map.set(c.id, merged);
         } else {
           map.set(c.id, periodVals);
         }
@@ -487,36 +497,38 @@ export function CompanyDashboardPage() {
                         const num = parseFloat(editCell.value);
                         if (isNaN(num)) { setEditCell(null); return; }
                         setSaving(true);
+                        const defForKey = definitions.find((def) => def.key === d.key);
+                        const effPeriodType = (isQualitative || defForKey?.always_current) ? "SNAPSHOT" : period.value;
+                        const effPeriodYear = (isQualitative || defForKey?.always_current) ? undefined : period.year;
                         try {
-                          await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" }, period.value, period.year);
+                          await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" }, effPeriodType, effPeriodYear);
                           await calculateValues(company.id, period.value, period.year);
-                          const updated = await getCompanyValues(company.id, period.value, period.year);
-                          setValuesMap((prev) => { const n = new Map(prev); n.set(company.id, updated); return n; });
+                          await loadAllValues();
                         } finally {
                           setSaving(false);
                           setEditCell(null);
                         }
                       };
 
-                      const isEmpty = !cv || (cv.numeric_value == null && cv.text_value == null);
-                      const isFromYahoo = cv?.source_name === "Yahoo Finance";
-                      const canChat = isQualitative || isEmpty || !isFromYahoo;
+                      const isAlwaysCurrent = d.always_current === true;
 
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${canChat ? "cursor-pointer hover:bg-muted/30" : "cursor-text"} ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
-                          onClick={canChat ? () => {
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
+                          onClick={() => {
                             setDrawer({
                               companyId: company.id,
                               valueKey: d.key,
                               companyName: company.name,
                               valueLabel: d.label_en,
                               currentScore: raw,
+                              currentText: cv?.text_value ?? undefined,
                               isQualitative,
+                              isAlwaysCurrent,
                               dataType: d.data_type,
                             });
                             setDrawerOpen(true);
-                          } : undefined}
+                          }}
                           onDoubleClick={(e) => {
                             e.stopPropagation();
                             const currentVal = cv?.numeric_value != null ? String(cv.numeric_value) : "";
@@ -600,24 +612,20 @@ export function CompanyDashboardPage() {
             valueKey={drawer.valueKey}
             valueLabel={drawer.valueLabel}
             currentScore={drawer.currentScore}
+            currentText={drawer.currentText}
             dataType={drawer.dataType as "NUMERIC" | "TEXT" | "FACTOR"}
             periodType={period.value}
             periodYear={period.year}
             onAcceptScore={async (score, textValue) => {
-              const savePeriodType = drawer.isQualitative ? "SNAPSHOT" : period.value;
-              const savePeriodYear = drawer.isQualitative ? undefined : period.year;
+              const effPeriodType = (drawer.isQualitative || drawer.isAlwaysCurrent) ? "SNAPSHOT" : period.value;
+              const effPeriodYear = (drawer.isQualitative || drawer.isAlwaysCurrent) ? undefined : period.year;
               if (textValue !== undefined) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Claude Analysis" }, savePeriodType, savePeriodYear);
+                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Manuell" }, effPeriodType, effPeriodYear);
               } else if (score != null) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Claude Analysis" }, savePeriodType, savePeriodYear);
+                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Manuell" }, effPeriodType, effPeriodYear);
               }
               await calculateValues(drawer.companyId, period.value, period.year);
-              const updated = await getCompanyValues(drawer.companyId, period.value, period.year);
-              setValuesMap((prev) => {
-                const next = new Map(prev);
-                next.set(drawer.companyId, updated);
-                return next;
-              });
+              await loadAllValues();
               setDrawerOpen(false);
             }}
           />

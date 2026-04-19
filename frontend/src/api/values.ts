@@ -9,6 +9,7 @@ export type ValueDefinition = {
   data_type: string;
   unit: string | null;
   sort_order: number;
+  always_current: boolean;
 };
 
 export type CompanyValue = {

@@ -6,6 +6,7 @@ import yfinance
 from cachetools import TTLCache
 
 from app.providers.base import ProviderResult
+from app.values.always_current import ALWAYS_CURRENT_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -105,22 +106,6 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "sales_growth": (-100, 1000),                       # percent, allow 10x growth
     "op_profit": (-1e15, 1e15),
     "buybacks": (0, 1e15),
-}
-
-ALWAYS_CURRENT_KEYS = {
-    "stock_price",
-    "market_cap",
-    "shares_outstanding",
-    "analysts_target",
-    "next_earnings",
-    "pe_ttm",
-    "pe_forward",
-    "eps_forward",
-    "ev",
-    "ev_ebitda",
-    "peg",
-    "insider_transactions",
-    "dividend_return",
 }
 
 FINANCIALS_ROWS = {

@@ -17,6 +17,7 @@ from app.db import get_db
 from app.portfolios.models import Portfolio
 from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
+from app.values.always_current import ALWAYS_CURRENT_KEYS
 from app.values.models import CompanyValue, SourceType, ValueDefinition
 from app.values.progress import cleanup_old_jobs, finish_job, get_job, mark_success, start_job, update_job
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
@@ -157,6 +158,9 @@ def _process_one_key(
     from app.providers.base import ProviderResult
     from app.llm.models import LlmConversation, LlmMessage
 
+    effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
+    effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
+
     providers = get_providers(key)
     if not providers:
         return
@@ -178,7 +182,7 @@ def _process_one_key(
             try:
                 research_val, research_source, research_url, user_prompt, assistant_response = research_value(
                     company.name, ticker, label, company.currency,
-                    period_type=payload.period_type, period_year=payload.period_year
+                    period_type=effective_period_type, period_year=effective_period_year
                 )
             except Exception as e:
                 logger.warning("Claude research failed for %s/%s: %s", ticker, key, e)
@@ -200,17 +204,17 @@ def _process_one_key(
                     q = db.query(LlmConversation).filter(
                         LlmConversation.company_id == company_id,
                         LlmConversation.value_key == key,
-                        LlmConversation.period_type == payload.period_type,
+                        LlmConversation.period_type == effective_period_type,
                     )
-                    if payload.period_year is None:
+                    if effective_period_year is None:
                         q = q.filter(LlmConversation.period_year.is_(None))
                     else:
-                        q = q.filter(LlmConversation.period_year == payload.period_year)
+                        q = q.filter(LlmConversation.period_year == effective_period_year)
                     existing_conv = q.first()
                     if not existing_conv:
                         existing_conv = LlmConversation(
                             company_id=company_id, value_key=key,
-                            period_type=payload.period_type, period_year=payload.period_year,
+                            period_type=effective_period_type, period_year=effective_period_year,
                         )
                         db.add(existing_conv)
                         db.flush()
@@ -239,11 +243,11 @@ def _process_one_key(
         .filter(
             CompanyValue.company_id == company_id,
             CompanyValue.value_key == key,
-            CompanyValue.period_type == payload.period_type,
+            CompanyValue.period_type == effective_period_type,
         )
     )
-    if payload.period_year is not None:
-        eq = eq.filter(CompanyValue.period_year == payload.period_year)
+    if effective_period_year is not None:
+        eq = eq.filter(CompanyValue.period_year == effective_period_year)
     else:
         eq = eq.filter(CompanyValue.period_year.is_(None))
     existing = eq.one_or_none()
@@ -273,8 +277,8 @@ def _process_one_key(
                 id=uuid4(),
                 company_id=company_id,
                 value_key=key,
-                period_type=payload.period_type,
-                period_year=payload.period_year,
+                period_type=effective_period_type,
+                period_year=effective_period_year,
                 numeric_value=numeric_value,
                 text_value=text_value,
                 currency=result.currency,
@@ -385,18 +389,24 @@ def override_company_value(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> CompanyValue:
+    from app.llm.models import LlmConversation, LlmMessage
+    from app.llm.routes import _get_or_create_conversation
+
     _get_owned_company(db, user, company_id)
+
+    effective_period_type = "SNAPSHOT" if value_key in ALWAYS_CURRENT_KEYS else period_type
+    effective_period_year = None if value_key in ALWAYS_CURRENT_KEYS else period_year
 
     oq = (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company_id,
             CompanyValue.value_key == value_key,
-            CompanyValue.period_type == period_type,
+            CompanyValue.period_type == effective_period_type,
         )
     )
-    if period_year is not None:
-        oq = oq.filter(CompanyValue.period_year == period_year)
+    if effective_period_year is not None:
+        oq = oq.filter(CompanyValue.period_year == effective_period_year)
     else:
         oq = oq.filter(CompanyValue.period_year.is_(None))
     existing = oq.one_or_none()
@@ -411,20 +421,40 @@ def override_company_value(
         existing.manually_overridden = True
         db.commit()
         db.refresh(existing)
-        return existing
+        result_cv = existing
+    else:
+        cv = CompanyValue(
+            id=uuid4(),
+            company_id=company_id,
+            value_key=value_key,
+            period_type=effective_period_type,
+            period_year=effective_period_year,
+            numeric_value=payload.numeric_value,
+            text_value=payload.text_value,
+            source_name=payload.source_name,
+            manually_overridden=True,
+        )
+        db.add(cv)
+        db.commit()
+        db.refresh(cv)
+        result_cv = cv
 
-    cv = CompanyValue(
-        id=uuid4(),
-        company_id=company_id,
-        value_key=value_key,
-        period_type=period_type,
-        period_year=period_year,
-        numeric_value=payload.numeric_value,
-        text_value=payload.text_value,
-        source_name=payload.source_name,
-        manually_overridden=True,
-    )
-    db.add(cv)
-    db.commit()
-    db.refresh(cv)
-    return cv
+    try:
+        conv = _get_or_create_conversation(db, company_id, value_key, effective_period_type, effective_period_year)
+        formatted_value = (
+            str(payload.numeric_value) if payload.numeric_value is not None
+            else (payload.text_value or "—")
+        )
+        source_hint = payload.source_name or "Manuell"
+        system_msg = LlmMessage(
+            conversation_id=conv.id,
+            role="system",
+            content=f"Manuell auf {formatted_value} gesetzt am {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} (Quelle: {source_hint})",
+            source="manual",
+        )
+        db.add(system_msg)
+        db.commit()
+    except Exception as e:
+        logger.warning("Failed to log manual override as system message for %s/%s: %s", company_id, value_key, e)
+
+    return result_cv

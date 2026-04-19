@@ -1,0 +1,16 @@
+ALWAYS_CURRENT_KEYS: frozenset[str] = frozenset({
+    "stock_price",
+    "market_cap",
+    "shares_outstanding",
+    "analysts_target",
+    "next_earnings",
+    "pe_ttm",
+    "pe_forward",
+    "eps_forward",
+    "ev",
+    "ev_ebitda",
+    "peg",
+    "insider_transactions",
+    "dividend_return",
+    "dividends",
+})
