@@ -212,7 +212,11 @@ def chat_message(
         .order_by(LlmMessage.created_at, LlmMessage.id)
         .all()
     )
-    messages = [{"role": m.role, "content": m.content} for m in existing]
+    messages = [
+        {"role": m.role, "content": m.content}
+        for m in existing
+        if m.role in ("user", "assistant")
+    ]
 
     try:
         content, score = call_claude(messages, context, mode=mode)
