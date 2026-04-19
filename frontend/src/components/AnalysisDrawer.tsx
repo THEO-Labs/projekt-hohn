@@ -141,7 +141,7 @@ export function AnalysisDrawer({
     if (!text || sending) return;
     setInputText("");
     setSending(true);
-    const optimisticId = crypto.randomUUID();
+    const optimisticId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const optimisticUserMsg: LlmMessage = {
       id: optimisticId,
       role: "user",
