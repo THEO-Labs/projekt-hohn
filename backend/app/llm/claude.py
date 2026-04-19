@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 import anthropic
 
 from app.config import settings
+from app.llm.rate_limiter import claude_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -243,12 +244,12 @@ def research_value(company_name: str, ticker: str, value_label: str, currency: s
 
     try:
         client = get_client()
-        response = client.messages.create(
+        response = claude_limiter.call(lambda: client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
             system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user_prompt}],
-        )
+        ))
         content = response.content[0].text
         value = extract_research_value(content)
         if value is None:
@@ -290,7 +291,7 @@ def call_claude(messages: list[dict[str, str]], company_context: str, mode: str 
             content = _rewrite_research_message(content)
         user_messages.append({"role": msg["role"], "content": content})
 
-    response = client.messages.create(
+    response = claude_limiter.call(lambda: client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1024,
         system=[
@@ -305,7 +306,7 @@ def call_claude(messages: list[dict[str, str]], company_context: str, mode: str 
             },
         ],
         messages=user_messages,
-    )
+    ))
 
     content = response.content[0].text
     if mode == "qualitative":

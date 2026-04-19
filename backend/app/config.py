@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = True
     allowed_origins: str = ""
     anthropic_api_key: str = ""
+    claude_rate_limit_interval: float = 4.0
 
     @property
     def origins_list(self) -> list[str]:
