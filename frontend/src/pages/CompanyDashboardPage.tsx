@@ -206,6 +206,38 @@ export function CompanyDashboardPage() {
     }
   };
 
+  const handleRefreshCompany = async (c: Company) => {
+    const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
+    setLoadingKeys((prev) => new Set([...prev, ...apiKeys]));
+    setRefreshStatuses((prev) => new Map(prev).set(c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }));
+    try {
+      const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
+      setValuesMap((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(c.id) ?? [];
+        const merged = new Map(existing.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
+        for (const u of updated) merged.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
+        next.set(c.id, Array.from(merged.values()));
+        return next;
+      });
+      const returnedKeys = new Set(updated.map((u) => u.value_key));
+      setNotFound((prev) => {
+        const next = new Set(prev);
+        for (const k of apiKeys) {
+          const nfKey = `${c.id}:${k}`;
+          returnedKeys.has(k) ? next.delete(nfKey) : next.add(nfKey);
+        }
+        return next;
+      });
+    } catch (err) {
+      console.error(`Refresh failed for ${c.name}:`, err);
+    } finally {
+      setLoadingKeys(new Set());
+      await pollStatuses(companies);
+      await loadAllValues();
+    }
+  };
+
   const handleRefreshAll = async () => {
     const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
     setLoadingKeys(new Set(apiKeys));
@@ -412,9 +444,17 @@ export function CompanyDashboardPage() {
               {companies.map((company) => (
                 <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">
                   <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 font-medium text-foreground">
-                    <div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleRefreshCompany(company)}
+                        disabled={refreshStatuses.get(company.id)?.status === "running"}
+                        title="Nur diese Firma berechnen"
+                        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${refreshStatuses.get(company.id)?.status === "running" ? "animate-spin" : ""}`} />
+                      </button>
                       <span>{company.name}</span>
-                      <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">
                         {company.ticker}
                       </span>
                     </div>

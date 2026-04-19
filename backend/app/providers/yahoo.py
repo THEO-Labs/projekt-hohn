@@ -80,31 +80,33 @@ PERCENT_KEYS = {"op_margin"}
 
 # Sanity ranges per key: (min_inclusive, max_inclusive).
 # Values outside these ranges are logged as warnings and dropped (return None).
+# Ranges are CURRENCY-AGNOSTIC and must accommodate KRW/JPY (1 USD ≈ 1300 KRW / 150 JPY),
+# so currency-denominated values need headroom of 10000x vs USD/EUR numbers.
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
-    "stock_price": (0, 1_000_000),
-    "market_cap": (0, 15_000_000_000_000),
-    "shares_outstanding": (0, 1_000_000_000_000),
-    "dividends": (0, 10_000),
-    "dividend_return": (0, 0.5),       # stored as decimal fraction 0..0.5 (=50%)
-    "analysts_target": (0, 1_000_000),
-    "eps_ttm": (-100_000, 100_000),
-    "eps_forward": (-100_000, 100_000),
-    "pe_ttm": (0, 10_000),
-    "pe_forward": (0, 10_000),
-    "ev": (0, 15_000_000_000_000),
-    "ebitda": (-1_000_000_000_000, 5_000_000_000_000),
-    "ev_ebitda": (-1_000, 1_000),
-    "peg": (-100, 1_000),
-    "free_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
-    "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
-    "cash": (0, 5_000_000_000_000),
-    "debt": (0, 10_000_000_000_000),
-    "sales": (0, 5_000_000_000_000),
-    "op_margin": (-100, 100),          # stored as percent after *100
-    "net_profit": (-5_000_000_000_000, 5_000_000_000_000),
-    "sales_growth": (-100, 500),       # stored as percent after *100
-    "op_profit": (-5_000_000_000_000, 5_000_000_000_000),
-    "buybacks": (0, 1_000_000_000_000),
+    "stock_price": (0, 1e10),                           # KRW/JPY stocks can be millions per share
+    "market_cap": (0, 1e16),                            # Apple is ~4T USD, Japan giants in JPY
+    "shares_outstanding": (0, 1e15),
+    "dividends": (0, 1e7),
+    "dividend_return": (0, 50),                         # percent (0-50%), covers both Yahoo formats
+    "analysts_target": (0, 1e10),
+    "eps_ttm": (-1e7, 1e7),                             # JPY EPS can be hundreds of thousands
+    "eps_forward": (-1e7, 1e7),
+    "pe_ttm": (0, 100_000),
+    "pe_forward": (0, 100_000),
+    "ev": (0, 1e16),
+    "ebitda": (-1e15, 1e16),
+    "ev_ebitda": (-10_000, 10_000),
+    "peg": (-1_000, 10_000),
+    "free_cash_flow": (-1e15, 1e15),
+    "op_cash_flow": (-1e15, 1e15),
+    "cash": (0, 1e15),
+    "debt": (0, 1e15),
+    "sales": (0, 1e16),
+    "op_margin": (-100, 100),                           # percent
+    "net_profit": (-1e15, 1e15),
+    "sales_growth": (-100, 1000),                       # percent, allow 10x growth
+    "op_profit": (-1e15, 1e15),
+    "buybacks": (0, 1e15),
 }
 
 ALWAYS_CURRENT_KEYS = {
