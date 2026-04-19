@@ -66,7 +66,7 @@ class CompanyValue(Base):
     period_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     period_type: Mapped[str] = mapped_column(String(16), nullable=False, default="SNAPSHOT")
     is_forecast: Mapped[bool] = mapped_column(Boolean, default=False)
-    numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(25, 6), nullable=True)
     text_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
