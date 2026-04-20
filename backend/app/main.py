@@ -69,6 +69,9 @@ def create_app() -> FastAPI:
     from app.llm.routes import router as llm_router
     app.include_router(llm_router)
 
+    from app.fx.routes import router as fx_router
+    app.include_router(fx_router)
+
     from pathlib import Path
     from fastapi import HTTPException
     from fastapi.responses import FileResponse

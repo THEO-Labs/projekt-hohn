@@ -21,6 +21,7 @@ import {
 } from "@/api/values";
 import { AnalysisDrawer } from "@/components/AnalysisDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
+import { getFxRates } from "@/api/fx";
 
 const CATEGORY_ORDER = [
   "TRANSACTION", "BASIC_COMPANY", "HOHN_BASIC_1", "HOHN_BASIC_2",
@@ -60,8 +61,12 @@ const PERIOD_OPTIONS = [
   { label: "FY 2021", value: "FY", year: 2021 },
 ];
 
-const FX_RATES: Record<string, number> = { USD: 1, EUR: 0.92, GBP: 0.79, CHF: 0.88 };
-const CURRENCIES = ["USD", "EUR", "GBP", "CHF"];
+const FALLBACK_FX_RATES: Record<string, number> = {
+  USD: 1, EUR: 0.92, GBP: 0.79, CHF: 0.88, JPY: 155, KRW: 1390,
+  HKD: 7.8, CNY: 7.2, CAD: 1.35, AUD: 1.52, SEK: 10.5, NOK: 10.5,
+  DKK: 6.9, SGD: 1.34, INR: 83, BRL: 5.0, MXN: 17, ZAR: 18.5,
+};
+const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
   net_debt: "Debt − Cash",
@@ -108,6 +113,7 @@ export function CompanyDashboardPage() {
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [refreshStatuses, setRefreshStatuses] = useState<Map<string, RefreshStatus>>(new Map());
+  const [fxRates, setFxRates] = useState<Record<string, number>>(FALLBACK_FX_RATES);
 
   const period = PERIOD_OPTIONS[periodIdx];
 
@@ -168,6 +174,9 @@ export function CompanyDashboardPage() {
 
   useEffect(() => {
     getValueDefinitions().then(setDefinitions);
+    getFxRates()
+      .then((r) => setFxRates(r.rates))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -318,8 +327,9 @@ export function CompanyDashboardPage() {
     const num = typeof val === "string" ? parseFloat(val) : val;
     if (isNaN(num)) return null;
     if (!from) return num;
-    const f = FX_RATES[from] ?? 1;
-    const t = FX_RATES[displayCurrency] ?? 1;
+    const f = fxRates[from];
+    const t = fxRates[displayCurrency];
+    if (f === undefined || t === undefined) return null;
     return f === t ? num : (num / f) * t;
   };
 
@@ -495,7 +505,9 @@ export function CompanyDashboardPage() {
                       const raw: number | null = rawStr == null ? null : (typeof rawStr === "string" ? parseFloat(rawStr) : rawStr);
                       const rawValid = raw != null && !isNaN(raw) ? raw : null;
                       const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && cv?.currency;
-                      const displayVal = shouldConvert ? convertCurrency(rawValid, cv?.currency ?? null) : rawValid;
+                      const convertedVal = shouldConvert ? convertCurrency(rawValid, cv?.currency ?? null) : rawValid;
+                      const fxUnknown = shouldConvert && rawValid !== null && convertedVal === null;
+                      const displayVal = fxUnknown ? rawValid : convertedVal;
                       const isQualitative = d.source_type === "QUALITATIVE";
 
                       const isHistoricalQual = isQualitative && period.value !== "SNAPSHOT";
@@ -572,13 +584,23 @@ export function CompanyDashboardPage() {
                                 <span className="text-xs text-red-500">{d.source_type === "CALCULATED" ? "Inputs fehlen" : "Nicht gefunden"}</span>
                               </div>
                             ) : (
-                            <span className="font-mono text-sm text-foreground">
-                              {d.data_type === "TEXT"
-                                ? cv?.text_value ?? (cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue)
-                                : d.data_type === "FACTOR"
-                                ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : (cv?.text_value ?? t.noValue)
-                                : formatValue(displayVal, d.unit, displayCurrency)}
-                            </span>
+                            <>
+                              <span className="font-mono text-sm text-foreground">
+                                {d.data_type === "TEXT"
+                                  ? cv?.text_value ?? (cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue)
+                                  : d.data_type === "FACTOR"
+                                  ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : (cv?.text_value ?? t.noValue)
+                                  : formatValue(displayVal, d.unit, displayCurrency)}
+                              </span>
+                              {fxUnknown && (
+                                <span
+                                  title={`Wechselkurs ${cv?.currency} → ${displayCurrency} unbekannt, Wert bleibt in ${cv?.currency}`}
+                                  className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-800"
+                                >
+                                  {cv?.currency}
+                                </span>
+                              )}
+                            </>
                             )}
                             {cv && !isQualitative && (
                               <button
