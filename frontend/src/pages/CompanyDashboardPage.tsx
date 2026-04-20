@@ -153,7 +153,17 @@ export function CompanyDashboardPage() {
         }
       })
     );
-    setRefreshStatuses(new Map(entries));
+    setRefreshStatuses((prev) => {
+      const next = new Map(prev);
+      for (const [id, newStatus] of entries) {
+        const prevStatus = prev.get(id);
+        if (newStatus.status === "idle" && prevStatus?.status === "running") {
+          continue;
+        }
+        next.set(id, newStatus);
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
