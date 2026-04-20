@@ -7,6 +7,7 @@ from cachetools import TTLCache
 
 from app.providers.base import ProviderResult
 from app.values.always_current import ALWAYS_CURRENT_KEYS
+from app.values.currency_keys import CURRENCY_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
 
 FINANCIALS_ROWS = {
     "sales": ["Total Revenue", "Revenue"],
-    "op_profit": ["Operating Income", "Operating Revenue"],
+    "op_profit": ["Operating Income"],
     "net_profit": ["Net Income", "Net Income Common Stockholders"],
     "ebitda": ["EBITDA", "Normalized EBITDA"],
     "eps_ttm": ["Diluted EPS", "Basic EPS"],
@@ -288,7 +289,7 @@ class YahooFinanceProvider:
             return self._fetch_from_balance_sheet(ticker, key, period_year, source_link, currency)
 
         if key in CASHFLOW_ROWS:
-            abs_value = key == "buybacks"
+            abs_value = key in {"buybacks", "dividends"}
             return self._fetch_from_cashflow(ticker, key, period_year, source_link, currency, abs_value=abs_value)
 
         if key == "op_margin":
@@ -312,6 +313,14 @@ class YahooFinanceProvider:
             value = self._get_row_value(df, col, FINANCIALS_ROWS[key])
             if value is None:
                 return None
+            if key == "op_profit":
+                sales = self._get_row_value(df, col, FINANCIALS_ROWS["sales"])
+                if sales is not None and sales != 0 and abs(value / sales) >= Decimal("0.99"):
+                    logger.warning(
+                        "Rejecting op_profit=%s for %s FY%s: within 1%% of sales=%s (likely Revenue row mismapped)",
+                        value, ticker, period_year, sales,
+                    )
+                    return None
             return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
         except Exception:
             return None
@@ -367,6 +376,12 @@ class YahooFinanceProvider:
             op_profit = self._get_row_value(df, col, FINANCIALS_ROWS["op_profit"])
             if sales is None or op_profit is None or sales == 0:
                 return None
+            if abs(op_profit / sales) >= Decimal("0.99"):
+                logger.warning(
+                    "Rejecting op_margin for %s FY%s: op_profit=%s within 1%% of sales=%s",
+                    ticker, period_year, op_profit, sales,
+                )
+                return None
             margin = op_profit / sales * Decimal("100")
             return ProviderResult(value=margin, source_name=self.name, source_link=source_link, currency=None)
         except Exception:
@@ -392,12 +407,15 @@ class YahooFinanceProvider:
 
     def _fetch_from_info(self, ticker: str, key: str, source_link: str) -> ProviderResult | None:
         info = self._get_info(ticker)
+
+        if key == "dividend_return":
+            return self._fetch_dividend_return(info, source_link)
+
         yf_key = INFO_KEY_MAP[key]
         raw = info.get(yf_key)
         if raw is None:
             return None
 
-        currency = info.get("currency")
         value = self._to_decimal(raw)
         if value is None:
             return None
@@ -405,18 +423,46 @@ class YahooFinanceProvider:
         if key in PERCENT_KEYS:
             value = value * Decimal("100")
 
-        if key == "dividend_return" and value < Decimal("1"):
-            value = value * Decimal("100")
-
         value = self._sanity_check(key, value)
         if value is None:
             return None
+
+        currency = info.get("currency") if key in CURRENCY_KEYS else None
 
         return ProviderResult(
             value=value,
             source_name=self.name,
             source_link=source_link,
             currency=currency,
+        )
+
+    def _fetch_dividend_return(self, info: dict, source_link: str) -> ProviderResult | None:
+        rate = self._to_decimal(info.get("dividendRate"))
+        price = self._to_decimal(info.get("currentPrice") or info.get("regularMarketPrice"))
+        if rate is not None and price is not None and price > 0:
+            value = rate / price * Decimal("100")
+            value = self._sanity_check("dividend_return", value)
+            if value is None:
+                return None
+            return ProviderResult(
+                value=value,
+                source_name=self.name,
+                source_link=source_link,
+                currency=None,
+            )
+        raw_yield = self._to_decimal(info.get("dividendYield"))
+        if raw_yield is None:
+            return None
+        if raw_yield < Decimal("1"):
+            raw_yield = raw_yield * Decimal("100")
+        raw_yield = self._sanity_check("dividend_return", raw_yield)
+        if raw_yield is None:
+            return None
+        return ProviderResult(
+            value=raw_yield,
+            source_name=self.name,
+            source_link=source_link,
+            currency=None,
         )
 
     def _fetch_next_earnings(self, ticker: str, source_link: str) -> ProviderResult | None:
@@ -489,6 +535,12 @@ class YahooFinanceProvider:
         value = self._to_decimal(revenue)
         margin_dec = self._to_decimal(margin)
         if value is None or margin_dec is None:
+            return None
+        if abs(margin_dec) >= Decimal("0.99"):
+            logger.warning(
+                "Rejecting op_profit for %s: operatingMargins=%s implies margin >= 99%%",
+                ticker, margin_dec,
+            )
             return None
         return ProviderResult(
             value=value * margin_dec,

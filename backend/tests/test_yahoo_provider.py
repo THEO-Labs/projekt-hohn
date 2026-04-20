@@ -256,3 +256,108 @@ def test_historical_op_profit(provider):
 
     assert result is not None
     assert result.value == Decimal("15000000")
+
+
+def _make_insurance_financials(year=2023):
+    """Insurance companies where Yahoo maps 'Operating Income' to revenue."""
+    dates = [pd.Timestamp(f"{year}-12-31"), pd.Timestamp(f"{year - 1}-12-31")]
+    return pd.DataFrame(
+        {
+            dates[0]: [62_312_000_000, 62_312_000_000, 6_118_000_000],
+            dates[1]: [60_400_000_000, 60_400_000_000, 5_900_000_000],
+        },
+        index=["Total Revenue", "Operating Income", "Net Income"],
+    )
+
+
+def test_op_profit_rejected_when_equals_sales(provider):
+    financials = _make_insurance_financials(2023)
+    with patch.object(provider, "_get_financials", return_value=financials), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("MUV2.DE", "op_profit", period_type="FY", period_year=2023)
+    assert result is None
+
+
+def test_op_margin_rejected_when_equals_100_percent(provider):
+    financials = _make_insurance_financials(2023)
+    with patch.object(provider, "_get_financials", return_value=financials), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("MUV2.DE", "op_margin", period_type="FY", period_year=2023)
+    assert result is None
+
+
+def test_snapshot_op_profit_rejected_when_margin_100_percent(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "totalRevenue": 62_312_000_000, "operatingMargins": 1.0, "currency": "EUR"
+    }):
+        result = provider.fetch("MUV2.DE", "op_profit", period_type="SNAPSHOT")
+    assert result is None
+
+
+def test_cashflow_dividends_abs_applied(provider):
+    cashflow = pd.DataFrame(
+        {pd.Timestamp("2023-12-31"): [-2_613_000_000]},
+        index=["Cash Dividends Paid"],
+    )
+    with patch.object(provider, "_get_cashflow", return_value=cashflow):
+        result = provider._fetch_from_cashflow(
+            "MUV2.DE", "dividends", 2023, "https://x", "EUR", abs_value=True
+        )
+    assert result is not None
+    assert result.value == Decimal("2613000000")
+
+
+def test_dividend_return_computed_from_rate_and_price(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "dividendRate": 3000, "currentPrice": 280000, "currency": "KRW"
+    }):
+        result = provider.fetch("000660.KS", "dividend_return", period_type="SNAPSHOT")
+    assert result is not None
+    assert abs(result.value - Decimal("1.0714")) < Decimal("0.01")
+    assert result.currency is None
+
+
+def test_dividend_return_fallback_to_yield_when_no_rate(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "dividendYield": 0.0438, "currency": "EUR"
+    }):
+        result = provider.fetch("ALV.DE", "dividend_return", period_type="SNAPSHOT")
+    assert result is not None
+    assert abs(result.value - Decimal("4.38")) < Decimal("0.01")
+
+
+def test_pe_ttm_has_no_currency(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "trailingPE": 11.98, "currency": "EUR"
+    }):
+        result = provider.fetch("MUV2.DE", "pe_ttm", period_type="SNAPSHOT")
+    assert result is not None
+    assert result.value == Decimal("11.98")
+    assert result.currency is None
+
+
+def test_shares_outstanding_has_no_currency(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "sharesOutstanding": 127961889, "currency": "EUR"
+    }):
+        result = provider.fetch("MUV2.DE", "shares_outstanding", period_type="SNAPSHOT")
+    assert result is not None
+    assert result.currency is None
+
+
+def test_op_margin_snapshot_has_no_currency(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "operatingMargins": 0.107, "currency": "EUR"
+    }):
+        result = provider.fetch("MUV2.DE", "op_margin", period_type="SNAPSHOT")
+    assert result is not None
+    assert result.currency is None
+
+
+def test_stock_price_keeps_currency(provider):
+    with patch.object(provider, "_get_info", return_value={
+        "currentPrice": 564.80, "currency": "EUR"
+    }):
+        result = provider.fetch("MUV2.DE", "stock_price", period_type="SNAPSHOT")
+    assert result is not None
+    assert result.currency == "EUR"
