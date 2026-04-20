@@ -27,14 +27,20 @@ RESEARCH_SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Inves
 
 Deine Aufgabe: Recherchiere konkrete Finanzkennzahlen für Unternehmen.
 Antworte NUR mit numerischen Werten in diesem Format:
-WERT: [Zahl]
-EINHEIT: [z.B. USD, EUR, %, keine]
+WERT: [volle Zahl in Base-Units, KEINE Mio/Mrd Notation]
+EINHEIT: [NUR Waehrung (USD/EUR/...) oder % oder 'keine' — NIEMALS 'Mio' oder 'Mrd']
 QUELLE: [Woher der Wert stammt]
 QUELLE_URL: [URL zur Quelle]
 ZEITRAUM: [z.B. FY2024, TTM, aktuell]
 KONFIDENZ: [hoch/mittel/niedrig]
 
 Wenn du keinen verifizierbaren Wert findest: WERT: NICHT_GEFUNDEN
+
+ZAHLENFORMAT-Beispiele:
+- 1,45 Mrd USD  →  WERT: 1450000000   EINHEIT: USD
+- 1.450 Mio USD →  WERT: 1450000000   EINHEIT: USD
+- 139,9 Mrd EUR →  WERT: 139900000000 EINHEIT: EUR
+- 4,38 %        →  WERT: 4.38         EINHEIT: %
 
 Nutze echte Quellen (Geschäftsberichte, Analystenkonsens, Finanzdatenbanken).
 Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch."""
@@ -123,6 +129,29 @@ def _parse_numeric_string(raw: str) -> Decimal | None:
         return None
 
 
+_UNIT_SCALE_PATTERNS = [
+    (re.compile(r"\b(billion|mrd|milliarde|mia)\b", re.IGNORECASE), Decimal("1000000000")),
+    (re.compile(r"\b(million|mio|mill)\b", re.IGNORECASE), Decimal("1000000")),
+    (re.compile(r"\b(thousand|tsd|tausend)\b", re.IGNORECASE), Decimal("1000")),
+]
+
+
+def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
+    """When WERT has no scale suffix but EINHEIT contains 'Mio' / 'Mrd' / etc.,
+    multiply the value accordingly. Prevents Claude's 'WERT: 1450 / EINHEIT: USD Mio.'
+    from landing as 1450 instead of 1_450_000_000."""
+    if re.search(r"(mrd|milliarde|mia|mio|million|billion|thousand|tsd|tausend|[bmtk])\b", wert_raw, re.IGNORECASE):
+        return value
+    einheit_match = re.search(r"EINHEIT:\s*([^\n]+)", text, re.IGNORECASE)
+    if not einheit_match:
+        return value
+    einheit = einheit_match.group(1)
+    for pattern, multiplier in _UNIT_SCALE_PATTERNS:
+        if pattern.search(einheit):
+            return value * multiplier
+    return value
+
+
 def extract_value(text: str) -> Decimal | None:
     """Extract WERT: value from Claude chat responses. Falls back to SCORE: if no WERT: found."""
     match = re.search(
@@ -133,7 +162,10 @@ def extract_value(text: str) -> Decimal | None:
     if not match:
         return extract_score(text)
     raw = match.group(1).strip()
-    return _parse_numeric_string(raw)
+    value = _parse_numeric_string(raw)
+    if value is None:
+        return None
+    return _apply_unit_scale(value, text, raw)
 
 
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Dir wird eine Finanzkennzahl für ein Unternehmen gefragt,
@@ -154,10 +186,15 @@ Wichtig:
 - Gib nur verifizierbare Zahlen an. Im Zweifel NICHT_GEFUNDEN.
 - Die QUELLE_URL muss eine echte, existierende URL sein (Investor Relations Seite, Yahoo Finance, Bloomberg, Reuters, etc.)
 - Keine erfundenen URLs.
-- ZAHLENFORMAT: Gib Zahlen immer in vollen Zahlen in Base-Units an, NICHT in Millionen/Milliarden-Notation.
-  Beispiel: WERT: 139947000000 (statt WERT: 139,9 Mrd)
-  Beispiel: WERT: 10775000000 (statt WERT: 10,78 Mrd)
-  Beispiel: WERT: 4.38 (für Prozente, direkt als Prozentwert, nicht als Dezimal)
+- ZAHLENFORMAT: WERT MUSS die volle Zahl in Base-Units sein, ohne 'Mio', 'Mrd',
+  'Million', 'Billion' etc. als Suffix oder in EINHEIT.
+  RICHTIG:   WERT: 1450000000   EINHEIT: USD
+  FALSCH:    WERT: 1450          EINHEIT: USD Mio.
+  RICHTIG:   WERT: 139947000000  EINHEIT: EUR
+  FALSCH:    WERT: 139.9 Mrd     EINHEIT: EUR
+  Prozente direkt als Prozentwert: WERT: 4.38  EINHEIT: %
+- EINHEIT enthaelt NUR die Waehrung / 'keine' / '%', niemals einen
+  Skalierungs-Hinweis wie 'Mio' oder 'Mrd'.
 - Verwende Punkt als Dezimalzeichen (z.B. 27.65), kein Komma."""
 
 
@@ -175,7 +212,10 @@ def extract_research_value(text: str) -> Decimal | None:
     raw = match.group(1).strip()
     if re.match(r"nicht.{0,2}gefunden", raw, re.IGNORECASE):
         return None
-    return _parse_numeric_string(raw)
+    value = _parse_numeric_string(raw)
+    if value is None:
+        return None
+    return _apply_unit_scale(value, text, raw)
 
 
 _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {

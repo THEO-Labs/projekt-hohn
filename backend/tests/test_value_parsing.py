@@ -172,6 +172,26 @@ class TestExtractResearchValue:
     def test_german_decimal(self):
         assert extract_research_value("WERT: 27,65") == Decimal("27.65")
 
+    def test_unit_mio_scales_value(self):
+        text = "WERT: 1450\nEINHEIT: USD Mio.\nQUELLE: SEC 10-K\nZEITRAUM: FY2025"
+        assert extract_research_value(text) == Decimal("1450000000")
+
+    def test_unit_mrd_scales_value(self):
+        text = "WERT: 139,9\nEINHEIT: EUR Mrd\nQUELLE: IR"
+        assert extract_research_value(text) == Decimal("139900000000")
+
+    def test_unit_million_english_scales_value(self):
+        text = "WERT: 1450\nEINHEIT: USD million\nQUELLE: 10-K"
+        assert extract_research_value(text) == Decimal("1450000000")
+
+    def test_unit_suffix_not_doubled_when_wert_already_has_it(self):
+        text = "WERT: 1.45 Mrd\nEINHEIT: USD Mrd\nQUELLE: x"
+        assert extract_research_value(text) == Decimal("1450000000")
+
+    def test_unit_plain_currency_no_scaling(self):
+        text = "WERT: 1450000000\nEINHEIT: USD\nQUELLE: x"
+        assert extract_research_value(text) == Decimal("1450000000")
+
 
 # ---------------------------------------------------------------------------
 # validate_claude_value
