@@ -3,109 +3,68 @@ from decimal import Decimal
 from app.calculations.engine import calculate_all
 
 
-def test_net_debt():
-    result = calculate_all({"debt": Decimal("500"), "cash": Decimal("200")})
-    assert result["net_debt"] == Decimal("300")
+def test_service_now_example():
+    """Reproduces the customer's reference sheet (ServiceNow FY2026):
+    Hohn Return = FCF Yield + NI Growth - SBC/Mcap = 5.58 + 20.55 - 1.90 = 24.23%"""
+    current = {
+        "sales": Decimal("15530"),
+        "fcf_margin_non_gaap": Decimal("36"),
+        "sbc": Decimal("1900"),
+        "market_cap": Decimal("100155"),
+    }
+    previous = {"sales": Decimal("12883")}
+
+    result = calculate_all(current, previous)
+
+    assert abs(result["fcf"] - Decimal("5590.80")) < Decimal("0.01")
+    assert abs(result["fcf_yield"] - Decimal("5.58")) < Decimal("0.01")
+    assert abs(result["ni_growth"] - Decimal("20.55")) < Decimal("0.01")
+    assert abs(result["sbc_yield"] - Decimal("1.90")) < Decimal("0.01")
+    assert abs(result["hohn_return"] - Decimal("24.23")) < Decimal("0.01")
 
 
-def test_eps_growth():
-    result = calculate_all({"eps_ttm": Decimal("5"), "eps_forward": Decimal("6")})
-    assert result["eps_growth"] == Decimal("20")
-
-
-def test_hohn_rendite_basic_1():
-    result = calculate_all({
-        "dividend_return": Decimal("2"),
-        "buybacks": Decimal("-50000000"),
-        "market_cap": Decimal("1000000000"),
-        "eps_ttm": Decimal("5"),
-        "eps_forward": Decimal("6"),
-    })
-    assert result["hohn_rendite_basic_1"] == Decimal("27")
-
-
-def test_fcf_yield():
-    result = calculate_all({
-        "free_cash_flow": Decimal("100000000"),
-        "market_cap": Decimal("1000000000"),
-    })
-    assert result["fcf_yield"] == Decimal("10")
-
-
-def test_upside_potential():
-    result = calculate_all({
-        "stock_price": Decimal("100"),
-        "analysts_target": Decimal("120"),
-    })
-    assert result["upside_potential"] == Decimal("20")
-
-
-def test_missing_values_return_none():
+def test_missing_inputs_return_none():
     result = calculate_all({})
-    assert result["net_debt"] is None
-    assert result["hohn_rendite_basic_1"] is None
-    assert result["hohn_rendite_adjusted"] is None
+    assert result["fcf"] is None
+    assert result["fcf_yield"] is None
+    assert result["ni_growth"] is None
+    assert result["sbc_yield"] is None
+    assert result["hohn_return"] is None
 
 
-def test_net_debt_missing_cash():
-    result = calculate_all({"debt": Decimal("500")})
-    assert result["net_debt"] is None
+def test_ni_growth_requires_previous_sales():
+    result = calculate_all({"sales": Decimal("100")})
+    assert result["ni_growth"] is None
+
+    result2 = calculate_all({"sales": Decimal("100")}, {"sales": Decimal("80")})
+    assert result2["ni_growth"] == Decimal("25")
 
 
-def test_buyback_return():
+def test_fcf_requires_sales_and_margin():
+    assert calculate_all({"sales": Decimal("100")})["fcf"] is None
+    assert calculate_all({"fcf_margin_non_gaap": Decimal("20")})["fcf"] is None
+    assert calculate_all({
+        "sales": Decimal("100"),
+        "fcf_margin_non_gaap": Decimal("20"),
+    })["fcf"] == Decimal("20")
+
+
+def test_hohn_return_requires_all_three_components():
     result = calculate_all({
-        "buybacks": Decimal("100000000"),
-        "market_cap": Decimal("2000000000"),
+        "sales": Decimal("100"),
+        "fcf_margin_non_gaap": Decimal("10"),
+        "market_cap": Decimal("1000"),
     })
-    assert result["buyback_return"] == Decimal("5")
+    assert result["fcf_yield"] == Decimal("1")
+    assert result["hohn_return"] is None
 
 
-def test_hohn_rendite_basic_2():
+def test_division_by_zero_market_cap():
     result = calculate_all({
-        "free_cash_flow": Decimal("100000000"),
-        "market_cap": Decimal("1000000000"),
-        "eps_ttm": Decimal("5"),
-        "eps_forward": Decimal("6"),
+        "sales": Decimal("100"),
+        "fcf_margin_non_gaap": Decimal("10"),
+        "market_cap": Decimal("0"),
+        "sbc": Decimal("5"),
     })
-    assert result["fcf_yield"] == Decimal("10")
-    assert result["eps_growth"] == Decimal("20")
-    assert result["hohn_rendite_basic_2"] == Decimal("30")
-
-
-def test_pe_target_analysts():
-    result = calculate_all({
-        "analysts_target": Decimal("150"),
-        "eps_forward": Decimal("10"),
-    })
-    assert result["pe_target_analysts"] == Decimal("15")
-
-
-def test_risk_factor_average():
-    result = calculate_all({
-        "risk_business_model": Decimal("0.9"),
-        "risk_regulatory": Decimal("0.8"),
-        "risk_macro": Decimal("1.0"),
-    })
-    expected = (Decimal("0.9") + Decimal("0.8") + Decimal("1.0")) / Decimal("3")
-    assert result["risk_factor"] == expected
-
-
-def test_hohn_rendite_adjusted_with_factor():
-    result = calculate_all({
-        "dividend_return": Decimal("3"),
-        "eps_ttm": Decimal("10"),
-        "eps_forward": Decimal("11"),
-        "buybacks": Decimal("0"),
-        "market_cap": Decimal("1000000000"),
-        "mgmt_participation": Decimal("0.9"),
-    })
-    assert result["hohn_rendite_adjusted"] is not None
-    assert result["total_adjustment_factor"] == Decimal("0.9")
-
-
-def test_hohn_rendite_adjusted_without_factor():
-    result = calculate_all({
-        "dividend_return": Decimal("3"),
-    })
-    assert result["hohn_rendite_adjusted"] == Decimal("3")
-    assert result["total_adjustment_factor"] is None
+    assert result["fcf_yield"] is None
+    assert result["sbc_yield"] is None

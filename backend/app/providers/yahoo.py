@@ -1,7 +1,6 @@
 import logging
 from decimal import Decimal, InvalidOperation
 
-import pandas as pd
 import yfinance
 from cachetools import TTLCache
 
@@ -11,135 +10,39 @@ from app.values.currency_keys import CURRENCY_KEYS
 
 logger = logging.getLogger(__name__)
 
-# Yahoo field unit documentation:
-# key             → yf_field              raw_unit (Yahoo returns)    stored_unit (what we store)
-# stock_price     → currentPrice          CURRENCY (e.g. 189.50)     CURRENCY (as-is)
-# market_cap      → marketCap             CURRENCY (e.g. 2.9e12)     CURRENCY (as-is)
-# shares_outstanding → sharesOutstanding  COUNT (e.g. 15.5e9)        COUNT (as-is)
-# dividends       → dividendRate          CURRENCY per share          CURRENCY (as-is)
-# dividend_return → dividendYield         INCONSISTENT: sometimes decimal (0.0438) sometimes percent (4.38)
-#                                         Normalized: if raw < 1 → multiply by 100 → PERCENT (0-50)
-# analysts_target → targetMeanPrice       CURRENCY                    CURRENCY (as-is)
-# eps_ttm         → trailingEps           CURRENCY per share          CURRENCY (as-is)
-# eps_forward     → forwardEps            CURRENCY per share          CURRENCY (as-is)
-# pe_ttm          → trailingPE            RATIO (e.g. 28.5)           RATIO (as-is)
-# pe_forward      → forwardPE             RATIO                       RATIO (as-is)
-# ev              → enterpriseValue       CURRENCY                    CURRENCY (as-is)
-# ebitda          → ebitda                CURRENCY                    CURRENCY (as-is)
-# ev_ebitda       → enterpriseToEbitda    RATIO                       RATIO (as-is)
-# peg             → pegRatio              RATIO                       RATIO (as-is)
-# free_cash_flow  → freeCashflow          CURRENCY                    CURRENCY (as-is)
-# op_cash_flow    → operatingCashflow     CURRENCY                    CURRENCY (as-is)
-# cash            → totalCash             CURRENCY                    CURRENCY (as-is)
-# debt            → totalDebt             CURRENCY                    CURRENCY (as-is)
-# sales           → totalRevenue          CURRENCY                    CURRENCY (as-is)
-# op_margin       → operatingMargins      DECIMAL (e.g. 0.13=13%)     PERCENT (*100 → 13)
-# net_profit      → netIncomeToCommon     CURRENCY                    CURRENCY (as-is)
-#
-# Specialized fetchers:
-# next_earnings   → calendar              DATE string                 TEXT (as-is)
-# buybacks        → cashflow df           CURRENCY (negative=outflow) CURRENCY (abs value)
-# sales_growth    → revenueGrowth         DECIMAL (e.g. -0.056)       PERCENT (*100 → -5.6)
-# op_profit       → totalRevenue * operatingMargins  CURRENCY calc    CURRENCY (as-is)
-# insider_transactions → insider_transactions df      TEXT summary    TEXT (as-is)
-#
-# Historical FY data (financials/balance_sheet/cashflow DataFrames):
-# All values are absolute numbers in company currency. No percent conversion needed.
-# op_margin historical → calculated from financials: op_profit/sales * 100 → PERCENT
-# sales_growth historical → calculated from financials: (curr-prev)/prev * 100 → PERCENT
 
 INFO_KEY_MAP = {
     "stock_price": "currentPrice",
     "market_cap": "marketCap",
     "shares_outstanding": "sharesOutstanding",
-    "dividends": "dividendRate",
-    "dividend_return": "dividendYield",
-    "analysts_target": "targetMeanPrice",
-    "eps_ttm": "trailingEps",
-    "eps_forward": "forwardEps",
-    "pe_ttm": "trailingPE",
-    "pe_forward": "forwardPE",
-    "ev": "enterpriseValue",
-    "ebitda": "ebitda",
-    "ev_ebitda": "enterpriseToEbitda",
-    "peg": "pegRatio",
-    "free_cash_flow": "freeCashflow",
-    "op_cash_flow": "operatingCashflow",
-    "cash": "totalCash",
-    "debt": "totalDebt",
     "sales": "totalRevenue",
-    "op_margin": "operatingMargins",
-    "net_profit": "netIncomeToCommon",
+    "net_income": "netIncomeToCommon",
 }
 
-# Keys whose raw Yahoo value is a decimal fraction (e.g. 0.13) that must be
-# multiplied by 100 before storing as a percent (13.0).
-# dividend_return is handled separately with normalization logic (see _fetch_from_info).
-# op_margin (operatingMargins) IS here: Yahoo returns 0.13 → we store 13.
-PERCENT_KEYS = {"op_margin"}
-
-# Sanity ranges per key: (min_inclusive, max_inclusive).
-# Values outside these ranges are logged as warnings and dropped (return None).
-# Ranges are CURRENCY-AGNOSTIC and must accommodate KRW/JPY (1 USD ≈ 1300 KRW / 150 JPY),
-# so currency-denominated values need headroom of 10000x vs USD/EUR numbers.
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
-    "stock_price": (0, 1e10),                           # KRW/JPY stocks can be millions per share
-    "market_cap": (0, 1e16),                            # Apple is ~4T USD, Japan giants in JPY
+    "stock_price": (0, 1e10),
+    "market_cap": (0, 1e16),
     "shares_outstanding": (0, 1e15),
-    "dividends": (0, 1e7),
-    "dividend_return": (0, 50),                         # percent (0-50%), covers both Yahoo formats
-    "analysts_target": (0, 1e10),
-    "eps_ttm": (-1e7, 1e7),                             # JPY EPS can be hundreds of thousands
-    "eps_forward": (-1e7, 1e7),
-    "pe_ttm": (0, 100_000),
-    "pe_forward": (0, 100_000),
-    "ev": (0, 1e16),
-    "ebitda": (-1e15, 1e16),
-    "ev_ebitda": (-10_000, 10_000),
-    "peg": (-1_000, 10_000),
-    "free_cash_flow": (-1e15, 1e15),
-    "op_cash_flow": (-1e15, 1e15),
-    "cash": (0, 1e15),
-    "debt": (0, 1e15),
     "sales": (0, 1e16),
-    "op_margin": (-100, 100),                           # percent
-    "net_profit": (-1e15, 1e15),
-    "sales_growth": (-100, 1000),                       # percent, allow 10x growth
-    "op_profit": (-1e15, 1e15),
-    "buybacks": (0, 1e15),
+    "net_income": (-1e15, 1e15),
+    "fcf_margin_non_gaap": (-100, 100),
+    "sbc": (0, 1e15),
 }
 
 FINANCIALS_ROWS = {
     "sales": ["Total Revenue", "Revenue"],
-    "op_profit": ["Operating Income"],
-    "net_profit": ["Net Income", "Net Income Common Stockholders"],
-    "ebitda": ["EBITDA", "Normalized EBITDA"],
-    "eps_ttm": ["Diluted EPS", "Basic EPS"],
-}
-
-BALANCE_SHEET_ROWS = {
-    "cash": ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments", "Cash And Short Term Investments"],
-    "debt": ["Total Debt", "Long Term Debt", "Net Debt"],
-}
-
-CASHFLOW_ROWS = {
-    "op_cash_flow": ["Operating Cash Flow", "Cash From Operating Activities"],
-    "free_cash_flow": ["Free Cash Flow"],
-    "buybacks": ["Repurchase Of Capital Stock", "Common Stock Repurchase", "Repurchase Of Common Stock"],
-    "dividends": ["Cash Dividends Paid", "Common Stock Dividend Paid", "Payment Of Dividends"],
+    "net_income": ["Net Income", "Net Income Common Stockholders"],
 }
 
 
 class YahooFinanceProvider:
     name = "Yahoo Finance"
-    supported_keys = set(INFO_KEY_MAP.keys()) | {"next_earnings", "buybacks", "sales_growth", "op_profit", "insider_transactions"}
+    supported_keys = set(INFO_KEY_MAP.keys())
 
     def __init__(self) -> None:
         self._ticker_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._info_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._financials_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
-        self._balance_sheet_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
-        self._cashflow_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._isin_ticker_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
 
     def resolve_ticker_from_isin(self, isin: str) -> str | None:
@@ -153,8 +56,7 @@ class YahooFinanceProvider:
                 timeout=5.0,
             )
             data = r.json()
-            quotes = data.get("quotes", [])
-            for q in quotes:
+            for q in data.get("quotes", []):
                 if q.get("quoteType") == "EQUITY":
                     symbol = q.get("symbol")
                     if symbol:
@@ -181,18 +83,6 @@ class YahooFinanceProvider:
             self._financials_cache[ticker] = t.financials
         return self._financials_cache[ticker]
 
-    def _get_balance_sheet(self, ticker: str):
-        if ticker not in self._balance_sheet_cache:
-            t = self._get_ticker(ticker)
-            self._balance_sheet_cache[ticker] = t.balance_sheet
-        return self._balance_sheet_cache[ticker]
-
-    def _get_cashflow(self, ticker: str):
-        if ticker not in self._cashflow_cache:
-            t = self._get_ticker(ticker)
-            self._cashflow_cache[ticker] = t.cashflow
-        return self._cashflow_cache[ticker]
-
     def _to_decimal(self, value) -> Decimal | None:
         if value is None:
             return None
@@ -215,11 +105,10 @@ class YahooFinanceProvider:
         try:
             fval = float(value)
         except (ValueError, OverflowError):
-            logger.warning("Sanity check: could not convert value for key=%s to float, dropping", key)
             return None
         if fval < lo or fval > hi:
             logger.warning(
-                "Sanity check failed for key=%s: value=%s out of range [%s, %s], dropping",
+                "Sanity check failed for key=%s: value=%s out of range [%s, %s]",
                 key, value, lo, hi,
             )
             return None
@@ -227,82 +116,62 @@ class YahooFinanceProvider:
 
     def _find_year_column(self, df, year: int):
         for col in df.columns:
-            if hasattr(col, "year") and col.year == year:
-                return col
+            try:
+                if hasattr(col, "year") and col.year == year:
+                    return col
+            except Exception:
+                continue
         return None
 
     def _get_row_value(self, df, col, row_names: list[str]) -> Decimal | None:
-        for name in row_names:
-            matching = [idx for idx in df.index if name.lower() in str(idx).lower()]
-            if matching:
-                val = df.loc[matching[0], col]
-                if pd.notna(val):
-                    return self._to_decimal(val)
+        for row in row_names:
+            if row in df.index:
+                raw = df.loc[row, col]
+                value = self._to_decimal(raw)
+                if value is not None:
+                    return value
         return None
 
     def fetch(
         self,
         ticker: str,
         key: str,
-        period_type: str = "SNAPSHOT",
+        period_type: str = "FY",
         period_year: int | None = None,
     ) -> ProviderResult | None:
         source_link = f"https://finance.yahoo.com/quote/{ticker}"
 
-        if period_type == "FY" and period_year is not None and key not in ALWAYS_CURRENT_KEYS:
+        if key in ALWAYS_CURRENT_KEYS:
+            return self._fetch_snapshot_from_info(ticker, key, source_link)
+
+        if period_type == "FY" and period_year is not None and key in FINANCIALS_ROWS:
             return self._fetch_historical(ticker, key, period_year, source_link)
 
-        if key in INFO_KEY_MAP:
-            return self._fetch_from_info(ticker, key, source_link)
-
-        if key == "next_earnings":
-            return self._fetch_next_earnings(ticker, source_link)
-
-        if key == "buybacks":
-            return self._fetch_buybacks(ticker, source_link)
-
-        if key == "op_profit":
-            return self._fetch_op_profit(ticker, source_link)
-
-        if key == "sales_growth":
-            return self._fetch_sales_growth(ticker, source_link)
-
-        if key == "insider_transactions":
-            return self._fetch_insider_transactions(ticker, source_link)
-
         return None
 
-    def _fetch_historical(
-        self,
-        ticker: str,
-        key: str,
-        period_year: int,
-        source_link: str,
-    ) -> ProviderResult | None:
+    def _fetch_snapshot_from_info(self, ticker: str, key: str, source_link: str) -> ProviderResult | None:
         info = self._get_info(ticker)
-        currency = info.get("currency")
+        yf_key = INFO_KEY_MAP.get(key)
+        if yf_key is None:
+            return None
+        raw = info.get(yf_key)
+        if raw is None:
+            return None
+        value = self._to_decimal(raw)
+        if value is None:
+            return None
+        value = self._sanity_check(key, value)
+        if value is None:
+            return None
+        currency = info.get("currency") if key in CURRENCY_KEYS else None
+        return ProviderResult(
+            value=value,
+            source_name=self.name,
+            source_link=source_link,
+            currency=currency,
+        )
 
-        if key in FINANCIALS_ROWS:
-            return self._fetch_from_financials(ticker, key, period_year, source_link, currency)
-
-        if key in BALANCE_SHEET_ROWS:
-            return self._fetch_from_balance_sheet(ticker, key, period_year, source_link, currency)
-
-        if key in CASHFLOW_ROWS:
-            abs_value = key in {"buybacks", "dividends"}
-            return self._fetch_from_cashflow(ticker, key, period_year, source_link, currency, abs_value=abs_value)
-
-        if key == "op_margin":
-            return self._fetch_historical_op_margin(ticker, period_year, source_link)
-
-        if key == "sales_growth":
-            return self._fetch_historical_sales_growth(ticker, period_year, source_link)
-
-        return None
-
-    def _fetch_from_financials(
-        self, ticker: str, key: str, period_year: int, source_link: str, currency: str | None
-    ) -> ProviderResult | None:
+    def _fetch_historical(self, ticker: str, key: str, period_year: int, source_link: str) -> ProviderResult | None:
         try:
             df = self._get_financials(ticker)
             if df is None or df.empty:
@@ -313,316 +182,17 @@ class YahooFinanceProvider:
             value = self._get_row_value(df, col, FINANCIALS_ROWS[key])
             if value is None:
                 return None
-            if key == "op_profit":
-                sales = self._get_row_value(df, col, FINANCIALS_ROWS["sales"])
-                if sales is not None and sales != 0 and abs(value / sales) >= Decimal("0.99"):
-                    logger.warning(
-                        "Rejecting op_profit=%s for %s FY%s: within 1%% of sales=%s (likely Revenue row mismapped)",
-                        value, ticker, period_year, sales,
-                    )
-                    return None
-            return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
-        except Exception:
-            return None
-
-    def _fetch_from_balance_sheet(
-        self, ticker: str, key: str, period_year: int, source_link: str, currency: str | None
-    ) -> ProviderResult | None:
-        try:
-            df = self._get_balance_sheet(ticker)
-            if df is None or df.empty:
-                return None
-            col = self._find_year_column(df, period_year)
-            if col is None:
-                return None
-            value = self._get_row_value(df, col, BALANCE_SHEET_ROWS[key])
+            value = self._sanity_check(key, value)
             if value is None:
                 return None
-            return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
-        except Exception:
-            return None
-
-    def _fetch_from_cashflow(
-        self, ticker: str, key: str, period_year: int, source_link: str, currency: str | None, abs_value: bool = False
-    ) -> ProviderResult | None:
-        row_names = CASHFLOW_ROWS.get(key)
-        if row_names is None:
-            return None
-        try:
-            df = self._get_cashflow(ticker)
-            if df is None or df.empty:
-                return None
-            col = self._find_year_column(df, period_year)
-            if col is None:
-                return None
-            value = self._get_row_value(df, col, row_names)
-            if value is None:
-                return None
-            if abs_value:
-                value = abs(value)
-            return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
-        except Exception:
-            return None
-
-    def _fetch_historical_op_margin(self, ticker: str, period_year: int, source_link: str) -> ProviderResult | None:
-        try:
-            df = self._get_financials(ticker)
-            if df is None or df.empty:
-                return None
-            col = self._find_year_column(df, period_year)
-            if col is None:
-                return None
-            sales = self._get_row_value(df, col, FINANCIALS_ROWS["sales"])
-            op_profit = self._get_row_value(df, col, FINANCIALS_ROWS["op_profit"])
-            if sales is None or op_profit is None or sales == 0:
-                return None
-            if abs(op_profit / sales) >= Decimal("0.99"):
-                logger.warning(
-                    "Rejecting op_margin for %s FY%s: op_profit=%s within 1%% of sales=%s",
-                    ticker, period_year, op_profit, sales,
-                )
-                return None
-            margin = op_profit / sales * Decimal("100")
-            return ProviderResult(value=margin, source_name=self.name, source_link=source_link, currency=None)
-        except Exception:
-            return None
-
-    def _fetch_historical_sales_growth(self, ticker: str, period_year: int, source_link: str) -> ProviderResult | None:
-        try:
-            df = self._get_financials(ticker)
-            if df is None or df.empty:
-                return None
-            col_current = self._find_year_column(df, period_year)
-            col_prev = self._find_year_column(df, period_year - 1)
-            if col_current is None or col_prev is None:
-                return None
-            sales_current = self._get_row_value(df, col_current, FINANCIALS_ROWS["sales"])
-            sales_prev = self._get_row_value(df, col_prev, FINANCIALS_ROWS["sales"])
-            if sales_current is None or sales_prev is None or sales_prev == 0:
-                return None
-            growth = (sales_current - sales_prev) / sales_prev * Decimal("100")
-            return ProviderResult(value=growth, source_name=self.name, source_link=source_link, currency=None)
-        except Exception:
-            return None
-
-    def _fetch_from_info(self, ticker: str, key: str, source_link: str) -> ProviderResult | None:
-        info = self._get_info(ticker)
-
-        if key == "dividend_return":
-            return self._fetch_dividend_return(info, source_link)
-
-        yf_key = INFO_KEY_MAP[key]
-        raw = info.get(yf_key)
-        if raw is None:
-            return None
-
-        value = self._to_decimal(raw)
-        if value is None:
-            return None
-
-        if key in PERCENT_KEYS:
-            value = value * Decimal("100")
-
-        value = self._sanity_check(key, value)
-        if value is None:
-            return None
-
-        currency = info.get("currency") if key in CURRENCY_KEYS else None
-
-        return ProviderResult(
-            value=value,
-            source_name=self.name,
-            source_link=source_link,
-            currency=currency,
-        )
-
-    def _fetch_dividend_return(self, info: dict, source_link: str) -> ProviderResult | None:
-        rate = self._to_decimal(info.get("dividendRate"))
-        price = self._to_decimal(info.get("currentPrice") or info.get("regularMarketPrice"))
-        if rate is not None and price is not None and price > 0:
-            value = rate / price * Decimal("100")
-            value = self._sanity_check("dividend_return", value)
-            if value is None:
-                return None
+            info = self._get_info(ticker)
+            currency = info.get("currency") if key in CURRENCY_KEYS else None
             return ProviderResult(
                 value=value,
                 source_name=self.name,
                 source_link=source_link,
-                currency=None,
+                currency=currency,
             )
-        raw_yield = self._to_decimal(info.get("dividendYield"))
-        if raw_yield is None:
+        except Exception as e:
+            logger.warning("Yahoo historical fetch failed for %s/%s FY%s: %s", ticker, key, period_year, e)
             return None
-        if raw_yield < Decimal("1"):
-            raw_yield = raw_yield * Decimal("100")
-        raw_yield = self._sanity_check("dividend_return", raw_yield)
-        if raw_yield is None:
-            return None
-        return ProviderResult(
-            value=raw_yield,
-            source_name=self.name,
-            source_link=source_link,
-            currency=None,
-        )
-
-    def _fetch_next_earnings(self, ticker: str, source_link: str) -> ProviderResult | None:
-        t = self._get_ticker(ticker)
-        try:
-            calendar = t.calendar
-            if calendar is None:
-                return None
-            if isinstance(calendar, dict):
-                date_val = calendar.get("Earnings Date")
-                if date_val is None:
-                    return None
-                if isinstance(date_val, list) and len(date_val) > 0:
-                    date_val = date_val[0]
-                text = str(date_val)
-            else:
-                text = str(calendar)
-        except Exception:
-            return None
-
-        return ProviderResult(
-            value=text,
-            source_name=self.name,
-            source_link=source_link,
-            currency=None,
-        )
-
-    def _fetch_buybacks(self, ticker: str, source_link: str) -> ProviderResult | None:
-        t = self._get_ticker(ticker)
-        info = self._get_info(ticker)
-        currency = info.get("currency")
-        try:
-            cashflow = t.cashflow
-            if cashflow is None or cashflow.empty:
-                return None
-            matching = [
-                idx for idx in cashflow.index
-                if "repurchase" in str(idx).lower() and "capital" in str(idx).lower()
-            ]
-            if not matching:
-                matching = [
-                    idx for idx in cashflow.index
-                    if "repurchase" in str(idx).lower()
-                ]
-            if not matching:
-                return None
-            row = cashflow.loc[matching[0]]
-            val = row.iloc[0] if hasattr(row, "iloc") else row
-            value = self._to_decimal(val)
-            if value is None:
-                return None
-            value = abs(value)
-        except Exception:
-            return None
-
-        return ProviderResult(
-            value=value,
-            source_name=self.name,
-            source_link=source_link,
-            currency=currency,
-        )
-
-    def _fetch_op_profit(self, ticker: str, source_link: str) -> ProviderResult | None:
-        info = self._get_info(ticker)
-        currency = info.get("currency")
-        revenue = info.get("totalRevenue")
-        margin = info.get("operatingMargins")
-        if revenue is None or margin is None:
-            return None
-        value = self._to_decimal(revenue)
-        margin_dec = self._to_decimal(margin)
-        if value is None or margin_dec is None:
-            return None
-        if abs(margin_dec) >= Decimal("0.99"):
-            logger.warning(
-                "Rejecting op_profit for %s: operatingMargins=%s implies margin >= 99%%",
-                ticker, margin_dec,
-            )
-            return None
-        return ProviderResult(
-            value=value * margin_dec,
-            source_name=self.name,
-            source_link=source_link,
-            currency=currency,
-        )
-
-    def _fetch_sales_growth(self, ticker: str, source_link: str) -> ProviderResult | None:
-        info = self._get_info(ticker)
-        raw = info.get("revenueGrowth")
-        if raw is None:
-            return None
-        value = self._to_decimal(raw)
-        if value is None:
-            return None
-        value = value * Decimal("100")
-        value = self._sanity_check("sales_growth", value)
-        if value is None:
-            return None
-        return ProviderResult(
-            value=value,
-            source_name=self.name,
-            source_link=source_link,
-            currency=None,
-        )
-
-    def _fetch_insider_transactions(self, ticker: str, source_link: str) -> ProviderResult | None:
-        t = self._get_ticker(ticker)
-        try:
-            df = t.insider_transactions
-            if df is None or (hasattr(df, "empty") and df.empty):
-                return None
-            if not hasattr(df, "iterrows"):
-                return None
-
-            text_col = None
-            for col in df.columns:
-                if "text" in str(col).lower() or "transaction" in str(col).lower():
-                    text_col = col
-                    break
-
-            shares_col = None
-            for col in df.columns:
-                if "shares" in str(col).lower():
-                    shares_col = col
-                    break
-
-            buys = 0
-            sales = 0
-            for _, row in df.iterrows():
-                if text_col is not None:
-                    desc = str(row.get(text_col, "")).lower()
-                    if "sale" in desc or "sold" in desc:
-                        sales += 1
-                    elif "purchase" in desc or "buy" in desc or "bought" in desc:
-                        buys += 1
-                elif shares_col is not None:
-                    val = row.get(shares_col)
-                    try:
-                        if float(val) > 0:
-                            buys += 1
-                        elif float(val) < 0:
-                            sales += 1
-                    except (TypeError, ValueError):
-                        pass
-
-            if buys == 0 and sales == 0:
-                summary = f"{len(df)} Transaktionen (letzte 6 Monate)"
-            else:
-                parts = []
-                if buys:
-                    parts.append(f"{buys} Kauf" if buys == 1 else f"{buys} Käufe")
-                if sales:
-                    parts.append(f"{sales} Verkauf" if sales == 1 else f"{sales} Verkäufe")
-                summary = ", ".join(parts) + " (letzte 6 Monate)"
-        except Exception:
-            return None
-
-        return ProviderResult(
-            value=summary,
-            source_name=self.name,
-            source_link=source_link,
-            currency=None,
-        )

@@ -2,106 +2,60 @@ from decimal import Decimal
 
 
 CALCULATED_KEYS = {
-    "net_debt",
-    "eps_growth",
-    "buyback_return",
-    "hohn_rendite_basic_1",
+    "fcf",
     "fcf_yield",
-    "hohn_rendite_basic_2",
-    "pe_target_analysts",
-    "upside_potential",
-    "risk_factor",
-    "mgmt_factor",
-    "total_adjustment_factor",
-    "hohn_rendite_adjusted",
+    "ni_growth",
+    "sbc_yield",
+    "hohn_return",
 }
 
 
-def calculate_all(values: dict[str, Decimal | None]) -> dict[str, Decimal | None]:
+def calculate_all(
+    values: dict[str, Decimal | None],
+    previous_values: dict[str, Decimal | None] | None = None,
+) -> dict[str, Decimal | None]:
+    """Compute derived metrics for a single FY.
+
+    `values` holds inputs for the target year (plus market_cap from Stammdaten).
+    `previous_values` holds inputs for the year before, used only for NI growth
+    (approximated via sales growth under the constant-margin assumption).
+    """
     results: dict[str, Decimal | None] = {}
 
-    def get(key: str) -> Decimal | None:
-        v = values.get(key)
-        if v is not None:
-            return v
-        return results.get(key)
+    sales = values.get("sales")
+    net_income = values.get("net_income")
+    fcf_margin_pct = values.get("fcf_margin_non_gaap")
+    sbc = values.get("sbc")
+    market_cap = values.get("market_cap")
 
-    def safe_div(a: Decimal | None, b: Decimal | None) -> Decimal | None:
-        if a is None or b is None or b == 0:
-            return None
-        return a / b
-
-    def safe_pct(a: Decimal | None, b: Decimal | None) -> Decimal | None:
-        if a is None or b is None or b == 0:
-            return None
-        return ((a - b) / abs(b)) * Decimal("100")
-
-    debt = get("debt")
-    cash = get("cash")
-    results["net_debt"] = (debt - cash) if debt is not None and cash is not None else None
-
-    results["eps_growth"] = safe_pct(get("eps_forward"), get("eps_ttm"))
-
-    buybacks = get("buybacks")
-    mcap = get("market_cap")
-    if buybacks is not None and mcap is not None and mcap > 0:
-        results["buyback_return"] = abs(buybacks) / mcap * Decimal("100")
+    if sales is not None and fcf_margin_pct is not None:
+        results["fcf"] = sales * fcf_margin_pct / Decimal("100")
     else:
-        results["buyback_return"] = None
+        results["fcf"] = None
 
-    div_ret = get("dividend_return")
-    bb_ret = results.get("buyback_return")
-    eps_g = results.get("eps_growth")
-    if div_ret is not None or bb_ret is not None or eps_g is not None:
-        results["hohn_rendite_basic_1"] = (
-            (div_ret or Decimal(0)) + (bb_ret or Decimal(0)) + (eps_g or Decimal(0))
-        )
-    else:
-        results["hohn_rendite_basic_1"] = None
-
-    fcf = get("free_cash_flow")
-    if fcf is not None and mcap is not None and mcap > 0:
-        results["fcf_yield"] = fcf / mcap * Decimal("100")
+    fcf = results["fcf"]
+    if fcf is not None and market_cap is not None and market_cap != 0:
+        results["fcf_yield"] = fcf / market_cap * Decimal("100")
     else:
         results["fcf_yield"] = None
 
-    fcf_y = results.get("fcf_yield")
-    eps_g2 = results.get("eps_growth")
-    if fcf_y is not None or eps_g2 is not None:
-        results["hohn_rendite_basic_2"] = (fcf_y or Decimal(0)) + (eps_g2 or Decimal(0))
+    sales_prev = previous_values.get("sales") if previous_values else None
+    if sales is not None and sales_prev is not None and sales_prev != 0:
+        results["ni_growth"] = (sales / sales_prev - Decimal("1")) * Decimal("100")
     else:
-        results["hohn_rendite_basic_2"] = None
+        results["ni_growth"] = None
 
-    results["pe_target_analysts"] = safe_div(get("analysts_target"), get("eps_forward"))
-
-    results["upside_potential"] = safe_pct(get("analysts_target"), get("stock_price"))
-
-    risk_keys = ["risk_business_model", "risk_regulatory", "risk_macro"]
-    risk_vals = [get(k) for k in risk_keys if get(k) is not None]
-    results["risk_factor"] = (sum(risk_vals) / Decimal(len(risk_vals))) if risk_vals else None
-
-    mgmt_keys = ["mgmt_participation"]
-    mgmt_vals = [get(k) for k in mgmt_keys if get(k) is not None]
-    results["mgmt_factor"] = (sum(mgmt_vals) / Decimal(len(mgmt_vals))) if mgmt_vals else None
-
-    rf = results.get("risk_factor")
-    mf = results.get("mgmt_factor")
-    if rf is not None and mf is not None:
-        results["total_adjustment_factor"] = rf * mf
-    elif rf is not None:
-        results["total_adjustment_factor"] = rf
-    elif mf is not None:
-        results["total_adjustment_factor"] = mf
+    if sbc is not None and market_cap is not None and market_cap != 0:
+        results["sbc_yield"] = sbc / market_cap * Decimal("100")
     else:
-        results["total_adjustment_factor"] = None
+        results["sbc_yield"] = None
 
-    hohn1 = results.get("hohn_rendite_basic_1")
-    taf = results.get("total_adjustment_factor")
-    if hohn1 is not None and taf is not None:
-        results["hohn_rendite_adjusted"] = hohn1 * taf
-    elif hohn1 is not None:
-        results["hohn_rendite_adjusted"] = hohn1
+    fcf_yield = results["fcf_yield"]
+    ni_growth = results["ni_growth"]
+    sbc_yield = results["sbc_yield"]
+    if fcf_yield is not None and ni_growth is not None and sbc_yield is not None:
+        results["hohn_return"] = fcf_yield + ni_growth - sbc_yield
     else:
-        results["hohn_rendite_adjusted"] = None
+        results["hohn_return"] = None
 
     return results

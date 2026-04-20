@@ -49,7 +49,7 @@ class CompanyValueOut(BaseModel):
 
 class RefreshRequest(BaseModel):
     keys: list[str]
-    period_type: str = "SNAPSHOT"
+    period_type: str = "FY"
     period_year: int | None = None
 
 

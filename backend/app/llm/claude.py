@@ -178,33 +178,41 @@ def extract_research_value(text: str) -> Decimal | None:
     return _parse_numeric_string(raw)
 
 
-# Sanity ranges imported from yahoo provider to avoid duplication.
-# Maps value_key → (min, max). Values outside are rejected before storing.
 _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "stock_price": (0, 1_000_000),
     "market_cap": (0, 15_000_000_000_000),
     "shares_outstanding": (0, 1_000_000_000_000),
-    "dividends": (0, 10_000),
-    "dividend_return": (0, 100),       # Claude returns percent directly (e.g. 4.38)
-    "analysts_target": (0, 1_000_000),
-    "eps_ttm": (-100_000, 100_000),
-    "eps_forward": (-100_000, 100_000),
-    "pe_ttm": (0, 10_000),
-    "pe_forward": (0, 10_000),
-    "ev": (0, 15_000_000_000_000),
-    "ebitda": (-1_000_000_000_000, 5_000_000_000_000),
-    "ev_ebitda": (-1_000, 1_000),
-    "peg": (-100, 1_000),
-    "free_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
-    "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
-    "cash": (0, 5_000_000_000_000),
-    "debt": (0, 10_000_000_000_000),
     "sales": (0, 5_000_000_000_000),
-    "op_margin": (-100, 100),
-    "net_profit": (-5_000_000_000_000, 5_000_000_000_000),
-    "sales_growth": (-100, 500),
-    "op_profit": (-5_000_000_000_000, 5_000_000_000_000),
-    "buybacks": (0, 1_000_000_000_000),
+    "net_income": (-5_000_000_000_000, 5_000_000_000_000),
+    "fcf_margin_non_gaap": (-100, 100),
+    "sbc": (0, 500_000_000_000),
+}
+
+
+KEY_RESEARCH_HINTS: dict[str, str] = {
+    "sbc": (
+        "Stock Based Compensation (SBC) ist als expliziter Posten im 10-K "
+        "(bzw. 20-F für Non-US-Filer oder Konzernabschluss) unter "
+        "'Share-based compensation expense' oder im Cash Flow Statement als "
+        "'Stock-based compensation' ausgewiesen. Bitte NUR aus dem "
+        "Jahres-Geschaeftsbericht des gefragten Jahres, nicht aus einem "
+        "Quartalsbericht hochgerechnet."
+    ),
+    "fcf_margin_non_gaap": (
+        "FCF Margin (non-GAAP) wird typischerweise im Earnings-Release oder "
+        "der Guidance des Managements veröffentlicht ('adjusted FCF margin', "
+        "'non-GAAP free cash flow margin'). Bitte nur die vom Unternehmen "
+        "selbst kommunizierte Zahl, kein aus GAAP-Werten berechneter Proxy."
+    ),
+    "sales": (
+        "Jahresumsatz ('Total Revenue' / 'Net Sales') aus dem 10-K / 20-F "
+        "für das exakte Geschaeftsjahr. Keine TTM-Werte. Keine Forward-Guidance, "
+        "wenn ein historisches Jahr gefragt ist."
+    ),
+    "net_income": (
+        "Net Income (Nettogewinn) aus dem 10-K / 20-F für das exakte "
+        "Geschaeftsjahr. Keine TTM-Werte."
+    ),
 }
 
 
@@ -229,18 +237,36 @@ def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
     return value
 
 
-def research_value(company_name: str, ticker: str, value_label: str, currency: str, period_type: str = "SNAPSHOT", period_year: int | None = None) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
+def research_value(
+    company_name: str,
+    ticker: str,
+    value_label: str,
+    currency: str,
+    period_type: str = "FY",
+    period_year: int | None = None,
+    value_key: str | None = None,
+) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
     """Returns (value, source_name, source_url, user_prompt, assistant_response)."""
     if period_type == "FY" and period_year:
-        period_str = f"Geschäftsjahr {period_year} (FY{period_year})"
-    elif period_type == "LTM":
-        period_str = "letzte 12 Monate (LTM)"
-    elif period_type == "TTM":
-        period_str = "trailing twelve months (TTM)"
+        period_str = f"Geschaeftsjahr {period_year} (FY{period_year})"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
 
-    user_prompt = f"Unternehmen: {company_name} ({ticker}, {currency})\nGesuchte Kennzahl: {value_label}\nZeitraum: {period_str}\n\nWichtig: Liefere NUR den Wert für den angegebenen Zeitraum. Wenn du für {period_str} keinen verifizierbaren Wert findest, antworte mit WERT: NICHT_GEFUNDEN."
+    hint = KEY_RESEARCH_HINTS.get(value_key or "", "")
+    hint_block = f"\n\nKontext zur Datenquelle:\n{hint}" if hint else ""
+
+    user_prompt = (
+        f"Unternehmen: {company_name} ({ticker}, {currency})\n"
+        f"Gesuchte Kennzahl: {value_label}\n"
+        f"Zeitraum: {period_str}\n\n"
+        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert fuer {period_str}. "
+        f"Keine TTM/LTM/Trailing-Werte, keine Forward-Guidance wenn ein "
+        f"historisches Jahr gefragt ist, keine Schaetzungen aus "
+        f"Quartalsberichten. Wenn du fuer {period_str} keinen "
+        f"verifizierbaren Wert aus dem Jahresabschluss findest, antworte "
+        f"mit WERT: NICHT_GEFUNDEN."
+        f"{hint_block}"
+    )
 
     try:
         client = get_client()

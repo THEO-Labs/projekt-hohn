@@ -23,42 +23,27 @@ import { AnalysisDrawer } from "@/components/AnalysisDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 import { getFxRates } from "@/api/fx";
 
-const CATEGORY_ORDER = [
-  "TRANSACTION", "BASIC_COMPANY", "HOHN_BASIC_1", "HOHN_BASIC_2",
-  "VALUATION_ADJ", "RISK_ADJ", "MGMT_ADJ", "TOTAL_ADJ",
-];
+const CATEGORY_ORDER = ["STAMMDATEN", "INPUTS", "CALCULATED"];
 
 const CATEGORY_LABELS: Record<string, string> = {
-  TRANSACTION: "Transaction Data",
-  BASIC_COMPANY: "Basic Company Data",
-  HOHN_BASIC_1: "Hohn Return (Basic 1)",
-  HOHN_BASIC_2: "Hohn Return (Basic 2)",
-  VALUATION_ADJ: "Valuation Adjustments",
-  RISK_ADJ: "Risk Adjustments",
-  MGMT_ADJ: "Management Adjustments",
-  TOTAL_ADJ: "Total Adjustments",
+  STAMMDATEN: "Stammdaten (aktuell)",
+  INPUTS: "Inputs (pro FY)",
+  CALCULATED: "Berechnet",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  TRANSACTION: "bg-slate-100 text-slate-700 border-slate-200",
-  BASIC_COMPANY: "bg-blue-50 text-blue-700 border-blue-200",
-  HOHN_BASIC_1: "bg-sky-50 text-sky-700 border-sky-200",
-  HOHN_BASIC_2: "bg-teal-50 text-teal-700 border-teal-200",
-  VALUATION_ADJ: "bg-amber-50 text-amber-700 border-amber-200",
-  RISK_ADJ: "bg-rose-50 text-rose-700 border-rose-200",
-  MGMT_ADJ: "bg-violet-50 text-violet-700 border-violet-200",
-  TOTAL_ADJ: "bg-sky-100 text-sky-800 border-sky-300",
+  STAMMDATEN: "bg-slate-100 text-slate-700 border-slate-200",
+  INPUTS: "bg-blue-50 text-blue-700 border-blue-200",
+  CALCULATED: "bg-sky-100 text-sky-800 border-sky-300",
 };
 
 const PERIOD_OPTIONS = [
-  { label: "Snapshot", value: "SNAPSHOT", year: undefined },
-  { label: "LTM", value: "LTM", year: undefined },
-  { label: "TTM", value: "TTM", year: undefined },
   { label: "FY 2025", value: "FY", year: 2025 },
   { label: "FY 2024", value: "FY", year: 2024 },
   { label: "FY 2023", value: "FY", year: 2023 },
   { label: "FY 2022", value: "FY", year: 2022 },
   { label: "FY 2021", value: "FY", year: 2021 },
+  { label: "FY 2020", value: "FY", year: 2020 },
 ];
 
 const FALLBACK_FX_RATES: Record<string, number> = {
@@ -69,18 +54,11 @@ const FALLBACK_FX_RATES: Record<string, number> = {
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
-  net_debt: "Debt − Cash",
-  eps_growth: "(EPS Forward − EPS TTM) / |EPS TTM| × 100",
-  buyback_return: "|Buybacks| / Market Cap × 100",
-  hohn_rendite_basic_1: "Dividend Return + Buyback Return + EPS Growth",
-  fcf_yield: "Free Cash Flow / Market Cap × 100",
-  hohn_rendite_basic_2: "FCF Yield + EPS Growth",
-  pe_target_analysts: "Analysts Target / EPS Forward",
-  upside_potential: "(Analysts Target − Stock Price) / Stock Price × 100",
-  risk_factor: "Avg(Business Model, Regulatory, Macro)",
-  mgmt_factor: "Avg(Participation)",
-  total_adjustment_factor: "Risk Factor × Mgmt Factor",
-  hohn_rendite_adjusted: "Hohn Return (Basic 1) × Total Adjustment Factor",
+  fcf: "Sales × FCF Margin / 100",
+  fcf_yield: "FCF / Market Cap × 100",
+  ni_growth: "(Sales[Y] / Sales[Y−1] − 1) × 100",
+  sbc_yield: "SBC / Market Cap × 100",
+  hohn_return: "FCF Yield + NI Growth − SBC / Market Cap",
 };
 
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;

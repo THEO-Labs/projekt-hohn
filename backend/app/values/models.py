@@ -12,14 +12,9 @@ from app.db import Base
 
 
 class ValueCategory(str, enum.Enum):
-    TRANSACTION = "TRANSACTION"
-    BASIC_COMPANY = "BASIC_COMPANY"
-    HOHN_BASIC_1 = "HOHN_BASIC_1"
-    HOHN_BASIC_2 = "HOHN_BASIC_2"
-    VALUATION_ADJ = "VALUATION_ADJ"
-    RISK_ADJ = "RISK_ADJ"
-    MGMT_ADJ = "MGMT_ADJ"
-    TOTAL_ADJ = "TOTAL_ADJ"
+    STAMMDATEN = "STAMMDATEN"
+    INPUTS = "INPUTS"
+    CALCULATED = "CALCULATED"
 
 
 class SourceType(str, enum.Enum):

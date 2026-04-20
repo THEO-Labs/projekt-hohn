@@ -51,25 +51,36 @@ def _run_and_persist_calculations(
         if row.numeric_value is not None:
             values_map[row.value_key] = row.numeric_value
 
-    if period_type != "SNAPSHOT":
-        qualitative_defs = db.query(ValueDefinition).filter(
-            ValueDefinition.source_type == SourceType.QUALITATIVE
-        ).all()
-        qual_keys = {vd.key for vd in qualitative_defs}
-        snapshot_qual_rows = db.query(CompanyValue).filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.period_type == "SNAPSHOT",
-            CompanyValue.period_year.is_(None),
-            CompanyValue.value_key.in_(qual_keys),
-        ).all()
-        for row in snapshot_qual_rows:
-            if row.value_key not in values_map and row.numeric_value is not None:
-                values_map[row.value_key] = row.numeric_value
+    snapshot_rows = db.query(CompanyValue).filter(
+        CompanyValue.company_id == company_id,
+        CompanyValue.period_type == "SNAPSHOT",
+        CompanyValue.period_year.is_(None),
+        CompanyValue.value_key.in_(ALWAYS_CURRENT_KEYS),
+    ).all()
+    for row in snapshot_rows:
+        if row.value_key not in values_map and row.numeric_value is not None:
+            values_map[row.value_key] = row.numeric_value
 
-    calc_results = calculate_all(values_map)
+    previous_values: dict[str, Decimal | None] | None = None
+    if period_type == "FY" and period_year is not None:
+        prev_rows = db.query(CompanyValue).filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == period_year - 1,
+        ).all()
+        previous_values = {
+            row.value_key: row.numeric_value
+            for row in prev_rows
+            if row.numeric_value is not None
+        }
+
+    calc_results = calculate_all(values_map, previous_values)
 
     by_key = {row.value_key: row for row in existing_rows}
     updated: list[CompanyValue] = []
+
+    company = db.query(Company).filter(Company.id == company_id).one_or_none()
+    company_currency = company.currency if company else None
 
     for key, value in calc_results.items():
         if key not in CALCULATED_KEYS:
@@ -83,11 +94,15 @@ def _run_and_persist_calculations(
         if value is None and existing is None:
             continue
 
+        calc_currency = company_currency if key in CURRENCY_KEYS else None
+
         if existing:
             existing.numeric_value = value
             existing.source_name = "Calculated"
             existing.source_link = None
             existing.fetched_at = datetime.now(timezone.utc)
+            if calc_currency and not existing.currency:
+                existing.currency = calc_currency
             updated.append(existing)
         else:
             cv = CompanyValue(
@@ -100,6 +115,7 @@ def _run_and_persist_calculations(
                 source_name="Calculated",
                 source_link=None,
                 fetched_at=datetime.now(timezone.utc),
+                currency=calc_currency,
             )
             db.add(cv)
             updated.append(cv)
@@ -163,9 +179,6 @@ def _process_one_key(
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
 
     providers = get_providers(key)
-    if not providers:
-        return
-
     result = None
     for provider in providers:
         try:
@@ -183,7 +196,8 @@ def _process_one_key(
             try:
                 research_val, research_source, research_url, user_prompt, assistant_response = research_value(
                     company.name, ticker, label, company.currency,
-                    period_type=effective_period_type, period_year=effective_period_year
+                    period_type=effective_period_type, period_year=effective_period_year,
+                    value_key=key,
                 )
             except Exception as e:
                 logger.warning("Claude research failed for %s/%s: %s", ticker, key, e)

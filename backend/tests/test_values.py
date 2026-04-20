@@ -67,7 +67,9 @@ def test_get_value_definitions_returns_catalog(client, db):
     assert len(data) == len(SEED_VALUES)
     keys = {item["key"] for item in data}
     assert "stock_price" in keys
-    assert "hohn_rendite_adjusted" in keys
+    assert "hohn_return" in keys
+    assert "fcf_margin_non_gaap" in keys
+    assert "sbc" in keys
 
 
 def test_get_value_definitions_ordered(client, db):
@@ -127,10 +129,11 @@ def test_refresh_skips_keys_without_provider(client, db):
 
         response = client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["hohn_rendite_adjusted"], "period_type": "SNAPSHOT"},
+            json={"keys": ["fcf"], "period_type": "FY", "period_year": 2024},
         )
 
     assert response.status_code == 200
+    # fcf is CALCULATED, so no provider fetch → no direct row, but calc runs with no inputs.
     assert response.json() == []
 
 
@@ -189,14 +192,14 @@ def test_get_company_values_after_refresh(client, db):
         mock_get_providers.return_value = [mock_provider]
         client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["eps_ttm"], "period_type": "SNAPSHOT"},
+            json={"keys": ["sales"], "period_type": "FY", "period_year": 2024},
         )
 
-    response = client.get(f"/api/companies/{cid}/values?period_type=SNAPSHOT")
+    response = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
-    assert data[0]["value_key"] == "eps_ttm"
+    assert data[0]["value_key"] == "sales"
 
 
 def test_manual_override(client, db):
@@ -204,13 +207,13 @@ def test_manual_override(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     response = client.post(
-        f"/api/companies/{cid}/values/risk_factor/override",
-        json={"numeric_value": "0.85", "source_name": "Manual"},
+        f"/api/companies/{cid}/values/fcf_margin_non_gaap/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "36", "source_name": "Manual"},
     )
     assert response.status_code == 200
     data = response.json()
     assert data["manually_overridden"] is True
-    assert data["numeric_value"] == "0.850000"
+    assert data["numeric_value"] == "36.000000"
     assert data["source_name"] == "Manual"
 
 
@@ -219,7 +222,7 @@ def test_manual_override_zero_persists(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     response = client.post(
-        f"/api/companies/{cid}/values/buybacks/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/sbc/override?period_type=FY&period_year=2024",
         json={"numeric_value": 0, "source_name": "Manuell"},
     )
     assert response.status_code == 200
@@ -228,7 +231,7 @@ def test_manual_override_zero_persists(client, db):
     assert Decimal(data["numeric_value"]) == Decimal("0")
 
     overwrite = client.post(
-        f"/api/companies/{cid}/values/buybacks/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/sbc/override?period_type=FY&period_year=2024",
         json={"numeric_value": 0, "source_name": "Manuell"},
     )
     assert overwrite.status_code == 200
@@ -236,7 +239,7 @@ def test_manual_override_zero_persists(client, db):
 
     fetched = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert fetched.status_code == 200
-    rows = [r for r in fetched.json() if r["value_key"] == "buybacks"]
+    rows = [r for r in fetched.json() if r["value_key"] == "sbc"]
     assert len(rows) == 1
     assert Decimal(rows[0]["numeric_value"]) == Decimal("0")
 
@@ -298,14 +301,14 @@ def test_refresh_one_failing_provider_doesnt_crash_others(client, db):
 
         response = client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["stock_price", "market_cap", "eps_ttm"], "period_type": "SNAPSHOT"},
+            json={"keys": ["stock_price", "market_cap", "shares_outstanding"], "period_type": "SNAPSHOT"},
         )
 
     assert response.status_code == 200
     data = response.json()
     returned_keys = {item["value_key"] for item in data}
     assert "stock_price" in returned_keys
-    assert "eps_ttm" in returned_keys
+    assert "shares_outstanding" in returned_keys
     assert "market_cap" not in returned_keys
 
 

@@ -196,36 +196,30 @@ class TestValidateClaudeValue:
         val = Decimal("3000000000000")
         assert validate_claude_value("market_cap", val) == val
 
-    def test_valid_op_margin(self):
-        assert validate_claude_value("op_margin", Decimal("25.5")) == Decimal("25.5")
+    def test_valid_fcf_margin(self):
+        assert validate_claude_value("fcf_margin_non_gaap", Decimal("36")) == Decimal("36")
 
-    def test_op_margin_over_100_rejected(self):
-        assert validate_claude_value("op_margin", Decimal("150")) is None
+    def test_fcf_margin_over_100_rejected(self):
+        assert validate_claude_value("fcf_margin_non_gaap", Decimal("150")) is None
 
-    def test_op_margin_under_neg100_rejected(self):
-        assert validate_claude_value("op_margin", Decimal("-150")) is None
+    def test_fcf_margin_negative_allowed(self):
+        assert validate_claude_value("fcf_margin_non_gaap", Decimal("-20")) == Decimal("-20")
 
-    def test_valid_dividend_return(self):
-        assert validate_claude_value("dividend_return", Decimal("4.38")) == Decimal("4.38")
+    def test_valid_sbc(self):
+        assert validate_claude_value("sbc", Decimal("1_900_000_000")) == Decimal("1900000000")
 
-    def test_unrealistic_dividend_return_rejected(self):
-        assert validate_claude_value("dividend_return", Decimal("200")) is None
+    def test_sbc_absurd_rejected(self):
+        assert validate_claude_value("sbc", Decimal("1e20")) is None
 
     def test_unknown_key_passes_through(self):
         val = Decimal("999999999999999")
         assert validate_claude_value("some_unknown_key", val) == val
 
-    def test_valid_pe_ttm(self):
-        assert validate_claude_value("pe_ttm", Decimal("28.5")) == Decimal("28.5")
+    def test_valid_sales(self):
+        assert validate_claude_value("sales", Decimal("100000000000")) == Decimal("100000000000")
 
-    def test_negative_pe_rejected(self):
-        assert validate_claude_value("pe_ttm", Decimal("-5")) is None
-
-    def test_sales_growth_extreme_but_valid(self):
-        assert validate_claude_value("sales_growth", Decimal("450")) == Decimal("450")
-
-    def test_sales_growth_over_500_rejected(self):
-        assert validate_claude_value("sales_growth", Decimal("600")) is None
+    def test_negative_sales_rejected(self):
+        assert validate_claude_value("sales", Decimal("-1")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -287,23 +281,11 @@ class TestYahooSanityCheck:
         val = Decimal("99999999999")
         assert self.provider._sanity_check("unknown_key", val) == val
 
-    def test_dividend_return_percent_valid(self):
-        val = Decimal("4.38")
-        assert self.provider._sanity_check("dividend_return", val) == val
+    def test_fcf_margin_valid(self):
+        assert self.provider._sanity_check("fcf_margin_non_gaap", Decimal("36")) == Decimal("36")
 
-    def test_dividend_return_over_50pct_rejected(self):
-        assert self.provider._sanity_check("dividend_return", Decimal("60")) is None
-
-    def test_op_margin_after_multiplication(self):
-        # After *100 conversion, op_margin should be -100..100
-        assert self.provider._sanity_check("op_margin", Decimal("15")) == Decimal("15")
-        assert self.provider._sanity_check("op_margin", Decimal("150")) is None
-
-    def test_sales_growth_valid(self):
-        assert self.provider._sanity_check("sales_growth", Decimal("-5.6")) == Decimal("-5.6")
-
-    def test_sales_growth_below_neg100_rejected(self):
-        assert self.provider._sanity_check("sales_growth", Decimal("-110")) is None
+    def test_fcf_margin_out_of_range_rejected(self):
+        assert self.provider._sanity_check("fcf_margin_non_gaap", Decimal("150")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -327,50 +309,12 @@ class TestYahooFetchSanityIntegration:
         assert result is not None
         assert result.value == Decimal("189.50")
 
-    def test_nan_dividend_yield_returns_none(self):
-        import math
-        mock_info = {"dividendYield": float("nan"), "currency": "USD"}
+    def test_sales_snapshot_request_returns_none(self):
+        """Sales is only fetched per-FY now; SNAPSHOT request yields None."""
+        mock_info = {"totalRevenue": 100_000_000, "currency": "USD"}
         with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "dividend_return")
+            result = self.provider.fetch("TEST", "sales", period_type="SNAPSHOT")
         assert result is None
-
-    def test_op_margin_decimal_converted_to_percent(self):
-        # Yahoo returns 0.13 for 13% margin; PERCENT_KEYS multiplies by 100 → 13
-        mock_info = {"operatingMargins": 0.13, "currency": "USD"}
-        with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "op_margin")
-        assert result is not None
-        assert result.value == Decimal("13")
-
-    def test_dividend_yield_decimal_normalized_to_percent(self):
-        # Yahoo returns 0.0438 (decimal form); provider normalizes to 4.38%
-        mock_info = {"dividendYield": 0.0438, "currency": "USD"}
-        with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "dividend_return")
-        assert result is not None
-        assert abs(result.value - Decimal("4.38")) < Decimal("0.001")
-
-    def test_dividend_yield_percent_form_unchanged(self):
-        # Yahoo returns 4.38 (already percent form); provider leaves as-is
-        mock_info = {"dividendYield": 4.38, "currency": "USD"}
-        with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "dividend_return")
-        assert result is not None
-        assert abs(result.value - Decimal("4.38")) < Decimal("0.001")
-
-    def test_insane_op_margin_returns_none(self):
-        # After *100: 150*100=15000 which is out of [-100,100]
-        mock_info = {"operatingMargins": 150.0, "currency": "USD"}
-        with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "op_margin")
-        assert result is None
-
-    def test_sales_growth_decimal_converted_to_percent(self):
-        mock_info = {"revenueGrowth": -0.056, "currency": "USD"}
-        with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "sales_growth")
-        assert result is not None
-        assert abs(result.value - Decimal("-5.6")) < Decimal("0.001")
 
 
 # ---------------------------------------------------------------------------
@@ -380,9 +324,8 @@ class TestYahooFetchSanityIntegration:
 class TestSanityChecksDictCompleteness:
     def test_critical_keys_present(self):
         required = {
-            "stock_price", "market_cap", "dividend_return", "op_margin",
-            "sales_growth", "pe_ttm", "pe_forward", "eps_ttm", "eps_forward",
-            "ev_ebitda", "peg",
+            "stock_price", "market_cap", "shares_outstanding",
+            "sales", "net_income", "fcf_margin_non_gaap", "sbc",
         }
         for key in required:
             assert key in VALUE_SANITY_CHECKS, f"Missing sanity check for {key}"
