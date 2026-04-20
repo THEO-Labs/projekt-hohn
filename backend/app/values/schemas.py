@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, model_validator
 
 from app.values.always_current import ALWAYS_CURRENT_KEYS
+from app.values.currency_keys import CURRENCY_KEYS
 
 
 class ValueDefinitionOut(BaseModel):
@@ -17,12 +18,14 @@ class ValueDefinitionOut(BaseModel):
     unit: str | None
     sort_order: int
     always_current: bool = False
+    is_currency: bool = False
 
     model_config = {"from_attributes": True}
 
     @model_validator(mode="after")
-    def set_always_current(self) -> "ValueDefinitionOut":
+    def set_flags(self) -> "ValueDefinitionOut":
         self.always_current = self.key in ALWAYS_CURRENT_KEYS
+        self.is_currency = self.key in CURRENCY_KEYS
         return self
 
 

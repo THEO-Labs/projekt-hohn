@@ -315,7 +315,7 @@ class TestYahooFetchSanityIntegration:
         self.provider = YahooFinanceProvider()
 
     def test_insane_stock_price_returns_none(self):
-        mock_info = {"currentPrice": 5_000_000.0, "currency": "USD"}
+        mock_info = {"currentPrice": 5e11, "currency": "USD"}
         with patch.object(self.provider, "_get_info", return_value=mock_info):
             result = self.provider.fetch("TEST", "stock_price")
         assert result is None

@@ -18,6 +18,7 @@ from app.portfolios.models import Portfolio
 from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
 from app.values.always_current import ALWAYS_CURRENT_KEYS
+from app.values.currency_keys import CURRENCY_KEYS
 from app.values.models import CompanyValue, SourceType, ValueDefinition
 from app.values.progress import cleanup_old_jobs, finish_job, get_job, mark_success, start_job, update_job
 from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
@@ -196,7 +197,7 @@ def _process_one_key(
                     value=research_val,
                     source_name=research_source or "Claude-Recherche",
                     source_link=research_url,
-                    currency=company.currency,
+                    currency=company.currency if key in CURRENCY_KEYS else None,
                 )
 
             if user_prompt and assistant_response:
@@ -392,7 +393,7 @@ def override_company_value(
     from app.llm.models import LlmConversation, LlmMessage
     from app.llm.routes import _get_or_create_conversation
 
-    _get_owned_company(db, user, company_id)
+    company = _get_owned_company(db, user, company_id)
 
     effective_period_type = "SNAPSHOT" if value_key in ALWAYS_CURRENT_KEYS else period_type
     effective_period_year = None if value_key in ALWAYS_CURRENT_KEYS else period_year
@@ -411,6 +412,8 @@ def override_company_value(
         oq = oq.filter(CompanyValue.period_year.is_(None))
     existing = oq.one_or_none()
 
+    inherit_currency = company.currency if value_key in CURRENCY_KEYS else None
+
     if existing:
         if payload.numeric_value is not None:
             existing.numeric_value = payload.numeric_value
@@ -418,6 +421,8 @@ def override_company_value(
             existing.text_value = payload.text_value
         if payload.source_name is not None:
             existing.source_name = payload.source_name
+        if inherit_currency and not existing.currency:
+            existing.currency = inherit_currency
         existing.manually_overridden = True
         db.commit()
         db.refresh(existing)
@@ -432,6 +437,7 @@ def override_company_value(
             numeric_value=payload.numeric_value,
             text_value=payload.text_value,
             source_name=payload.source_name,
+            currency=inherit_currency,
             manually_overridden=True,
         )
         db.add(cv)

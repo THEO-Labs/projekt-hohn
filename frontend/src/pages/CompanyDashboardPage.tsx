@@ -484,7 +484,7 @@ export function CompanyDashboardPage() {
                       const rawStr = cv?.numeric_value ?? null;
                       const raw: number | null = rawStr == null ? null : (typeof rawStr === "string" ? parseFloat(rawStr) : rawStr);
                       const rawValid = raw != null && !isNaN(raw) ? raw : null;
-                      const shouldConvert = d.unit !== "%" && d.data_type === "NUMERIC" && cv?.currency;
+                      const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && cv?.currency;
                       const displayVal = shouldConvert ? convertCurrency(rawValid, cv?.currency ?? null) : rawValid;
                       const isQualitative = d.source_type === "QUALITATIVE";
 

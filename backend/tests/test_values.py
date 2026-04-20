@@ -214,6 +214,33 @@ def test_manual_override(client, db):
     assert data["source_name"] == "Manual"
 
 
+def test_manual_override_zero_persists(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db)
+
+    response = client.post(
+        f"/api/companies/{cid}/values/buybacks/override?period_type=FY&period_year=2024",
+        json={"numeric_value": 0, "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["manually_overridden"] is True
+    assert Decimal(data["numeric_value"]) == Decimal("0")
+
+    overwrite = client.post(
+        f"/api/companies/{cid}/values/buybacks/override?period_type=FY&period_year=2024",
+        json={"numeric_value": 0, "source_name": "Manuell"},
+    )
+    assert overwrite.status_code == 200
+    assert Decimal(overwrite.json()["numeric_value"]) == Decimal("0")
+
+    fetched = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
+    assert fetched.status_code == 200
+    rows = [r for r in fetched.json() if r["value_key"] == "buybacks"]
+    assert len(rows) == 1
+    assert Decimal(rows[0]["numeric_value"]) == Decimal("0")
+
+
 def test_manual_override_prevents_refresh(client, db):
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db)
