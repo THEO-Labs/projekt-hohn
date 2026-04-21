@@ -52,6 +52,24 @@ def get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
 
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20250305",
+    "name": "web_search",
+    "max_uses": 5,
+}
+
+
+def _collect_text(response) -> str:
+    """Concatenate all text blocks of a Claude response. Tool-use / server-tool
+    blocks are skipped so callers only see the final prose."""
+    parts: list[str] = []
+    for block in response.content:
+        btype = getattr(block, "type", None)
+        if btype == "text":
+            parts.append(getattr(block, "text", "") or "")
+    return "\n".join(p for p in parts if p)
+
+
 def extract_score(text: str) -> Decimal | None:
     match = re.search(r"SCORE:\s*(\d+[.,]\d+)", text, re.IGNORECASE)
     if not match:
@@ -328,7 +346,12 @@ def research_value(
         f"historisches Jahr gefragt ist, keine Schaetzungen aus "
         f"Quartalsberichten. Wenn du fuer {period_str} keinen "
         f"verifizierbaren Wert aus dem Jahresabschluss findest, antworte "
-        f"mit WERT: NICHT_GEFUNDEN."
+        f"mit WERT: NICHT_GEFUNDEN.\n\n"
+        f"Nutze das Web-Search-Tool um die IR-Seite des Unternehmens, "
+        f"Annual-Report-PDFs und SEC-Filings aktiv zu durchsuchen. "
+        f"Verlasse dich NICHT nur auf dein Gedaechtnis — insbesondere "
+        f"fuer das laufende oder letzte Geschaeftsjahr ist die tatsaechliche "
+        f"Veroeffentlichung ausschlaggebend."
         f"{hint_block}"
     )
 
@@ -336,11 +359,12 @@ def research_value(
         client = get_client()
         response = claude_limiter.call(lambda: client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=512,
+            max_tokens=2048,
             system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            tools=[WEB_SEARCH_TOOL],
             messages=[{"role": "user", "content": user_prompt}],
         ))
-        content = response.content[0].text
+        content = _collect_text(response)
         value = extract_research_value(content)
         if value is None:
             return None, None, None, user_prompt, content
@@ -381,9 +405,9 @@ def call_claude(messages: list[dict[str, str]], company_context: str, mode: str 
             content = _rewrite_research_message(content)
         user_messages.append({"role": msg["role"], "content": content})
 
-    response = claude_limiter.call(lambda: client.messages.create(
+    kwargs: dict = dict(
         model="claude-sonnet-4-6",
-        max_tokens=1024,
+        max_tokens=2048,
         system=[
             {
                 "type": "text",
@@ -396,9 +420,13 @@ def call_claude(messages: list[dict[str, str]], company_context: str, mode: str 
             },
         ],
         messages=user_messages,
-    ))
+    )
+    if mode != "qualitative":
+        kwargs["tools"] = [WEB_SEARCH_TOOL]
 
-    content = response.content[0].text
+    response = claude_limiter.call(lambda: client.messages.create(**kwargs))
+
+    content = _collect_text(response)
     if mode == "qualitative":
         score = extract_score(content)
     else:
