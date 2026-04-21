@@ -292,8 +292,9 @@ class TestYahooSanityCheck:
     def test_net_income_valid(self):
         assert self.provider._sanity_check("net_income", Decimal("1000000000")) == Decimal("1000000000")
 
-    def test_capex_negative_rejected(self):
-        assert self.provider._sanity_check("capex", Decimal("-1")) is None
+    def test_fcf_sanity_both_signs(self):
+        assert self.provider._sanity_check("fcf", Decimal("1000000000")) == Decimal("1000000000")
+        assert self.provider._sanity_check("fcf", Decimal("-1e17")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +332,7 @@ class TestYahooFetchSanityIntegration:
 
 class TestSanityChecksDictCompleteness:
     def test_critical_keys_present(self):
-        required = {"market_cap", "sbc", "net_income", "op_cash_flow", "capex"}
+        required = {"market_cap", "sbc", "net_income", "op_cash_flow", "fcf", "debt", "cash"}
         for key in required:
             assert key in VALUE_SANITY_CHECKS, f"Missing sanity check for {key}"
 

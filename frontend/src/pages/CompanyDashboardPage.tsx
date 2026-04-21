@@ -55,7 +55,7 @@ const FALLBACK_FX_RATES: Record<string, number> = {
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
-  fcf: "Op. Cash Flow − Capex",
+  capex: "Op. Cash Flow − FCF",
   net_debt: "Debt − Cash",
   cash: "Cash & Equivalents + Mkt Sec ST + LT",
   ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",

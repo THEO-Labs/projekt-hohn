@@ -23,8 +23,8 @@ def _financials(year=2023):
 def _cashflow(year=2023):
     dates = [pd.Timestamp(f"{year}-12-31")]
     return pd.DataFrame(
-        {dates[0]: [18_000_000, -3_000_000]},
-        index=["Operating Cash Flow", "Capital Expenditure"],
+        {dates[0]: [18_000_000, 15_000_000]},
+        index=["Operating Cash Flow", "Free Cash Flow"],
     )
 
 
@@ -67,12 +67,20 @@ def test_historical_op_cash_flow(provider):
     assert result.value == Decimal("18000000")
 
 
-def test_historical_capex_abs(provider):
+def test_historical_fcf(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("ALV.DE", "fcf", period_type="FY", period_year=2023)
+    assert result is not None
+    assert result.value == Decimal("15000000")
+
+
+def test_capex_not_fetched_by_yahoo(provider):
+    """Capex is derived from OpCF − FCF now; provider should not fetch it directly."""
     with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
          patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
         result = provider.fetch("ALV.DE", "capex", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("3000000")
+    assert result is None
 
 
 def test_historical_debt(provider):

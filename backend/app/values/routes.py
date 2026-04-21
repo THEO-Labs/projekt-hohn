@@ -325,7 +325,7 @@ def _process_one_key(
         db.rollback()
 
 
-_PREV_YEAR_GROWTH_KEYS = ("net_income", "op_cash_flow", "capex", "debt", "cash", "sbc")
+_PREV_YEAR_GROWTH_KEYS = ("net_income", "op_cash_flow", "fcf", "debt", "cash", "sbc")
 
 
 def _ensure_previous_year_inputs(

@@ -4,7 +4,7 @@ from decimal import Decimal
 STAMMDATEN_CALC_KEYS: set[str] = set()
 
 FY_CALC_KEYS = {
-    "fcf",
+    "capex",
     "net_debt",
     "ni_growth",
     "fcf_yield",
@@ -28,7 +28,7 @@ def calculate_fy(
     stammdaten: dict[str, Decimal | None],
 ) -> dict[str, Decimal | None]:
     results: dict[str, Decimal | None] = {
-        "fcf": None,
+        "capex": None,
         "net_debt": None,
         "ni_growth": None,
         "fcf_yield": None,
@@ -40,14 +40,14 @@ def calculate_fy(
     }
 
     op_cf = current.get("op_cash_flow")
-    capex = current.get("capex")
+    fcf_input = current.get("fcf")
     debt = current.get("debt")
     cash = current.get("cash")
     ni = current.get("net_income")
     sbc = current.get("sbc")
 
-    if op_cf is not None and capex is not None:
-        results["fcf"] = op_cf - capex
+    if op_cf is not None and fcf_input is not None:
+        results["capex"] = op_cf - fcf_input
 
     if debt is not None and cash is not None:
         results["net_debt"] = debt - cash
@@ -64,9 +64,8 @@ def calculate_fy(
             return results[key]
         return current.get(key)
 
-    eff_fcf = _effective("fcf")
-    if eff_fcf is not None and market_cap is not None and market_cap != 0:
-        results["fcf_yield"] = eff_fcf / market_cap * Decimal("100")
+    if fcf_input is not None and market_cap is not None and market_cap != 0:
+        results["fcf_yield"] = fcf_input / market_cap * Decimal("100")
 
     if sbc is not None and market_cap is not None and market_cap != 0:
         results["sbc_yield"] = sbc / market_cap * Decimal("100")

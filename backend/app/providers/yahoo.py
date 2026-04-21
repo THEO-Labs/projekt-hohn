@@ -34,7 +34,7 @@ CASH_COMPONENTS: list[list[str]] = [
 
 CASHFLOW_ROWS = {
     "op_cash_flow": ["Operating Cash Flow", "Cash From Operating Activities"],
-    "capex": ["Capital Expenditure", "Capital Expenditures"],
+    "fcf": ["Free Cash Flow"],
 }
 
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
@@ -43,7 +43,7 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "sbc": (0, 1e15),
     "net_income": (-1e15, 1e15),
     "op_cash_flow": (-1e15, 1e15),
-    "capex": (0, 1e15),
+    "fcf": (-1e15, 1e15),
     "debt": (0, 1e15),
     "cash": (0, 1e15),
 }
@@ -182,8 +182,7 @@ class YahooFinanceProvider:
             if key in BALANCE_SHEET_ROWS:
                 return self._fetch_from_balance_sheet(ticker, key, period_year, source_link)
             if key in CASHFLOW_ROWS:
-                abs_value = key == "capex"
-                return self._fetch_from_cashflow(ticker, key, period_year, source_link, abs_value=abs_value)
+                return self._fetch_from_cashflow(ticker, key, period_year, source_link)
 
         return None
 

@@ -7,14 +7,24 @@ def test_stammdaten_is_noop():
     assert calculate_stammdaten({"market_cap": Decimal("100000")}) == {}
 
 
-def test_fcf_and_net_debt_base():
+def test_capex_from_opcf_and_fcf():
     result = calculate_fy(
-        {"op_cash_flow": Decimal("500"), "capex": Decimal("100"), "debt": Decimal("300"), "cash": Decimal("500")},
+        {"op_cash_flow": Decimal("500"), "fcf": Decimal("400"), "debt": Decimal("300"), "cash": Decimal("500")},
         None,
         {},
     )
-    assert result["fcf"] == Decimal("400")
+    assert result["capex"] == Decimal("100")
     assert result["net_debt"] == Decimal("-200")
+
+
+def test_fcf_yield_uses_fcf_input():
+    result = calculate_fy(
+        {"op_cash_flow": Decimal("5000"), "fcf": Decimal("4636")},
+        None,
+        {"market_cap": Decimal("101100")},
+    )
+    # 4636/101100*100 ≈ 4.587
+    assert abs(result["fcf_yield"] - Decimal("4.587")) < Decimal("0.01")
 
 
 def test_ni_growth_requires_previous():
@@ -24,7 +34,6 @@ def test_ni_growth_requires_previous():
 
 
 def test_sbc_per_fy():
-    """SBC now lives in per-FY inputs, so sbc_yield uses current-year sbc."""
     result = calculate_fy(
         {"sbc": Decimal("1000")},
         None,
@@ -34,20 +43,18 @@ def test_sbc_per_fy():
 
 
 def test_net_debt_change_absolute_and_pct():
-    current = {"debt": Decimal("1000"), "cash": Decimal("2000")}  # net_debt = -1000
-    previous = {"debt": Decimal("2000"), "cash": Decimal("1500")}  # net_debt = 500
+    current = {"debt": Decimal("1000"), "cash": Decimal("2000")}
+    previous = {"debt": Decimal("2000"), "cash": Decimal("1500")}
     stammdaten = {"market_cap": Decimal("100000")}
     result = calculate_fy(current, previous, stammdaten)
-    # net_debt_change = prev - curr = 500 - (-1000) = 1500 (debt reduction positive)
     assert result["net_debt_change"] == Decimal("1500")
-    # 1500 / 100000 * 100 = 1.5 %
     assert result["net_debt_change_pct"] == Decimal("1.5")
 
 
 def test_hohn_return_base_and_full():
     current = {
         "op_cash_flow": Decimal("5000"),
-        "capex": Decimal("1000"),
+        "fcf": Decimal("4000"),
         "net_income": Decimal("120"),
         "debt": Decimal("1000"),
         "cash": Decimal("2000"),
@@ -60,30 +67,42 @@ def test_hohn_return_base_and_full():
     }
     stammdaten = {"market_cap": Decimal("100000")}
     result = calculate_fy(current, previous, stammdaten)
-    # fcf_yield=4, ni_growth=20, sbc_yield=1 => base = 23
+    # fcf_yield=4, ni_growth=20, sbc_yield=1, nd_change_pct=1.5
     assert result["hohn_return_base"] == Decimal("23")
-    # net_debt_change_pct = 1.5 => full = 24.5
     assert result["hohn_return"] == Decimal("24.5")
 
 
-def test_hohn_return_without_previous_still_computes_base():
+def test_servicenow_fy2025_reference_numbers():
+    """ServiceNow FY2025 matching ChatGPT reference (ignoring minor timing)."""
     current = {
-        "op_cash_flow": Decimal("5000"),
-        "capex": Decimal("1000"),
-        "net_income": Decimal("120"),
-        "ni_growth": Decimal("20"),
-        "sbc": Decimal("1000"),
+        "op_cash_flow": Decimal("5444"),
+        "fcf": Decimal("4636"),
+        "net_income": Decimal("1748"),
+        "debt": Decimal("2291"),
+        "cash": Decimal("10055"),
+        "sbc": Decimal("1900"),
     }
-    stammdaten = {"market_cap": Decimal("100000")}
-    result = calculate_fy(current, None, stammdaten)
-    assert result["hohn_return_base"] == Decimal("23")
-    # no previous -> no ND change, full = base
-    assert result["hohn_return"] == Decimal("23")
+    previous = {
+        "net_income": Decimal("1425"),
+        "debt": Decimal("2239"),
+        "cash": Decimal("8262"),
+    }
+    stammdaten = {"market_cap": Decimal("101100")}
+    result = calculate_fy(current, previous, stammdaten)
+    assert result["capex"] == Decimal("808")
+    # fcf_yield ≈ 4.59
+    assert abs(result["fcf_yield"] - Decimal("4.587")) < Decimal("0.01")
+    # ni_growth ≈ 22.67
+    assert abs(result["ni_growth"] - Decimal("22.67")) < Decimal("0.1")
+    # sbc_yield ≈ 1.88
+    assert abs(result["sbc_yield"] - Decimal("1.879")) < Decimal("0.01")
+    # hohn_return_base ≈ 4.59 + 22.67 - 1.88 = 25.38
+    assert abs(result["hohn_return_base"] - Decimal("25.38")) < Decimal("0.05")
 
 
 def test_zero_market_cap_safe():
     result = calculate_fy(
-        {"op_cash_flow": Decimal("1000"), "capex": Decimal("100"), "sbc": Decimal("10")},
+        {"op_cash_flow": Decimal("1000"), "fcf": Decimal("900"), "sbc": Decimal("10")},
         None,
         {"market_cap": Decimal("0")},
     )
