@@ -56,34 +56,52 @@ def _get_or_create_conversation(
 
 
 def _build_company_context(db: Session, company: Company, period_type: str = "SNAPSHOT", period_year: int | None = None) -> str:
-    values = db.query(CompanyValue, ValueDefinition).join(
+    stammdaten_rows = db.query(CompanyValue, ValueDefinition).join(
         ValueDefinition, CompanyValue.value_key == ValueDefinition.key, isouter=True
     ).filter(
         CompanyValue.company_id == company.id,
         CompanyValue.period_type == "SNAPSHOT",
     ).all()
 
-    data = {}
-    for v, vd in values:
+    stammdaten: dict[str, str] = {}
+    for v, vd in stammdaten_rows:
         label = vd.label_en if vd else v.value_key
         if v.numeric_value is not None:
-            data[label] = str(v.numeric_value)
+            stammdaten[label] = str(v.numeric_value)
         elif v.text_value is not None:
-            data[label] = v.text_value
+            stammdaten[label] = v.text_value
+
+    fy_context: dict[str, dict[str, str]] = {}
+    if period_type == "FY" and period_year is not None:
+        for year in (period_year - 1, period_year):
+            fy_rows = db.query(CompanyValue, ValueDefinition).join(
+                ValueDefinition, CompanyValue.value_key == ValueDefinition.key, isouter=True
+            ).filter(
+                CompanyValue.company_id == company.id,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == year,
+            ).all()
+            year_values: dict[str, str] = {}
+            for v, vd in fy_rows:
+                label = vd.label_en if vd else v.value_key
+                if v.numeric_value is not None:
+                    year_values[label] = str(v.numeric_value)
+                elif v.text_value is not None:
+                    year_values[label] = v.text_value
+            if year_values:
+                fy_context[f"FY{year}"] = year_values
 
     if period_type == "FY" and period_year:
         period_str = f"FY{period_year}"
-    elif period_type == "LTM":
-        period_str = "LTM"
-    elif period_type == "TTM":
-        period_str = "TTM"
     else:
         period_str = "aktuell"
+
+    context_data = {"Stammdaten": stammdaten, **fy_context}
 
     return (
         f"Unternehmen: {company.name} ({company.ticker}, ISIN: {company.isin or 'N/A'}, Currency: {company.currency})\n"
         f"Aktueller Analyse-Zeitraum: {period_str}\n\n"
-        f"Verfuegbare Finanzdaten:\n{json.dumps(data, indent=2, ensure_ascii=False)}"
+        f"Verfuegbare Finanzdaten:\n{json.dumps(context_data, indent=2, ensure_ascii=False)}"
     )
 
 
