@@ -113,14 +113,20 @@ def test_cash_partial_components(provider):
     assert result.value == Decimal("5000000000")
 
 
-def test_sbc_not_fetched_by_yahoo(provider):
-    with patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+def test_sbc_from_cashflow(provider):
+    df = pd.DataFrame(
+        {pd.Timestamp("2025-12-31"): [1_955_000_000]},
+        index=["Stock Based Compensation"],
+    )
+    with patch.object(provider, "_get_cashflow", return_value=df), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
         result = provider.fetch("NOW", "sbc", period_type="FY", period_year=2025)
-    assert result is None
+    assert result is not None
+    assert result.value == Decimal("1955000000")
 
 
-def test_snapshot_sbc_no_longer_supported(provider):
-    """SBC is per-FY now; snapshot request returns None."""
+def test_snapshot_sbc_returns_none(provider):
+    """SBC is per-FY; snapshot request without period_year returns None."""
     with patch.object(provider, "_get_info", return_value={"currency": "USD"}):
         result = provider.fetch("NOW", "sbc")
     assert result is None

@@ -44,6 +44,7 @@ CASH_COMPONENTS: list[list[str]] = [
 CASHFLOW_ROWS = {
     "op_cash_flow": ["Operating Cash Flow", "Cash From Operating Activities"],
     "fcf": ["Free Cash Flow"],
+    "sbc": ["Stock Based Compensation", "Share Based Compensation"],
 }
 
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
