@@ -11,7 +11,13 @@ logger = logging.getLogger(__name__)
 from app.config import settings
 from app.auth.deps import current_user
 from app.auth.models import User
-from app.calculations.engine import CALCULATED_KEYS, calculate_all
+from app.calculations.engine import (
+    CALCULATED_KEYS,
+    FY_CALC_KEYS,
+    STAMMDATEN_CALC_KEYS,
+    calculate_fy,
+    calculate_stammdaten,
+)
 from app.companies.models import Company
 from app.db import get_db
 from app.portfolios.models import Portfolio
@@ -27,70 +33,46 @@ catalog_router = APIRouter(prefix="/api/value-definitions", tags=["values"])
 values_router = APIRouter(prefix="/api/companies", tags=["values"])
 
 
-def _run_and_persist_calculations(
+def _load_value_map(
     db: Session,
     company_id: UUID,
     period_type: str,
     period_year: int | None,
-) -> list[CompanyValue]:
-    q = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.period_type == period_type,
-        )
+) -> tuple[list[CompanyValue], dict[str, Decimal | None]]:
+    q = db.query(CompanyValue).filter(
+        CompanyValue.company_id == company_id,
+        CompanyValue.period_type == period_type,
     )
     if period_year is not None:
         q = q.filter(CompanyValue.period_year == period_year)
     else:
         q = q.filter(CompanyValue.period_year.is_(None))
-    existing_rows = q.all()
+    rows = q.all()
+    values = {row.value_key: row.numeric_value for row in rows if row.numeric_value is not None}
+    return rows, values
 
-    values_map: dict[str, Decimal | None] = {}
-    for row in existing_rows:
-        if row.numeric_value is not None:
-            values_map[row.value_key] = row.numeric_value
 
-    snapshot_rows = db.query(CompanyValue).filter(
-        CompanyValue.company_id == company_id,
-        CompanyValue.period_type == "SNAPSHOT",
-        CompanyValue.period_year.is_(None),
-        CompanyValue.value_key.in_(ALWAYS_CURRENT_KEYS),
-    ).all()
-    for row in snapshot_rows:
-        if row.value_key not in values_map and row.numeric_value is not None:
-            values_map[row.value_key] = row.numeric_value
-
-    previous_values: dict[str, Decimal | None] | None = None
-    if period_type == "FY" and period_year is not None:
-        prev_rows = db.query(CompanyValue).filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.period_type == "FY",
-            CompanyValue.period_year == period_year - 1,
-        ).all()
-        previous_values = {
-            row.value_key: row.numeric_value
-            for row in prev_rows
-            if row.numeric_value is not None
-        }
-
-    calc_results = calculate_all(values_map, previous_values)
-
+def _persist_calc_results(
+    db: Session,
+    company_id: UUID,
+    period_type: str,
+    period_year: int | None,
+    existing_rows: list[CompanyValue],
+    calc_results: dict[str, Decimal | None],
+    allowed_keys: set[str],
+    company_currency: str | None,
+) -> list[CompanyValue]:
     by_key = {row.value_key: row for row in existing_rows}
     updated: list[CompanyValue] = []
 
-    company = db.query(Company).filter(Company.id == company_id).one_or_none()
-    company_currency = company.currency if company else None
-
     for key, value in calc_results.items():
-        if key not in CALCULATED_KEYS:
+        if key not in allowed_keys:
             continue
 
         existing = by_key.get(key)
         if existing and existing.manually_overridden:
             updated.append(existing)
             continue
-
         if value is None and existing is None:
             continue
 
@@ -119,6 +101,40 @@ def _run_and_persist_calculations(
             )
             db.add(cv)
             updated.append(cv)
+    return updated
+
+
+def _run_and_persist_calculations(
+    db: Session,
+    company_id: UUID,
+    period_type: str,
+    period_year: int | None,
+) -> list[CompanyValue]:
+    company = db.query(Company).filter(Company.id == company_id).one_or_none()
+    company_currency = company.currency if company else None
+
+    snapshot_rows, stammdaten = _load_value_map(db, company_id, "SNAPSHOT", None)
+
+    stammdaten_calc = calculate_stammdaten(stammdaten)
+    for key, val in stammdaten_calc.items():
+        if val is not None and key not in stammdaten:
+            stammdaten[key] = val
+
+    updated: list[CompanyValue] = []
+    updated += _persist_calc_results(
+        db, company_id, "SNAPSHOT", None,
+        snapshot_rows, stammdaten_calc, STAMMDATEN_CALC_KEYS, company_currency,
+    )
+
+    if period_type == "FY" and period_year is not None:
+        current_rows, current = _load_value_map(db, company_id, "FY", period_year)
+        _prev_rows, previous = _load_value_map(db, company_id, "FY", period_year - 1)
+
+        fy_calc = calculate_fy(current, previous, stammdaten)
+        updated += _persist_calc_results(
+            db, company_id, "FY", period_year,
+            current_rows, fy_calc, FY_CALC_KEYS, company_currency,
+        )
 
     return updated
 

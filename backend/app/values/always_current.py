@@ -1,5 +1,10 @@
 ALWAYS_CURRENT_KEYS: frozenset[str] = frozenset({
     "stock_price",
-    "shares_outstanding",
+    "currency",
+    "exchange_rate",
     "market_cap",
+    "shares_outstanding",
+    "debt",
+    "cash",
+    "sbc",
 })

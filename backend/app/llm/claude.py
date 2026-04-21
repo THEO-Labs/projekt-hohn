@@ -222,36 +222,61 @@ _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "stock_price": (0, 1_000_000),
     "market_cap": (0, 15_000_000_000_000),
     "shares_outstanding": (0, 1_000_000_000_000),
-    "sales": (0, 5_000_000_000_000),
-    "net_income": (-5_000_000_000_000, 5_000_000_000_000),
-    "fcf_margin_non_gaap": (-100, 100),
+    "debt": (0, 1_000_000_000_000),
+    "cash": (0, 1_000_000_000_000),
+    "exchange_rate": (0, 1_000_000),
     "sbc": (0, 500_000_000_000),
+    "net_income": (-5_000_000_000_000, 5_000_000_000_000),
+    "eps": (-10_000, 100_000),
+    "eps_adj": (-10_000, 100_000),
+    "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
+    "capex": (0, 5_000_000_000_000),
+    "dividends": (0, 1_000_000_000_000),
 }
 
 
 KEY_RESEARCH_HINTS: dict[str, str] = {
     "sbc": (
-        "Stock Based Compensation (SBC) ist als expliziter Posten im 10-K "
-        "(bzw. 20-F für Non-US-Filer oder Konzernabschluss) unter "
-        "'Share-based compensation expense' oder im Cash Flow Statement als "
-        "'Stock-based compensation' ausgewiesen. Bitte NUR aus dem "
-        "Jahres-Geschaeftsbericht des gefragten Jahres, nicht aus einem "
-        "Quartalsbericht hochgerechnet."
+        "Stock Based Compensation (SBC): jaehrlicher Betrag aus dem 10-K "
+        "(oder 20-F bei Non-US-Filern) unter 'Share-based compensation "
+        "expense' bzw. im Cash Flow Statement als 'Stock-based compensation'. "
+        "NUR aus dem Jahres-Geschaeftsbericht des gefragten Jahres."
     ),
-    "fcf_margin_non_gaap": (
-        "FCF Margin (non-GAAP) wird typischerweise im Earnings-Release oder "
-        "der Guidance des Managements veröffentlicht ('adjusted FCF margin', "
-        "'non-GAAP free cash flow margin'). Bitte nur die vom Unternehmen "
-        "selbst kommunizierte Zahl, kein aus GAAP-Werten berechneter Proxy."
+    "op_cash_flow": (
+        "Operating Cash Flow: aus dem Jahres-Cashflow-Statement ('Net cash "
+        "provided by operating activities'). Fuer das Ziel-Jahr der aktuellen "
+        "Analyse sind auch Guidance-Zahlen aus Earnings-Call / IR erlaubt — "
+        "dann QUELLE explizit als 'Guidance FY XXXX' ausweisen."
     ),
-    "sales": (
-        "Jahresumsatz ('Total Revenue' / 'Net Sales') aus dem 10-K / 20-F "
-        "für das exakte Geschaeftsjahr. Keine TTM-Werte. Keine Forward-Guidance, "
-        "wenn ein historisches Jahr gefragt ist."
+    "capex": (
+        "Capital Expenditures: Zeile 'Purchase of property and equipment' / "
+        "'Capital expenditures' im Cashflow-Statement. Immer als POSITIVER "
+        "absoluter Betrag melden. Fuer das Ziel-Jahr auch Guidance aus IR."
+    ),
+    "eps_adj": (
+        "Adjusted / non-GAAP EPS: aus dem Earnings-Release, NICHT der GAAP-"
+        "Wert. Fuer Forward-Jahre ist Analyst-Konsens oder IR-Guidance "
+        "akzeptabel — QUELLE entsprechend ausweisen."
+    ),
+    "eps": (
+        "GAAP Diluted EPS aus dem 10-K / 20-F fuer das exakte Geschaeftsjahr. "
+        "Keine TTM-Werte."
     ),
     "net_income": (
-        "Net Income (Nettogewinn) aus dem 10-K / 20-F für das exakte "
-        "Geschaeftsjahr. Keine TTM-Werte."
+        "Net Income (Nettogewinn) aus dem 10-K / 20-F fuer das exakte "
+        "Geschaeftsjahr. Keine TTM-Werte, keine bereinigten 'adjusted' Zahlen."
+    ),
+    "dividends": (
+        "Cash Dividends Paid (absoluter Betrag) aus dem Cashflow-Statement. "
+        "Fuer Forward-Jahre: erwartete Ausschuettung aus der Dividend Policy "
+        "des Unternehmens."
+    ),
+    "debt": (
+        "Total Debt aus dem Balance Sheet zum letzten verfuegbaren Stichtag."
+    ),
+    "cash": (
+        "Cash and Cash Equivalents (inklusive Short-Term Investments wenn "
+        "ueblich ausgewiesen) aus dem Balance Sheet."
     ),
 }
 

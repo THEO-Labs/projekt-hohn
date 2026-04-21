@@ -68,8 +68,9 @@ def test_get_value_definitions_returns_catalog(client, db):
     keys = {item["key"] for item in data}
     assert "stock_price" in keys
     assert "hohn_return" in keys
-    assert "fcf_margin_non_gaap" in keys
+    assert "ev" in keys
     assert "sbc" in keys
+    assert "eps_adj" in keys
 
 
 def test_get_value_definitions_ordered(client, db):
@@ -192,14 +193,14 @@ def test_get_company_values_after_refresh(client, db):
         mock_get_providers.return_value = [mock_provider]
         client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["sales"], "period_type": "FY", "period_year": 2024},
+            json={"keys": ["net_income"], "period_type": "FY", "period_year": 2024},
         )
 
     response = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
-    assert data[0]["value_key"] == "sales"
+    assert data[0]["value_key"] == "net_income"
 
 
 def test_manual_override(client, db):
@@ -207,13 +208,13 @@ def test_manual_override(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     response = client.post(
-        f"/api/companies/{cid}/values/fcf_margin_non_gaap/override?period_type=FY&period_year=2024",
-        json={"numeric_value": "36", "source_name": "Manual"},
+        f"/api/companies/{cid}/values/eps_adj/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "5.25", "source_name": "Manual"},
     )
     assert response.status_code == 200
     data = response.json()
     assert data["manually_overridden"] is True
-    assert data["numeric_value"] == "36.000000"
+    assert data["numeric_value"] == "5.250000"
     assert data["source_name"] == "Manual"
 
 
@@ -222,7 +223,7 @@ def test_manual_override_zero_persists(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     response = client.post(
-        f"/api/companies/{cid}/values/sbc/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/capex/override?period_type=FY&period_year=2024",
         json={"numeric_value": 0, "source_name": "Manuell"},
     )
     assert response.status_code == 200
@@ -231,7 +232,7 @@ def test_manual_override_zero_persists(client, db):
     assert Decimal(data["numeric_value"]) == Decimal("0")
 
     overwrite = client.post(
-        f"/api/companies/{cid}/values/sbc/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/capex/override?period_type=FY&period_year=2024",
         json={"numeric_value": 0, "source_name": "Manuell"},
     )
     assert overwrite.status_code == 200
@@ -239,7 +240,7 @@ def test_manual_override_zero_persists(client, db):
 
     fetched = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert fetched.status_code == 200
-    rows = [r for r in fetched.json() if r["value_key"] == "sbc"]
+    rows = [r for r in fetched.json() if r["value_key"] == "capex"]
     assert len(rows) == 1
     assert Decimal(rows[0]["numeric_value"]) == Decimal("0")
 

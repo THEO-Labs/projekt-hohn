@@ -1,70 +1,101 @@
 from decimal import Decimal
 
-from app.calculations.engine import calculate_all
+from app.calculations.engine import calculate_fy, calculate_stammdaten
 
 
-def test_service_now_example():
-    """Reproduces the customer's reference sheet (ServiceNow FY2026):
-    Hohn Return = FCF Yield + NI Growth - SBC/Mcap = 5.58 + 20.55 - 1.90 = 24.23%"""
+def test_stammdaten_all_calcs():
+    result = calculate_stammdaten({
+        "stock_price": Decimal("100"),
+        "exchange_rate": Decimal("0.92"),
+        "shares_outstanding": Decimal("1000"),
+        "market_cap": Decimal("100000"),
+        "debt": Decimal("30000"),
+        "cash": Decimal("10000"),
+    })
+    assert result["stock_price_eur"] == Decimal("92.00")
+    assert result["market_cap_calc"] == Decimal("100000")
+    assert result["net_debt"] == Decimal("20000")
+    assert result["ev"] == Decimal("120000")
+
+
+def test_stammdaten_missing_inputs_yield_none():
+    result = calculate_stammdaten({})
+    assert result["stock_price_eur"] is None
+    assert result["market_cap_calc"] is None
+    assert result["net_debt"] is None
+    assert result["ev"] is None
+
+
+def test_fcf_from_op_cf_and_capex():
+    result = calculate_fy(
+        {"op_cash_flow": Decimal("500"), "capex": Decimal("100")},
+        None,
+        {},
+    )
+    assert result["fcf"] == Decimal("400")
+
+
+def test_ni_growth_requires_previous():
+    current = {"net_income": Decimal("120")}
+    assert calculate_fy(current, None, {})["ni_growth"] is None
+    assert calculate_fy(current, {"net_income": Decimal("100")}, {})["ni_growth"] == Decimal("20")
+
+
+def test_fcf_change_uses_reconstructed_previous_fcf():
+    current = {"op_cash_flow": Decimal("200"), "capex": Decimal("50")}  # fcf=150
+    previous = {"op_cash_flow": Decimal("150"), "capex": Decimal("50")}  # fcf=100
+    result = calculate_fy(current, previous, {})
+    assert result["fcf_change"] == Decimal("50")
+
+
+def test_ratios_with_full_stammdaten():
     current = {
-        "sales": Decimal("15530"),
-        "fcf_margin_non_gaap": Decimal("36"),
-        "sbc": Decimal("1900"),
-        "market_cap": Decimal("100155"),
+        "op_cash_flow": Decimal("5000"),
+        "capex": Decimal("1000"),
+        "net_income": Decimal("3000"),
+        "eps_adj": Decimal("5"),
+        "dividends": Decimal("500"),
     }
-    previous = {"sales": Decimal("12883")}
+    previous = {
+        "net_income": Decimal("2500"),
+        "eps_adj": Decimal("4"),
+    }
+    stammdaten = {
+        "stock_price": Decimal("100"),
+        "market_cap": Decimal("100000"),
+        "ev": Decimal("120000"),
+        "sbc": Decimal("1000"),
+    }
+    result = calculate_fy(current, previous, stammdaten)
 
-    result = calculate_all(current, previous)
+    assert result["fcf"] == Decimal("4000")
+    assert result["ni_growth"] == Decimal("20")
+    assert result["ev_op_cf"] == Decimal("24")
+    assert result["pe_ltm_adj"] == Decimal("25")
+    assert result["pe_target"] == Decimal("20")
+    assert result["fcf_yield"] == Decimal("4")
+    assert result["dividend_yield"] == Decimal("0.5")
+    assert result["peg"] == Decimal("1")
+    # hohn_return = fcf_yield(4) + ni_growth(20) - sbc/mcap*100(1) = 23
+    assert result["hohn_return"] == Decimal("23")
 
-    assert abs(result["fcf"] - Decimal("5590.80")) < Decimal("0.01")
-    assert abs(result["fcf_yield"] - Decimal("5.58")) < Decimal("0.01")
-    assert abs(result["ni_growth"] - Decimal("20.55")) < Decimal("0.01")
-    assert abs(result["sbc_yield"] - Decimal("1.90")) < Decimal("0.01")
-    assert abs(result["hohn_return"] - Decimal("24.23")) < Decimal("0.01")
+
+def test_hohn_return_without_sbc_still_computes():
+    current = {
+        "op_cash_flow": Decimal("5000"),
+        "capex": Decimal("1000"),
+        "net_income": Decimal("120"),
+    }
+    previous = {"net_income": Decimal("100")}
+    stammdaten = {"market_cap": Decimal("100000")}
+    result = calculate_fy(current, previous, stammdaten)
+    assert result["hohn_return"] == Decimal("24")  # 4 + 20
 
 
-def test_missing_inputs_return_none():
-    result = calculate_all({})
-    assert result["fcf"] is None
+def test_division_by_zero_safe():
+    stammdaten = {"stock_price": Decimal("100"), "market_cap": Decimal("0"), "ev": Decimal("0")}
+    current = {"eps_adj": Decimal("0"), "op_cash_flow": Decimal("0")}
+    result = calculate_fy(current, None, stammdaten)
+    assert result["pe_target"] is None
+    assert result["ev_op_cf"] is None
     assert result["fcf_yield"] is None
-    assert result["ni_growth"] is None
-    assert result["sbc_yield"] is None
-    assert result["hohn_return"] is None
-
-
-def test_ni_growth_requires_previous_sales():
-    result = calculate_all({"sales": Decimal("100")})
-    assert result["ni_growth"] is None
-
-    result2 = calculate_all({"sales": Decimal("100")}, {"sales": Decimal("80")})
-    assert result2["ni_growth"] == Decimal("25")
-
-
-def test_fcf_requires_sales_and_margin():
-    assert calculate_all({"sales": Decimal("100")})["fcf"] is None
-    assert calculate_all({"fcf_margin_non_gaap": Decimal("20")})["fcf"] is None
-    assert calculate_all({
-        "sales": Decimal("100"),
-        "fcf_margin_non_gaap": Decimal("20"),
-    })["fcf"] == Decimal("20")
-
-
-def test_hohn_return_requires_all_three_components():
-    result = calculate_all({
-        "sales": Decimal("100"),
-        "fcf_margin_non_gaap": Decimal("10"),
-        "market_cap": Decimal("1000"),
-    })
-    assert result["fcf_yield"] == Decimal("1")
-    assert result["hohn_return"] is None
-
-
-def test_division_by_zero_market_cap():
-    result = calculate_all({
-        "sales": Decimal("100"),
-        "fcf_margin_non_gaap": Decimal("10"),
-        "market_cap": Decimal("0"),
-        "sbc": Decimal("5"),
-    })
-    assert result["fcf_yield"] is None
-    assert result["sbc_yield"] is None

@@ -216,30 +216,26 @@ class TestValidateClaudeValue:
         val = Decimal("3000000000000")
         assert validate_claude_value("market_cap", val) == val
 
-    def test_valid_fcf_margin(self):
-        assert validate_claude_value("fcf_margin_non_gaap", Decimal("36")) == Decimal("36")
-
-    def test_fcf_margin_over_100_rejected(self):
-        assert validate_claude_value("fcf_margin_non_gaap", Decimal("150")) is None
-
-    def test_fcf_margin_negative_allowed(self):
-        assert validate_claude_value("fcf_margin_non_gaap", Decimal("-20")) == Decimal("-20")
-
     def test_valid_sbc(self):
         assert validate_claude_value("sbc", Decimal("1_900_000_000")) == Decimal("1900000000")
 
     def test_sbc_absurd_rejected(self):
         assert validate_claude_value("sbc", Decimal("1e20")) is None
 
+    def test_valid_net_income(self):
+        val = Decimal("8000000000")
+        assert validate_claude_value("net_income", val) == val
+
+    def test_valid_eps_adj(self):
+        val = Decimal("5.00")
+        assert validate_claude_value("eps_adj", val) == val
+
     def test_unknown_key_passes_through(self):
         val = Decimal("999999999999999")
         assert validate_claude_value("some_unknown_key", val) == val
 
-    def test_valid_sales(self):
-        assert validate_claude_value("sales", Decimal("100000000000")) == Decimal("100000000000")
-
-    def test_negative_sales_rejected(self):
-        assert validate_claude_value("sales", Decimal("-1")) is None
+    def test_capex_negative_rejected(self):
+        assert validate_claude_value("capex", Decimal("-1")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +297,11 @@ class TestYahooSanityCheck:
         val = Decimal("99999999999")
         assert self.provider._sanity_check("unknown_key", val) == val
 
-    def test_fcf_margin_valid(self):
-        assert self.provider._sanity_check("fcf_margin_non_gaap", Decimal("36")) == Decimal("36")
+    def test_net_income_valid(self):
+        assert self.provider._sanity_check("net_income", Decimal("1000000000")) == Decimal("1000000000")
 
-    def test_fcf_margin_out_of_range_rejected(self):
-        assert self.provider._sanity_check("fcf_margin_non_gaap", Decimal("150")) is None
+    def test_capex_negative_rejected(self):
+        assert self.provider._sanity_check("capex", Decimal("-1")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +341,8 @@ class TestSanityChecksDictCompleteness:
     def test_critical_keys_present(self):
         required = {
             "stock_price", "market_cap", "shares_outstanding",
-            "sales", "net_income", "fcf_margin_non_gaap", "sbc",
+            "debt", "cash", "net_income", "eps", "eps_adj",
+            "op_cash_flow", "capex", "dividends", "sbc", "exchange_rate",
         }
         for key in required:
             assert key in VALUE_SANITY_CHECKS, f"Missing sanity check for {key}"

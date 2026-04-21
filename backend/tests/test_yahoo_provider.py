@@ -12,18 +12,26 @@ def provider():
     return YahooFinanceProvider()
 
 
-def _make_financials(year=2023):
+def _financials(year=2023):
     dates = [pd.Timestamp(f"{year}-12-31"), pd.Timestamp(f"{year - 1}-12-31")]
     return pd.DataFrame(
         {
-            dates[0]: [100_000_000, 8_000_000],
-            dates[1]: [90_000_000, 7_000_000],
+            dates[0]: [8_000_000, Decimal("5.00")],
+            dates[1]: [7_000_000, Decimal("4.50")],
         },
-        index=["Total Revenue", "Net Income"],
+        index=["Net Income", "Diluted EPS"],
     )
 
 
-def test_snapshot_stock_price(provider):
+def _cashflow(year=2023):
+    dates = [pd.Timestamp(f"{year}-12-31")]
+    return pd.DataFrame(
+        {dates[0]: [18_000_000, -3_000_000, -2_000_000]},
+        index=["Operating Cash Flow", "Capital Expenditure", "Cash Dividends Paid"],
+    )
+
+
+def test_stock_price_snapshot(provider):
     with patch.object(provider, "_get_info", return_value={"currentPrice": 189.5, "currency": "USD"}):
         result = provider.fetch("AAPL", "stock_price")
     assert result is not None
@@ -31,69 +39,92 @@ def test_snapshot_stock_price(provider):
     assert result.currency == "USD"
 
 
-def test_snapshot_market_cap(provider):
-    with patch.object(provider, "_get_info", return_value={"marketCap": 3_000_000_000_000, "currency": "USD"}):
-        result = provider.fetch("AAPL", "market_cap")
+def test_currency_fetch(provider):
+    with patch.object(provider, "_get_info", return_value={"currency": "usd"}):
+        result = provider.fetch("AAPL", "currency")
     assert result is not None
-    assert result.value == Decimal("3000000000000")
+    assert result.value == "USD"
 
 
-def test_snapshot_shares_outstanding_no_currency(provider):
-    with patch.object(provider, "_get_info", return_value={"sharesOutstanding": 15_000_000_000, "currency": "USD"}):
-        result = provider.fetch("AAPL", "shares_outstanding")
+def test_exchange_rate_usd_company(provider):
+    with patch.object(provider, "_get_info", return_value={"currency": "USD"}), \
+         patch("app.fx.routes._cache", {"rates": {"EUR": 0.92, "USD": 1.0}}):
+        result = provider.fetch("AAPL", "exchange_rate")
     assert result is not None
-    assert result.currency is None
+    assert abs(result.value - Decimal("0.92")) < Decimal("0.001")
 
 
-def test_historical_sales(provider):
-    financials = _make_financials(2023)
-    with patch.object(provider, "_get_financials", return_value=financials), \
-         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
-        result = provider.fetch("ALV.DE", "sales", period_type="FY", period_year=2023)
+def test_exchange_rate_krw_company(provider):
+    with patch.object(provider, "_get_info", return_value={"currency": "KRW"}), \
+         patch("app.fx.routes._cache", {"rates": {"EUR": 0.92, "KRW": 1390.0, "USD": 1.0}}):
+        result = provider.fetch("000660.KS", "exchange_rate")
     assert result is not None
-    assert result.value == Decimal("100000000")
-    assert result.currency == "EUR"
+    expected = Decimal("0.92") / Decimal("1390")
+    assert abs(result.value - expected) < Decimal("0.0001")
+
+
+def test_debt_from_info(provider):
+    with patch.object(provider, "_get_info", return_value={"totalDebt": 5_000_000_000, "currency": "USD"}):
+        result = provider.fetch("AAPL", "debt")
+    assert result is not None
+    assert result.value == Decimal("5000000000")
+
+
+def test_cash_from_info(provider):
+    with patch.object(provider, "_get_info", return_value={"totalCash": 30_000_000_000, "currency": "USD"}):
+        result = provider.fetch("AAPL", "cash")
+    assert result is not None
+    assert result.value == Decimal("30000000000")
 
 
 def test_historical_net_income(provider):
-    financials = _make_financials(2023)
-    with patch.object(provider, "_get_financials", return_value=financials), \
+    with patch.object(provider, "_get_financials", return_value=_financials(2023)), \
          patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
         result = provider.fetch("ALV.DE", "net_income", period_type="FY", period_year=2023)
     assert result is not None
     assert result.value == Decimal("8000000")
 
 
-def test_historical_year_not_found_returns_none(provider):
-    financials = _make_financials(2023)
-    with patch.object(provider, "_get_financials", return_value=financials), \
+def test_historical_eps(provider):
+    with patch.object(provider, "_get_financials", return_value=_financials(2023)), \
          patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
-        result = provider.fetch("ALV.DE", "sales", period_type="FY", period_year=2010)
-    assert result is None
-
-
-def test_always_current_key_ignores_period(provider):
-    mock_info = {"currentPrice": 150.0, "currency": "EUR"}
-    with patch.object(provider, "_get_info", return_value=mock_info):
-        result = provider.fetch("AAPL", "stock_price", period_type="FY", period_year=2023)
+        result = provider.fetch("ALV.DE", "eps", period_type="FY", period_year=2023)
     assert result is not None
-    assert result.value == Decimal("150.0")
+    assert result.value == Decimal("5.00")
 
 
-def test_fcf_margin_not_fetched_by_yahoo(provider):
-    """Yahoo has no direct non-GAAP FCF margin field, so provider returns None."""
-    with patch.object(provider, "_get_info", return_value={"currency": "USD"}):
-        result = provider.fetch("AAPL", "fcf_margin_non_gaap", period_type="FY", period_year=2023)
-    assert result is None
+def test_historical_op_cash_flow(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("ALV.DE", "op_cash_flow", period_type="FY", period_year=2023)
+    assert result is not None
+    assert result.value == Decimal("18000000")
+
+
+def test_historical_capex_abs_value(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("ALV.DE", "capex", period_type="FY", period_year=2023)
+    assert result is not None
+    assert result.value == Decimal("3000000")
+
+
+def test_historical_dividends_abs_value(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("ALV.DE", "dividends", period_type="FY", period_year=2023)
+    assert result is not None
+    assert result.value == Decimal("2000000")
 
 
 def test_sbc_not_fetched_by_yahoo(provider):
     with patch.object(provider, "_get_info", return_value={"currency": "USD"}):
-        result = provider.fetch("AAPL", "sbc", period_type="FY", period_year=2023)
+        result = provider.fetch("AAPL", "sbc")
     assert result is None
 
 
-def test_sanity_rejects_absurd_stock_price(provider):
-    with patch.object(provider, "_get_info", return_value={"currentPrice": 5e11, "currency": "USD"}):
-        result = provider.fetch("AAPL", "stock_price")
+def test_year_not_found_returns_none(provider):
+    with patch.object(provider, "_get_financials", return_value=_financials(2023)), \
+         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
+        result = provider.fetch("ALV.DE", "net_income", period_type="FY", period_year=2010)
     assert result is None
