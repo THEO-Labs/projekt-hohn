@@ -1,18 +1,8 @@
 CURRENCY_KEYS = frozenset({
-    "stock_price",
-    "stock_price_eur",
     "market_cap",
-    "market_cap_calc",
-    "debt",
-    "cash",
-    "net_debt",
-    "ev",
     "sbc",
     "net_income",
-    "eps",
-    "eps_adj",
     "op_cash_flow",
     "capex",
     "fcf",
-    "dividends",
 })

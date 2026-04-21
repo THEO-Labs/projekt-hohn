@@ -198,23 +198,15 @@ class TestExtractResearchValue:
 # ---------------------------------------------------------------------------
 
 class TestValidateClaudeValue:
-    def test_valid_stock_price(self):
-        val = Decimal("150.00")
-        assert validate_claude_value("stock_price", val) == val
-
-    def test_negative_stock_price_rejected(self):
-        assert validate_claude_value("stock_price", Decimal("-1")) is None
-
-    def test_zero_stock_price_allowed(self):
-        assert validate_claude_value("stock_price", Decimal("0")) == Decimal("0")
-
-    def test_absurdly_large_stock_price_rejected(self):
-        assert validate_claude_value("stock_price", Decimal("2000000")) is None
-
     def test_valid_market_cap(self):
-        # Apple-size market cap
         val = Decimal("3000000000000")
         assert validate_claude_value("market_cap", val) == val
+
+    def test_negative_market_cap_rejected(self):
+        assert validate_claude_value("market_cap", Decimal("-1")) is None
+
+    def test_absurdly_large_market_cap_rejected(self):
+        assert validate_claude_value("market_cap", Decimal("2e14")) is None
 
     def test_valid_sbc(self):
         assert validate_claude_value("sbc", Decimal("1_900_000_000")) == Decimal("1900000000")
@@ -286,12 +278,12 @@ class TestYahooSanityCheck:
     def setup_method(self):
         self.provider = YahooFinanceProvider()
 
-    def test_valid_stock_price(self):
-        val = Decimal("150")
-        assert self.provider._sanity_check("stock_price", val) == val
+    def test_valid_market_cap(self):
+        val = Decimal("1000000")
+        assert self.provider._sanity_check("market_cap", val) == val
 
-    def test_negative_stock_price_rejected(self):
-        assert self.provider._sanity_check("stock_price", Decimal("-1")) is None
+    def test_negative_market_cap_rejected(self):
+        assert self.provider._sanity_check("market_cap", Decimal("-1")) is None
 
     def test_unknown_key_passes_through(self):
         val = Decimal("99999999999")
@@ -312,18 +304,18 @@ class TestYahooFetchSanityIntegration:
     def setup_method(self):
         self.provider = YahooFinanceProvider()
 
-    def test_insane_stock_price_returns_none(self):
-        mock_info = {"currentPrice": 5e11, "currency": "USD"}
+    def test_insane_market_cap_rejected(self):
+        mock_info = {"marketCap": 5e20, "currency": "USD"}
         with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "stock_price")
+            result = self.provider.fetch("TEST", "market_cap")
         assert result is None
 
-    def test_normal_stock_price_passes(self):
-        mock_info = {"currentPrice": 189.50, "currency": "USD"}
+    def test_normal_market_cap_passes(self):
+        mock_info = {"marketCap": 3_000_000_000_000, "currency": "USD"}
         with patch.object(self.provider, "_get_info", return_value=mock_info):
-            result = self.provider.fetch("TEST", "stock_price")
+            result = self.provider.fetch("TEST", "market_cap")
         assert result is not None
-        assert result.value == Decimal("189.50")
+        assert result.value == Decimal("3000000000000")
 
     def test_sales_snapshot_request_returns_none(self):
         """Sales is only fetched per-FY now; SNAPSHOT request yields None."""
@@ -339,11 +331,7 @@ class TestYahooFetchSanityIntegration:
 
 class TestSanityChecksDictCompleteness:
     def test_critical_keys_present(self):
-        required = {
-            "stock_price", "market_cap", "shares_outstanding",
-            "debt", "cash", "net_income", "eps", "eps_adj",
-            "op_cash_flow", "capex", "dividends", "sbc", "exchange_rate",
-        }
+        required = {"market_cap", "sbc", "net_income", "op_cash_flow", "capex"}
         for key in required:
             assert key in VALUE_SANITY_CHECKS, f"Missing sanity check for {key}"
 

@@ -55,21 +55,11 @@ const FALLBACK_FX_RATES: Record<string, number> = {
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
-  stock_price_eur: "Stock Price × Exchange Rate",
-  market_cap_calc: "Shares Outstanding × Stock Price",
-  net_debt: "Debt − Cash",
-  ev: "Market Cap + Net Debt",
   fcf: "Op. Cash Flow − Capex",
-  fcf_change: "(FCF[Y] / FCF[Y−1] − 1) × 100",
   ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",
-  op_cf_change: "(Op. CF[Y] / Op. CF[Y−1] − 1) × 100",
-  ev_op_cf: "EV / Op. Cash Flow",
-  pe_ltm_adj: "Stock Price / EPS adj (Vorjahr)",
-  pe_target: "Stock Price / EPS adj (Ziel-FY)",
   fcf_yield: "FCF / Market Cap × 100",
-  dividend_yield: "Dividends / Market Cap × 100",
-  peg: "PE (Ziel-FY) / NI Growth",
-  hohn_return: "FCF Yield + NI Growth − SBC / Market Cap × 100",
+  sbc_yield: "SBC / Market Cap × 100",
+  hohn_return: "FCF Yield + NI Growth − SBC Yield",
 };
 
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;

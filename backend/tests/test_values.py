@@ -66,11 +66,11 @@ def test_get_value_definitions_returns_catalog(client, db):
     data = response.json()
     assert len(data) == len(SEED_VALUES)
     keys = {item["key"] for item in data}
-    assert "stock_price" in keys
+    assert "market_cap" in keys
     assert "hohn_return" in keys
-    assert "ev" in keys
     assert "sbc" in keys
-    assert "eps_adj" in keys
+    assert "fcf" in keys
+    assert "ni_growth" in keys
 
 
 def test_get_value_definitions_ordered(client, db):
@@ -108,13 +108,13 @@ def test_refresh_with_mocked_provider(client, db):
 
         response = client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["stock_price"], "period_type": "SNAPSHOT"},
+            json={"keys": ["market_cap"], "period_type": "SNAPSHOT"},
         )
 
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
-    assert data[0]["value_key"] == "stock_price"
+    assert data[0]["value_key"] == "market_cap"
     assert data[0]["numeric_value"] == "189.500000"
     assert data[0]["currency"] == "USD"
     assert data[0]["source_name"] == "Yahoo Finance"
@@ -156,7 +156,7 @@ def test_refresh_updates_existing_value(client, db):
         mock_get_providers.return_value = [mock_provider]
         client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["stock_price"], "period_type": "SNAPSHOT"},
+            json={"keys": ["market_cap"], "period_type": "SNAPSHOT"},
         )
 
     with patch("app.values.routes.get_providers") as mock_get_providers:
@@ -165,7 +165,7 @@ def test_refresh_updates_existing_value(client, db):
         mock_get_providers.return_value = [mock_provider]
         response = client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["stock_price"], "period_type": "SNAPSHOT"},
+            json={"keys": ["market_cap"], "period_type": "SNAPSHOT"},
         )
 
     assert response.status_code == 200
@@ -208,7 +208,7 @@ def test_manual_override(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     response = client.post(
-        f"/api/companies/{cid}/values/eps_adj/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
         json={"numeric_value": "5.25", "source_name": "Manual"},
     )
     assert response.status_code == 200
@@ -250,7 +250,7 @@ def test_manual_override_prevents_refresh(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     client.post(
-        f"/api/companies/{cid}/values/stock_price/override",
+        f"/api/companies/{cid}/values/market_cap/override",
         json={"numeric_value": "999.99"},
     )
 
@@ -265,7 +265,7 @@ def test_manual_override_prevents_refresh(client, db):
         mock_get_providers.return_value = [mock_provider]
         response = client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["stock_price"], "period_type": "SNAPSHOT"},
+            json={"keys": ["market_cap"], "period_type": "SNAPSHOT"},
         )
 
     assert response.status_code == 200
@@ -302,14 +302,13 @@ def test_refresh_one_failing_provider_doesnt_crash_others(client, db):
 
         response = client.post(
             f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["stock_price", "market_cap", "shares_outstanding"], "period_type": "SNAPSHOT"},
+            json={"keys": ["market_cap", "sbc"], "period_type": "SNAPSHOT"},
         )
 
     assert response.status_code == 200
     data = response.json()
     returned_keys = {item["value_key"] for item in data}
-    assert "stock_price" in returned_keys
-    assert "shares_outstanding" in returned_keys
+    assert "sbc" in returned_keys
     assert "market_cap" not in returned_keys
 
 

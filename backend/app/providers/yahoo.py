@@ -12,50 +12,30 @@ logger = logging.getLogger(__name__)
 
 
 INFO_KEY_MAP = {
-    "stock_price": "currentPrice",
     "market_cap": "marketCap",
-    "shares_outstanding": "sharesOutstanding",
-    "debt": "totalDebt",
-    "cash": "totalCash",
 }
 
 FINANCIALS_ROWS = {
     "net_income": ["Net Income", "Net Income Common Stockholders"],
-    "eps": ["Diluted EPS", "Basic EPS"],
-    "eps_adj": ["Diluted EPS", "Basic EPS"],
 }
 
 CASHFLOW_ROWS = {
     "op_cash_flow": ["Operating Cash Flow", "Cash From Operating Activities"],
     "capex": ["Capital Expenditure", "Capital Expenditures"],
-    "dividends": ["Cash Dividends Paid", "Common Stock Dividend Paid", "Payment Of Dividends"],
 }
 
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
-    "stock_price": (0, 1e10),
     "market_cap": (0, 1e16),
-    "shares_outstanding": (0, 1e15),
-    "debt": (0, 1e15),
-    "cash": (0, 1e15),
-    "exchange_rate": (0, 1e6),
     "sbc": (0, 1e15),
     "net_income": (-1e15, 1e15),
-    "eps": (-1e7, 1e7),
-    "eps_adj": (-1e7, 1e7),
     "op_cash_flow": (-1e15, 1e15),
     "capex": (0, 1e15),
-    "dividends": (0, 1e15),
 }
 
 
 class YahooFinanceProvider:
     name = "Yahoo Finance"
-    supported_keys = (
-        set(INFO_KEY_MAP.keys())
-        | {"currency", "exchange_rate"}
-        | set(FINANCIALS_ROWS.keys())
-        | set(CASHFLOW_ROWS.keys())
-    )
+    supported_keys = set(INFO_KEY_MAP.keys()) | set(FINANCIALS_ROWS.keys()) | set(CASHFLOW_ROWS.keys())
 
     def __init__(self) -> None:
         self._ticker_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
@@ -132,10 +112,7 @@ class YahooFinanceProvider:
         except (ValueError, OverflowError):
             return None
         if fval < lo or fval > hi:
-            logger.warning(
-                "Sanity check failed for key=%s: value=%s out of [%s, %s]",
-                key, value, lo, hi,
-            )
+            logger.warning("Sanity check failed %s=%s [%s,%s]", key, value, lo, hi)
             return None
         return value
 
@@ -166,12 +143,6 @@ class YahooFinanceProvider:
     ) -> ProviderResult | None:
         source_link = f"https://finance.yahoo.com/quote/{ticker}"
 
-        if key == "currency":
-            return self._fetch_currency(ticker, source_link)
-
-        if key == "exchange_rate":
-            return self._fetch_exchange_rate(ticker, source_link)
-
         if key in ALWAYS_CURRENT_KEYS and key in INFO_KEY_MAP:
             return self._fetch_snapshot_from_info(ticker, key, source_link)
 
@@ -179,58 +150,10 @@ class YahooFinanceProvider:
             if key in FINANCIALS_ROWS:
                 return self._fetch_from_financials(ticker, key, period_year, source_link)
             if key in CASHFLOW_ROWS:
-                abs_value = key in {"capex", "dividends"}
+                abs_value = key == "capex"
                 return self._fetch_from_cashflow(ticker, key, period_year, source_link, abs_value=abs_value)
 
         return None
-
-    def _fetch_currency(self, ticker: str, source_link: str) -> ProviderResult | None:
-        info = self._get_info(ticker)
-        currency = info.get("currency")
-        if not currency:
-            return None
-        return ProviderResult(
-            value=str(currency).upper(),
-            source_name=self.name,
-            source_link=source_link,
-            currency=None,
-        )
-
-    def _fetch_exchange_rate(self, ticker: str, source_link: str) -> ProviderResult | None:
-        """Rate to convert the company's reporting currency into EUR.
-        Pulls from our Frankfurter-backed FX cache (USD-base), computes
-        EUR_per_1_unit_of(company_currency)."""
-        info = self._get_info(ticker)
-        src_currency = info.get("currency")
-        if not src_currency:
-            return None
-        src_currency = str(src_currency).upper()
-        try:
-            from app.fx.routes import _fetch_live_rates, _cache, FALLBACK_RATES
-            rates = _cache.get("rates") or _fetch_live_rates()
-            if not rates:
-                rates = FALLBACK_RATES
-            if isinstance(rates, dict) and "rates" in rates:
-                rates = rates["rates"]
-        except Exception as e:
-            logger.warning("FX rate lookup failed: %s", e)
-            return None
-        if not isinstance(rates, dict):
-            return None
-        eur_per_usd = rates.get("EUR")
-        src_per_usd = rates.get(src_currency) if src_currency != "USD" else 1.0
-        if eur_per_usd is None or src_per_usd is None or src_per_usd == 0:
-            return None
-        eur_per_src = Decimal(str(eur_per_usd)) / Decimal(str(src_per_usd))
-        value = self._sanity_check("exchange_rate", eur_per_src)
-        if value is None:
-            return None
-        return ProviderResult(
-            value=value,
-            source_name="ECB / Frankfurter",
-            source_link=source_link,
-            currency=None,
-        )
 
     def _fetch_snapshot_from_info(self, ticker: str, key: str, source_link: str) -> ProviderResult | None:
         info = self._get_info(ticker)
@@ -270,12 +193,7 @@ class YahooFinanceProvider:
                 return None
             info = self._get_info(ticker)
             currency = info.get("currency") if key in CURRENCY_KEYS else None
-            return ProviderResult(
-                value=value,
-                source_name=self.name,
-                source_link=source_link,
-                currency=currency,
-            )
+            return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
         except Exception as e:
             logger.warning("Yahoo financials fetch failed %s/%s FY%s: %s", ticker, key, period_year, e)
             return None
@@ -298,12 +216,7 @@ class YahooFinanceProvider:
                 return None
             info = self._get_info(ticker)
             currency = info.get("currency") if key in CURRENCY_KEYS else None
-            return ProviderResult(
-                value=value,
-                source_name=self.name,
-                source_link=source_link,
-                currency=currency,
-            )
+            return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
         except Exception as e:
             logger.warning("Yahoo cashflow fetch failed %s/%s FY%s: %s", ticker, key, period_year, e)
             return None
