@@ -38,7 +38,6 @@ def calculate_fy(
 
     if op_cf is not None and capex is not None:
         results["fcf"] = op_cf - capex
-    fcf = results["fcf"]
 
     if previous:
         ni_prev = previous.get("net_income")
@@ -48,15 +47,24 @@ def calculate_fy(
     market_cap = stammdaten.get("market_cap")
     sbc = stammdaten.get("sbc")
 
-    if fcf is not None and market_cap is not None and market_cap != 0:
-        results["fcf_yield"] = fcf / market_cap * Decimal("100")
+    def _effective(key: str) -> Decimal | None:
+        """Prefer freshly-computed value; fall back to the stored value
+        (e.g. manual override) so downstream ratios see an effective number."""
+        if results.get(key) is not None:
+            return results[key]
+        return current.get(key)
+
+    eff_fcf = _effective("fcf")
+    if eff_fcf is not None and market_cap is not None and market_cap != 0:
+        results["fcf_yield"] = eff_fcf / market_cap * Decimal("100")
 
     if sbc is not None and market_cap is not None and market_cap != 0:
         results["sbc_yield"] = sbc / market_cap * Decimal("100")
 
-    fcf_yield = results["fcf_yield"]
-    ni_growth = results["ni_growth"]
-    sbc_yield = results["sbc_yield"]
+    fcf_yield = _effective("fcf_yield")
+    ni_growth = _effective("ni_growth")
+    sbc_yield = _effective("sbc_yield")
+
     if fcf_yield is not None and ni_growth is not None and sbc_yield is not None:
         results["hohn_return"] = fcf_yield + ni_growth - sbc_yield
     elif fcf_yield is not None and ni_growth is not None:

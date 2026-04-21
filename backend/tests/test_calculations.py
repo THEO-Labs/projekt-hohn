@@ -72,6 +72,22 @@ def test_hohn_return_none_when_inputs_missing():
     assert calculate_fy({}, None, {})["hohn_return"] is None
 
 
+def test_hohn_return_uses_manual_ni_growth_fallback():
+    """If previous-year net_income is missing, the auto ni_growth calc yields None.
+    But if ni_growth is already stored (e.g. user set it manually), hohn_return
+    must still compute using that stored value."""
+    current = {
+        "op_cash_flow": Decimal("5444000000"),
+        "capex": Decimal("911000000"),
+        "net_income": Decimal("1748000000"),
+        "ni_growth": Decimal("35.3"),
+    }
+    stammdaten = {"market_cap": Decimal("104307122176"), "sbc": Decimal("1765000000")}
+    result = calculate_fy(current, None, stammdaten)
+    assert result["hohn_return"] is not None
+    assert abs(result["hohn_return"] - Decimal("37.95")) < Decimal("0.01")
+
+
 def test_zero_market_cap_safe():
     result = calculate_fy(
         {"op_cash_flow": Decimal("1000"), "capex": Decimal("100")},
