@@ -9,7 +9,7 @@ from app.auth.deps import current_user
 from app.auth.models import User
 from app.companies.models import Company
 from app.db import get_db
-from app.llm.claude import ANALYSIS_MODE_KEYS, call_claude
+from app.llm.claude import ANALYSIS_MODE_KEYS, FORWARD_YEAR_HINT, _is_forward_year, call_claude
 from app.llm.models import LlmConversation, LlmMessage
 from app.llm.schemas import AnalyzeResponse, ChatHistoryOut, ChatRequest
 from app.portfolios.models import Portfolio
@@ -144,8 +144,10 @@ def analyze_value(
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
     is_qualitative = vd and vd.source_type == SourceType.QUALITATIVE
 
+    is_forward = _is_forward_year(period_year) if period_type == "FY" else False
     if period_type == "FY" and period_year:
-        period_str = f"Geschäftsjahr {period_year} (FY{period_year})"
+        marker = "e" if is_forward else ""
+        period_str = f"Geschäftsjahr {period_year}{marker} (FY{period_year}{marker})"
     elif period_type == "LTM":
         period_str = "letzte 12 Monate (LTM)"
     elif period_type == "TTM":
@@ -159,6 +161,15 @@ def analyze_value(
         initial_prompt = f"Bewerte den folgenden Aspekt für {company.name}:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begründung."
         mode = "qualitative"
     elif is_analysis:
+        forward_note = ""
+        if is_forward and period_year is not None:
+            forward_note = (
+                f"\n\nHINWEIS: {period_str} liegt in der Zukunft — die Inputs im "
+                f"Kontext sind Schaetzungen (IR-Guidance / Analysten-Konsens / "
+                f"Trend-Extrapolation). Kennzeichne unsichere Komponenten "
+                f"entsprechend und diskutiere die Qualitaet der Guidance "
+                f"(was hat das Management selbst bestaetigt vs. was ist Model-Annahme)."
+            )
         initial_prompt = (
             f"Zerlege und erklaere die Kennzahl '{label}' fuer {company.name} "
             f"({company.ticker}) im Zeitraum {period_str}.\n\n"
@@ -169,6 +180,7 @@ def analyze_value(
             f"Falls fuer die Ursachen-Analyse weitere Hintergrundinfos noetig sind "
             f"(z.B. einmalige Tax-Items, Restructuring, Guidance-Kommentare), "
             f"nutze web_search auf der IR-Seite / im 10-K."
+            f"{forward_note}"
         )
         mode = "analysis"
     else:

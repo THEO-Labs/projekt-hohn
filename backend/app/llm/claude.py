@@ -1,5 +1,6 @@
 import re
 import logging
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 import anthropic
@@ -8,6 +9,36 @@ from app.config import settings
 from app.llm.rate_limiter import claude_limiter
 
 logger = logging.getLogger(__name__)
+
+
+def _is_forward_year(period_year: int | None) -> bool:
+    """True if no 10-K has been filed yet for the given FY.
+    Uses `>=` because the FY XXXX report typically lands in Feb XXXX+1, so
+    during most of calendar year XXXX the report is still pending and the
+    value must come from IR Guidance / analyst consensus."""
+    if period_year is None:
+        return False
+    return period_year >= date.today().year
+
+
+FORWARD_YEAR_HINT = (
+    "DIESES JAHR LIEGT IN DER ZUKUNFT: Das Unternehmen hat dafuer NOCH KEINEN "
+    "10-K / 20-F veroeffentlicht. Nutze stattdessen in dieser Reihenfolge:\n"
+    "1. IR-Guidance aus dem letzten Q4/Q1-Earnings-Call Transcript oder "
+    "Press Release (Management-Outlook).\n"
+    "2. Investor Presentations / Guidance-Folien (z.B. 'FY{YEAR} Outlook').\n"
+    "3. Analysten-Konsens (Yahoo Finance Analyst Estimates, Factset, "
+    "Refinitiv, Seeking Alpha Consensus).\n\n"
+    "Die QUELLE muss explizit als 'Guidance FY{YEAR}' oder "
+    "'Analysten-Konsens FY{YEAR}' gekennzeichnet sein — NICHT einfach "
+    "als 'Geschaeftsbericht' ausgeben.\n\n"
+    "Gut prognostizierbar (verlaessliche Guidance): FCF, Net Income, Sales, "
+    "Dividenden-Policy, Buyback-Authorization.\n"
+    "Kaum prognostizierbar (selten gegeben): Balance-Sheet-Positionen (Cash, "
+    "Debt, Marketable Securities, Leases). Bei diesen darfst du die letzten "
+    "verfuegbaren Quartalswerte als 'Approximation per letztem Q' ausweisen "
+    "oder WERT: NICHT_GEFUNDEN antworten — kein erraten."
+)
 
 QUALITATIVE_SYSTEM_PROMPT = """Du bist ein erfahrener Finanzanalyst bei einem Investmentunternehmen.
 
@@ -386,29 +417,38 @@ def research_value(
     value_key: str | None = None,
 ) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
     """Returns (value, source_name, source_url, user_prompt, assistant_response)."""
+    is_forward = _is_forward_year(period_year)
     if period_type == "FY" and period_year:
-        period_str = f"Geschaeftsjahr {period_year} (FY{period_year})"
+        marker = "e" if is_forward else ""
+        period_str = f"Geschaeftsjahr {period_year}{marker} (FY{period_year}{marker})"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
 
     hint = KEY_RESEARCH_HINTS.get(value_key or "", "")
     hint_block = f"\n\nKontext zur Datenquelle:\n{hint}" if hint else ""
 
+    if is_forward:
+        forward_block = "\n\n" + FORWARD_YEAR_HINT.replace("{YEAR}", str(period_year))
+        historical_constraint = ""
+    else:
+        forward_block = ""
+        historical_constraint = (
+            " Keine TTM/LTM/Trailing-Werte, keine Forward-Guidance wenn ein "
+            "historisches Jahr gefragt ist, keine Schaetzungen aus "
+            "Quartalsberichten."
+        )
+
     user_prompt = (
         f"Unternehmen: {company_name} ({ticker}, {currency})\n"
         f"Gesuchte Kennzahl: {value_label}\n"
         f"Zeitraum: {period_str}\n\n"
-        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert fuer {period_str}. "
-        f"Keine TTM/LTM/Trailing-Werte, keine Forward-Guidance wenn ein "
-        f"historisches Jahr gefragt ist, keine Schaetzungen aus "
-        f"Quartalsberichten. Wenn du fuer {period_str} keinen "
-        f"verifizierbaren Wert aus dem Jahresabschluss findest, antworte "
+        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert fuer {period_str}.{historical_constraint} "
+        f"Wenn du fuer {period_str} keinen verifizierbaren Wert findest, antworte "
         f"mit WERT: NICHT_GEFUNDEN.\n\n"
         f"Nutze das Web-Search-Tool um die IR-Seite des Unternehmens, "
         f"Annual-Report-PDFs und SEC-Filings aktiv zu durchsuchen. "
-        f"Verlasse dich NICHT nur auf dein Gedaechtnis — insbesondere "
-        f"fuer das laufende oder letzte Geschaeftsjahr ist die tatsaechliche "
-        f"Veroeffentlichung ausschlaggebend."
+        f"Verlasse dich NICHT nur auf dein Gedaechtnis."
+        f"{forward_block}"
         f"{hint_block}"
     )
 
