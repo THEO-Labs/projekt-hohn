@@ -325,6 +325,53 @@ def _process_one_key(
         db.rollback()
 
 
+_PREV_YEAR_GROWTH_KEYS = ("net_income", "op_cash_flow", "capex", "debt", "cash")
+
+
+def _ensure_previous_year_inputs(
+    db: Session,
+    ticker: str,
+    company,
+    company_id: UUID,
+    period_year: int,
+) -> None:
+    """Fetch previous-FY per-input values if they are not yet persisted.
+    Required so ni_growth and net_debt_change can be computed for period_year."""
+    prev_year = period_year - 1
+
+    existing = db.query(CompanyValue).filter(
+        CompanyValue.company_id == company_id,
+        CompanyValue.period_type == "FY",
+        CompanyValue.period_year == prev_year,
+        CompanyValue.value_key.in_(_PREV_YEAR_GROWTH_KEYS),
+    ).all()
+    existing_keys = {r.value_key for r in existing if r.numeric_value is not None}
+    missing = [k for k in _PREV_YEAR_GROWTH_KEYS if k not in existing_keys]
+    if not missing:
+        return
+
+    class _PrevPayload:
+        period_type = "FY"
+        period_year = prev_year
+
+    prev_payload = _PrevPayload()
+    dummy_updated: list = []
+    for key in missing:
+        try:
+            _process_one_key(
+                db=db,
+                key=key,
+                ticker=ticker,
+                company=company,
+                company_id=company_id,
+                payload=prev_payload,
+                updated=dummy_updated,
+            )
+        except Exception as e:
+            logger.warning("Prev-year prefetch failed for %s/%s FY%s: %s", ticker, key, prev_year, e)
+            db.rollback()
+
+
 @values_router.get("/{company_id}/refresh-status")
 def get_refresh_status(
     company_id: UUID,
@@ -380,6 +427,10 @@ def refresh_company_values(
                 db.rollback()
 
         db.commit()
+
+        if payload.period_type == "FY" and payload.period_year is not None:
+            _ensure_previous_year_inputs(db, ticker, company, company_id, payload.period_year)
+            db.commit()
 
         _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
         db.commit()

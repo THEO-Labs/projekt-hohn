@@ -199,8 +199,8 @@ def test_get_company_values_after_refresh(client, db):
     response = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 1
-    assert data[0]["value_key"] == "net_income"
+    keys = {item["value_key"] for item in data}
+    assert "net_income" in keys
 
 
 def test_manual_override(client, db):
