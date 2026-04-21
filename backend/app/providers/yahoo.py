@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 INFO_KEY_MAP = {
+    "stock_price": "currentPrice",
     "market_cap": "marketCap",
     "shares_outstanding": "sharesOutstanding",
 }
@@ -21,41 +22,45 @@ FINANCIALS_ROWS = {
 }
 
 BALANCE_SHEET_ROWS = {
-    "debt": ["Total Debt", "Long Term Debt", "Net Debt"],
-}
-
-# Cash = Cash & Equivalents + Short-Term Marketable Securities + Long-Term Marketable Securities.
-# Pro Komponente wird die erste matchende Zeile genommen; fehlende Zeilen zaehlen als 0.
-# Die LT-Liste priorisiert "marktfaehige Wertpapiere" vor "Investments And Advances",
-# da letztere bei manchen Firmen auch illiquide Equity-Beteiligungen enthalten.
-CASH_COMPONENTS: list[list[str]] = [
-    ["Cash And Cash Equivalents", "Cash Financial"],
-    ["Other Short Term Investments", "Short Term Investments"],
-    [
+    "cash_and_equivalents": ["Cash And Cash Equivalents", "Cash Financial"],
+    "marketable_securities_st": ["Other Short Term Investments", "Short Term Investments"],
+    "marketable_securities_lt": [
         "Available For Sale Securities",
         "Investmentin Financial Assets",
         "Long Term Marketable Securities",
         "Non Current Marketable Securities",
         "Long Term Investments",
-        "Other Investments",
     ],
-]
+    "long_term_debt": ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"],
+    "lease_liabilities": [
+        "Long Term Capital Lease Obligation",
+        "Capital Lease Obligations",
+        "Operating Lease Liabilities Non Current",
+        "Current Capital Lease Obligation",
+    ],
+}
 
 CASHFLOW_ROWS = {
-    "op_cash_flow": ["Operating Cash Flow", "Cash From Operating Activities"],
     "fcf": ["Free Cash Flow"],
     "sbc": ["Stock Based Compensation", "Share Based Compensation"],
+    "buyback_volume": ["Repurchase Of Capital Stock", "Common Stock Repurchase", "Repurchase Of Common Stock"],
+    "dividends": ["Cash Dividends Paid", "Common Stock Dividend Paid"],
 }
 
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
+    "stock_price": (0, 1e10),
     "market_cap": (0, 1e16),
     "shares_outstanding": (0, 1e15),
     "sbc": (0, 1e15),
     "net_income": (-1e15, 1e15),
-    "op_cash_flow": (-1e15, 1e15),
     "fcf": (-1e15, 1e15),
-    "debt": (0, 1e15),
-    "cash": (0, 1e15),
+    "cash_and_equivalents": (0, 1e15),
+    "marketable_securities_st": (0, 1e15),
+    "marketable_securities_lt": (0, 1e15),
+    "long_term_debt": (0, 1e15),
+    "lease_liabilities": (0, 1e15),
+    "buyback_volume": (0, 1e15),
+    "dividends": (0, 1e15),
 }
 
 
@@ -187,42 +192,14 @@ class YahooFinanceProvider:
         if period_type == "FY" and period_year is not None:
             if key in FINANCIALS_ROWS:
                 return self._fetch_from_financials(ticker, key, period_year, source_link)
-            if key == "cash":
-                return self._fetch_cash_summed(ticker, period_year, source_link)
             if key in BALANCE_SHEET_ROWS:
+                abs_value = False
                 return self._fetch_from_balance_sheet(ticker, key, period_year, source_link)
             if key in CASHFLOW_ROWS:
-                return self._fetch_from_cashflow(ticker, key, period_year, source_link)
+                abs_value = key in {"buyback_volume", "dividends"}
+                return self._fetch_from_cashflow(ticker, key, period_year, source_link, abs_value=abs_value)
 
         return None
-
-    def _fetch_cash_summed(self, ticker: str, period_year: int, source_link: str) -> ProviderResult | None:
-        """Cash = Cash & Equivalents + Short-Term Marketable Securities + Long-Term Marketable Securities."""
-        try:
-            df = self._get_balance_sheet(ticker)
-            if df is None or df.empty:
-                return None
-            col = self._find_year_column(df, period_year)
-            if col is None:
-                return None
-            total = Decimal("0")
-            components_found = 0
-            for component_rows in CASH_COMPONENTS:
-                value = self._get_row_value(df, col, component_rows)
-                if value is not None:
-                    total += value
-                    components_found += 1
-            if components_found == 0:
-                return None
-            total = self._sanity_check("cash", total)
-            if total is None:
-                return None
-            info = self._get_info(ticker)
-            currency = info.get("currency") if "cash" in CURRENCY_KEYS else None
-            return ProviderResult(value=total, source_name=self.name, source_link=source_link, currency=currency)
-        except Exception as e:
-            logger.warning("Yahoo cash-sum fetch failed %s FY%s: %s", ticker, period_year, e)
-            return None
 
     def _fetch_from_balance_sheet(self, ticker: str, key: str, period_year: int, source_link: str) -> ProviderResult | None:
         try:

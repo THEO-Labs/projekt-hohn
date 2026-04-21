@@ -332,7 +332,13 @@ class TestYahooFetchSanityIntegration:
 
 class TestSanityChecksDictCompleteness:
     def test_critical_keys_present(self):
-        required = {"market_cap", "sbc", "net_income", "op_cash_flow", "fcf", "debt", "cash"}
+        required = {
+            "market_cap", "stock_price", "shares_outstanding",
+            "sbc", "net_income", "fcf",
+            "cash_and_equivalents", "marketable_securities_st", "marketable_securities_lt",
+            "long_term_debt", "lease_liabilities",
+            "buyback_volume", "dividends",
+        }
         for key in required:
             assert key in VALUE_SANITY_CHECKS, f"Missing sanity check for {key}"
 

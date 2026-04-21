@@ -12,121 +12,125 @@ def provider():
     return YahooFinanceProvider()
 
 
-def _financials(year=2023):
-    dates = [pd.Timestamp(f"{year}-12-31"), pd.Timestamp(f"{year - 1}-12-31")]
+def _balance_sheet(year=2025):
+    dates = [pd.Timestamp(f"{year}-12-31")]
     return pd.DataFrame(
-        {dates[0]: [8_000_000], dates[1]: [7_000_000]},
+        {dates[0]: [3_726_000_000, 2_558_000_000, 3_771_000_000, 1_491_000_000, 800_000_000]},
+        index=[
+            "Cash And Cash Equivalents",
+            "Other Short Term Investments",
+            "Available For Sale Securities",
+            "Long Term Debt",
+            "Long Term Capital Lease Obligation",
+        ],
+    )
+
+
+def _cashflow(year=2025):
+    dates = [pd.Timestamp(f"{year}-12-31")]
+    return pd.DataFrame(
+        {dates[0]: [4_636_000_000, 1_955_000_000, -1_840_000_000, 0]},
+        index=[
+            "Free Cash Flow",
+            "Stock Based Compensation",
+            "Repurchase Of Capital Stock",
+            "Cash Dividends Paid",
+        ],
+    )
+
+
+def _financials(year=2025):
+    dates = [pd.Timestamp(f"{year}-12-31")]
+    return pd.DataFrame(
+        {dates[0]: [1_748_000_000]},
         index=["Net Income"],
     )
 
 
-def _cashflow(year=2023):
-    dates = [pd.Timestamp(f"{year}-12-31")]
-    return pd.DataFrame(
-        {dates[0]: [18_000_000, 15_000_000]},
-        index=["Operating Cash Flow", "Free Cash Flow"],
-    )
-
-
-def _balance_sheet(year=2023):
-    dates = [pd.Timestamp(f"{year}-12-31")]
-    return pd.DataFrame(
-        {dates[0]: [3_726_000_000, 2_558_000_000, 3_771_000_000, 2_291_000_000]},
-        index=["Cash And Cash Equivalents", "Other Short Term Investments", "Long Term Investments", "Total Debt"],
-    )
+def test_stock_price_snapshot(provider):
+    with patch.object(provider, "_get_info", return_value={"currentPrice": 100.97, "currency": "USD"}):
+        result = provider.fetch("NOW", "stock_price")
+    assert result is not None
+    assert result.value == Decimal("100.97")
 
 
 def test_market_cap_snapshot(provider):
-    with patch.object(provider, "_get_info", return_value={"marketCap": 3_000_000_000_000, "currency": "USD"}):
-        result = provider.fetch("AAPL", "market_cap")
-    assert result is not None
-    assert result.value == Decimal("3000000000000")
+    with patch.object(provider, "_get_info", return_value={"marketCap": 101_100_000_000, "currency": "USD"}):
+        result = provider.fetch("NOW", "market_cap")
+    assert result.value == Decimal("101100000000")
 
 
 def test_shares_outstanding_snapshot(provider):
     with patch.object(provider, "_get_info", return_value={"sharesOutstanding": 1_036_000_000, "currency": "USD"}):
         result = provider.fetch("NOW", "shares_outstanding")
-    assert result is not None
     assert result.value == Decimal("1036000000")
-    assert result.currency is None  # count, not currency
 
 
-def test_historical_net_income(provider):
-    with patch.object(provider, "_get_financials", return_value=_financials(2023)), \
-         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
-        result = provider.fetch("ALV.DE", "net_income", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("8000000")
-
-
-def test_historical_op_cash_flow(provider):
-    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
-         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
-        result = provider.fetch("ALV.DE", "op_cash_flow", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("18000000")
-
-
-def test_historical_fcf(provider):
-    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
-         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
-        result = provider.fetch("ALV.DE", "fcf", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("15000000")
-
-
-def test_capex_not_fetched_by_yahoo(provider):
-    """Capex is derived from OpCF − FCF now; provider should not fetch it directly."""
-    with patch.object(provider, "_get_cashflow", return_value=_cashflow(2023)), \
-         patch.object(provider, "_get_info", return_value={"currency": "EUR"}):
-        result = provider.fetch("ALV.DE", "capex", period_type="FY", period_year=2023)
-    assert result is None
-
-
-def test_historical_debt(provider):
-    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet(2023)), \
+def test_cash_and_equivalents_per_fy(provider):
+    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet()), \
          patch.object(provider, "_get_info", return_value={"currency": "USD"}):
-        result = provider.fetch("NOW", "debt", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("2291000000")
+        result = provider.fetch("NOW", "cash_and_equivalents", period_type="FY", period_year=2025)
+    assert result.value == Decimal("3726000000")
 
 
-def test_cash_sums_three_components(provider):
-    """Cash = Cash&Eq (3.726) + ST MktSec (2.558) + LT MktSec (3.771) = 10.055B"""
-    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet(2023)), \
+def test_marketable_securities_st(provider):
+    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet()), \
          patch.object(provider, "_get_info", return_value={"currency": "USD"}):
-        result = provider.fetch("NOW", "cash", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("10055000000")
+        result = provider.fetch("NOW", "marketable_securities_st", period_type="FY", period_year=2025)
+    assert result.value == Decimal("2558000000")
 
 
-def test_cash_partial_components(provider):
-    """If only cash-equivalents present, still return that (no LT/ST MktSec)."""
-    df = pd.DataFrame(
-        {pd.Timestamp("2023-12-31"): [5_000_000_000]},
-        index=["Cash And Cash Equivalents"],
-    )
-    with patch.object(provider, "_get_balance_sheet", return_value=df), \
+def test_marketable_securities_lt(provider):
+    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet()), \
          patch.object(provider, "_get_info", return_value={"currency": "USD"}):
-        result = provider.fetch("NOW", "cash", period_type="FY", period_year=2023)
-    assert result is not None
-    assert result.value == Decimal("5000000000")
+        result = provider.fetch("NOW", "marketable_securities_lt", period_type="FY", period_year=2025)
+    assert result.value == Decimal("3771000000")
 
 
-def test_sbc_from_cashflow(provider):
-    df = pd.DataFrame(
-        {pd.Timestamp("2025-12-31"): [1_955_000_000]},
-        index=["Stock Based Compensation"],
-    )
-    with patch.object(provider, "_get_cashflow", return_value=df), \
+def test_long_term_debt(provider):
+    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet()), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+        result = provider.fetch("NOW", "long_term_debt", period_type="FY", period_year=2025)
+    assert result.value == Decimal("1491000000")
+
+
+def test_lease_liabilities(provider):
+    with patch.object(provider, "_get_balance_sheet", return_value=_balance_sheet()), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+        result = provider.fetch("NOW", "lease_liabilities", period_type="FY", period_year=2025)
+    assert result.value == Decimal("800000000")
+
+
+def test_fcf_per_fy(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow()), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+        result = provider.fetch("NOW", "fcf", period_type="FY", period_year=2025)
+    assert result.value == Decimal("4636000000")
+
+
+def test_sbc_per_fy(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow()), \
          patch.object(provider, "_get_info", return_value={"currency": "USD"}):
         result = provider.fetch("NOW", "sbc", period_type="FY", period_year=2025)
-    assert result is not None
     assert result.value == Decimal("1955000000")
 
 
-def test_snapshot_sbc_returns_none(provider):
-    """SBC is per-FY; snapshot request without period_year returns None."""
-    with patch.object(provider, "_get_info", return_value={"currency": "USD"}):
-        result = provider.fetch("NOW", "sbc")
+def test_buyback_volume_abs(provider):
+    with patch.object(provider, "_get_cashflow", return_value=_cashflow()), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+        result = provider.fetch("NOW", "buyback_volume", period_type="FY", period_year=2025)
+    assert result.value == Decimal("1840000000")
+
+
+def test_net_income_per_fy(provider):
+    with patch.object(provider, "_get_financials", return_value=_financials()), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+        result = provider.fetch("NOW", "net_income", period_type="FY", period_year=2025)
+    assert result.value == Decimal("1748000000")
+
+
+def test_year_not_found_returns_none(provider):
+    with patch.object(provider, "_get_financials", return_value=_financials(2025)), \
+         patch.object(provider, "_get_info", return_value={"currency": "USD"}):
+        result = provider.fetch("NOW", "net_income", period_type="FY", period_year=2010)
     assert result is None

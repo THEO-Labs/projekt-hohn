@@ -67,10 +67,11 @@ def test_get_value_definitions_returns_catalog(client, db):
     assert len(data) == len(SEED_VALUES)
     keys = {item["key"] for item in data}
     assert "market_cap" in keys
-    assert "hohn_return" in keys
+    assert "hohn_return_simple" in keys
+    assert "hohn_return_detailed" in keys
     assert "sbc" in keys
-    assert "fcf" in keys
-    assert "ni_growth" in keys
+    assert "cash_and_equivalents" in keys
+    assert "net_buyback_yield" in keys
 
 
 def test_get_value_definitions_ordered(client, db):
@@ -223,7 +224,7 @@ def test_manual_override_zero_persists(client, db):
     _user, _pid, cid = _login_with_company(client, db)
 
     response = client.post(
-        f"/api/companies/{cid}/values/capex/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/buyback_volume/override?period_type=FY&period_year=2024",
         json={"numeric_value": 0, "source_name": "Manuell"},
     )
     assert response.status_code == 200
@@ -232,7 +233,7 @@ def test_manual_override_zero_persists(client, db):
     assert Decimal(data["numeric_value"]) == Decimal("0")
 
     overwrite = client.post(
-        f"/api/companies/{cid}/values/capex/override?period_type=FY&period_year=2024",
+        f"/api/companies/{cid}/values/buyback_volume/override?period_type=FY&period_year=2024",
         json={"numeric_value": 0, "source_name": "Manuell"},
     )
     assert overwrite.status_code == 200
@@ -240,7 +241,7 @@ def test_manual_override_zero_persists(client, db):
 
     fetched = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert fetched.status_code == 200
-    rows = [r for r in fetched.json() if r["value_key"] == "capex"]
+    rows = [r for r in fetched.json() if r["value_key"] == "buyback_volume"]
     assert len(rows) == 1
     assert Decimal(rows[0]["numeric_value"]) == Decimal("0")
 

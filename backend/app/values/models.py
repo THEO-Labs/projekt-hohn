@@ -13,8 +13,13 @@ from app.db import Base
 
 class ValueCategory(str, enum.Enum):
     STAMMDATEN = "STAMMDATEN"
-    INPUTS = "INPUTS"
-    CALCULATED = "CALCULATED"
+    CASH_DEBT = "CASH_DEBT"
+    BUYBACKS_SBC = "BUYBACKS_SBC"
+    FCF = "FCF"
+    NI_GROWTH = "NI_GROWTH"
+    DELTA_ND = "DELTA_ND"
+    DIVIDENDS = "DIVIDENDS"
+    HOHN_RETURN = "HOHN_RETURN"
 
 
 class SourceType(str, enum.Enum):

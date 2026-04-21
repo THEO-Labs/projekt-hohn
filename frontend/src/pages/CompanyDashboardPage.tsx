@@ -23,18 +23,31 @@ import { AnalysisDrawer } from "@/components/AnalysisDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 import { getFxRates } from "@/api/fx";
 
-const CATEGORY_ORDER = ["STAMMDATEN", "INPUTS", "CALCULATED"];
+const CATEGORY_ORDER = [
+  "STAMMDATEN", "CASH_DEBT", "BUYBACKS_SBC", "FCF",
+  "NI_GROWTH", "DELTA_ND", "DIVIDENDS", "HOHN_RETURN",
+];
 
 const CATEGORY_LABELS: Record<string, string> = {
-  STAMMDATEN: "Inputs — Fix (1× pro Firma)",
-  INPUTS: "Inputs — pro FY",
-  CALCULATED: "Berechnete Kennzahlen",
+  STAMMDATEN: "Stammdaten",
+  CASH_DEBT: "Cash & Debt",
+  BUYBACKS_SBC: "Buybacks & SBC",
+  FCF: "FCF Yield",
+  NI_GROWTH: "Net Income Growth",
+  DELTA_ND: "ΔNet Debt",
+  DIVIDENDS: "Dividends",
+  HOHN_RETURN: "Hohn-Rendite",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
   STAMMDATEN: "bg-slate-100 text-slate-700 border-slate-200",
-  INPUTS: "bg-blue-50 text-blue-700 border-blue-200",
-  CALCULATED: "bg-sky-100 text-sky-800 border-sky-300",
+  CASH_DEBT: "bg-blue-50 text-blue-700 border-blue-200",
+  BUYBACKS_SBC: "bg-amber-50 text-amber-700 border-amber-200",
+  FCF: "bg-teal-50 text-teal-700 border-teal-200",
+  NI_GROWTH: "bg-violet-50 text-violet-700 border-violet-200",
+  DELTA_ND: "bg-rose-50 text-rose-700 border-rose-200",
+  DIVIDENDS: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  HOHN_RETURN: "bg-sky-100 text-sky-800 border-sky-300",
 };
 
 const PERIOD_OPTIONS = [
@@ -55,16 +68,21 @@ const FALLBACK_FX_RATES: Record<string, number> = {
 const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
-  capex: "Op. Cash Flow − FCF",
-  net_debt: "Debt − Cash",
-  cash: "Cash & Equivalents + Mkt Sec ST + LT",
-  ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",
-  fcf_yield: "FCF / Market Cap × 100",
+  market_cap_calc: "Stock Price × Shares Outstanding",
+  cash_sum: "Cash & Equivalents + Mkt Sec ST + LT",
+  debt_sum: "Lease Liabilities + Long-term Debt",
+  net_debt: "Debt Sum − Cash Sum",
+  ev: "Market Cap + Net Debt",
+  net_buyback: "Buyback-Volumen − SBC",
   sbc_yield: "SBC / Market Cap × 100",
-  net_debt_change: "Net Debt[Y−1] − Net Debt[Y] (>0 = Schulden-Abbau)",
-  net_debt_change_pct: "Net Debt Change / Market Cap × 100",
-  hohn_return_base: "FCF Yield + NI Growth − SBC / MCap",
-  hohn_return: "Hohn Return (Base) + Net Debt Change / MCap",
+  net_buyback_yield: "Net Buyback / Market Cap × 100",
+  fcf_yield: "FCF / Market Cap × 100",
+  ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",
+  net_debt_change: "Net Debt[Y−1] − Net Debt[Y]",
+  net_debt_change_pct: "ΔNet Debt / Market Cap × 100",
+  dividend_yield: "Dividends / Market Cap × 100",
+  hohn_return_simple: "FCF Yield + NI Growth − SBC/MCap + ΔND/MCap",
+  hohn_return_detailed: "Dividend Yield + NI Growth + Net Buyback/MCap + ΔND/MCap",
 };
 
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
