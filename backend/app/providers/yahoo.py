@@ -26,10 +26,19 @@ BALANCE_SHEET_ROWS = {
 
 # Cash = Cash & Equivalents + Short-Term Marketable Securities + Long-Term Marketable Securities.
 # Pro Komponente wird die erste matchende Zeile genommen; fehlende Zeilen zaehlen als 0.
+# Die LT-Liste priorisiert "marktfaehige Wertpapiere" vor "Investments And Advances",
+# da letztere bei manchen Firmen auch illiquide Equity-Beteiligungen enthalten.
 CASH_COMPONENTS: list[list[str]] = [
     ["Cash And Cash Equivalents", "Cash Financial"],
     ["Other Short Term Investments", "Short Term Investments"],
-    ["Long Term Investments", "Other Investments", "Investments And Advances"],
+    [
+        "Available For Sale Securities",
+        "Investmentin Financial Assets",
+        "Long Term Marketable Securities",
+        "Non Current Marketable Securities",
+        "Long Term Investments",
+        "Other Investments",
+    ],
 ]
 
 CASHFLOW_ROWS = {
