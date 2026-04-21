@@ -14,8 +14,6 @@ logger = logging.getLogger(__name__)
 INFO_KEY_MAP = {
     "market_cap": "marketCap",
     "shares_outstanding": "sharesOutstanding",
-    "debt": "totalDebt",
-    "cash": "totalCash",
 }
 
 FINANCIALS_ROWS = {
@@ -24,8 +22,15 @@ FINANCIALS_ROWS = {
 
 BALANCE_SHEET_ROWS = {
     "debt": ["Total Debt", "Long Term Debt", "Net Debt"],
-    "cash": ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments", "Cash And Short Term Investments"],
 }
+
+# Cash = Cash & Equivalents + Short-Term Marketable Securities + Long-Term Marketable Securities.
+# Pro Komponente wird die erste matchende Zeile genommen; fehlende Zeilen zaehlen als 0.
+CASH_COMPONENTS: list[list[str]] = [
+    ["Cash And Cash Equivalents", "Cash Financial"],
+    ["Other Short Term Investments", "Short Term Investments"],
+    ["Long Term Investments", "Other Investments", "Investments And Advances"],
+]
 
 CASHFLOW_ROWS = {
     "op_cash_flow": ["Operating Cash Flow", "Cash From Operating Activities"],
@@ -172,6 +177,8 @@ class YahooFinanceProvider:
         if period_type == "FY" and period_year is not None:
             if key in FINANCIALS_ROWS:
                 return self._fetch_from_financials(ticker, key, period_year, source_link)
+            if key == "cash":
+                return self._fetch_cash_summed(ticker, period_year, source_link)
             if key in BALANCE_SHEET_ROWS:
                 return self._fetch_from_balance_sheet(ticker, key, period_year, source_link)
             if key in CASHFLOW_ROWS:
@@ -179,6 +186,34 @@ class YahooFinanceProvider:
                 return self._fetch_from_cashflow(ticker, key, period_year, source_link, abs_value=abs_value)
 
         return None
+
+    def _fetch_cash_summed(self, ticker: str, period_year: int, source_link: str) -> ProviderResult | None:
+        """Cash = Cash & Equivalents + Short-Term Marketable Securities + Long-Term Marketable Securities."""
+        try:
+            df = self._get_balance_sheet(ticker)
+            if df is None or df.empty:
+                return None
+            col = self._find_year_column(df, period_year)
+            if col is None:
+                return None
+            total = Decimal("0")
+            components_found = 0
+            for component_rows in CASH_COMPONENTS:
+                value = self._get_row_value(df, col, component_rows)
+                if value is not None:
+                    total += value
+                    components_found += 1
+            if components_found == 0:
+                return None
+            total = self._sanity_check("cash", total)
+            if total is None:
+                return None
+            info = self._get_info(ticker)
+            currency = info.get("currency") if "cash" in CURRENCY_KEYS else None
+            return ProviderResult(value=total, source_name=self.name, source_link=source_link, currency=currency)
+        except Exception as e:
+            logger.warning("Yahoo cash-sum fetch failed %s FY%s: %s", ticker, period_year, e)
+            return None
 
     def _fetch_from_balance_sheet(self, ticker: str, key: str, period_year: int, source_link: str) -> ProviderResult | None:
         try:

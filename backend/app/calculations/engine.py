@@ -10,6 +10,8 @@ FY_CALC_KEYS = {
     "fcf_yield",
     "sbc_yield",
     "net_debt_change",
+    "net_debt_change_pct",
+    "hohn_return_base",
     "hohn_return",
 }
 
@@ -32,6 +34,8 @@ def calculate_fy(
         "fcf_yield": None,
         "sbc_yield": None,
         "net_debt_change": None,
+        "net_debt_change_pct": None,
+        "hohn_return_base": None,
         "hohn_return": None,
     }
 
@@ -40,6 +44,7 @@ def calculate_fy(
     debt = current.get("debt")
     cash = current.get("cash")
     ni = current.get("net_income")
+    sbc = current.get("sbc")
 
     if op_cf is not None and capex is not None:
         results["fcf"] = op_cf - capex
@@ -53,11 +58,8 @@ def calculate_fy(
             results["ni_growth"] = (ni / ni_prev - Decimal("1")) * Decimal("100")
 
     market_cap = stammdaten.get("market_cap")
-    sbc = stammdaten.get("sbc")
 
     def _effective(key: str) -> Decimal | None:
-        """Prefer freshly-computed value; fall back to stored value so a
-        manually-overridden component still drives downstream ratios."""
         if results.get(key) is not None:
             return results[key]
         return current.get(key)
@@ -69,30 +71,35 @@ def calculate_fy(
     if sbc is not None and market_cap is not None and market_cap != 0:
         results["sbc_yield"] = sbc / market_cap * Decimal("100")
 
-    # Net Debt Change: debt reduction counts positive toward Hohn Return.
-    # formula = (net_debt[Y-1] - net_debt[Y]) / market_cap * 100
+    # Net Debt Change: prev minus curr (positive when debt decreased / cash grew).
+    # This sign convention makes Hohn Return += ND_change_pct intuitive —
+    # cash cushion growth contributes positively to shareholder return.
     eff_net_debt = _effective("net_debt")
-    if previous and eff_net_debt is not None and market_cap is not None and market_cap != 0:
+    if previous and eff_net_debt is not None:
         prev_debt = previous.get("debt")
         prev_cash = previous.get("cash")
         prev_net_debt = previous.get("net_debt")
         if prev_net_debt is None and prev_debt is not None and prev_cash is not None:
             prev_net_debt = prev_debt - prev_cash
         if prev_net_debt is not None:
-            results["net_debt_change"] = (prev_net_debt - eff_net_debt) / market_cap * Decimal("100")
+            results["net_debt_change"] = prev_net_debt - eff_net_debt
+            if market_cap is not None and market_cap != 0:
+                results["net_debt_change_pct"] = results["net_debt_change"] / market_cap * Decimal("100")
 
     fcf_yield = _effective("fcf_yield")
     ni_growth = _effective("ni_growth")
     sbc_yield = _effective("sbc_yield")
-    net_debt_change = _effective("net_debt_change")
+    nd_change_pct = _effective("net_debt_change_pct")
 
-    terms = [fcf_yield, ni_growth, sbc_yield, net_debt_change]
     if fcf_yield is not None and ni_growth is not None:
-        total = fcf_yield + ni_growth
+        base = fcf_yield + ni_growth
         if sbc_yield is not None:
-            total -= sbc_yield
-        if net_debt_change is not None:
-            total += net_debt_change
-        results["hohn_return"] = total
+            base -= sbc_yield
+        results["hohn_return_base"] = base
+
+        full = base
+        if nd_change_pct is not None:
+            full += nd_change_pct
+        results["hohn_return"] = full
 
     return results

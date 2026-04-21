@@ -26,9 +26,9 @@ import { getFxRates } from "@/api/fx";
 const CATEGORY_ORDER = ["STAMMDATEN", "INPUTS", "CALCULATED"];
 
 const CATEGORY_LABELS: Record<string, string> = {
-  STAMMDATEN: "Stammdaten (aktuell)",
-  INPUTS: "Inputs (pro FY)",
-  CALCULATED: "Berechnet",
+  STAMMDATEN: "Inputs — Fix (1× pro Firma)",
+  INPUTS: "Inputs — pro FY",
+  CALCULATED: "Berechnete Kennzahlen",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -57,11 +57,14 @@ const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 const FORMULAS: Record<string, string> = {
   fcf: "Op. Cash Flow − Capex",
   net_debt: "Debt − Cash",
+  cash: "Cash & Equivalents + Mkt Sec ST + LT",
   ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",
   fcf_yield: "FCF / Market Cap × 100",
   sbc_yield: "SBC / Market Cap × 100",
-  net_debt_change: "(Net Debt[Y−1] − Net Debt[Y]) / Market Cap × 100",
-  hohn_return: "FCF Yield + NI Growth − SBC Yield + Net Debt Change",
+  net_debt_change: "Net Debt[Y−1] − Net Debt[Y] (>0 = Schulden-Abbau)",
+  net_debt_change_pct: "Net Debt Change / Market Cap × 100",
+  hohn_return_base: "FCF Yield + NI Growth − SBC / MCap",
+  hohn_return: "Hohn Return (Base) + Net Debt Change / MCap",
 };
 
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
