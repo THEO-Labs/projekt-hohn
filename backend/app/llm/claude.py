@@ -143,7 +143,7 @@ def get_client() -> anthropic.Anthropic:
 WEB_SEARCH_TOOL = {
     "type": "web_search_20250305",
     "name": "web_search",
-    "max_uses": 5,
+    "max_uses": 2,
 }
 
 
