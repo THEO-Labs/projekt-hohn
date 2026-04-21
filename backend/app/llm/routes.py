@@ -9,7 +9,7 @@ from app.auth.deps import current_user
 from app.auth.models import User
 from app.companies.models import Company
 from app.db import get_db
-from app.llm.claude import call_claude
+from app.llm.claude import ANALYSIS_MODE_KEYS, call_claude
 from app.llm.models import LlmConversation, LlmMessage
 from app.llm.schemas import AnalyzeResponse, ChatHistoryOut, ChatRequest
 from app.portfolios.models import Portfolio
@@ -153,9 +153,24 @@ def analyze_value(
     else:
         period_str = "aktuell"
 
+    is_analysis = value_key in ANALYSIS_MODE_KEYS
+
     if is_qualitative:
         initial_prompt = f"Bewerte den folgenden Aspekt für {company.name}:\n\nAspekt: {label}\n\nGib einen Score von 0.5 bis 1.5 und eine Begründung."
         mode = "qualitative"
+    elif is_analysis:
+        initial_prompt = (
+            f"Zerlege und erklaere die Kennzahl '{label}' fuer {company.name} "
+            f"({company.ticker}) im Zeitraum {period_str}.\n\n"
+            f"Nutze die Finanzdaten aus dem Kontext. Zeige die Komponenten-Tabelle "
+            f"mit Wert und Effekt (✅/❌) fuer jeden Einflussfaktor. Identifiziere "
+            f"die 2-3 wichtigsten Treiber und gib eine Business-Interpretation fuer "
+            f"einen langfristigen Aktionaer ab.\n\n"
+            f"Falls fuer die Ursachen-Analyse weitere Hintergrundinfos noetig sind "
+            f"(z.B. einmalige Tax-Items, Restructuring, Guidance-Kommentare), "
+            f"nutze web_search auf der IR-Seite / im 10-K."
+        )
+        mode = "analysis"
     else:
         unit_hint = f" (Einheit: {vd.unit})" if vd and vd.unit else ""
         initial_prompt = (
@@ -217,7 +232,12 @@ def chat_message(
 
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
     is_qualitative = vd and vd.source_type == SourceType.QUALITATIVE
-    mode = "qualitative" if is_qualitative else "research"
+    if is_qualitative:
+        mode = "qualitative"
+    elif value_key in ANALYSIS_MODE_KEYS:
+        mode = "analysis"
+    else:
+        mode = "research"
 
     user_msg = LlmMessage(conversation_id=conv.id, role="user", content=payload.message, source="chat")
     db.add(user_msg)

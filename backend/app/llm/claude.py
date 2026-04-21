@@ -46,6 +46,63 @@ Nutze echte Quellen (Geschäftsberichte, Analystenkonsens, Finanzdatenbanken).
 Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch."""
 
 
+ANALYSIS_SYSTEM_PROMPT = """Du bist ein erfahrener Kapitalallokations-Analyst im Stil von
+Sir Christopher Hohn (TCI Fund). Deine Aufgabe: Berechnete Kennzahlen
+(insbesondere Hohn-Rendite, FCF Yield, NI Growth, Net Debt Change) fuer
+den Nutzer zerlegen und wirtschaftlich einordnen.
+
+Antwortstruktur (strikt):
+
+1. **Kurze Einordnung** (1-2 Saetze): Was misst die Kennzahl?
+
+2. **Komponenten-Tabelle** im Markdown-Format mit Spalten
+   `Komponente | Wert | Effekt`. Jede Input-Komponente bekommt eine
+   Zeile mit Wert und einem Marker:
+     ✅ positiv   ⚠️ neutral   ❌ negativ
+   Letzte Zeile: Gesamtergebnis mit 🔴 rot / 🟢 gruen / 🟡 gelb.
+
+3. **Treiber-Analyse** (2-3 Haupttreiber, pos und neg getrennt).
+   Pro Treiber: kurze Ursachenbeschreibung, ggf. Zusammenhang zu
+   operativen Metriken, typische Fallstricke (z.B. one-time tax items,
+   valuation allowance release).
+
+4. **Business-Interpretation** (3-5 Saetze): Was bedeutet das aus
+   Sicht eines langfristigen Aktionaers? Qualitaet des Wachstums,
+   Kapitalallokation, Dilution.
+
+Nutze die im Kontext gelieferten Finanzdaten. Fuer historische Perspektive
+oder Begruendungen (z.B. "warum war 2023 das NI so hoch?") aktiv
+web_search nutzen und IR-Seite / 10-K des Unternehmens pruefen.
+
+Formeln zur Referenz:
+- Hohn Return (simple)  = FCF Yield + NI Growth - SBC/MCap + ΔND/MCap
+- Hohn Return (detailed) = Div Yield + NI Growth + Net Buyback/MCap + ΔND/MCap
+
+Antworte auf Deutsch, Fachbegriffe auf Englisch. Keine WERT:/EINHEIT:-
+Marker in dieser Mode — das ist eine Analyse, keine Wert-Recherche."""
+
+
+# Keys whose drawer chat should open in analysis (decomposition) mode
+# instead of research mode.
+ANALYSIS_MODE_KEYS: frozenset[str] = frozenset({
+    "hohn_return_simple",
+    "hohn_return_detailed",
+    "fcf_yield",
+    "sbc_yield",
+    "net_buyback_yield",
+    "dividend_yield",
+    "ni_growth",
+    "net_debt_change",
+    "net_debt_change_pct",
+    "net_debt",
+    "ev",
+    "cash_sum",
+    "debt_sum",
+    "net_buyback",
+    "market_cap_calc",
+})
+
+
 def get_client() -> anthropic.Anthropic:
     if not settings.anthropic_api_key:
         raise ValueError("ANTHROPIC_API_KEY not configured")
@@ -396,7 +453,12 @@ def _rewrite_research_message(content: str) -> str:
 def call_claude(messages: list[dict[str, str]], company_context: str, mode: str = "qualitative") -> tuple[str, Decimal | None]:
     client = get_client()
 
-    system_prompt = QUALITATIVE_SYSTEM_PROMPT if mode == "qualitative" else RESEARCH_SYSTEM_PROMPT
+    if mode == "qualitative":
+        system_prompt = QUALITATIVE_SYSTEM_PROMPT
+    elif mode == "analysis":
+        system_prompt = ANALYSIS_SYSTEM_PROMPT
+    else:
+        system_prompt = RESEARCH_SYSTEM_PROMPT
 
     user_messages = []
     for msg in messages:
@@ -429,6 +491,9 @@ def call_claude(messages: list[dict[str, str]], company_context: str, mode: str 
     content = _collect_text(response)
     if mode == "qualitative":
         score = extract_score(content)
+    elif mode == "analysis":
+        # Analysis mode doesn't extract a numeric score; it explains instead.
+        score = None
     else:
         score = extract_value(content)
     return content, score
