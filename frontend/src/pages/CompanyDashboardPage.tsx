@@ -56,10 +56,12 @@ const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
   fcf: "Op. Cash Flow − Capex",
+  net_debt: "Debt − Cash",
   ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",
   fcf_yield: "FCF / Market Cap × 100",
   sbc_yield: "SBC / Market Cap × 100",
-  hohn_return: "FCF Yield + NI Growth − SBC Yield",
+  net_debt_change: "(Net Debt[Y−1] − Net Debt[Y]) / Market Cap × 100",
+  hohn_return: "FCF Yield + NI Growth − SBC Yield + Net Debt Change",
 };
 
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;

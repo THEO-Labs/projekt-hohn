@@ -171,6 +171,16 @@ def extract_value(text: str) -> Decimal | None:
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Dir wird eine Finanzkennzahl für ein Unternehmen gefragt,
 die nicht über die API verfügbar war. Recherchiere den Wert basierend auf deinem Wissen.
 
+QUELLEN-PRIORITAET (strikt einhalten):
+1. Investor-Relations-Seite des Unternehmens selbst (investors.<domain>, z.B.
+   investors.servicenow.com, ir.apple.com). Hier sind Earnings-Releases,
+   Press Releases und Guidance-Dokumente des Managements direkt aus erster Hand.
+2. 10-K / 20-F Jahresabschluss bei der SEC (sec.gov/edgar).
+3. Earnings Release PDF / 8-K Filing fuer das gefragte Quartal / Jahr.
+4. Analysten-Konsens nur als Fallback, wenn 1-3 nicht verfuegbar.
+Yahoo Finance / Finanzdatenbanken zaehlen NICHT als Primaerquelle — nur
+wenn es ueberhaupt keine Quelle aus 1-4 gibt.
+
 Antworte NUR in diesem Format:
 WERT: [Zahl]
 EINHEIT: [z.B. USD, EUR, %, keine]
@@ -219,19 +229,14 @@ def extract_research_value(text: str) -> Decimal | None:
 
 
 _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
-    "stock_price": (0, 1_000_000),
     "market_cap": (0, 15_000_000_000_000),
     "shares_outstanding": (0, 1_000_000_000_000),
-    "debt": (0, 1_000_000_000_000),
-    "cash": (0, 1_000_000_000_000),
-    "exchange_rate": (0, 1_000_000),
     "sbc": (0, 500_000_000_000),
     "net_income": (-5_000_000_000_000, 5_000_000_000_000),
-    "eps": (-10_000, 100_000),
-    "eps_adj": (-10_000, 100_000),
     "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
     "capex": (0, 5_000_000_000_000),
-    "dividends": (0, 1_000_000_000_000),
+    "debt": (0, 10_000_000_000_000),
+    "cash": (0, 5_000_000_000_000),
 }
 
 
@@ -240,43 +245,37 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
         "Stock Based Compensation (SBC): jaehrlicher Betrag aus dem 10-K "
         "(oder 20-F bei Non-US-Filern) unter 'Share-based compensation "
         "expense' bzw. im Cash Flow Statement als 'Stock-based compensation'. "
-        "NUR aus dem Jahres-Geschaeftsbericht des gefragten Jahres."
-    ),
-    "op_cash_flow": (
-        "Operating Cash Flow: aus dem Jahres-Cashflow-Statement ('Net cash "
-        "provided by operating activities'). Fuer das Ziel-Jahr der aktuellen "
-        "Analyse sind auch Guidance-Zahlen aus Earnings-Call / IR erlaubt — "
-        "dann QUELLE explizit als 'Guidance FY XXXX' ausweisen."
-    ),
-    "capex": (
-        "Capital Expenditures: Zeile 'Purchase of property and equipment' / "
-        "'Capital expenditures' im Cashflow-Statement. Immer als POSITIVER "
-        "absoluter Betrag melden. Fuer das Ziel-Jahr auch Guidance aus IR."
-    ),
-    "eps_adj": (
-        "Adjusted / non-GAAP EPS: aus dem Earnings-Release, NICHT der GAAP-"
-        "Wert. Fuer Forward-Jahre ist Analyst-Konsens oder IR-Guidance "
-        "akzeptabel — QUELLE entsprechend ausweisen."
-    ),
-    "eps": (
-        "GAAP Diluted EPS aus dem 10-K / 20-F fuer das exakte Geschaeftsjahr. "
-        "Keine TTM-Werte."
+        "Primaer von der IR-Seite (Annual Report PDF), sekundaer SEC Edgar."
     ),
     "net_income": (
-        "Net Income (Nettogewinn) aus dem 10-K / 20-F fuer das exakte "
-        "Geschaeftsjahr. Keine TTM-Werte, keine bereinigten 'adjusted' Zahlen."
+        "Net Income (Nettogewinn) fuer das exakte Geschaeftsjahr. Primaer "
+        "IR-Seite (Press Release / Annual Report), sekundaer 10-K. Keine TTM, "
+        "keine non-GAAP-Adjustments."
     ),
-    "dividends": (
-        "Cash Dividends Paid (absoluter Betrag) aus dem Cashflow-Statement. "
-        "Fuer Forward-Jahre: erwartete Ausschuettung aus der Dividend Policy "
-        "des Unternehmens."
+    "op_cash_flow": (
+        "Operating Cash Flow (Net cash provided by operating activities) "
+        "fuer das exakte Geschaeftsjahr. Primaer IR-Press-Release, sekundaer "
+        "Cashflow-Statement im 10-K. Fuer das laufende Jahr sind Guidance-"
+        "Zahlen akzeptabel — dann QUELLE explizit als 'IR Guidance FY XXXX'."
+    ),
+    "capex": (
+        "Capital Expenditures fuer das exakte Geschaeftsjahr, Zeile 'Purchase "
+        "of property and equipment' / 'Capital expenditures'. Immer POSITIV. "
+        "Primaer IR-Seite, sekundaer 10-K. Fuer laufendes Jahr Guidance ok."
     ),
     "debt": (
-        "Total Debt aus dem Balance Sheet zum letzten verfuegbaren Stichtag."
+        "Total Debt aus dem Balance Sheet zum Ende des exakten Geschaeftsjahrs. "
+        "Long-Term Debt + Short-Term Debt + Lease Liabilities (sofern als "
+        "Finanzschuld klassifiziert). Primaer IR (Annual Report), sekundaer 10-K."
     ),
     "cash": (
-        "Cash and Cash Equivalents (inklusive Short-Term Investments wenn "
-        "ueblich ausgewiesen) aus dem Balance Sheet."
+        "Cash and Cash Equivalents + Short-Term Investments/Marketable "
+        "Securities aus dem Balance Sheet zum Ende des exakten Geschaeftsjahrs. "
+        "Primaer IR, sekundaer 10-K."
+    ),
+    "shares_outstanding": (
+        "Diluted Weighted Average Shares Outstanding aus dem jeweiligen 10-K "
+        "(oder aktuelle Zahl zum letzten Stichtag aus IR)."
     ),
 }
 

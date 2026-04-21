@@ -4,5 +4,8 @@ CURRENCY_KEYS = frozenset({
     "net_income",
     "op_cash_flow",
     "capex",
+    "debt",
+    "cash",
     "fcf",
+    "net_debt",
 })

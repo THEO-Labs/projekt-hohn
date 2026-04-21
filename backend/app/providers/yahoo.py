@@ -13,10 +13,18 @@ logger = logging.getLogger(__name__)
 
 INFO_KEY_MAP = {
     "market_cap": "marketCap",
+    "shares_outstanding": "sharesOutstanding",
+    "debt": "totalDebt",
+    "cash": "totalCash",
 }
 
 FINANCIALS_ROWS = {
     "net_income": ["Net Income", "Net Income Common Stockholders"],
+}
+
+BALANCE_SHEET_ROWS = {
+    "debt": ["Total Debt", "Long Term Debt", "Net Debt"],
+    "cash": ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments", "Cash And Short Term Investments"],
 }
 
 CASHFLOW_ROWS = {
@@ -26,21 +34,30 @@ CASHFLOW_ROWS = {
 
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "market_cap": (0, 1e16),
+    "shares_outstanding": (0, 1e15),
     "sbc": (0, 1e15),
     "net_income": (-1e15, 1e15),
     "op_cash_flow": (-1e15, 1e15),
     "capex": (0, 1e15),
+    "debt": (0, 1e15),
+    "cash": (0, 1e15),
 }
 
 
 class YahooFinanceProvider:
     name = "Yahoo Finance"
-    supported_keys = set(INFO_KEY_MAP.keys()) | set(FINANCIALS_ROWS.keys()) | set(CASHFLOW_ROWS.keys())
+    supported_keys = (
+        set(INFO_KEY_MAP.keys())
+        | set(FINANCIALS_ROWS.keys())
+        | set(BALANCE_SHEET_ROWS.keys())
+        | set(CASHFLOW_ROWS.keys())
+    )
 
     def __init__(self) -> None:
         self._ticker_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._info_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._financials_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
+        self._balance_sheet_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._cashflow_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._isin_ticker_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
 
@@ -81,6 +98,12 @@ class YahooFinanceProvider:
             t = self._get_ticker(ticker)
             self._financials_cache[ticker] = t.financials
         return self._financials_cache[ticker]
+
+    def _get_balance_sheet(self, ticker: str):
+        if ticker not in self._balance_sheet_cache:
+            t = self._get_ticker(ticker)
+            self._balance_sheet_cache[ticker] = t.balance_sheet
+        return self._balance_sheet_cache[ticker]
 
     def _get_cashflow(self, ticker: str):
         if ticker not in self._cashflow_cache:
@@ -149,11 +172,34 @@ class YahooFinanceProvider:
         if period_type == "FY" and period_year is not None:
             if key in FINANCIALS_ROWS:
                 return self._fetch_from_financials(ticker, key, period_year, source_link)
+            if key in BALANCE_SHEET_ROWS:
+                return self._fetch_from_balance_sheet(ticker, key, period_year, source_link)
             if key in CASHFLOW_ROWS:
                 abs_value = key == "capex"
                 return self._fetch_from_cashflow(ticker, key, period_year, source_link, abs_value=abs_value)
 
         return None
+
+    def _fetch_from_balance_sheet(self, ticker: str, key: str, period_year: int, source_link: str) -> ProviderResult | None:
+        try:
+            df = self._get_balance_sheet(ticker)
+            if df is None or df.empty:
+                return None
+            col = self._find_year_column(df, period_year)
+            if col is None:
+                return None
+            value = self._get_row_value(df, col, BALANCE_SHEET_ROWS[key])
+            if value is None:
+                return None
+            value = self._sanity_check(key, value)
+            if value is None:
+                return None
+            info = self._get_info(ticker)
+            currency = info.get("currency") if key in CURRENCY_KEYS else None
+            return ProviderResult(value=value, source_name=self.name, source_link=source_link, currency=currency)
+        except Exception as e:
+            logger.warning("Yahoo balance-sheet fetch failed %s/%s FY%s: %s", ticker, key, period_year, e)
+            return None
 
     def _fetch_snapshot_from_info(self, ticker: str, key: str, source_link: str) -> ProviderResult | None:
         info = self._get_info(ticker)
