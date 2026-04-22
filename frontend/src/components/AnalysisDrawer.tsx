@@ -4,6 +4,7 @@ import { X, Sparkles, Send, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
+import { parseNumericInput } from "@/lib/parseNumeric";
 import {
   analyzeValue,
   sendChatMessage,
@@ -80,6 +81,9 @@ export function AnalysisDrawer({
 
   const [messages, setMessages] = useState<LlmMessage[]>([]);
   const [sliderValue, setSliderValue] = useState<number>(currentScore ?? 1.0);
+  const [numericInput, setNumericInput] = useState<string>(
+    currentScore != null ? String(currentScore) : ""
+  );
   const [textValue, setTextValue] = useState<string>("");
   const [inputText, setInputText] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -88,11 +92,16 @@ export function AnalysisDrawer({
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const applySliderValue = (v: number) => {
+    setSliderValue(v);
+    setNumericInput(String(v));
+  };
+
   useEffect(() => {
     setMessages([]);
     setInputText("");
     setHistoryLoaded(false);
-    setSliderValue(currentScore ?? 1.0);
+    applySliderValue(currentScore ?? 1.0);
     setTextValue(currentText ?? "");
   }, [companyId, valueKey, periodType, periodYear, currentScore, currentText]);
 
@@ -105,9 +114,9 @@ export function AnalysisDrawer({
           .reverse()
           .find((m) => m.score_suggestion != null);
         if (lastSuggestion?.score_suggestion != null) {
-          setSliderValue(toNum(lastSuggestion.score_suggestion));
+          applySliderValue(toNum(lastSuggestion.score_suggestion));
         } else if (currentScore != null) {
-          setSliderValue(currentScore);
+          applySliderValue(currentScore);
         }
       })
       .catch(() => setMessages([]))
@@ -129,7 +138,7 @@ export function AnalysisDrawer({
         return exists ? prev : [...prev, res.message];
       });
       if (res.message.score_suggestion != null) {
-        setSliderValue(toNum(res.message.score_suggestion));
+        applySliderValue(toNum(res.message.score_suggestion));
       }
     } catch {
       toast.error("Analyse fehlgeschlagen. Bitte erneut versuchen.");
@@ -156,7 +165,7 @@ export function AnalysisDrawer({
       const res = await sendChatMessage(companyId, valueKey, text, periodType, periodYear);
       setMessages((prev) => [...prev, res.message]);
       if (res.message.score_suggestion != null) {
-        setSliderValue(toNum(res.message.score_suggestion));
+        applySliderValue(toNum(res.message.score_suggestion));
       }
     } catch {
       toast.error("Nachricht konnte nicht gesendet werden.");
@@ -234,12 +243,17 @@ export function AnalysisDrawer({
             ) : isTextType ? null : (
               <input
                 type="text"
-                className="w-32 rounded border border-input bg-background px-2 py-1 text-right font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
-                value={sliderValue || ""}
+                className="w-40 rounded border border-input bg-background px-2 py-1 text-right font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+                value={numericInput}
                 onChange={(e) => {
-                  const v = parseFloat(e.target.value);
+                  const raw = e.target.value;
+                  setNumericInput(raw);
+                  if (raw === "") {
+                    setSliderValue(0);
+                    return;
+                  }
+                  const v = parseNumericInput(raw);
                   if (!isNaN(v)) setSliderValue(v);
-                  else if (e.target.value === "") setSliderValue(0);
                 }}
               />
             )}
@@ -252,7 +266,7 @@ export function AnalysisDrawer({
                 max={1.5}
                 step={0.05}
                 value={sliderValue}
-                onChange={(e) => setSliderValue(Number(e.target.value))}
+                onChange={(e) => applySliderValue(Number(e.target.value))}
                 className="mt-2 w-full accent-primary"
               />
               <div className="flex justify-between text-[10px] text-muted-foreground">

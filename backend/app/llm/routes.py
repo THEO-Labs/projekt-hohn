@@ -242,6 +242,9 @@ def chat_message(
     conv = _get_or_create_conversation(db, company_id, value_key, period_type, period_year)
     context = _build_company_context(db, company, period_type, period_year)
 
+    if period_type == "FY" and period_year is not None and _is_forward_year(period_year):
+        context += "\n\n" + FORWARD_YEAR_HINT.replace("{YEAR}", str(period_year))
+
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
     is_qualitative = vd and vd.source_type == SourceType.QUALITATIVE
     if is_qualitative:
