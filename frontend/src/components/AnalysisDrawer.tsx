@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Sparkles, Send, RefreshCw } from "lucide-react";
+import { X, Sparkles, Send, RefreshCw, Search, FileSearch, Database, BrainCircuit } from "lucide-react";
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
@@ -60,6 +60,65 @@ function parseMarkdown(text: string): string {
     .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
     .replace(/(<li[^>]*>.*<\/li>\n?)+/g, (m) => `<ul class="space-y-0.5 my-1">${m}</ul>`)
     .replace(/\n/g, "<br />");
+}
+
+const THINKING_STAGES: { icon: typeof Search; text: string }[] = [
+  { icon: BrainCircuit, text: "Analysiere Frage und Kontext…" },
+  { icon: Search, text: "Durchsuche Investor-Relations-Seite…" },
+  { icon: FileSearch, text: "Prüfe 10-K / SEC EDGAR Filings…" },
+  { icon: Database, text: "Scanne Finanzdaten-Aggregatoren…" },
+  { icon: FileSearch, text: "Verifiziere Zahlen gegen Quartalsberichte…" },
+  { icon: BrainCircuit, text: "Fasse Ergebnis zusammen…" },
+];
+
+function ClaudeThinking() {
+  const [stageIdx, setStageIdx] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const startedAt = Date.now();
+    const tickElapsed = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    const tickStage = setInterval(() => {
+      setStageIdx((i) => Math.min(i + 1, THINKING_STAGES.length - 1));
+    }, 4500);
+    return () => {
+      clearInterval(tickElapsed);
+      clearInterval(tickStage);
+    };
+  }, []);
+
+  const stage = THINKING_STAGES[stageIdx];
+  const StageIcon = stage.icon;
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[90%] rounded-2xl rounded-bl-sm border border-primary/20 bg-primary/5 px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15">
+            <StageIcon className="h-4 w-4 text-primary" />
+            <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/50" />
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
+            </span>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium text-foreground">{stage.text}</span>
+              <span className="flex gap-0.5">
+                <span className="h-1 w-1 animate-bounce rounded-full bg-primary [animation-delay:0ms]" />
+                <span className="h-1 w-1 animate-bounce rounded-full bg-primary [animation-delay:150ms]" />
+                <span className="h-1 w-1 animate-bounce rounded-full bg-primary [animation-delay:300ms]" />
+              </span>
+            </div>
+            <span className="text-[11px] text-muted-foreground">
+              {elapsed < 10 ? "Claude recherchiert…" : `Claude recherchiert seit ${elapsed}s (kann bis zu 60s dauern)`}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function AnalysisDrawer({
@@ -389,17 +448,7 @@ export function AnalysisDrawer({
                   </div>
                 );
               })}
-              {(analyzing || sending) && (
-                <div className="flex justify-start">
-                  <div className="max-w-[85%] rounded-2xl rounded-bl-sm bg-muted px-4 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
-                    </div>
-                  </div>
-                </div>
-              )}
+              {(analyzing || sending) && <ClaudeThinking />}
               <div ref={messagesEndRef} />
             </div>
           )}
