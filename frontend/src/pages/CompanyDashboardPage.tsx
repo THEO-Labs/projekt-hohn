@@ -22,6 +22,7 @@ import {
 import { AnalysisDrawer } from "@/components/AnalysisDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 import { getFxRates } from "@/api/fx";
+import { parseNumericInput } from "@/lib/parseNumeric";
 
 const CATEGORY_ORDER = [
   "STAMMDATEN", "CASH_DEBT", "BUYBACKS_SBC", "FCF",
@@ -378,7 +379,6 @@ export function CompanyDashboardPage() {
                 className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
                 {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
-              <span className="text-xs text-muted-foreground">(Richtwerte, nicht live)</span>
             </div>
           </div>
         </div>
@@ -518,7 +518,7 @@ export function CompanyDashboardPage() {
 
                       const handleSaveEdit = async () => {
                         if (!editCell || saving) return;
-                        const num = parseFloat(editCell.value);
+                        const num = parseNumericInput(editCell.value);
                         if (isNaN(num)) { setEditCell(null); return; }
                         setSaving(true);
                         const defForKey = definitions.find((def) => def.key === d.key);
