@@ -475,14 +475,21 @@ def research_value(
     else:
         forward_block = ""
         historical_constraint = (
-            " Keine TTM/LTM/Trailing-Werte, keine Forward-Guidance wenn ein "
-            "historisches Jahr gefragt ist, keine Schaetzungen aus "
-            "Quartalsberichten."
+            " Ziel ist der exakte Jahreswert aus dem 10-K/20-F. Keine TTM/LTM."
         )
         not_found_clause = (
-            "Wenn du fuer {period_str} keinen verifizierbaren Wert aus dem "
-            "Jahresabschluss findest, antworte mit WERT: NICHT_GEFUNDEN."
-        ).replace("{period_str}", period_str)
+            "FALLBACK-REGEL: Wenn die Web-Suche keinen exakten Wert fuer "
+            f"{period_str} in Aggregatoren (stockanalysis.com, macrotrends.net, "
+            "wisesheets.io, wsj.com) findet — was fuer sehr junge 10-Ks "
+            "(letzte 6 Monate) oder spezifische Bilanznoten haeufig ist — "
+            "liefere den naechstliegenden bekannten Istwert (z.B. FY"
+            f"{period_year - 1} oder juengstes 10-Q) als Approximation. "
+            "QUELLE muss das klar kennzeichnen: z.B. 'Approximation: FY"
+            f"{period_year - 1} Istwert — FY{period_year} in Aggregatoren "
+            "noch nicht verfuegbar'. KONFIDENZ: niedrig. "
+            "WERT: NICHT_GEFUNDEN nur wenn du nicht einmal einen alten "
+            "Istwert finden kannst."
+        )
 
     user_prompt = (
         f"Unternehmen: {company_name} ({ticker}, {currency})\n"
