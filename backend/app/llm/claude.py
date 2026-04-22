@@ -155,7 +155,7 @@ def get_client() -> anthropic.Anthropic:
 WEB_SEARCH_TOOL = {
     "type": "web_search_20250305",
     "name": "web_search",
-    "max_uses": 2,
+    "max_uses": 10,
 }
 
 
@@ -287,17 +287,41 @@ def extract_value(text: str) -> Decimal | None:
 
 
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Dir wird eine Finanzkennzahl für ein Unternehmen gefragt,
-die nicht über die API verfügbar war. Recherchiere den Wert basierend auf deinem Wissen.
+die nicht über die API verfügbar war. Recherchiere den Wert aktiv via web_search.
 
-QUELLEN-PRIORITAET (strikt einhalten):
-1. Investor-Relations-Seite des Unternehmens selbst (investors.<domain>, z.B.
-   investors.servicenow.com, ir.apple.com). Hier sind Earnings-Releases,
-   Press Releases und Guidance-Dokumente des Managements direkt aus erster Hand.
-2. 10-K / 20-F Jahresabschluss bei der SEC (sec.gov/edgar).
-3. Earnings Release PDF / 8-K Filing fuer das gefragte Quartal / Jahr.
-4. Analysten-Konsens nur als Fallback, wenn 1-3 nicht verfuegbar.
-Yahoo Finance / Finanzdatenbanken zaehlen NICHT als Primaerquelle — nur
-wenn es ueberhaupt keine Quelle aus 1-4 gibt.
+WICHTIG — web_search liefert nur Snippets (keine vollen PDFs/10-Ks).
+Das heisst: direkte SEC-10-K-Links sind OFT NICHT nutzbar (zu lang, PDF-Text
+wird im Snippet gekuerzt). Suche stattdessen gezielt auf Datenaggregatoren,
+die bereits die Bilanzposten aus 10-Ks extrahiert haben:
+
+FUER BILANZPOSITIONEN (Cash, Debt, Leases, Marketable Securities):
+  - stockanalysis.com/stocks/<TICKER>/financials/balance-sheet/
+  - macrotrends.net/stocks/charts/<TICKER>/<company>/balance-sheet
+  - wisesheets.io
+  - simplywall.st
+  - wsj.com/market-data/quotes/<TICKER>/financials/annual/balance-sheet
+
+FUER CASH-FLOW-POSITIONEN (SBC, CapEx, FCF, Buybacks):
+  - stockanalysis.com/stocks/<TICKER>/financials/cash-flow-statement/
+  - macrotrends.net/stocks/charts/<TICKER>/<company>/cash-flow-statement
+
+FUER GEWINN/UMSATZ (Net Income, Sales):
+  - stockanalysis.com/stocks/<TICKER>/financials/
+  - macrotrends.net/stocks/charts/<TICKER>/<company>/net-income
+
+FUER FORWARD/GUIDANCE-ZAHLEN:
+  - Investor-Relations-Seite (investor.<domain>) mit 'earnings press release'
+    oder 'Q4 earnings call transcript'
+  - seekingalpha.com/article/ (Earnings Call Transcripts)
+  - Yahoo Finance 'analyst estimates'
+
+Starte Such-Queries MIT EXPLIZITEM JAHR (z.B. 'Visa lease liabilities
+2025 stockanalysis' oder 'NOW stock based compensation FY2024
+macrotrends'). Wenn erste Suche nichts liefert, probiere eine andere
+Site-Query.
+
+Fallback (wirklich letztes Mittel): Analysten-Konsens/Schaetzung — mit
+expliziter QUELLE-Kennzeichnung 'Schaetzung basierend auf Trend/Konsens'.
 
 Antworte NUR in diesem Format:
 WERT: [Zahl]
