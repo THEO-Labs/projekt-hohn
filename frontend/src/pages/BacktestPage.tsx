@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, RefreshCw, AlertTriangle } from "lucide-react";
-import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
 import { useAuth } from "@/hooks/useAuth";

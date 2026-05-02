@@ -3,7 +3,6 @@ import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
-import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
@@ -283,23 +282,19 @@ export function CompanyDashboardPage() {
           try { await fetchHistoricalStammdaten(c.id, period.year); } catch {}
         }
         const periodVals = await getCompanyValues(c.id, period.value, period.year);
-        if (period.value !== "SNAPSHOT") {
-          const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
-          const periodKeyMap = new Map(periodVals.map((v) => [v.value_key, v]));
-          const allKeys = new Set([...periodVals.map((v) => v.value_key), ...snapshotVals.map((v) => v.value_key)]);
-          const merged = [...allKeys].map((key) => {
-            if (qualitativeOnlyKeys.has(key)) {
-              return snapshotVals.find((v) => v.value_key === key) ?? periodKeyMap.get(key);
-            }
-            if (alwaysCurrentApiKeys.has(key)) {
-              return periodKeyMap.get(key) ?? snapshotVals.find((v) => v.value_key === key);
-            }
+        const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
+        const periodKeyMap = new Map(periodVals.map((v) => [v.value_key, v]));
+        const allKeys = new Set([...periodVals.map((v) => v.value_key), ...snapshotVals.map((v) => v.value_key)]);
+        const merged = [...allKeys].map((key) => {
+          if (qualitativeOnlyKeys.has(key)) {
+            return snapshotVals.find((v) => v.value_key === key) ?? periodKeyMap.get(key);
+          }
+          if (alwaysCurrentApiKeys.has(key)) {
             return periodKeyMap.get(key) ?? snapshotVals.find((v) => v.value_key === key);
-          }).filter(Boolean) as CompanyValue[];
-          map.set(c.id, merged);
-        } else {
-          map.set(c.id, periodVals);
-        }
+          }
+          return periodKeyMap.get(key) ?? snapshotVals.find((v) => v.value_key === key);
+        }).filter(Boolean) as CompanyValue[];
+        map.set(c.id, merged);
         if (wantsPrev) {
           try {
             const prevVals = await getCompanyValues(c.id, "FY", (period.year as number) - 1);
@@ -843,7 +838,7 @@ export function CompanyDashboardPage() {
                       const isQualitative = d.source_type === "QUALITATIVE";
                       const isCalculated = d.source_type === "CALCULATED";
 
-                      const isHistoricalQual = isQualitative && period.value !== "SNAPSHOT";
+                      const isHistoricalQual = isQualitative && period.value === "FY";
 
                       const isEditing = editCell?.companyId === company.id && editCell?.key === d.key;
 
