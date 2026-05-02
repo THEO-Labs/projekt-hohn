@@ -1,0 +1,17 @@
+{
+	email till@theolabs.xyz
+}
+
+hohn.18-196-0-127.sslip.io {
+	reverse_proxy app:8000
+
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

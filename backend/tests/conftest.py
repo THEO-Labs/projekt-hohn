@@ -40,8 +40,10 @@ def db(engine):
 
 @pytest.fixture(autouse=True)
 def reset_rate_limiter():
-    from app.auth.routes import limiter
+    from app.auth.routes import limiter, _FAILED, _LOCK
     limiter.reset()
+    with _LOCK:
+        _FAILED.clear()
     yield
 
 
