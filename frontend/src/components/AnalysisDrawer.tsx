@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Sparkles, Send, RefreshCw, Search, FileSearch, Database, BrainCircuit } from "lucide-react";
+import { X, Sparkles, Send, RefreshCw, Search, FileSearch, Database, BrainCircuit, HelpCircle, TrendingUp, ShieldCheck, Calculator, Scale } from "lucide-react";
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
@@ -24,6 +24,7 @@ type AnalysisDrawerProps = {
   currentScore: number | null;
   currentText?: string;
   dataType?: DataType;
+  isCalculated?: boolean;
   periodType?: string;
   periodYear?: number;
   onAcceptScore: (score: number | null, textValue?: string) => Promise<void>;
@@ -62,16 +63,76 @@ function parseMarkdown(text: string): string {
     .replace(/\n/g, "<br />");
 }
 
-const THINKING_STAGES: { icon: typeof Search; text: string }[] = [
-  { icon: BrainCircuit, text: "Analysiere Frage und Kontext…" },
-  { icon: Search, text: "Durchsuche Investor-Relations-Seite…" },
-  { icon: FileSearch, text: "Prüfe 10-K / SEC EDGAR Filings…" },
-  { icon: Database, text: "Scanne Finanzdaten-Aggregatoren…" },
-  { icon: FileSearch, text: "Verifiziere Zahlen gegen Quartalsberichte…" },
-  { icon: BrainCircuit, text: "Fasse Ergebnis zusammen…" },
+const CALC_QUICK_PROMPTS: {
+  icon: typeof Search;
+  label: string;
+  prompt: string;
+  enableSearch: boolean;
+  hint?: string;
+}[] = [
+  {
+    icon: HelpCircle,
+    label: "Zerlege das Ergebnis",
+    prompt: "Zerlege die Kennzahl ausschliesslich auf Basis der Daten im Kontext: zeige die Komponenten-Tabelle (Wert + Effekt) und identifiziere die 2-3 wichtigsten Treiber. Keine Web-Recherche notwendig.",
+    enableSearch: false,
+  },
+  {
+    icon: TrendingUp,
+    label: "Was treibt diesen Wert?",
+    prompt: "Was sind die wichtigsten Treiber hinter diesem Wert? Liste positive und negative Faktoren mit Bezug auf operative Metriken im Kontext. Falls Industrie-Kontext oder allgemeines Business-Wissen hilft, einbauen, aber keine Web-Recherche.",
+    enableSearch: false,
+  },
+  {
+    icon: ShieldCheck,
+    label: "Plausibilität & Sondereffekte",
+    prompt: "Pruefe die Plausibilitaet dieses Werts. Recherchiere aktiv nach One-Time-Items, Tax-Settlements, Restructuring-Charges, Akquisitions-Effekten oder Earnings-Call-Commentary die diesen Wert verzerren koennten. Nutze web_search auf IR-Seite und 10-K.",
+    enableSearch: true,
+    hint: "ca. 30s, mit Web-Recherche",
+  },
 ];
 
-function ClaudeThinking() {
+type ThinkingMode = "research" | "analysis-quick" | "analysis-deep" | "qualitative";
+
+const STAGES_BY_MODE: Record<ThinkingMode, { icon: typeof Search; text: string }[]> = {
+  research: [
+    { icon: BrainCircuit, text: "Analysiere Frage und Kontext…" },
+    { icon: Search, text: "Durchsuche Investor-Relations-Seite…" },
+    { icon: FileSearch, text: "Prüfe 10-K / SEC EDGAR Filings…" },
+    { icon: Database, text: "Scanne Finanzdaten-Aggregatoren…" },
+    { icon: FileSearch, text: "Verifiziere Zahlen gegen Quartalsberichte…" },
+    { icon: BrainCircuit, text: "Fasse Ergebnis zusammen…" },
+  ],
+  "analysis-quick": [
+    { icon: BrainCircuit, text: "Lese Komponenten aus dem Kontext…" },
+    { icon: Calculator, text: "Berechne Beiträge der einzelnen Komponenten…" },
+    { icon: TrendingUp, text: "Identifiziere Treiber und Effekte…" },
+    { icon: BrainCircuit, text: "Formuliere Analyse…" },
+  ],
+  "analysis-deep": [
+    { icon: BrainCircuit, text: "Lese Komponenten aus dem Kontext…" },
+    { icon: Calculator, text: "Berechne Beiträge…" },
+    { icon: Search, text: "Suche nach One-Time-Items und Sondereffekten…" },
+    { icon: FileSearch, text: "Prüfe Earnings-Call-Transcripts…" },
+    { icon: ShieldCheck, text: "Bewerte Plausibilität…" },
+    { icon: BrainCircuit, text: "Fasse Analyse zusammen…" },
+  ],
+  qualitative: [
+    { icon: BrainCircuit, text: "Analysiere die Bewertungskriterien…" },
+    { icon: Search, text: "Sammle Informationen zur Firma…" },
+    { icon: Scale, text: "Wäge positive und negative Faktoren ab…" },
+    { icon: BrainCircuit, text: "Formuliere Score und Begründung…" },
+  ],
+};
+
+const MODE_HINT_TEXT: Record<ThinkingMode, (sec: number) => string> = {
+  research: (sec) => sec < 10 ? "Claude recherchiert…" : `Claude recherchiert seit ${sec}s (kann bis zu 60s dauern)`,
+  "analysis-quick": (sec) => sec < 8 ? "Claude analysiert…" : `Claude analysiert seit ${sec}s`,
+  "analysis-deep": (sec) => sec < 10 ? "Claude prüft Plausibilität…" : `Claude recherchiert seit ${sec}s (kann bis zu 60s dauern)`,
+  qualitative: (sec) => sec < 8 ? "Claude bewertet…" : `Claude bewertet seit ${sec}s`,
+};
+
+function ClaudeThinking({ mode }: { mode: ThinkingMode }) {
+  const stages = STAGES_BY_MODE[mode];
   const [stageIdx, setStageIdx] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -80,15 +141,15 @@ function ClaudeThinking() {
       setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     const tickStage = setInterval(() => {
-      setStageIdx((i) => Math.min(i + 1, THINKING_STAGES.length - 1));
+      setStageIdx((i) => Math.min(i + 1, stages.length - 1));
     }, 4500);
     return () => {
       clearInterval(tickElapsed);
       clearInterval(tickStage);
     };
-  }, []);
+  }, [stages.length]);
 
-  const stage = THINKING_STAGES[stageIdx];
+  const stage = stages[stageIdx];
   const StageIcon = stage.icon;
 
   return (
@@ -112,7 +173,7 @@ function ClaudeThinking() {
               </span>
             </div>
             <span className="text-[11px] text-muted-foreground">
-              {elapsed < 10 ? "Claude recherchiert…" : `Claude recherchiert seit ${elapsed}s (kann bis zu 60s dauern)`}
+              {MODE_HINT_TEXT[mode](elapsed)}
             </span>
           </div>
         </div>
@@ -131,12 +192,16 @@ export function AnalysisDrawer({
   currentScore,
   currentText,
   dataType = "NUMERIC",
+  isCalculated = false,
   periodType,
   periodYear,
   onAcceptScore,
 }: AnalysisDrawerProps) {
   const isFactorType = dataType === "FACTOR";
   const isTextType = dataType === "TEXT";
+  const hasValue = isTextType
+    ? Boolean(currentText && currentText.trim())
+    : currentScore != null;
 
   const [messages, setMessages] = useState<LlmMessage[]>([]);
   const [sliderValue, setSliderValue] = useState<number>(currentScore ?? 1.0);
@@ -149,6 +214,12 @@ export function AnalysisDrawer({
   const [sending, setSending] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const defaultThinkingMode: ThinkingMode = isFactorType
+    ? "qualitative"
+    : isCalculated
+    ? "analysis-quick"
+    : "research";
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(defaultThinkingMode);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const applySliderValue = (v: number) => {
@@ -190,6 +261,7 @@ export function AnalysisDrawer({
 
   const handleAnalyze = async (force = false) => {
     setAnalyzing(true);
+    setThinkingMode(defaultThinkingMode);
     try {
       const res = await analyzeValue(companyId, valueKey, periodType, periodYear, force);
       setMessages((prev) => {
@@ -199,18 +271,26 @@ export function AnalysisDrawer({
       if (res.message.score_suggestion != null) {
         applySliderValue(toNum(res.message.score_suggestion));
       }
-    } catch {
-      toast.error("Analyse fehlgeschlagen. Bitte erneut versuchen.");
+    } catch (e) {
+      const detail = (e as { message?: string })?.message;
+      toast.error(detail || "Analyse fehlgeschlagen. Bitte erneut versuchen.");
     } finally {
       setAnalyzing(false);
     }
   };
 
-  const handleSend = async () => {
-    const text = inputText.trim();
+  const handleSend = async (overrideText?: string, enableSearch = false) => {
+    const text = (overrideText ?? inputText).trim();
     if (!text || sending) return;
-    setInputText("");
+    if (overrideText === undefined) setInputText("");
     setSending(true);
+    setThinkingMode(
+      isFactorType
+        ? "qualitative"
+        : isCalculated
+        ? (enableSearch ? "analysis-deep" : "analysis-quick")
+        : "research"
+    );
     const optimisticId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const optimisticUserMsg: LlmMessage = {
       id: optimisticId,
@@ -221,13 +301,14 @@ export function AnalysisDrawer({
     };
     setMessages((prev) => [...prev, optimisticUserMsg]);
     try {
-      const res = await sendChatMessage(companyId, valueKey, text, periodType, periodYear);
+      const res = await sendChatMessage(companyId, valueKey, text, periodType, periodYear, enableSearch);
       setMessages((prev) => [...prev, res.message]);
       if (res.message.score_suggestion != null) {
         applySliderValue(toNum(res.message.score_suggestion));
       }
-    } catch {
-      toast.error("Nachricht konnte nicht gesendet werden.");
+    } catch (e) {
+      const detail = (e as { message?: string })?.message;
+      toast.error(detail || "Nachricht konnte nicht gesendet werden.");
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
     } finally {
       setSending(false);
@@ -302,9 +383,11 @@ export function AnalysisDrawer({
             ) : isTextType ? null : (
               <input
                 type="text"
-                className="w-40 rounded border border-input bg-background px-2 py-1 text-right font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-primary"
+                readOnly={isCalculated}
+                className={`w-40 rounded border border-input bg-background px-2 py-1 text-right font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-primary ${isCalculated ? "cursor-not-allowed opacity-70" : ""}`}
                 value={numericInput}
                 onChange={(e) => {
+                  if (isCalculated) return;
                   const raw = e.target.value;
                   setNumericInput(raw);
                   if (raw === "") {
@@ -346,7 +429,7 @@ export function AnalysisDrawer({
           )}
         </div>
 
-        {hasMessages && (
+        {hasMessages && !isCalculated && hasValue && (
           <div className="shrink-0 border-b border-border px-5 py-2">
             <button
               onClick={() => handleAnalyze(true)}
@@ -361,37 +444,86 @@ export function AnalysisDrawer({
 
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {historyLoaded && messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-              <div className="rounded-full bg-primary/10 p-4">
-                <Sparkles className="h-8 w-8 text-primary" />
+            !hasValue ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 px-4 text-center">
+                <div className="rounded-full bg-muted p-4">
+                  <Sparkles className="h-8 w-8 text-muted-foreground" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground">Noch kein Wert vorhanden</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {isCalculated
+                      ? "Sobald die Eingangswerte gepflegt sind und die Formel ein Ergebnis liefert, kannst du Claude dazu befragen."
+                      : "Trage zuerst einen Wert ein (oder lass ihn per Refresh holen), dann kannst du Claude dazu befragen."}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-medium text-foreground">Noch keine Analyse vorhanden</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Starte eine Claude-Analyse um eine Einschätzung zu erhalten.
-                </p>
+            ) : isCalculated ? (
+              <div className="flex h-full flex-col items-center justify-center gap-4 px-2 text-center">
+                <div className="rounded-full bg-primary/10 p-4">
+                  <Sparkles className="h-8 w-8 text-primary" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground">Plausibilitäts-Check mit Claude</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Wähle einen Quick-Prompt oder stelle eine eigene Frage unten im Chat.
+                  </p>
+                </div>
+                <div className="flex w-full flex-col gap-2">
+                  {CALC_QUICK_PROMPTS.map((q) => {
+                    const Icon = q.icon;
+                    return (
+                      <button
+                        key={q.label}
+                        onClick={() => handleSend(q.prompt, q.enableSearch)}
+                        disabled={sending}
+                        className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:opacity-50"
+                      >
+                        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                        <div className="flex flex-col">
+                          <span className="font-medium">{q.label}</span>
+                          {q.hint && (
+                            <span className="text-[10px] text-muted-foreground">{q.hint}</span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <button
-                onClick={() => handleAnalyze(false)}
-                disabled={analyzing}
-                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-              >
-                {analyzing ? (
-                  <>
-                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                    </svg>
-                    {t.analyzing}
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-4 w-4" />
-                    {t.analyzeStart}
-                  </>
-                )}
-              </button>
-            </div>
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+                <div className="rounded-full bg-primary/10 p-4">
+                  <Sparkles className="h-8 w-8 text-primary" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground">Noch keine Analyse vorhanden</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Starte eine Claude-Analyse um eine Einschätzung zu erhalten.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleAnalyze(false)}
+                  disabled={analyzing}
+                  className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+                >
+                  {analyzing ? (
+                    <>
+                      <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                      {t.analyzing}
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-4 w-4" />
+                      {t.analyzeStart}
+                    </>
+                  )}
+                </button>
+              </div>
+            )
           ) : (
             <div className="space-y-3">
               {messages.map((msg) => {
@@ -448,7 +580,7 @@ export function AnalysisDrawer({
                   </div>
                 );
               })}
-              {(analyzing || sending) && <ClaudeThinking />}
+              {(analyzing || sending) && <ClaudeThinking mode={thinkingMode} />}
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -460,14 +592,14 @@ export function AnalysisDrawer({
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t.chatPlaceholder}
+              placeholder={hasValue ? t.chatPlaceholder : "Trage zuerst einen Wert ein um den Chat zu starten"}
               rows={2}
-              disabled={sending || analyzing}
+              disabled={!hasValue || sending || analyzing}
               className="flex-1 resize-none rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
             />
             <button
-              onClick={handleSend}
-              disabled={!inputText.trim() || sending || analyzing}
+              onClick={() => handleSend()}
+              disabled={!hasValue || !inputText.trim() || sending || analyzing}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {sending ? (
@@ -483,14 +615,20 @@ export function AnalysisDrawer({
         </div>
 
         <footer className="shrink-0 border-t border-border px-4 py-3 space-y-2">
-          <button
-            onClick={handleAccept}
-            disabled={accepting}
-            className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-          >
-            {accepting ? "..." : acceptLabel}
-          </button>
-          {historyLoaded && messages.filter((m) => m.role !== "system").length === 0 && !analyzing && (
+          {isCalculated ? (
+            <p className="rounded-xl border border-border bg-muted/40 px-3 py-2.5 text-center text-xs text-muted-foreground">
+              Berechneter Wert (Formel) - nicht direkt editierbar. Korrigiere die Eingangswerte um diesen Wert zu beeinflussen.
+            </p>
+          ) : (
+            <button
+              onClick={handleAccept}
+              disabled={accepting}
+              className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
+            >
+              {accepting ? "..." : acceptLabel}
+            </button>
+          )}
+          {historyLoaded && messages.filter((m) => m.role !== "system").length === 0 && !analyzing && !isCalculated && hasValue && (
             <button
               onClick={() => handleAnalyze(false)}
               disabled={analyzing}

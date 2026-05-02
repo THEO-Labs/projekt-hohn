@@ -27,10 +27,11 @@ export const analyzeValue = (companyId: string, valueKey: string, periodType?: s
   return api<AnalyzeResponse>(`/api/companies/${companyId}/analyze/${valueKey}${qs ? `?${qs}` : ""}`, { method: "POST" });
 };
 
-export const sendChatMessage = (companyId: string, valueKey: string, message: string, periodType?: string, periodYear?: number) => {
+export const sendChatMessage = (companyId: string, valueKey: string, message: string, periodType?: string, periodYear?: number, enableSearch = false) => {
   const params = new URLSearchParams();
   if (periodType) params.set("period_type", periodType);
   if (periodYear) params.set("period_year", String(periodYear));
+  if (enableSearch) params.set("enable_search", "true");
   const qs = params.toString();
   return api<AnalyzeResponse>(`/api/companies/${companyId}/chat/${valueKey}${qs ? `?${qs}` : ""}`, {
     method: "POST",

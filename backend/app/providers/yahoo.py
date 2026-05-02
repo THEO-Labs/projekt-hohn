@@ -287,3 +287,173 @@ class YahooFinanceProvider:
         except Exception as e:
             logger.warning("Yahoo cashflow fetch failed %s/%s FY%s: %s", ticker, key, period_year, e)
             return None
+
+
+    def fetch_stock_return(self, ticker: str, start_date) -> dict | None:
+        """Fetch total return (Adj Close based) from start_date until today.
+        Returns dict {start_close, end_close, start_actual_date, end_actual_date,
+        total_return_pct, cagr_pct, n_years}."""
+        try:
+            from datetime import date, timedelta
+            t = yfinance.Ticker(ticker)
+            today = date.today()
+
+            # Window around start_date for first available trading day
+            start_window_begin = start_date - timedelta(days=5)
+            start_window_end = start_date + timedelta(days=10)
+            hist_start = t.history(start=start_window_begin.isoformat(), end=start_window_end.isoformat(), auto_adjust=False)
+            if hist_start is None or hist_start.empty:
+                return None
+
+            # Window around today for last available trading day
+            end_window_begin = today - timedelta(days=10)
+            hist_end = t.history(start=end_window_begin.isoformat(), end=(today + timedelta(days=1)).isoformat(), auto_adjust=False)
+            if hist_end is None or hist_end.empty:
+                return None
+
+            close_col_s = "Adj Close" if "Adj Close" in hist_start.columns else "Close"
+            close_col_e = "Adj Close" if "Adj Close" in hist_end.columns else "Close"
+            start_close = float(hist_start[close_col_s].iloc[0])
+            end_close = float(hist_end[close_col_e].iloc[-1])
+            start_actual = hist_start.index[0].date() if hasattr(hist_start.index[0], "date") else None
+            end_actual = hist_end.index[-1].date() if hasattr(hist_end.index[-1], "date") else None
+
+            if start_close <= 0:
+                return None
+            n_days = (end_actual - start_actual).days if start_actual and end_actual else (today - start_date).days
+            n_years = n_days / 365.25 if n_days > 0 else 0
+            total_ret = end_close / start_close - 1
+            cagr = (end_close / start_close) ** (1.0 / n_years) - 1 if n_years > 0 else None
+
+            return {
+                "start_close": start_close,
+                "end_close": end_close,
+                "start_actual_date": start_actual.isoformat() if start_actual else None,
+                "end_actual_date": end_actual.isoformat() if end_actual else None,
+                "total_return_pct": total_ret * 100,
+                "cagr_pct": cagr * 100 if cagr is not None else None,
+                "n_years": n_years,
+            }
+        except Exception as e:
+            logger.warning("Yahoo stock-return failed for %s/%s: %s", ticker, start_date, e)
+            return None
+
+    def detect_fiscal_year_end(self, ticker: str) -> tuple[int, int] | None:
+        """Detect FY-end (month, day) from Yahoo annual financials columns.
+        Returns None if not detectable."""
+        try:
+            t = yfinance.Ticker(ticker)
+            df = t.financials
+            if df is None or df.empty:
+                return None
+            col = df.columns[0]
+            return (col.month, col.day)
+        except Exception as e:
+            logger.warning("Yahoo FY-end detect failed for %s: %s", ticker, e)
+            return None
+
+    def _get_historical_shares(self, ticker: str, target_date) -> tuple[Decimal | None, str | None]:
+        """Get shares outstanding from Yahoo's quarterly_balance_sheet for the
+        quarter closest-on-or-before `target_date`. Returns (shares, source_label).
+        Falls back to (None, None) if not available."""
+        try:
+            t = yfinance.Ticker(ticker)
+            qbs = t.quarterly_balance_sheet
+            if qbs is None or qbs.empty:
+                return (None, None)
+            row_keys = ["Ordinary Shares Number", "Share Issued", "Common Stock Equity"]
+            row_name = next((r for r in row_keys if r in qbs.index), None)
+            if row_name is None:
+                return (None, None)
+            import pandas as pd
+            target_ts = pd.Timestamp(year=target_date.year, month=target_date.month, day=target_date.day)
+            cols_sorted = sorted(qbs.columns)
+            chosen_col = None
+            for col in cols_sorted:
+                col_naive = col.tz_localize(None) if col.tz else col
+                if col_naive <= target_ts:
+                    chosen_col = col
+            if chosen_col is None:
+                chosen_col = cols_sorted[0]
+            raw = qbs.loc[row_name, chosen_col]
+            value = self._to_decimal(raw)
+            if value is None or value <= 0:
+                return (None, None)
+            label = f"Q{((chosen_col.month - 1) // 3) + 1}/{chosen_col.year}"
+            return (value, label)
+        except Exception as e:
+            logger.warning("Yahoo historical-shares failed for %s/%s: %s", ticker, target_date, e)
+            return (None, None)
+
+    def fetch_historical_market_cap(
+        self,
+        ticker: str,
+        year: int,
+        fy_end_month: int = 12,
+        fy_end_day: int = 31,
+    ) -> ProviderResult | None:
+        """Fetch historical market cap as Adj Close on (closest trading day to) the FY-end
+        of `year` × shares outstanding from the closest quarterly balance sheet (V1.5).
+        Falls back to current shares if historical not available."""
+        try:
+            from datetime import date, timedelta
+            t = yfinance.Ticker(ticker)
+            info = self._get_info(ticker)
+
+            try:
+                target = date(year, fy_end_month, fy_end_day)
+            except ValueError:
+                target = date(year, 12, 31)
+
+            historical_shares, shares_label = self._get_historical_shares(ticker, target)
+            if historical_shares is not None:
+                shares_dec = historical_shares
+                shares_source_suffix = f"Shares per {shares_label}"
+            else:
+                current_shares = info.get("sharesOutstanding")
+                if not current_shares:
+                    logger.warning("Yahoo historical-mcap: no shares for %s", ticker)
+                    return None
+                shares_dec = Decimal(str(current_shares))
+                shares_source_suffix = "current Shares"
+
+            start = target - timedelta(days=10)
+            end = target + timedelta(days=8)
+            hist = t.history(start=start.isoformat(), end=end.isoformat(), auto_adjust=False)
+            if hist is None or hist.empty:
+                logger.warning("Yahoo historical-mcap: no history rows for %s/%s", ticker, year)
+                return None
+
+            try:
+                import pandas as pd
+                target_ts = pd.Timestamp(year=target.year, month=target.month, day=target.day)
+                if hist.index.tz is not None:
+                    valid = hist.loc[hist.index.tz_localize(None) <= target_ts]
+                else:
+                    valid = hist.loc[hist.index <= target_ts]
+                if valid.empty:
+                    valid = hist
+            except Exception:
+                valid = hist
+
+            close_col = "Adj Close" if "Adj Close" in valid.columns else "Close"
+            last_close = float(valid[close_col].iloc[-1])
+            stock_price_dec = Decimal(str(last_close))
+            mcap = stock_price_dec * shares_dec
+            currency = info.get("currency")
+            target_str = target.strftime("%d.%m.%Y")
+            return ProviderResult(
+                value=mcap,
+                source_name=f"Yahoo (Close {target_str} × {shares_source_suffix})",
+                source_link=f"https://finance.yahoo.com/quote/{ticker}/history",
+                currency=currency,
+                extras={
+                    "stock_price": stock_price_dec,
+                    "shares_outstanding": shares_dec,
+                    "as_of_date": target_str,
+                    "shares_source": shares_source_suffix,
+                },
+            )
+        except Exception as e:
+            logger.warning("Yahoo historical-mcap failed for %s/%s: %s", ticker, year, e)
+            return None

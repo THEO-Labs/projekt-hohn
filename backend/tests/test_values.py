@@ -333,3 +333,217 @@ def test_company_values_other_user_is_404(client, db):
 
     response = client.get(f"/api/companies/{cid}/values")
     assert response.status_code == 404
+
+
+def _seed_value(db, cid, key, period_type, period_year, value, manually_overridden=False):
+    cv = CompanyValue(
+        company_id=cid,
+        value_key=key,
+        period_type=period_type,
+        period_year=period_year,
+        numeric_value=Decimal(str(value)),
+        source_name="Test",
+        manually_overridden=manually_overridden,
+    )
+    db.add(cv)
+    db.commit()
+
+
+def _get_row(client, cid, key, period_type, period_year=None):
+    params = f"period_type={period_type}"
+    if period_year is not None:
+        params += f"&period_year={period_year}"
+    rows = client.get(f"/api/companies/{cid}/values?{params}").json()
+    return next((r for r in rows if r["value_key"] == key), None)
+
+
+def test_override_calculated_key_rejected(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="lock@example.com")
+
+    for key in ("hohn_return_simple", "hohn_return_detailed", "net_debt", "ni_growth", "fcf_yield"):
+        response = client.post(
+            f"/api/companies/{cid}/values/{key}/override?period_type=FY&period_year=2024",
+            json={"numeric_value": "1.0", "source_name": "Manual"},
+        )
+        assert response.status_code == 400, f"override of {key} should be rejected"
+
+
+def test_override_primary_triggers_same_year_recalc(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="recalc@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+    assert Decimal(response.json()["numeric_value"]) == Decimal("200")
+
+    ni_growth = _get_row(client, cid, "ni_growth", "FY", 2024)
+    assert ni_growth is not None
+    assert Decimal(ni_growth["numeric_value"]) == Decimal("100")
+    assert ni_growth["manually_overridden"] is False
+
+
+def test_override_primary_cascades_to_next_year_when_data_exists(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="cross@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+    _seed_value(db, cid, "net_income", "FY", 2025, "180")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+
+    ng_2025 = _get_row(client, cid, "ni_growth", "FY", 2025)
+    assert ng_2025 is not None
+    assert Decimal(ng_2025["numeric_value"]) == Decimal("-10")
+
+
+def test_override_primary_does_not_create_rows_in_empty_next_year(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="empty@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+
+    rows_2025 = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2025").json()
+    assert rows_2025 == []
+
+
+def test_override_market_cap_recalcs_all_existing_fy_years(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="mcap@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "fcf", "FY", 2023, "100")
+    _seed_value(db, cid, "fcf", "FY", 2024, "200")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/market_cap/override?period_type=SNAPSHOT",
+        json={"numeric_value": "2000", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+
+    fy_2023 = _get_row(client, cid, "fcf_yield", "FY", 2023)
+    fy_2024 = _get_row(client, cid, "fcf_yield", "FY", 2024)
+    assert fy_2023 is not None and Decimal(fy_2023["numeric_value"]) == Decimal("5")
+    assert fy_2024 is not None and Decimal(fy_2024["numeric_value"]) == Decimal("10")
+
+
+def test_override_logs_recalc_system_messages_same_year(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="audit@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+
+    history = client.get(
+        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2024"
+    ).json()
+    system_msgs = [m for m in history["messages"] if m["role"] == "system"]
+    assert len(system_msgs) >= 1
+    msg = system_msgs[0]["content"]
+    assert "Automatisch neu berechnet" in msg
+    assert "Net Income" in msg
+    assert "FY2024" in msg
+
+
+def test_override_logs_recalc_in_next_year_via_cascade(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="audit2@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+    _seed_value(db, cid, "net_income", "FY", 2025, "180")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+
+    history_2025 = client.get(
+        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2025"
+    ).json()
+    system_msgs = [m for m in history_2025["messages"] if m["role"] == "system"]
+    assert len(system_msgs) >= 1
+    assert "Automatisch neu berechnet" in system_msgs[0]["content"]
+    assert "Net Income" in system_msgs[0]["content"]
+
+
+def test_unchanged_calc_value_does_not_log_message(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="audit3@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+
+    history_before = client.get(
+        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2024"
+    ).json()
+    msgs_before = len([m for m in history_before["messages"] if m["role"] == "system"])
+
+    client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+
+    history_after = client.get(
+        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2024"
+    ).json()
+    msgs_after = len([m for m in history_after["messages"] if m["role"] == "system"])
+
+    assert msgs_after == msgs_before
+
+
+def test_old_calc_key_with_stale_lock_gets_overwritten(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="stale@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+    _seed_value(db, cid, "ni_growth", "FY", 2024, "999", manually_overridden=True)
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "source_name": "Manuell"},
+    )
+    assert response.status_code == 200
+
+    ng = _get_row(client, cid, "ni_growth", "FY", 2024)
+    assert ng is not None
+    assert Decimal(ng["numeric_value"]) == Decimal("100")
+    assert ng["manually_overridden"] is False

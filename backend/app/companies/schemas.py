@@ -25,6 +25,8 @@ class CompanyUpdate(BaseModel):
     ticker: str | None = None
     isin: str | None = None
     currency: str | None = None
+    fiscal_year_end_month: int | None = None
+    fiscal_year_end_day: int | None = None
 
     @field_validator("isin")
     @classmethod
@@ -43,6 +45,8 @@ class CompanyOut(BaseModel):
     ticker: str
     isin: str | None
     currency: str
+    fiscal_year_end_month: int | None = None
+    fiscal_year_end_day: int | None = None
     created_at: datetime
     updated_at: datetime
 

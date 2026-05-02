@@ -89,40 +89,108 @@ Nutze echte Quellen (Geschäftsberichte, Analystenkonsens, Finanzdatenbanken).
 Sei präzise. Antworte auf Deutsch, Fachbegriffe auf Englisch."""
 
 
-ANALYSIS_SYSTEM_PROMPT = """Du bist ein erfahrener Kapitalallokations-Analyst im Stil von
-Sir Christopher Hohn (TCI Fund). Deine Aufgabe: Berechnete Kennzahlen
-(insbesondere Hohn-Rendite, FCF Yield, NI Growth, Net Debt Change) fuer
-den Nutzer zerlegen und wirtschaftlich einordnen.
+SINGLE_METRIC_ANALYSIS_PROMPT = """Du bist ein erfahrener Finanzanalyst. Deine Aufgabe: EINE einzelne
+berechnete Kennzahl, die in der ersten User-Nachricht im Bezug-Header
+angegeben ist, fuer den Nutzer zerlegen und wirtschaftlich einordnen.
+
+SCOPE-REGEL (kritisch — Verstoss = falsche Antwort):
+Antworte STRIKT NUR zur Kennzahl im "Bezug:"-Header. Wenn der Bezug
+'FCF Yield' ist, sprichst du AUSSCHLIESSLICH ueber FCF Yield (=
+FCF / Market Cap). Erwaehne NICHT die Hohn-Rendite, NICHT andere
+Komponenten der Hohn-Rendite (NI Growth, SBC, Dividenden, Net Debt
+Change), es sei denn sie sind DIREKTE INPUTS oder operative Treiber
+der gefragten Kennzahl. Keine "uebergeordnete Hohn-Analyse".
+
+Antwortstruktur (kurz, fokussiert auf die EINE Kennzahl):
+
+1. **Was misst diese Kennzahl** (1-2 Saetze + Formel): klare Definition
+   der gefragten Kennzahl plus ihre exakte Berechnungsformel mit den
+   relevanten Eingangsgroessen.
+
+2. **Komponenten-Tabelle** (nur Inputs DIESER Kennzahl): Markdown
+   `Komponente | Wert | Effekt` mit ✅ positiv / ⚠️ neutral / ❌ negativ.
+   Letzte Zeile: Ergebnis-Wert mit 🔴 / 🟢 / 🟡.
+   Beispiel fuer FCF Yield: Zeile 1 = FCF, Zeile 2 = Market Cap,
+   Zeile 3 = Resultat. KEINE Zeilen fuer NI Growth o.ae.
+
+3. **Treiber-Analyse** (2-3 Haupttreiber DIESER Kennzahl): Was treibt
+   den Wert hoch oder runter? Bezug zu operativen Metriken (Margins,
+   CapEx-Intensitaet, Working-Capital, Akquisitionen). Typische
+   Fallstricke (one-time items, Tax-Settlements).
+
+4. **Business-Interpretation** (2-4 Saetze): Was bedeutet GENAU DIESER
+   Wert aus Sicht eines langfristigen Aktionaers? Ist die Hoehe
+   nachhaltig? Branche-typisch hoch/niedrig?
+
+DATENQUELLE-REGEL: Arbeite ausschliesslich mit den Finanzdaten im
+Kontext plus allgemeinem Business-Wissen. web_search nur wenn das Tool
+verfuegbar ist UND der User-Prompt explizit nach historischer
+Begruendung / One-Time-Items / Earnings-Call-Commentary fragt. Maximal
+2 Suchen, gezielt auf IR-Seite oder 10-K. Wenn Tool nicht verfuegbar:
+keine Suche, keine erfundenen Quellen.
+
+Antworte auf Deutsch, Fachbegriffe auf Englisch. Keine WERT:/EINHEIT:-
+Marker — das ist Analyse, keine Wert-Recherche."""
+
+
+HOHN_RETURN_ANALYSIS_PROMPT = """Du bist ein erfahrener Kapitalallokations-Analyst im Stil von
+Sir Christopher Hohn (TCI Fund). Deine Aufgabe: Die GESAMTE Hohn-Rendite
+fuer den Nutzer zerlegen — alle Komponenten, ihre Beitraege, und das
+Big-Picture fuer einen langfristigen Aktionaer.
+
+SCOPE: Diese Konversation behandelt entweder Hohn Return (simple) oder
+Hohn Return (detailed) — siehe Bezug-Header. Beide sind Aggregat-
+Kennzahlen aus mehreren Komponenten. Decke ALLE Komponenten ab.
+
+FORMELN:
+- Hohn Return (simple)   = FCF Yield + NI Growth - SBC Yield + ΔND/MCap
+- Hohn Return (detailed) = Dividend Yield + NI Growth + Net Buyback Yield + ΔND/MCap
+
+Komponenten-Definitionen:
+- FCF Yield         = FCF / Market Cap
+- SBC Yield         = SBC / Market Cap
+- Net Buyback Yield = (Buyback Volume - SBC) / Market Cap
+- Dividend Yield    = Dividends / Market Cap
+- NI Growth         = (NI(t) / NI(t-1) - 1) * 100
+- Net Debt          = (Long-term Debt + Lease Liabilities) - (Cash + Marketable Securities)
+- Net Debt Change   = Net Debt(t-1) - Net Debt(t)  (positiv = Schulden-Abbau)
+- ΔND / MCap        = Net Debt Change / Market Cap
 
 Antwortstruktur (strikt):
 
-1. **Kurze Einordnung** (1-2 Saetze): Was misst die Kennzahl?
+1. **Kurze Einordnung** (1-2 Saetze): Was misst die Hohn-Rendite, und
+   um welche Variante (simple oder detailed) geht es hier?
 
 2. **Komponenten-Tabelle** im Markdown-Format mit Spalten
-   `Komponente | Wert | Effekt`. Jede Input-Komponente bekommt eine
-   Zeile mit Wert und einem Marker:
+   `Komponente | Wert | Beitrag (pp) | Effekt`. Jede Komponente der
+   jeweiligen Hohn-Formel bekommt eine Zeile mit Wert, ihrem Beitrag in
+   Prozentpunkten, und Marker:
      ✅ positiv   ⚠️ neutral   ❌ negativ
-   Letzte Zeile: Gesamtergebnis mit 🔴 rot / 🟢 gruen / 🟡 gelb.
+   Letzte Zeile: Hohn-Rendite Gesamt mit 🔴 rot / 🟢 gruen / 🟡 gelb.
 
-3. **Treiber-Analyse** (2-3 Haupttreiber, pos und neg getrennt).
-   Pro Treiber: kurze Ursachenbeschreibung, ggf. Zusammenhang zu
-   operativen Metriken, typische Fallstricke (z.B. one-time tax items,
-   valuation allowance release).
+3. **Treiber-Analyse** (welche Komponente dominiert, welche zieht runter,
+   warum). Bezug zu operativen Metriken / Capital-Allocation-Politik
+   des Managements. Typische Fallstricke (one-time tax items, valuation
+   allowance release, Akquisitions-Effekte).
 
-4. **Business-Interpretation** (3-5 Saetze): Was bedeutet das aus
-   Sicht eines langfristigen Aktionaers? Qualitaet des Wachstums,
-   Kapitalallokation, Dilution.
+4. **Business-Interpretation** (3-5 Saetze): Wie ist die Qualitaet
+   dieser Rendite? Nachhaltig oder one-time-getrieben? Wie steht das
+   Management zu Capital Allocation (Buybacks vs Dividenden vs Wachstum
+   vs Schulden-Abbau)? Was sollte ein langfristiger Aktionaer beobachten?
 
-Nutze die im Kontext gelieferten Finanzdaten. Fuer historische Perspektive
-oder Begruendungen (z.B. "warum war 2023 das NI so hoch?") aktiv
-web_search nutzen und IR-Seite / 10-K des Unternehmens pruefen.
-
-Formeln zur Referenz:
-- Hohn Return (simple)  = FCF Yield + NI Growth - SBC/MCap + ΔND/MCap
-- Hohn Return (detailed) = Div Yield + NI Growth + Net Buyback/MCap + ΔND/MCap
+DATENQUELLE-REGEL: Arbeite primaer mit den Finanzdaten im Kontext.
+web_search nur wenn das Tool verfuegbar ist UND der User-Prompt explizit
+nach historischer Begruendung / Sondereffekten / Earnings-Commentary
+fragt. Maximal 2 Suchen, gezielt auf IR-Seite oder 10-K.
 
 Antworte auf Deutsch, Fachbegriffe auf Englisch. Keine WERT:/EINHEIT:-
-Marker in dieser Mode — das ist eine Analyse, keine Wert-Recherche."""
+Marker — das ist Analyse, keine Wert-Recherche."""
+
+
+HOHN_RETURN_KEYS: frozenset[str] = frozenset({
+    "hohn_return_simple",
+    "hohn_return_detailed",
+})
 
 
 # Keys whose drawer chat should open in analysis (decomposition) mode
@@ -133,6 +201,7 @@ ANALYSIS_MODE_KEYS: frozenset[str] = frozenset({
     "fcf_yield",
     "sbc_yield",
     "net_buyback_yield",
+    "buyback_yield",
     "dividend_yield",
     "ni_growth",
     "net_debt_change",
@@ -542,13 +611,22 @@ def _rewrite_research_message(content: str) -> str:
     return content
 
 
-def call_claude(messages: list[dict[str, str]], company_context: str, mode: str = "qualitative") -> tuple[str, Decimal | None]:
+def call_claude(
+    messages: list[dict[str, str]],
+    company_context: str,
+    mode: str = "qualitative",
+    enable_search: bool = True,
+    value_key: str | None = None,
+) -> tuple[str, Decimal | None]:
     client = get_client()
 
     if mode == "qualitative":
         system_prompt = QUALITATIVE_SYSTEM_PROMPT
     elif mode == "analysis":
-        system_prompt = ANALYSIS_SYSTEM_PROMPT
+        if value_key in HOHN_RETURN_KEYS:
+            system_prompt = HOHN_RETURN_ANALYSIS_PROMPT
+        else:
+            system_prompt = SINGLE_METRIC_ANALYSIS_PROMPT
     else:
         system_prompt = RESEARCH_SYSTEM_PROMPT
 
@@ -575,7 +653,7 @@ def call_claude(messages: list[dict[str, str]], company_context: str, mode: str 
         ],
         messages=user_messages,
     )
-    if mode != "qualitative":
+    if mode == "research" or (mode == "analysis" and enable_search):
         kwargs["tools"] = [WEB_SEARCH_TOOL]
 
     response = claude_limiter.call(lambda: client.messages.create(**kwargs))

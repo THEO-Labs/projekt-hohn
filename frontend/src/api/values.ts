@@ -65,6 +65,8 @@ export type RefreshStatus = {
   successful?: number;
   current_key: string | null;
   status: "running" | "done" | "failed" | "idle";
+  phase?: "fetching" | "prev_year_inputs" | "calculating";
+  phase_label?: string | null;
   started_at?: string;
   finished_at?: string | null;
 };
@@ -82,6 +84,67 @@ export const calculateValues = (
   if (periodYear != null) params.set("period_year", String(periodYear));
   return api<CompanyValue[]>(`/api/companies/${companyId}/values/calculate?${params}`, { method: "POST" });
 };
+
+export type FyAvailability = {
+  fy_years_with_data: number[];
+  keys_per_year: Record<string, string[]>;
+  has_snapshot_market_cap: boolean;
+};
+
+export const getFyAvailability = (companyId: string) =>
+  api<FyAvailability>(`/api/companies/${companyId}/fy-availability`);
+
+export type CumulativeCell = {
+  cum: string | null;
+  pa_avg: string | null;
+  pa_cagr: string | null;
+  missing: string[];
+};
+
+export type CumulativeValuesResponse = {
+  from_year: number;
+  to_year: number;
+  n_years: number;
+  market_cap: string | null;
+  values: Record<string, CumulativeCell>;
+  per_year_breakdown: Record<string, Record<string, string | null>>;
+  pre_period_year: number;
+  pre_period_breakdown: Record<string, string | null>;
+  missing_years: number[];
+};
+
+export const getCumulativeValues = (
+  companyId: string,
+  fromYear: number,
+  toYear: number,
+) => {
+  const params = new URLSearchParams();
+  params.set("from_year", String(fromYear));
+  params.set("to_year", String(toYear));
+  return api<CumulativeValuesResponse>(`/api/companies/${companyId}/values/cumulative?${params}`);
+};
+
+export type StockReturnResponse = {
+  company_id: string;
+  ticker: string;
+  requested_start: string;
+  start_close: number;
+  end_close: number;
+  start_actual_date: string | null;
+  end_actual_date: string | null;
+  total_return_pct: number;
+  cagr_pct: number | null;
+  n_years: number;
+};
+
+export const getStockReturn = (companyId: string, startDate: string) =>
+  api<StockReturnResponse>(`/api/companies/${companyId}/stock-return?start_date=${startDate}`);
+
+export const fetchHistoricalStammdaten = (companyId: string, periodYear: number) =>
+  api<{ stored: boolean; reason?: string; period_year?: number }>(
+    `/api/companies/${companyId}/values/historical-stammdaten?period_year=${periodYear}`,
+    { method: "POST" }
+  );
 
 export const overrideValue = (
   companyId: string,

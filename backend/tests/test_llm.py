@@ -98,6 +98,29 @@ def test_chat_history_after_analyze(client, db):
     assert roles == ["user", "assistant"]
 
 
+def test_chat_failure_does_not_persist_orphan_user_message(client, db):
+    cid = _login_with_company(client, db, email="orphan@example.com")
+    with patch("app.llm.routes.call_claude", side_effect=RuntimeError("boom")):
+        response = client.post(
+            f"/api/companies/{cid}/chat/judgement",
+            json={"message": "Was ist die Qualitaet?"},
+        )
+    assert response.status_code == 503
+
+    history = client.get(f"/api/companies/{cid}/chat/judgement/history").json()
+    assert history["messages"] == []
+
+
+def test_analyze_failure_does_not_persist_orphan_user_message(client, db):
+    cid = _login_with_company(client, db, email="orphan2@example.com")
+    with patch("app.llm.routes.call_claude", side_effect=RuntimeError("boom")):
+        response = client.post(f"/api/companies/{cid}/analyze/judgement")
+    assert response.status_code == 503
+
+    history = client.get(f"/api/companies/{cid}/chat/judgement/history").json()
+    assert history["messages"] == []
+
+
 def test_analyze_unknown_company_returns_404(client, db):
     user = User(email="x@example.com", password_hash=hash_password("pw1234"))
     db.add(user)

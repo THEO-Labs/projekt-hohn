@@ -11,33 +11,70 @@ import { listCompanies, type Company } from "@/api/companies";
 import {
   getValueDefinitions,
   getCompanyValues,
+  getCumulativeValues,
+  getFyAvailability,
   getRefreshStatus,
   refreshValues,
   overrideValue,
-  calculateValues,
+  fetchHistoricalStammdaten,
   type ValueDefinition,
   type CompanyValue,
+  type CumulativeValuesResponse,
+  type FyAvailability,
   type RefreshStatus,
 } from "@/api/values";
 import { AnalysisDrawer } from "@/components/AnalysisDrawer";
+import { CumulativeBreakdownDrawer } from "@/components/CumulativeBreakdownDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 import { getFxRates } from "@/api/fx";
 import { parseNumericInput } from "@/lib/parseNumeric";
 
 const CATEGORY_ORDER = [
-  "STAMMDATEN", "CASH_DEBT", "BUYBACKS_SBC", "FCF",
-  "NI_GROWTH", "DELTA_ND", "DIVIDENDS", "HOHN_RETURN",
+  "HOHN_RETURN", "FCF", "NI_GROWTH", "BUYBACKS_SBC",
+  "DIVIDENDS", "DELTA_ND", "CASH_DEBT", "STAMMDATEN",
 ];
 
+const FACTOR_KEYS = new Set([
+  "hohn_return_simple",
+  "hohn_return_detailed",
+  "fcf_yield",
+  "ni_growth",
+  "sbc_yield",
+  "net_buyback_yield",
+  "buyback_yield",
+  "dividend_yield",
+  "net_debt_change_pct",
+  "market_cap",
+]);
+
+const PREV_YEAR_DISPLAY_KEYS = new Set([
+  "net_income",
+  "net_debt",
+]);
+
+const CUM_INPUT_FY_KEYS = [
+  "fcf",
+  "net_income",
+  "sbc",
+  "buyback_volume",
+  "dividends",
+  "cash_and_equivalents",
+  "marketable_securities_st",
+  "marketable_securities_lt",
+  "lease_liabilities",
+  "long_term_debt",
+];
+
+
 const CATEGORY_LABELS: Record<string, string> = {
-  STAMMDATEN: "Stammdaten",
-  CASH_DEBT: "Cash & Debt",
-  BUYBACKS_SBC: "Buybacks & SBC",
+  HOHN_RETURN: "Hohn-Rendite",
   FCF: "FCF Yield",
   NI_GROWTH: "Net Income Growth",
-  DELTA_ND: "ΔNet Debt",
-  DIVIDENDS: "Dividends",
-  HOHN_RETURN: "Hohn-Rendite",
+  BUYBACKS_SBC: "Buybacks & SBC",
+  DIVIDENDS: "Dividend Yield",
+  DELTA_ND: "ΔNet Debt / MCap",
+  CASH_DEBT: "Cash & Debt (Inputs)",
+  STAMMDATEN: "Stammdaten",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -51,15 +88,27 @@ const CATEGORY_COLORS: Record<string, string> = {
   HOHN_RETURN: "bg-sky-100 text-sky-800 border-sky-300",
 };
 
-const PERIOD_OPTIONS = [
-  { label: "FY 2026e", value: "FY", year: 2026 },
-  { label: "FY 2025", value: "FY", year: 2025 },
-  { label: "FY 2024", value: "FY", year: 2024 },
-  { label: "FY 2023", value: "FY", year: 2023 },
-  { label: "FY 2022", value: "FY", year: 2022 },
-  { label: "FY 2021", value: "FY", year: 2021 },
-  { label: "FY 2020", value: "FY", year: 2020 },
+type PeriodOption =
+  | { label: string; value: "FY"; year: number; from_year?: undefined; to_year?: undefined }
+  | { label: string; value: "CUM"; year?: undefined; from_year: number; to_year: number };
+
+const FY_OPTIONS: { label: string; year: number }[] = [
+  { label: "FY 2026e", year: 2026 },
+  { label: "FY 2025", year: 2025 },
+  { label: "FY 2024", year: 2024 },
+  { label: "FY 2023", year: 2023 },
+  { label: "FY 2022", year: 2022 },
+  { label: "FY 2021", year: 2021 },
+  { label: "FY 2020", year: 2020 },
 ];
+
+const CUM_TO_YEAR = 2025;
+const CUM_FROM_YEARS = [2024, 2023, 2022, 2021, 2020];
+const CUM_OPTIONS: { label: string; from_year: number; to_year: number }[] = CUM_FROM_YEARS.map((fy) => ({
+  label: `seit ${fy}`,
+  from_year: fy,
+  to_year: CUM_TO_YEAR,
+}));
 
 const FALLBACK_FX_RATES: Record<string, number> = {
   USD: 1, EUR: 0.92, GBP: 0.79, CHF: 0.88, JPY: 155, KRW: 1390,
@@ -86,6 +135,54 @@ const FORMULAS: Record<string, string> = {
   hohn_return_detailed: "Dividend Yield + NI Growth + Net Buyback/MCap + ΔND/MCap",
 };
 
+type ColorTier = "excellent" | "good" | "neutral" | "weak" | "bad";
+
+const HIGHER_BETTER_THRESHOLDS: Record<string, [number, number, number, number]> = {
+  hohn_return_simple: [15, 10, 5, 0],
+  hohn_return_detailed: [15, 10, 5, 0],
+  fcf_yield: [6, 4, 2, 0],
+  ni_growth: [15, 8, 0, -5],
+  buyback_yield: [4, 2, 0.5, 0],
+  net_buyback_yield: [3, 1.5, 0, -1],
+  dividend_yield: [3, 1.5, 0.5, 0],
+  net_debt_change_pct: [3, 0.5, -1, -3],
+};
+
+const LOWER_BETTER_THRESHOLDS: Record<string, [number, number, number, number]> = {
+  sbc_yield: [0.5, 1, 2, 4],
+};
+
+function colorTier(key: string, value: number | null): ColorTier | null {
+  if (value == null || isNaN(value)) return null;
+  const hb = HIGHER_BETTER_THRESHOLDS[key];
+  if (hb) {
+    const [exc, good, weak, bad] = hb;
+    if (value >= exc) return "excellent";
+    if (value >= good) return "good";
+    if (value >= weak) return "neutral";
+    if (value >= bad) return "weak";
+    return "bad";
+  }
+  const lb = LOWER_BETTER_THRESHOLDS[key];
+  if (lb) {
+    const [exc, good, weak, bad] = lb;
+    if (value <= exc) return "excellent";
+    if (value <= good) return "good";
+    if (value <= weak) return "neutral";
+    if (value <= bad) return "weak";
+    return "bad";
+  }
+  return null;
+}
+
+const TIER_BG: Record<ColorTier, string> = {
+  excellent: "bg-emerald-100/70",
+  good: "bg-green-50",
+  neutral: "",
+  weak: "bg-orange-50",
+  bad: "bg-red-100/60",
+};
+
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
 
 export function CompanyDashboardPage() {
@@ -95,10 +192,12 @@ export function CompanyDashboardPage() {
   const [definitions, setDefinitions] = useState<ValueDefinition[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [valuesMap, setValuesMap] = useState<Map<string, CompanyValue[]>>(new Map());
-  const [periodIdx, setPeriodIdx] = useState(0);
+  const [periodMode, setPeriodMode] = useState<"FY" | "CUM">("FY");
+  const [fyIdx, setFyIdx] = useState(0);
+  const [cumIdx, setCumIdx] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
   const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -112,32 +211,88 @@ export function CompanyDashboardPage() {
     currentText: string | undefined;
     isQualitative: boolean;
     isAlwaysCurrent: boolean;
+    isCalculated: boolean;
     dataType: string;
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [cumDrawer, setCumDrawer] = useState<{ companyId: string; companyName: string; valueKey: string; valueLabel: string } | null>(null);
+  const [cumDrawerOpen, setCumDrawerOpen] = useState(false);
+  const [prevYearValuesMap, setPrevYearValuesMap] = useState<Map<string, CompanyValue[]>>(new Map());
+  const [cumulativeMap, setCumulativeMap] = useState<Map<string, CumulativeValuesResponse>>(new Map());
+  const [availabilityMap, setAvailabilityMap] = useState<Map<string, FyAvailability>>(new Map());
   const [refreshStatuses, setRefreshStatuses] = useState<Map<string, RefreshStatus>>(new Map());
   const [fxRates, setFxRates] = useState<Record<string, number>>(FALLBACK_FX_RATES);
 
-  const period = PERIOD_OPTIONS[periodIdx];
+  const period: PeriodOption = periodMode === "FY"
+    ? { label: FY_OPTIONS[fyIdx].label, value: "FY", year: FY_OPTIONS[fyIdx].year }
+    : { label: CUM_OPTIONS[cumIdx].label, value: "CUM", from_year: CUM_OPTIONS[cumIdx].from_year, to_year: CUM_OPTIONS[cumIdx].to_year };
 
   const loadAllValues = useCallback(async () => {
     if (!pid || companies.length === 0) return;
-    const snapshotOverrideKeys = new Set(
-      definitions
-        .filter((d) => d.source_type === "QUALITATIVE" || d.always_current)
-        .map((d) => d.key)
-    );
-    const map = new Map<string, CompanyValue[]>();
+    const availMap = new Map<string, FyAvailability>();
     await Promise.all(
       companies.map(async (c) => {
+        try {
+          availMap.set(c.id, await getFyAvailability(c.id));
+        } catch {
+          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false });
+        }
+      })
+    );
+    setAvailabilityMap(availMap);
+
+    const qualitativeOnlyKeys = new Set(
+      definitions.filter((d) => d.source_type === "QUALITATIVE").map((d) => d.key)
+    );
+    const alwaysCurrentApiKeys = new Set(
+      definitions.filter((d) => d.always_current && d.source_type !== "QUALITATIVE").map((d) => d.key)
+    );
+
+    if (period.value === "CUM") {
+      const cumMap = new Map<string, CumulativeValuesResponse>();
+      const snapMap = new Map<string, CompanyValue[]>();
+      await Promise.all(
+        companies.map(async (c) => {
+          try {
+            const cum = await getCumulativeValues(c.id, period.from_year, period.to_year);
+            cumMap.set(c.id, cum);
+          } catch {
+            // skip
+          }
+          try {
+            const snap = await getCompanyValues(c.id, "SNAPSHOT");
+            snapMap.set(c.id, snap);
+          } catch {
+            // skip
+          }
+        })
+      );
+      setCumulativeMap(cumMap);
+      setValuesMap(snapMap);
+      setPrevYearValuesMap(new Map());
+      return;
+    }
+
+    const map = new Map<string, CompanyValue[]>();
+    const prevMap = new Map<string, CompanyValue[]>();
+    const wantsPrev = period.value === "FY" && period.year !== undefined && period.year > 0;
+    const isHistoricalFy = period.value === "FY" && period.year !== undefined && period.year < new Date().getFullYear();
+    await Promise.all(
+      companies.map(async (c) => {
+        if (isHistoricalFy && period.year !== undefined) {
+          try { await fetchHistoricalStammdaten(c.id, period.year); } catch {}
+        }
         const periodVals = await getCompanyValues(c.id, period.value, period.year);
         if (period.value !== "SNAPSHOT") {
           const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
           const periodKeyMap = new Map(periodVals.map((v) => [v.value_key, v]));
           const allKeys = new Set([...periodVals.map((v) => v.value_key), ...snapshotVals.map((v) => v.value_key)]);
           const merged = [...allKeys].map((key) => {
-            if (snapshotOverrideKeys.has(key)) {
+            if (qualitativeOnlyKeys.has(key)) {
               return snapshotVals.find((v) => v.value_key === key) ?? periodKeyMap.get(key);
+            }
+            if (alwaysCurrentApiKeys.has(key)) {
+              return periodKeyMap.get(key) ?? snapshotVals.find((v) => v.value_key === key);
             }
             return periodKeyMap.get(key) ?? snapshotVals.find((v) => v.value_key === key);
           }).filter(Boolean) as CompanyValue[];
@@ -145,10 +300,19 @@ export function CompanyDashboardPage() {
         } else {
           map.set(c.id, periodVals);
         }
+        if (wantsPrev) {
+          try {
+            const prevVals = await getCompanyValues(c.id, "FY", (period.year as number) - 1);
+            prevMap.set(c.id, prevVals);
+          } catch {
+            prevMap.set(c.id, []);
+          }
+        }
       })
     );
     setValuesMap(map);
-  }, [pid, companies, period.value, period.year, definitions]);
+    setPrevYearValuesMap(prevMap);
+  }, [pid, companies, period.value, period.year, period.from_year, period.to_year, definitions]);
 
   const pollStatuses = useCallback(async (companyList: Company[]) => {
     if (companyList.length === 0) return;
@@ -189,6 +353,28 @@ export function CompanyDashboardPage() {
     });
   }, [pid, pollStatuses]);
 
+  const reloadAvailability = useCallback(async () => {
+    if (companies.length === 0) {
+      setAvailabilityMap(new Map());
+      return;
+    }
+    const map = new Map<string, FyAvailability>();
+    await Promise.all(
+      companies.map(async (c) => {
+        try {
+          map.set(c.id, await getFyAvailability(c.id));
+        } catch {
+          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false });
+        }
+      })
+    );
+    setAvailabilityMap(map);
+  }, [companies]);
+
+  useEffect(() => {
+    reloadAvailability();
+  }, [reloadAvailability]);
+
   useEffect(() => {
     setValuesMap(new Map());
     setNotFound(new Set());
@@ -203,7 +389,7 @@ export function CompanyDashboardPage() {
   }, [refreshStatuses, companies, pollStatuses]);
 
   const toggleCategory = (cat: string) => {
-    setCollapsed((prev) => {
+    setExpandedSections((prev) => {
       const next = new Set(prev);
       next.has(cat) ? next.delete(cat) : next.add(cat);
       return next;
@@ -271,57 +457,6 @@ export function CompanyDashboardPage() {
     }
   };
 
-  const handleRefreshAll = async () => {
-    const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
-    setLoadingKeys(new Set(apiKeys));
-    setRefreshStatuses(new Map(companies.map((c) => [c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }])));
-    try {
-      for (const c of companies) {
-        try {
-          const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
-          setValuesMap((prev) => {
-            const next = new Map(prev);
-            const existing = next.get(c.id) ?? [];
-            const merged = new Map(existing.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
-            for (const u of updated) merged.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
-            next.set(c.id, Array.from(merged.values()));
-            return next;
-          });
-          const returnedKeys = new Set(updated.map((u) => u.value_key));
-          setNotFound((prev) => {
-            const next = new Set(prev);
-            for (const k of apiKeys) {
-              const nfKey = `${c.id}:${k}`;
-              returnedKeys.has(k) ? next.delete(nfKey) : next.add(nfKey);
-            }
-            return next;
-          });
-        } catch (err) {
-          console.error(`Refresh failed for ${c.name}:`, err);
-        }
-        await pollStatuses(companies);
-      }
-      await loadAllValues();
-      const checkableKeys = definitions
-        .filter((d) => d.source_type === "API" || d.source_type === "CALCULATED")
-        .map((d) => d.key);
-      setNotFound((prev) => {
-        const next = new Set(prev);
-        for (const c of companies) {
-          const vals = valuesMap.get(c.id) ?? [];
-          const hasKeys = new Set(vals.map((v) => v.value_key));
-          for (const k of checkableKeys) {
-            const nfKey = `${c.id}:${k}`;
-            hasKeys.has(k) ? next.delete(nfKey) : next.add(nfKey);
-          }
-        }
-        return next;
-      });
-    } finally {
-      setLoadingKeys(new Set());
-    }
-  };
-
   const getVal = (companyId: string, key: string): CompanyValue | undefined =>
     (valuesMap.get(companyId) ?? []).find((v) => v.value_key === key);
 
@@ -336,13 +471,43 @@ export function CompanyDashboardPage() {
     return f === t ? num : (num / f) * t;
   };
 
-  const grouped = CATEGORY_ORDER.map((cat) => ({
-    category: cat,
-    label: CATEGORY_LABELS[cat],
-    defs: definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order),
-  })).filter((g) => g.defs.length > 0);
+  const isCumMode = period.value === "CUM";
+  const showPrevYear = period.value === "FY" && period.year !== undefined;
+  const prevYear = showPrevYear ? (period.year as number) - 1 : null;
 
-  const visibleDefs = grouped.flatMap((g) => collapsed.has(g.category) ? [] : g.defs);
+  const HIDDEN_IN_CUM_SECTIONS = new Set(["CASH_DEBT", "STAMMDATEN"]);
+  const grouped = CATEGORY_ORDER.filter((cat) => !(isCumMode && HIDDEN_IN_CUM_SECTIONS.has(cat))).map((cat) => {
+    const allDefs = definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order);
+    const factorDefs = allDefs.filter((d) => FACTOR_KEYS.has(d.key));
+    const inputDefs = allDefs.filter((d) => !FACTOR_KEYS.has(d.key));
+    const isExpanded = !isCumMode && expandedSections.has(cat);
+    const cumFactorDefs = factorDefs.filter((d) => d.key !== "market_cap");
+    const baseVisibleDefs = isCumMode ? cumFactorDefs : (isExpanded ? allDefs : factorDefs);
+    const visibleSectionDefs: (ValueDefinition & { isPrevYear?: boolean; basedOnKey?: string })[] = [];
+    for (const d of baseVisibleDefs) {
+      visibleSectionDefs.push(d);
+      if (showPrevYear && isExpanded && PREV_YEAR_DISPLAY_KEYS.has(d.key)) {
+        visibleSectionDefs.push({
+          ...d,
+          key: `${d.key}__prev`,
+          label_en: `${d.label_en} (FY${prevYear})`,
+          label_de: `${d.label_de} (FY${prevYear})`,
+          isPrevYear: true,
+          basedOnKey: d.key,
+        });
+      }
+    }
+    return {
+      category: cat,
+      label: CATEGORY_LABELS[cat],
+      defs: visibleSectionDefs,
+      hiddenInputCount: isCumMode ? 0 : inputDefs.length,
+      isExpanded,
+      isEmptyInCompact: factorDefs.length === 0,
+    };
+  }).filter((g) => g.defs.length > 0 || g.hiddenInputCount > 0);
+
+  const visibleDefs = grouped.flatMap((g) => g.defs);
 
   if (!user) return null;
 
@@ -358,22 +523,59 @@ export function CompanyDashboardPage() {
         </div>
 
         <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
-          <h2 className="text-2xl font-semibold tracking-tight text-foreground">{t.dashboard}</h2>
           <div className="flex items-center gap-3">
-            <Button variant="outline" size="sm" onClick={handleRefreshAll}>
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              {t.allValues}
-            </Button>
-            <Link to={`/portfolios/${pid}/manage`}>
-              <Button variant="outline" size="sm">
-                <Plus className="mr-1.5 h-3.5 w-3.5" />
-                {t.companies}
-              </Button>
+            <h2 className="text-2xl font-semibold tracking-tight text-foreground">{t.dashboard}</h2>
+            <Link to={`/portfolios/${pid}/backtest`}
+              className="rounded-md border border-primary/40 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
+              title="Backtest: Hohn-Rendite vs. realisierte Stock-Performance"
+            >
+              📈 Backtest
             </Link>
-            <select value={periodIdx} onChange={(e) => setPeriodIdx(Number(e.target.value))}
-              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
-              {PERIOD_OPTIONS.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
-            </select>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1">
+                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Einzelnes FY</span>
+                {FY_OPTIONS.map((p, i) => {
+                  const isActive = periodMode === "FY" && fyIdx === i;
+                  return (
+                    <button key={i}
+                      onClick={() => { setPeriodMode("FY"); setFyIdx(i); }}
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${isActive ? "bg-primary text-primary-foreground" : "border border-border bg-background text-foreground hover:bg-muted"}`}
+                    >{p.label.replace("FY ", "")}</button>
+                  );
+                })}
+              </div>
+              <div className="h-6 w-px bg-border" />
+              <div className="flex items-center gap-1">
+                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Kumuliert</span>
+                {CUM_OPTIONS.map((p, i) => {
+                  const isActive = periodMode === "CUM" && cumIdx === i;
+                  let missingCount = 0;
+                  for (const c of companies) {
+                    const av = availabilityMap.get(c.id);
+                    if (!av?.has_snapshot_market_cap) { missingCount++; continue; }
+                    for (let y = p.from_year - 1; y <= p.to_year; y++) {
+                      const isPre = y === p.from_year - 1;
+                      const requiredKeys = isPre ? ["net_income"] : CUM_INPUT_FY_KEYS;
+                      const have = new Set(av.keys_per_year?.[String(y)] ?? []);
+                      if (requiredKeys.some((k) => !have.has(k))) { missingCount++; break; }
+                    }
+                  }
+                  const isUnavailable = companies.length > 0 && missingCount > 0;
+                  return (
+                    <button key={i}
+                      onClick={() => { setPeriodMode("CUM"); setCumIdx(i); }}
+                      title={isUnavailable ? `${missingCount}/${companies.length} Firmen brauchen Refresh` : `Kumuliert FY${p.from_year} bis FY${p.to_year}`}
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${isActive ? "bg-primary text-primary-foreground" : "border border-border bg-background text-foreground hover:bg-muted"} ${isUnavailable && !isActive ? "opacity-50" : ""}`}
+                    >
+                      {p.label}
+                      {isUnavailable && <span className="ml-1 text-amber-600">⚠</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="flex items-center gap-1.5">
               <select value={displayCurrency} onChange={(e) => setDisplayCurrency(e.target.value)}
                 className="rounded-md border border-input bg-background px-3 py-1.5 text-sm text-foreground">
@@ -386,23 +588,89 @@ export function CompanyDashboardPage() {
         <div className="mb-4 flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 px-4 py-2.5">
           <div className="flex items-center gap-2">
             <div className="h-2.5 w-2.5 rounded-full bg-primary" />
-            <span className="text-sm font-medium text-foreground">
-              {period.value === "SNAPSHOT" ? "Aktuelle Werte" : period.label}
-            </span>
+            <span className="text-sm font-medium text-foreground">{period.label}</span>
           </div>
           <span className="text-xs text-muted-foreground">|</span>
           <span className="text-xs text-muted-foreground">
-            Finanzdaten: {period.value === "SNAPSHOT" ? "Live / letzte verfügbare" : period.value === "LTM" || period.value === "TTM" ? "Letzte 12 Monate" : `Geschäftsjahr ${period.year}`}
+            {period.value === "CUM"
+              ? `Kumuliert über ${period.to_year - period.from_year + 1} FYs (${period.from_year}-${period.to_year}) · MCap-Stichtag: heute · Cell zeigt Σ über die Periode + p.a.-Durchschnitt`
+              : `Finanzdaten: Geschäftsjahr ${period.year}`}
           </span>
-          {period.value !== "SNAPSHOT" && (
-            <>
-              <span className="text-xs text-muted-foreground">|</span>
-              <span className="text-xs italic text-amber-600">
-                Qualitative Bewertungen aus heutiger Sicht · Leere Zellen = keine Daten für diesen Zeitraum
-              </span>
-            </>
-          )}
         </div>
+
+        {period.value === "CUM" && (() => {
+          type Gap = { company: Company; mcapMissing: boolean; missingPerYear: { year: number; isPre: boolean; missingKeys: string[] }[] };
+          const gaps: Gap[] = [];
+          for (const c of companies) {
+            const av = availabilityMap.get(c.id);
+            const mcapMissing = !av?.has_snapshot_market_cap;
+            const missingPerYear: Gap["missingPerYear"] = [];
+            for (let y = period.from_year - 1; y <= period.to_year; y++) {
+              const isPre = y === period.from_year - 1;
+              const required = isPre ? ["net_income"] : CUM_INPUT_FY_KEYS;
+              const have = new Set(av?.keys_per_year?.[String(y)] ?? []);
+              const miss = required.filter((k) => !have.has(k));
+              if (miss.length > 0) missingPerYear.push({ year: y, isPre, missingKeys: miss });
+            }
+            if (mcapMissing || missingPerYear.length > 0) {
+              gaps.push({ company: c, mcapMissing, missingPerYear });
+            }
+          }
+          if (gaps.length === 0) return null;
+          return (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+              <div className="flex items-center gap-2 font-semibold">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                Daten unvollständig — {gaps.length} von {companies.length} Firmen brauchen Refresh
+              </div>
+              <p className="mt-1 text-[11px] text-amber-800/90">
+                Pre-Period FY{period.from_year - 1} braucht nur <code className="rounded bg-amber-100 px-1">net_income</code>. Periode FY{period.from_year}-{period.to_year} braucht alle 10 Cum-Inputs (FCF, Net Income, SBC, Buybacks, Dividends, Cash/Marketable, Leases, LT-Debt). MCap kommt aus SNAPSHOT.
+              </p>
+              <div className="mt-2 space-y-2">
+                {gaps.map(({ company, mcapMissing, missingPerYear }) => (
+                  <div key={company.id} className="rounded border border-amber-200 bg-white/60 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold text-amber-900">
+                          {company.name} <span className="text-amber-700">({company.ticker})</span>
+                        </div>
+                        {mcapMissing && (
+                          <div className="mt-1 text-[11px] text-amber-800">
+                            SNAPSHOT: <span className="font-mono">market_cap</span> fehlt
+                          </div>
+                        )}
+                        {missingPerYear.map(({ year, isPre, missingKeys }) => (
+                          <div key={year} className="mt-1 text-[11px] text-amber-800">
+                            <span className="font-mono font-semibold">FY{year}</span>
+                            {isPre && <span className="text-amber-700"> (pre-period)</span>}:{" "}
+                            <span className="font-mono">{missingKeys.join(", ")}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={async () => {
+                          if (mcapMissing) {
+                            try { await refreshValues(company.id, ["market_cap"], "SNAPSHOT"); } catch {}
+                          }
+                          for (const { year, missingKeys } of missingPerYear) {
+                            try {
+                              await refreshValues(company.id, missingKeys, "FY", year);
+                            } catch {}
+                          }
+                          await loadAllValues();
+                        }}
+                        className="shrink-0 rounded bg-amber-600 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-amber-700"
+                        title="Triggert gezielten Refresh nur für die fehlenden Werte"
+                      >
+                        Fehlende holen
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {companies.some((c) => refreshStatuses.get(c.id)?.status === "running") && (
           <div className="mb-4 space-y-2">
@@ -426,40 +694,45 @@ export function CompanyDashboardPage() {
                 <th className="sticky left-0 z-20 border-b border-r bg-card px-3 py-2 text-left text-xs font-semibold text-foreground" rowSpan={2}>
                   Firma
                 </th>
-                {grouped.map((g) => (
-                  <th
-                    key={g.category}
-                    colSpan={collapsed.has(g.category) ? 1 : g.defs.length}
-                    className={`cursor-pointer select-none border-b border-r px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider transition-colors hover:opacity-80 ${CATEGORY_COLORS[g.category]}`}
-                    onClick={() => toggleCategory(g.category)}
-                  >
-                    <div className="flex items-center justify-center gap-1.5">
-                      {collapsed.has(g.category)
-                        ? <ChevronRight className="h-3.5 w-3.5" />
-                        : <ChevronDown className="h-3.5 w-3.5" />
-                      }
-                      <span>{g.label}</span>
-                    </div>
-                  </th>
-                ))}
+                {grouped.map((g) => {
+                  const colSpan = g.defs.length === 0 ? 1 : g.defs.length;
+                  const canExpand = g.hiddenInputCount > 0;
+                  return (
+                    <th
+                      key={g.category}
+                      colSpan={colSpan}
+                      className={`select-none border-b border-r px-3 py-2 text-center text-xs font-semibold uppercase tracking-wider transition-colors ${canExpand ? "cursor-pointer hover:opacity-80" : ""} ${CATEGORY_COLORS[g.category]}`}
+                      onClick={canExpand ? () => toggleCategory(g.category) : undefined}
+                      title={canExpand ? (g.isExpanded ? "Hilfswerte ausblenden" : `${g.hiddenInputCount} Hilfswerte einblenden`) : undefined}
+                    >
+                      <div className="flex items-center justify-center gap-1.5">
+                        {canExpand && (g.isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />)}
+                        <span>{g.label}</span>
+                        {canExpand && !g.isExpanded && (
+                          <span className="rounded-full bg-foreground/10 px-1.5 py-0.5 text-[9px] font-semibold leading-none">+{g.hiddenInputCount}</span>
+                        )}
+                      </div>
+                    </th>
+                  );
+                })}
               </tr>
-              {/* Value column headers (only for expanded categories) */}
+              {/* Value column headers (or empty placeholder for sections without factors in compact mode) */}
               <tr>
                 {grouped.flatMap((g) => {
-                  if (collapsed.has(g.category)) {
+                  if (g.defs.length === 0) {
                     return [
-                      <th key={`${g.category}-collapsed`}
-                        className="border-b border-r border-border/40 px-2 py-1.5 text-center text-[10px] text-muted-foreground">
-                        {g.defs.length} Werte
+                      <th key={`${g.category}-empty`}
+                        className="border-b border-r border-border/40 px-2 py-1.5 text-center text-[10px] italic text-muted-foreground">
+                        nur Hilfswerte
                       </th>
                     ];
                   }
                   return g.defs.map((d) => (
                     <th key={d.key}
-                      className="whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                      className={`whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground ${d.isPrevYear ? "bg-muted/20 italic" : ""}`}>
                       <div className="flex items-center gap-1">
                         <span className="truncate" title={d.label_de}>{d.label_en}</span>
-                        {d.source_type === "API" && (
+                        {d.source_type === "API" && !d.isPrevYear && (
                           <button onClick={() => handleRefreshColumn(d.key)}
                             disabled={loadingKeys.has(d.key)}
                             className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
@@ -493,15 +766,72 @@ export function CompanyDashboardPage() {
                     </div>
                   </td>
                   {grouped.flatMap((g) => {
-                    if (collapsed.has(g.category)) {
+                    if (g.defs.length === 0) {
                       return [
-                        <td key={`${company.id}-${g.category}-collapsed`}
+                        <td key={`${company.id}-${g.category}-empty`}
                           className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">
-                          ...
+                          —
                         </td>
                       ];
                     }
                     return g.defs.map((d) => {
+                      if (d.isPrevYear) {
+                        const baseKey = d.basedOnKey as string;
+                        const prevRows = prevYearValuesMap.get(company.id) ?? [];
+                        const prevCv = prevRows.find((v) => v.value_key === baseKey);
+                        const prevRawStr = prevCv?.numeric_value ?? null;
+                        const prevRaw = prevRawStr == null ? null : (typeof prevRawStr === "string" ? parseFloat(prevRawStr) : prevRawStr);
+                        const prevValid = prevRaw != null && !isNaN(prevRaw) ? prevRaw : null;
+                        const shouldConvertPrev = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
+                        const convertedPrev = shouldConvertPrev ? convertCurrency(prevValid, prevCv?.currency ?? null) : prevValid;
+                        const fxUnknownPrev = shouldConvertPrev && prevValid !== null && convertedPrev === null;
+                        const displayPrev = fxUnknownPrev ? prevValid : convertedPrev;
+                        return (
+                          <td key={`${company.id}-${d.key}`}
+                            className="whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground"
+                            title={`Vorjahres-Wert ${d.label_de}`}
+                          >
+                            <span className="font-mono text-sm italic">
+                              {prevValid == null ? "—" : formatValue(displayPrev, d.unit, displayCurrency)}
+                            </span>
+                          </td>
+                        );
+                      }
+                      if (isCumMode) {
+                        const cumResp = cumulativeMap.get(company.id);
+                        const cell = cumResp?.values?.[d.key];
+                        const cumVal = cell?.cum != null ? parseFloat(cell.cum) : null;
+                        const avgVal = cell?.pa_avg != null ? parseFloat(cell.pa_avg) : null;
+                        const isPartial = (cell?.missing?.length ?? 0) > 0;
+                        const tier = colorTier(d.key, avgVal);
+                        const tierBg = isPartial ? "bg-amber-50/40" : (tier ? TIER_BG[tier] : "");
+                        const fmt = (n: number | null) => n == null || isNaN(n) ? "—" : `${n.toFixed(2)} %`;
+                        const fmtPa = (n: number | null) => n == null || isNaN(n) ? "—" : `${n.toFixed(2)} % p.a.`;
+                        return (
+                          <td key={`${company.id}-${d.key}`}
+                            className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${tierBg}`}
+                            title={isPartial ? `Partial — fehlt: ${cell?.missing.join("; ")}` : `${d.label_de} (Kumuliert ${period.from_year}-${period.to_year})`}
+                            onClick={() => {
+                              if (!cumResp) return;
+                              setCumDrawer({
+                                companyId: company.id,
+                                companyName: company.name,
+                                valueKey: d.key,
+                                valueLabel: `${d.label_en} (Kumuliert ${period.from_year}-${period.to_year})`,
+                              });
+                              setCumDrawerOpen(true);
+                            }}
+                          >
+                            <div className="flex flex-col gap-0.5">
+                              <div className="flex items-center gap-1">
+                                <span className="font-mono text-sm font-semibold text-foreground">{fmt(cumVal)}</span>
+                                {isPartial && <AlertTriangle className="h-3 w-3 text-amber-600" />}
+                              </div>
+                              <span className="text-[10px] text-muted-foreground">{fmtPa(avgVal)}</span>
+                            </div>
+                          </td>
+                        );
+                      }
                       const cv = getVal(company.id, d.key);
                       const rawStr = cv?.numeric_value ?? null;
                       const raw: number | null = rawStr == null ? null : (typeof rawStr === "string" ? parseFloat(rawStr) : rawStr);
@@ -511,6 +841,7 @@ export function CompanyDashboardPage() {
                       const fxUnknown = shouldConvert && rawValid !== null && convertedVal === null;
                       const displayVal = fxUnknown ? rawValid : convertedVal;
                       const isQualitative = d.source_type === "QUALITATIVE";
+                      const isCalculated = d.source_type === "CALCULATED";
 
                       const isHistoricalQual = isQualitative && period.value !== "SNAPSHOT";
 
@@ -526,7 +857,6 @@ export function CompanyDashboardPage() {
                         const effPeriodYear = (isQualitative || defForKey?.always_current) ? undefined : period.year;
                         try {
                           await overrideValue(company.id, d.key, { numeric_value: num, source_name: "Manuell" }, effPeriodType, effPeriodYear);
-                          await calculateValues(company.id, period.value, period.year);
                           await loadAllValues();
                         } finally {
                           setSaving(false);
@@ -535,10 +865,18 @@ export function CompanyDashboardPage() {
                       };
 
                       const isAlwaysCurrent = d.always_current === true;
+                      const fyTier = colorTier(d.key, displayVal);
+                      const fyTierBg = fyTier ? TIER_BG[fyTier] : "";
+                      const isStammdatenKey = d.category === "STAMMDATEN";
+                      const showFyAsOf = isStammdatenKey && cv?.period_type === "FY" && cv?.period_year != null;
+                      const fyAsOfBadge = showFyAsOf
+                        ? `${String(company.fiscal_year_end_day ?? 31).padStart(2, "0")}.${String(company.fiscal_year_end_month ?? 12).padStart(2, "0")}.${cv?.period_year}`
+                        : null;
 
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""}`}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg}`}
+                          title={isCalculated ? "Berechneter Wert (Formel) - nicht direkt editierbar. Korrigiere die Eingangswerte." : undefined}
                           onClick={() => {
                             setDrawer({
                               companyId: company.id,
@@ -549,11 +887,12 @@ export function CompanyDashboardPage() {
                               currentText: cv?.text_value ?? undefined,
                               isQualitative,
                               isAlwaysCurrent,
+                              isCalculated,
                               dataType: d.data_type,
                             });
                             setDrawerOpen(true);
                           }}
-                          onDoubleClick={(e) => {
+                          onDoubleClick={isCalculated ? undefined : (e) => {
                             e.stopPropagation();
                             const currentVal = cv?.numeric_value != null ? String(cv.numeric_value) : "";
                             setEditCell({ companyId: company.id, key: d.key, value: currentVal });
@@ -602,6 +941,14 @@ export function CompanyDashboardPage() {
                                   {cv?.currency}
                                 </span>
                               )}
+                              {fyAsOfBadge && (
+                                <span
+                                  title={`Stand FY${cv?.period_year} (${fyAsOfBadge})`}
+                                  className="shrink-0 rounded bg-blue-50 px-1 py-0.5 text-[9px] font-medium text-blue-700"
+                                >
+                                  {fyAsOfBadge}
+                                </span>
+                              )}
                             </>
                             )}
                             {cv && !isQualitative && (
@@ -626,10 +973,21 @@ export function CompanyDashboardPage() {
               ))}
               {companies.length === 0 && (
                 <tr>
-                  <td colSpan={visibleDefs.length + grouped.filter((g) => collapsed.has(g.category)).length + 1}
+                  <td colSpan={visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1}
                     className="px-6 py-12 text-center text-sm text-muted-foreground">
                     Noch keine Firmen in diesem Portfolio.{" "}
                     <Link to={`/portfolios/${pid}/manage`} className="text-primary hover:underline">Firma hinzufügen</Link>
+                  </td>
+                </tr>
+              )}
+              {companies.length > 0 && (
+                <tr className="border-t border-border/50 bg-muted/20 hover:bg-muted/40">
+                  <td colSpan={visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1} className="px-3 py-2">
+                    <Link to={`/portfolios/${pid}/manage`}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+                      <Plus className="h-3.5 w-3.5" />
+                      Firma hinzufügen / verwalten
+                    </Link>
                   </td>
                 </tr>
               )}
@@ -648,6 +1006,7 @@ export function CompanyDashboardPage() {
             currentScore={drawer.currentScore}
             currentText={drawer.currentText}
             dataType={drawer.dataType as "NUMERIC" | "TEXT" | "FACTOR"}
+            isCalculated={drawer.isCalculated}
             periodType={period.value}
             periodYear={period.year}
             onAcceptScore={async (score, textValue) => {
@@ -658,9 +1017,26 @@ export function CompanyDashboardPage() {
               } else if (score != null) {
                 await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Manuell" }, effPeriodType, effPeriodYear);
               }
-              await calculateValues(drawer.companyId, period.value, period.year);
               await loadAllValues();
               setDrawerOpen(false);
+            }}
+          />
+        )}
+
+        {cumDrawer && cumulativeMap.get(cumDrawer.companyId) && (
+          <CumulativeBreakdownDrawer
+            open={cumDrawerOpen}
+            onClose={() => setCumDrawerOpen(false)}
+            companyName={cumDrawer.companyName}
+            valueKey={cumDrawer.valueKey}
+            valueLabel={cumDrawer.valueLabel}
+            cum={cumulativeMap.get(cumDrawer.companyId)!}
+            onJumpToFy={(year) => {
+              const targetIdx = FY_OPTIONS.findIndex((opt) => opt.year === year);
+              if (targetIdx >= 0) {
+                setPeriodMode("FY");
+                setFyIdx(targetIdx);
+              }
             }}
           />
         )}
@@ -668,7 +1044,20 @@ export function CompanyDashboardPage() {
         {tooltip && (() => {
           const cv = getVal(tooltip.companyId, tooltip.key);
           const def = definitions.find((d) => d.key === tooltip.key);
+          const tooltipCompany = companies.find((c) => c.id === tooltip.companyId);
           if (!cv || !def) return null;
+
+          const formatAsOf = (): string => {
+            if (cv.period_type === "FY" && cv.period_year) {
+              const m = tooltipCompany?.fiscal_year_end_month;
+              const d = tooltipCompany?.fiscal_year_end_day;
+              if (m && d) {
+                return `${String(d).padStart(2, "0")}.${String(m).padStart(2, "0")}.${cv.period_year} (FY-Ende ${cv.period_year})`;
+              }
+              return `FY ${cv.period_year}`;
+            }
+            return "aktuell (Snapshot)";
+          };
 
           const isClaudeResearch = cv.source_name?.includes("Claude-Recherche");
           const confidence = cv.manually_overridden
@@ -721,6 +1110,10 @@ export function CompanyDashboardPage() {
                       </dd>
                     </div>
                   )}
+                  <div className="flex justify-between">
+                    <dt className="text-muted-foreground">Wert per</dt>
+                    <dd className="font-medium text-foreground text-right">{formatAsOf()}</dd>
+                  </div>
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">{t.fetchedAt}</dt>
                     <dd className="text-foreground">{cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}</dd>

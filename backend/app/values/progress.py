@@ -15,9 +15,20 @@ def start_job(company_id: UUID, total_keys: int) -> None:
             "successful": 0,
             "current_key": None,
             "status": "running",
+            "phase": "fetching",
+            "phase_label": None,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": None,
         }
+
+
+def set_phase(company_id: UUID, phase: str, phase_label: str | None = None) -> None:
+    with _LOCK:
+        job = _JOBS.get(company_id)
+        if job:
+            job["phase"] = phase
+            job["phase_label"] = phase_label
+            job["current_key"] = None
 
 
 def update_job(company_id: UUID, current_key: str, completed_delta: int = 1, success: bool = False) -> None:

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -20,6 +20,8 @@ class Company(Base):
     ticker: Mapped[str] = mapped_column(String(32), nullable=False)
     isin: Mapped[str | None] = mapped_column(String(12), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    fiscal_year_end_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fiscal_year_end_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -14,6 +14,8 @@ export type Company = {
   ticker: string;
   isin: string | null;
   currency: string;
+  fiscal_year_end_month: number | null;
+  fiscal_year_end_day: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -34,7 +36,12 @@ export const createCompany = (portfolioId: string, payload: CompanyCreate) =>
     body: JSON.stringify(payload),
   });
 
-export const updateCompany = (id: string, payload: Partial<CompanyCreate>) =>
+export type CompanyUpdate = Partial<CompanyCreate> & {
+  fiscal_year_end_month?: number | null;
+  fiscal_year_end_day?: number | null;
+};
+
+export const updateCompany = (id: string, payload: CompanyUpdate) =>
   api<Company>(`/api/companies/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
 
 export const deleteCompany = (id: string) =>

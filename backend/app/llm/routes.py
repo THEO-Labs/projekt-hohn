@@ -71,6 +71,20 @@ def _build_company_context(db: Session, company: Company, period_type: str = "SN
         elif v.text_value is not None:
             stammdaten[label] = v.text_value
 
+    if period_type == "FY" and period_year is not None:
+        fy_stamm_rows = db.query(CompanyValue, ValueDefinition).join(
+            ValueDefinition, CompanyValue.value_key == ValueDefinition.key, isouter=True
+        ).filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == period_year,
+            CompanyValue.value_key.in_(("market_cap", "stock_price", "shares_outstanding", "market_cap_calc")),
+            CompanyValue.numeric_value.isnot(None),
+        ).all()
+        for v, vd in fy_stamm_rows:
+            label = vd.label_en if vd else v.value_key
+            stammdaten[label] = f"{v.numeric_value} (Stand FY{period_year})"
+
     fy_context: dict[str, dict[str, str]] = {}
     if period_type == "FY" and period_year is not None:
         for year in (period_year - 1, period_year):
@@ -206,10 +220,29 @@ def analyze_value(
     messages = [{"role": "user", "content": initial_prompt}]
 
     try:
-        content, score = call_claude(messages, context, mode=mode)
+        content, score = call_claude(messages, context, mode=mode, value_key=value_key)
+    except ValueError as e:
+        logger.error("Claude API config error: %s", e)
+        db.delete(user_msg)
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Claude-Konfiguration fehlt: {e}")
     except Exception as e:
         logger.error("Claude API error: %s", e)
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Claude API nicht erreichbar")
+        db.delete(user_msg)
+        db.commit()
+        msg = str(e)
+        lower = msg.lower()
+        if "rate" in lower and "limit" in lower:
+            detail = "Claude Rate-Limit erreicht — bitte 1 Minute warten und neu versuchen."
+        elif "auth" in lower or "401" in lower or "invalid api key" in lower:
+            detail = "Claude-API-Key ungültig oder abgelaufen."
+        elif "timeout" in lower or "timed out" in lower:
+            detail = "Claude-API-Timeout — Anfrage hat zu lange gedauert."
+        elif "overloaded" in lower or "529" in lower:
+            detail = "Claude ist gerade überlastet — bitte gleich nochmal versuchen."
+        else:
+            detail = f"Claude-API-Fehler: {msg[:200]}"
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     assistant_msg = LlmMessage(
         conversation_id=conv.id,
@@ -235,6 +268,7 @@ def chat_message(
     payload: ChatRequest,
     period_type: str = "SNAPSHOT",
     period_year: int | None = None,
+    enable_search: bool = False,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -265,17 +299,52 @@ def chat_message(
         .order_by(LlmMessage.created_at, LlmMessage.id)
         .all()
     )
-    messages = [
-        {"role": m.role, "content": m.content}
-        for m in existing
-        if m.role in ("user", "assistant")
-    ]
+
+    if mode == "analysis":
+        scope_label = vd.label_en if vd else value_key
+        if period_type == "FY" and period_year is not None:
+            scope_period = f"FY{period_year}"
+        elif period_type == "SNAPSHOT":
+            scope_period = "aktueller Stichtag"
+        else:
+            scope_period = period_type
+        scope_header = f"Bezug: {scope_label} ({value_key}) für {scope_period}\n\n"
+    else:
+        scope_header = ""
+
+    messages = []
+    for m in existing:
+        if m.role not in ("user", "assistant"):
+            continue
+        content_text = m.content
+        if scope_header and m.role == "user" and not content_text.startswith("Bezug:"):
+            content_text = scope_header + content_text
+        messages.append({"role": m.role, "content": content_text})
 
     try:
-        content, score = call_claude(messages, context, mode=mode)
+        content, score = call_claude(messages, context, mode=mode, enable_search=enable_search, value_key=value_key)
+    except ValueError as e:
+        logger.error("Claude API config error: %s", e)
+        db.delete(user_msg)
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Claude-Konfiguration fehlt: {e}")
     except Exception as e:
         logger.error("Claude API error: %s", e)
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Claude API nicht erreichbar")
+        db.delete(user_msg)
+        db.commit()
+        msg = str(e)
+        lower = msg.lower()
+        if "rate" in lower and "limit" in lower:
+            detail = "Claude Rate-Limit erreicht — bitte 1 Minute warten und neu versuchen."
+        elif "auth" in lower or "401" in lower or "invalid api key" in lower:
+            detail = "Claude-API-Key ungültig oder abgelaufen."
+        elif "timeout" in lower or "timed out" in lower:
+            detail = "Claude-API-Timeout — Anfrage hat zu lange gedauert."
+        elif "overloaded" in lower or "529" in lower:
+            detail = "Claude ist gerade überlastet — bitte gleich nochmal versuchen."
+        else:
+            detail = f"Claude-API-Fehler: {msg[:200]}"
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     assistant_msg = LlmMessage(
         conversation_id=conv.id,

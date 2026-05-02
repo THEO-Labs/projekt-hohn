@@ -14,6 +14,7 @@ import {
   deleteCompany,
   listCompanies,
   lookupCompany,
+  updateCompany,
   type Company,
 } from "@/api/companies";
 import { t } from "@/lib/i18n";
@@ -28,6 +29,7 @@ export function PortfolioDetailPage() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookedUp, setLookedUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [editingFy, setEditingFy] = useState<{ companyId: string; month: string; day: string } | null>(null);
 
   const refresh = () => {
     if (id) listCompanies(id).then(setCompanies);
@@ -226,6 +228,67 @@ export function PortfolioDetailPage() {
                       <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
                         {c.currency}
                       </span>
+                      {editingFy?.companyId === c.id ? (
+                        <span className="flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
+                          <span>FY-Ende:</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="31"
+                            value={editingFy.day}
+                            onChange={(e) => setEditingFy({ ...editingFy, day: e.target.value })}
+                            className="w-10 rounded border border-blue-200 bg-white px-1 text-center font-mono"
+                            placeholder="DD"
+                          />
+                          <span>.</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="12"
+                            value={editingFy.month}
+                            onChange={(e) => setEditingFy({ ...editingFy, month: e.target.value })}
+                            className="w-10 rounded border border-blue-200 bg-white px-1 text-center font-mono"
+                            placeholder="MM"
+                          />
+                          <button
+                            onClick={async () => {
+                              const month = parseInt(editingFy.month);
+                              const day = parseInt(editingFy.day);
+                              if (!month || month < 1 || month > 12 || !day || day < 1 || day > 31) {
+                                toast.error("Ungültiges Datum (Monat 1-12, Tag 1-31)");
+                                return;
+                              }
+                              try {
+                                await updateCompany(c.id, { fiscal_year_end_month: month, fiscal_year_end_day: day });
+                                setEditingFy(null);
+                                refresh();
+                                toast.success("FY-Ende aktualisiert");
+                              } catch {
+                                toast.error("Speichern fehlgeschlagen");
+                              }
+                            }}
+                            className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-blue-700"
+                          >✓</button>
+                          <button
+                            onClick={() => setEditingFy(null)}
+                            className="rounded px-1 text-blue-700/60 hover:text-blue-900"
+                          >✕</button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setEditingFy({
+                            companyId: c.id,
+                            month: c.fiscal_year_end_month ? String(c.fiscal_year_end_month).padStart(2, "0") : "",
+                            day: c.fiscal_year_end_day ? String(c.fiscal_year_end_day).padStart(2, "0") : "",
+                          })}
+                          className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                          title="Fiscal Year End — Klick zum Editieren"
+                        >
+                          FY-Ende: {c.fiscal_year_end_month && c.fiscal_year_end_day
+                            ? `${String(c.fiscal_year_end_day).padStart(2, "0")}.${String(c.fiscal_year_end_month).padStart(2, "0")}.`
+                            : "auto"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

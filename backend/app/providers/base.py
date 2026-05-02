@@ -9,6 +9,7 @@ class ProviderResult:
     source_name: str
     source_link: str | None = None
     currency: str | None = None
+    extras: dict | None = None
 
 
 class ValueProvider(Protocol):
