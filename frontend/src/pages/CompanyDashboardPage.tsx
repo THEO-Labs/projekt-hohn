@@ -280,6 +280,13 @@ export function CompanyDashboardPage() {
       companies.map(async (c) => {
         if (isHistoricalFy && period.year !== undefined) {
           try { await fetchHistoricalStammdaten(c.id, period.year); } catch {}
+          if (!c.fiscal_year_end_month || !c.fiscal_year_end_day) {
+            // FY-end may have been auto-detected on backend → refresh company state
+            try {
+              const fresh = await listCompanies(pid);
+              setCompanies(fresh);
+            } catch {}
+          }
         }
         const periodVals = await getCompanyValues(c.id, period.value, period.year);
         const snapshotVals = await getCompanyValues(c.id, "SNAPSHOT");
@@ -864,8 +871,13 @@ export function CompanyDashboardPage() {
                       const fyTierBg = fyTier ? TIER_BG[fyTier] : "";
                       const isStammdatenKey = d.category === "STAMMDATEN";
                       const showFyAsOf = isStammdatenKey && cv?.period_type === "FY" && cv?.period_year != null;
+                      // Try parsing as-of date from source_name (e.g. "Adj Close 30.09.2025") — most reliable
+                      const sourceDateMatch = cv?.source_name?.match(/(\d{2}\.\d{2}\.\d{4})/);
                       const fyAsOfBadge = showFyAsOf
-                        ? `${String(company.fiscal_year_end_day ?? 31).padStart(2, "0")}.${String(company.fiscal_year_end_month ?? 12).padStart(2, "0")}.${cv?.period_year}`
+                        ? (sourceDateMatch?.[1]
+                            ?? (company.fiscal_year_end_day && company.fiscal_year_end_month
+                                ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cv?.period_year}`
+                                : `FY${cv?.period_year}`))
                         : null;
 
                       return (
