@@ -18,7 +18,7 @@ services:
       DATABASE_URL: postgresql+psycopg://hohn:${POSTGRES_PASSWORD}@db:5432/hohn
       JWT_SECRET: ${JWT_SECRET}
       JWT_ALGORITHM: HS256
-      JWT_TTL_MINUTES: 120
+      JWT_TTL_MINUTES: 720
       COOKIE_SECURE: 'true'
       ALLOWED_ORIGINS: https://hohn.18-196-0-127.sslip.io,http://18.196.0.127,http://localhost
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}

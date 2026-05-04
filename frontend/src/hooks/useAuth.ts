@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { ApiError } from "@/api/client";
+import { toast } from "sonner";
+import { ApiError, setUnauthorizedHandler } from "@/api/client";
 import { login as apiLogin, logout as apiLogout, me, type User } from "@/api/auth";
 
 export function useAuth() {
@@ -14,6 +15,13 @@ export function useAuth() {
         else throw err;
       })
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setUser(null);
+      toast.error("Session abgelaufen — bitte neu einloggen.");
+    });
   }, []);
 
   const login = async (email: string, password: string) => {
