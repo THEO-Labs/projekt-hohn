@@ -592,14 +592,14 @@ export function AnalysisDrawer({
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={hasValue ? t.chatPlaceholder : "Trage zuerst einen Wert ein um den Chat zu starten"}
+              placeholder={t.chatPlaceholder}
               rows={2}
-              disabled={!hasValue || sending || analyzing}
+              disabled={sending || analyzing}
               className="flex-1 resize-none rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
             />
             <button
               onClick={() => handleSend()}
-              disabled={!hasValue || !inputText.trim() || sending || analyzing}
+              disabled={!inputText.trim() || sending || analyzing}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {sending ? (
