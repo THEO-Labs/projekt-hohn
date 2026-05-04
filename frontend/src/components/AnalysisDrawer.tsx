@@ -264,10 +264,17 @@ export function AnalysisDrawer({
     setThinkingMode(defaultThinkingMode);
     try {
       const res = await analyzeValue(companyId, valueKey, periodType, periodYear, force);
-      setMessages((prev) => {
-        const exists = prev.some((m) => m.id === res.message.id);
-        return exists ? prev : [...prev, res.message];
-      });
+      // Refetch full history so the canned user-prompt appears BEFORE the assistant response.
+      try {
+        const fresh = await getChatHistory(companyId, valueKey, periodType, periodYear);
+        setMessages(fresh.messages);
+      } catch {
+        // fallback: at least append the assistant message
+        setMessages((prev) => {
+          const exists = prev.some((m) => m.id === res.message.id);
+          return exists ? prev : [...prev, res.message];
+        });
+      }
       if (res.message.score_suggestion != null) {
         applySliderValue(toNum(res.message.score_suggestion));
       }
