@@ -136,19 +136,19 @@ def calculate_fy(
     results["dividend_yield"] = _safe_div_pct(dividends, market_cap)
 
     # Realised Total Shareholder Return for COMPLETED FYs:
-    #   actual_return = (MCap end-of-FY / MCap start-of-FY - 1) * 100 + dividend_yield
+    #   actual_return = (MCap end-of-FY / MCap start-of-FY - 1) * 100
     # Where MCap end-of-FY-N is stored as period_year=N+1 market_cap (because
-    # our convention anchors stammdaten to start-of-FY). Returns None for
-    # the running FY (next_year_market_cap unavailable yet) — caller should
-    # additionally suppress display when the FY itself is a forecast.
+    # our convention anchors stammdaten to start-of-FY).
+    # IMPORTANT: we use Yahoo Adj Close × shares for MCap, and Yahoo Adj Close
+    # is already dividend-adjusted (back-corrected as if dividends were
+    # reinvested). So this ratio already IS the Total Shareholder Return; we
+    # must NOT add dividend_yield on top — that would double-count dividends.
     if (
         next_year_market_cap is not None
         and market_cap is not None
         and market_cap != 0
     ):
-        price_return_pct = (next_year_market_cap / market_cap - Decimal("1")) * Decimal("100")
-        div_pct = results.get("dividend_yield") or Decimal("0")
-        results["actual_return"] = price_return_pct + div_pct
+        results["actual_return"] = (next_year_market_cap / market_cap - Decimal("1")) * Decimal("100")
 
     fcf_yield = results.get("fcf_yield")
     ni_growth = results.get("ni_growth")

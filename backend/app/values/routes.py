@@ -149,6 +149,48 @@ def _run_and_persist_calculations(
         _next_rows, next_year = _load_value_map(db, company_id, "FY", period_year + 1)
         next_mcap = next_year.get("market_cap")
         fy_calc = calculate_fy(current, previous, stammdaten, next_year_market_cap=next_mcap)
+
+        # If we just calculated actual_return, log a one-shot formula
+        # breakdown into its chat thread so the user can see how the number
+        # came together (anchored MCaps + reminder that Yahoo Adj Close is
+        # already dividend-adjusted, so no separate dividend term is added).
+        ar = fy_calc.get("actual_return")
+        start_mcap = current.get("market_cap") or stammdaten.get("market_cap")
+        if ar is not None and next_mcap is not None and start_mcap is not None and start_mcap != 0:
+            try:
+                from app.llm.routes import _get_or_create_conversation
+                from app.llm.models import LlmMessage
+                conv = _get_or_create_conversation(db, company_id, "actual_return", "FY", period_year)
+                # Avoid duplicating the message on every recalc by checking if
+                # the latest computed_msg already matches this value.
+                last = (
+                    db.query(LlmMessage)
+                    .filter(LlmMessage.conversation_id == conv.id, LlmMessage.source == "computed")
+                    .order_by(LlmMessage.created_at.desc())
+                    .first()
+                )
+                ratio = next_mcap / start_mcap
+                content = (
+                    f"Actual Return FY{period_year} = (MCap Ende FY / MCap Anfang FY) − 1\n"
+                    f"  MCap Anfang FY{period_year} = {start_mcap:,.0f}\n"
+                    f"  MCap Ende FY{period_year}   = {next_mcap:,.0f}  (= MCap Anfang FY{period_year + 1})\n"
+                    f"  Verhältnis = {ratio:.4f}\n"
+                    f"  Resultat   = {ar:.2f} %\n\n"
+                    f"Hinweis: Yahoo Adj Close ist bereits dividenden-adjustiert (rückwärts korrigiert "
+                    f"als wären Dividenden reinvestiert worden). Daher ist diese Ratio bereits der Total "
+                    f"Shareholder Return — wir addieren die Dividendenrendite NICHT separat (würde sie "
+                    f"doppelt zählen)."
+                )
+                if last is None or content not in (last.content or ""):
+                    db.add(LlmMessage(
+                        conversation_id=conv.id,
+                        role="system",
+                        content=content,
+                        source="computed",
+                    ))
+                    db.flush()
+            except Exception as e:
+                logger.warning("Failed to log actual_return formula message: %s", e)
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
             current_rows, fy_calc, FY_CALC_KEYS, company_currency,
