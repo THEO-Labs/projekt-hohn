@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle, Loader2 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { useAuth } from "@/hooks/useAuth";
@@ -196,6 +196,7 @@ export function CompanyDashboardPage() {
   const [cumIdx, setCumIdx] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
+  const [isLoadingPeriod, setIsLoadingPeriod] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
   const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
@@ -228,6 +229,8 @@ export function CompanyDashboardPage() {
 
   const loadAllValues = useCallback(async () => {
     if (!pid || companies.length === 0) return;
+    setIsLoadingPeriod(true);
+    try {
     const availMap = new Map<string, FyAvailability>();
     await Promise.all(
       companies.map(async (c) => {
@@ -314,6 +317,9 @@ export function CompanyDashboardPage() {
     );
     setValuesMap(map);
     setPrevYearValuesMap(prevMap);
+    } finally {
+      setIsLoadingPeriod(false);
+    }
   }, [pid, companies, period.value, period.year, period.from_year, period.to_year, definitions]);
 
   const pollStatuses = useCallback(async (companyList: Company[]) => {
@@ -378,7 +384,6 @@ export function CompanyDashboardPage() {
   }, [reloadAvailability]);
 
   useEffect(() => {
-    setValuesMap(new Map());
     setNotFound(new Set());
     loadAllValues();
   }, [loadAllValues]);
@@ -598,6 +603,12 @@ export function CompanyDashboardPage() {
               ? `Kumuliert über ${period.to_year - period.from_year + 1} FYs (${period.from_year}-${period.to_year}) · MCap-Stichtag: heute · Cell zeigt Σ über die Periode + p.a.-Durchschnitt`
               : `Finanzdaten: Geschäftsjahr ${period.year}`}
           </span>
+          {isLoadingPeriod && (
+            <span className="ml-auto flex items-center gap-1.5 text-xs text-primary">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Lade Daten…
+            </span>
+          )}
         </div>
 
         {period.value === "CUM" && (() => {
@@ -688,8 +699,24 @@ export function CompanyDashboardPage() {
           </div>
         )}
 
-        <div className="overflow-x-auto rounded-xl border border-border/60 bg-card">
-          <table className="w-full text-sm">
+        <div className="relative overflow-x-auto rounded-xl border border-border/60 bg-card">
+          {isLoadingPeriod && valuesMap.size > 0 && (
+            <div className="pointer-events-none absolute inset-0 z-30 flex items-start justify-center bg-white/40 pt-16">
+              <span className="flex items-center gap-2 rounded-full border border-border bg-white/95 px-3 py-1.5 text-xs font-medium text-primary shadow-sm">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Lade {period.label}…
+              </span>
+            </div>
+          )}
+          {isLoadingPeriod && valuesMap.size === 0 && (
+            <div className="flex items-center justify-center px-6 py-16">
+              <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                <span className="text-sm">Lade Werte für {period.label}…</span>
+              </div>
+            </div>
+          )}
+          <table className={`w-full text-sm ${isLoadingPeriod && valuesMap.size === 0 ? "hidden" : ""}`}>
             <thead>
               {/* Category header row */}
               <tr>
