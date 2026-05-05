@@ -18,7 +18,9 @@ RUN uv sync --frozen --no-dev
 COPY backend/ ./
 COPY --from=frontend-build /frontend/dist ./static
 
-RUN addgroup --system app && adduser --system --home /home/app --ingroup app app && chown -R app:app /app
+RUN addgroup --system app && adduser --system --home /home/app --ingroup app app \
+    && chown -R app:app /app \
+    && mkdir -p /data/ir-docs && chown -R app:app /data
 ENV HOME=/home/app
 USER app
 
