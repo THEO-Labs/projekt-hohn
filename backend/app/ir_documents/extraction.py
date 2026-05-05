@@ -11,9 +11,16 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import anthropic
+from pypdf import PdfReader
 
 from app.config import settings
 from app.llm.rate_limiter import claude_limiter
+
+# Heuristic: PDFs above this raw-bytes size are likely too token-heavy as images.
+# We then fall back to extracted text, which is ~5-10x smaller.
+PDF_IMAGE_BYTES_LIMIT = 5 * 1024 * 1024  # 5 MB raw PDF
+# Hard cap on text we send to Claude (rough: ~4 chars per token)
+MAX_TEXT_CHARS = 600_000
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +126,28 @@ def _parse_json_from_response(text: str) -> dict | None:
             return None
 
 
+def _extract_pdf_text(pdf_path: Path) -> str:
+    """Extract text from all pages of a PDF, prefixed with [Page N] markers
+    so Claude can cite page numbers. Truncated to MAX_TEXT_CHARS."""
+    reader = PdfReader(str(pdf_path))
+    parts: list[str] = []
+    total = 0
+    for i, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        chunk = f"\n\n[Page {i}]\n{text}"
+        total += len(chunk)
+        if total > MAX_TEXT_CHARS:
+            chunk = chunk[: MAX_TEXT_CHARS - (total - len(chunk))]
+            parts.append(chunk)
+            parts.append(f"\n\n[... PDF truncated at page {i}, {len(reader.pages)} pages total ...]")
+            break
+        parts.append(chunk)
+    return "".join(parts)
+
+
 def extract_values_from_pdf(
     pdf_path: Path,
     *,
@@ -129,6 +158,10 @@ def extract_values_from_pdf(
 ) -> tuple[dict, str | None]:
     """Run Claude extraction on the PDF. Returns (results_per_key, raw_response).
 
+    Sends the full PDF as document if it's small (<5 MB) so Claude can read tables
+    natively as images. For larger PDFs (Annual Reports >> 100 pages), falls back
+    to extracted-text mode to stay under the 1M token limit.
+
     results_per_key shape:
       {"net_income": {"value": Decimal, "currency": "USD", "page": 31, ...}, ...}
     Failed keys carry value=None.
@@ -137,28 +170,45 @@ def extract_values_from_pdf(
         raise ValueError("ANTHROPIC_API_KEY not configured")
 
     pdf_bytes = pdf_path.read_bytes()
-    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
     user_prompt = _build_user_prompt(period_coverage, period_year, document_type, company_name)
 
+    if len(pdf_bytes) <= PDF_IMAGE_BYTES_LIMIT:
+        # Native PDF — Claude reads visual layout including tables as images
+        pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
+        content_blocks = [
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": pdf_b64,
+                },
+            },
+            {"type": "text", "text": user_prompt},
+        ]
+        mode_note = "PDF-as-image"
+    else:
+        # Text-extraction fallback for large PDFs (saves ~5-10x tokens)
+        text = _extract_pdf_text(pdf_path)
+        content_blocks = [
+            {
+                "type": "text",
+                "text": (
+                    f"Text-Extraktion aus PDF ({len(pdf_bytes) // 1024 // 1024} MB Original, zu gross fuer "
+                    f"Image-Modus). Seitenangaben aus '[Page N]'-Markern uebernehmen.\n\n"
+                    f"{text}\n\n---\n\n{user_prompt}"
+                ),
+            },
+        ]
+        mode_note = "PDF-as-text"
+
+    logger.info("PDF extraction mode=%s for %s/%s", mode_note, company_name, period_year)
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     response = claude_limiter.call(lambda: client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": [
-                {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_b64,
-                    },
-                },
-                {"type": "text", "text": user_prompt},
-            ],
-        }],
+        messages=[{"role": "user", "content": content_blocks}],
     ))
 
     text_parts = []
