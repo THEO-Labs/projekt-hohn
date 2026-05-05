@@ -600,8 +600,8 @@ export function CompanyDashboardPage() {
           <span className="text-xs text-muted-foreground">|</span>
           <span className="text-xs text-muted-foreground">
             {period.value === "CUM"
-              ? `Kumuliert über ${period.to_year - period.from_year + 1} FYs (${period.from_year}-${period.to_year}) · MCap-Stichtag: heute · Cell zeigt Σ über die Periode + p.a.-Durchschnitt`
-              : `Finanzdaten: Geschäftsjahr ${period.year}`}
+              ? `Kumuliert über ${period.to_year - period.from_year + 1} FYs (${period.from_year}-${period.to_year}) · MCap-Anker: Anfang FY${period.from_year} (= Ende FY${period.from_year - 1}) · Cell zeigt Σ über die Periode + p.a.-Durchschnitt`
+              : `Finanzdaten: Geschäftsjahr ${period.year} · MCap-Anker: Anfang FY (= Ende FY${(period.year ?? 0) - 1})`}
           </span>
           {isLoadingPeriod && (
             <span className="ml-auto flex items-center gap-1.5 text-xs text-primary">

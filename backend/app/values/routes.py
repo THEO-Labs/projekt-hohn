@@ -671,6 +671,54 @@ def calculate_company_values(
     return calc_updated
 
 
+@values_router.post("/recalc-all-fy")
+def recalc_all_fy(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Re-run _run_and_persist_calculations for every (company, FY-year) the user
+    owns. Use after changing any calc semantics (e.g. switching the MCap anchor)
+    so all stored Calculated rows reflect the new logic. Returns counts."""
+    owned_pids = (
+        db.query(Portfolio.id).filter(Portfolio.owner_user_id == user.id).all()
+    )
+    pid_set = {p[0] for p in owned_pids}
+    company_ids = (
+        db.query(Company.id).filter(Company.portfolio_id.in_(pid_set)).all()
+    )
+    n_companies = 0
+    n_years = 0
+    for (cid,) in company_ids:
+        years = (
+            db.query(CompanyValue.period_year)
+            .filter(
+                CompanyValue.company_id == cid,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        if not years:
+            continue
+        n_companies += 1
+        for (yr,) in years:
+            try:
+                _run_and_persist_calculations(db, cid, "FY", yr)
+                n_years += 1
+            except Exception as e:
+                logger.warning("recalc-all-fy failed for company=%s year=%s: %s", cid, yr, e)
+                db.rollback()
+        # SNAPSHOT-level too (in case stammdaten changed)
+        try:
+            _run_and_persist_calculations(db, cid, "SNAPSHOT", None)
+        except Exception as e:
+            logger.warning("recalc-all-fy SNAPSHOT failed for company=%s: %s", cid, e)
+            db.rollback()
+    db.commit()
+    return {"companies_processed": n_companies, "fy_rows_recalculated": n_years}
+
+
 _CUM_INPUT_KEYS_FY: tuple[str, ...] = (
     "fcf",
     "net_income",
@@ -866,11 +914,20 @@ def get_cumulative_values(
         for k in ("net_income", "net_debt", "cash_and_equivalents", "marketable_securities_st", "marketable_securities_lt", "lease_liabilities", "long_term_debt", "debt_sum", "cash_sum")
     }
 
+    pre_mcap = pre_data.get("market_cap")
+    snap_mcap = stammdaten.get("market_cap")
+    anchor_mcap = pre_mcap if pre_mcap is not None else snap_mcap
+    anchor_label = (
+        f"FY{pre_year}-Ende" if pre_mcap is not None
+        else "SNAPSHOT (Fallback — historischer MCap fehlt)"
+    )
     return {
         "from_year": from_year,
         "to_year": to_year,
         "n_years": len(period_years),
-        "market_cap": _decimal_to_str(stammdaten.get("market_cap")),
+        "market_cap": _decimal_to_str(anchor_mcap),
+        "market_cap_anchor": anchor_label,
+        "snapshot_market_cap": _decimal_to_str(snap_mcap),
         "values": {k: _cell_to_dict(v) for k, v in cum_results.items()},
         "per_year_breakdown": per_year_breakdown,
         "pre_period_year": pre_year,

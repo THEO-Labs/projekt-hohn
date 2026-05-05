@@ -60,7 +60,16 @@ def calculate_fy(
 ) -> dict[str, Decimal | None]:
     results: dict[str, Decimal | None] = {k: None for k in FY_CALC_KEYS}
 
-    market_cap = current.get("market_cap") if current.get("market_cap") is not None else stammdaten.get("market_cap")
+    # Yield denominator is anchored to the START of the FY = end of previous FY.
+    # That matches the "investor entry-point" view (Hohn-style backtest semantics):
+    # what would an investor who bought at FY-start get vs. the FCF/SBC/etc. that
+    # the company subsequently delivered. Falls back to current FY-end MCap, then
+    # SNAPSHOT MCap, when prior data is unavailable.
+    market_cap = (
+        (previous.get("market_cap") if previous else None)
+        or current.get("market_cap")
+        or stammdaten.get("market_cap")
+    )
 
     cash_eq = current.get("cash_and_equivalents")
     mkt_st = current.get("marketable_securities_st")
@@ -232,13 +241,18 @@ def calculate_cumulative(
 ) -> dict[str, dict]:
     """Compute cumulative Hohn-Rendite components over a multi-year period.
     Returns {key: {cum, pa_avg, pa_cagr, missing}} for each metric in CUMULATIVE_KEYS.
-    Yields use today's market_cap as denominator. NI Growth is end-to-end
-    (NI[last] / NI[pre] - 1). ΔND is start-period − end-period.
+    Yields use the START-OF-PERIOD market_cap (= end of from_year-1) as denominator,
+    matching the "investor entry-point" backtest framing. Falls back to SNAPSHOT
+    if pre-period MCap is missing. NI Growth is end-to-end (NI[last] / NI[pre] - 1).
+    ΔND is start-period − end-period.
     `missing` lists which inputs/components are not available; if non-empty,
     cum/pa_avg/pa_cagr may be None or partial."""
     results: dict[str, dict] = {k: _empty_cell() for k in CUMULATIVE_KEYS}
 
-    market_cap = stammdaten.get("market_cap")
+    # Anchor MCap to start of period (end of pre_year). Falls back to SNAPSHOT
+    # so cumulative views still work for ranges where historical MCap was never
+    # fetched.
+    market_cap = pre_period_data.get("market_cap") or stammdaten.get("market_cap")
     years = sorted(year_data.keys())
     n = len(years)
     if n == 0:
@@ -247,7 +261,7 @@ def calculate_cumulative(
 
     if market_cap is None or market_cap == 0:
         for k in CUMULATIVE_KEYS:
-            results[k] = _empty_cell(["market_cap (SNAPSHOT)"])
+            results[k] = _empty_cell(["market_cap (Anfang Periode)"])
         return results
 
     sum_fcf, miss_fcf = _sum_over_years(year_data, "fcf")

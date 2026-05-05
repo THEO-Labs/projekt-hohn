@@ -106,6 +106,8 @@ export type CumulativeValuesResponse = {
   to_year: number;
   n_years: number;
   market_cap: string | null;
+  market_cap_anchor?: string;
+  snapshot_market_cap?: string | null;
   values: Record<string, CumulativeCell>;
   per_year_breakdown: Record<string, Record<string, string | null>>;
   pre_period_year: number;
