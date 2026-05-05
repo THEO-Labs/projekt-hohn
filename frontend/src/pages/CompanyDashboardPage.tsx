@@ -939,19 +939,22 @@ export function CompanyDashboardPage() {
                             {(() => {
                               const pdfNullSource = cv?.numeric_value == null && cv?.text_value == null
                                 && typeof cv?.source_name === "string" && cv.source_name.includes("kein Wert");
-                              const isMissing = (!cv && notFound.has(`${company.id}:${d.key}`)) || pdfNullSource;
+                              const cvEmpty = cv && cv.numeric_value == null && cv.text_value == null && !pdfNullSource;
+                              const noCv = !cv && !isQualitative;
+                              const isMissing = noCv || pdfNullSource || cvEmpty || notFound.has(`${company.id}:${d.key}`);
                               if (!isMissing) return null;
                               const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
                               const pdfReason = reasonMatch?.[1]?.trim();
+                              const isCalc = d.source_type === "CALCULATED";
                               const tooltipText = pdfNullSource
                                 ? `PDF analysiert, kein Wert gefunden${pdfReason ? `: ${pdfReason}` : ""}. Doppelklick zum manuellen Eintragen.`
-                                : d.source_type === "CALCULATED"
+                                : isCalc
                                 ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
-                                : "Nicht gefunden - Doppelklick zum manuellen Eintragen";
+                                : `Wert fehlt - keine Daten von Yahoo/EDGAR/PDF/Claude. Refresh ausführen oder Doppelklick für manuelle Eingabe.`;
                               const labelText = pdfNullSource
                                 ? "PDF: kein Wert"
-                                : d.source_type === "CALCULATED" ? "Inputs fehlen" : "Nicht gefunden";
-                              const colorClass = pdfNullSource ? "text-amber-600" : "text-red-500";
+                                : isCalc ? "Inputs fehlen" : "Wert fehlt";
+                              const colorClass = pdfNullSource || isCalc ? "text-amber-600" : "text-amber-600";
                               return (
                                 <div className="group/nf flex items-center gap-1.5 cursor-pointer" title={tooltipText}>
                                   <AlertTriangle className={`h-3.5 w-3.5 ${colorClass}`} />
