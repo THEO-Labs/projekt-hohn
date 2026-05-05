@@ -1017,6 +1017,14 @@ export function CompanyDashboardPage() {
                                   {fyAsOfBadge}
                                 </span>
                               )}
+                              {cv?.is_forecast && (
+                                <span
+                                  title={cv.source_name ? `Schätzung — ${cv.source_name}` : "Schätzung (kein Ist-Wert verfügbar)"}
+                                  className="shrink-0 rounded bg-violet-100 px-1 py-0.5 text-[9px] font-bold text-violet-700"
+                                >
+                                  e
+                                </span>
+                              )}
                             </>
                             )}
                             {cv && !isQualitative && (

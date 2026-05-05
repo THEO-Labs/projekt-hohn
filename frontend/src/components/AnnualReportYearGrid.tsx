@@ -213,6 +213,14 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
         Hochgeladene PDFs werden via Claude analysiert und liefern die Werte primaer (vor Yahoo/EDGAR).
       </p>
+      <QuarterlyReportGrid
+        companyId={companyId}
+        companyName={companyName}
+        docs={docs}
+        onChanged={refresh}
+        anyExtracting={anyExtracting}
+        blockedByOtherUpload={blockedByOtherUpload}
+      />
       <ExtraReportsList
         companyId={companyId}
         companyName={companyName}
@@ -220,6 +228,177 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         onChanged={refresh}
         anyExtracting={anyExtracting}
       />
+    </div>
+  );
+}
+
+
+const QUARTERS = ["Q1", "Q2", "Q3", "Q4"] as const;
+
+function QuarterlyReportGrid({
+  companyId,
+  companyName,
+  docs,
+  onChanged,
+  anyExtracting,
+  blockedByOtherUpload,
+}: {
+  companyId: string;
+  companyName: string;
+  docs: IRDocument[];
+  onChanged: () => void;
+  anyExtracting: boolean;
+  blockedByOtherUpload: boolean;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pending, setPending] = useState<{ year: number; q: typeof QUARTERS[number] } | null>(null);
+  const [uploading, setUploading] = useState<string | null>(null); // "year-Q1" key
+
+  const currentYear = new Date().getFullYear();
+  const years = [currentYear - 1, currentYear];
+
+  const docFor = (year: number, q: string) =>
+    docs.find((d) => d.document_type === "QUARTERLY_REPORT" && d.period_year === year && d.period_coverage === q);
+
+  const onPick = (year: number, q: typeof QUARTERS[number]) => {
+    setPending({ year, q });
+    fileInputRef.current?.click();
+  };
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !pending) return;
+    const key = `${pending.year}-${pending.q}`;
+    const label = `${companyName} ${pending.q} ${pending.year}`;
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+    setUploading(key);
+    uploadGate.start();
+    const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)...`, { duration: Infinity });
+    try {
+      await uploadIRDocument(companyId, {
+        file,
+        document_type: "QUARTERLY_REPORT",
+        period_coverage: pending.q,
+        period_year: pending.year,
+        display_name: label,
+      });
+      toast.success(`${label} hochgeladen — eingereiht. Estimate FY${currentYear} wird automatisch aktualisiert.`, { id: toastId });
+      await onChanged();
+    } catch (err) {
+      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId });
+    } finally {
+      setUploading(null);
+      setPending(null);
+      uploadGate.end();
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-border/30 pt-2">
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+        <FileText className="h-3.5 w-3.5" />
+        Quartalsberichte
+        <span className="ml-1 text-[9px] font-normal text-muted-foreground/70">
+          — werden für Faktor-Estimate FY{currentYear} verwendet
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {years.map((yr) => (
+          <div key={yr} className="flex items-center gap-1.5">
+            <span className="w-10 shrink-0 text-[10px] font-semibold text-muted-foreground">{yr}</span>
+            <div className="grid grid-cols-4 flex-1 gap-1.5">
+              {QUARTERS.map((q) => {
+                const doc = docFor(yr, q);
+                const tileKey = `${yr}-${q}`;
+                const isUploading = uploading === tileKey;
+                if (isUploading) {
+                  return (
+                    <div key={q}
+                      className="flex flex-col items-center justify-center gap-0.5 rounded border border-blue-300 bg-blue-50 px-1 py-1.5 text-blue-800"
+                    >
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      <span className="text-[9px] font-semibold">{q}</span>
+                      <span className="text-[7px] leading-none">lädt…</span>
+                    </div>
+                  );
+                }
+                if (doc) {
+                  const status = doc.extraction_status;
+                  const isPending = status === "PENDING";
+                  const isRunning = status === "EXTRACTING";
+                  const isFailed = status === "FAILED";
+                  const isDone = status === "DONE";
+                  const numExtracted = doc.extraction_results
+                    ? Object.values(doc.extraction_results).filter((v: unknown) => (v as { value?: unknown })?.value != null).length
+                    : 0;
+                  const colorClasses = (isPending || isRunning)
+                    ? "border-amber-300 bg-amber-50 text-amber-800"
+                    : isFailed
+                    ? "border-red-300 bg-red-50 text-red-800"
+                    : "border-emerald-300 bg-emerald-50 text-emerald-800";
+                  const tooltipParts = [doc.display_name];
+                  if (isDone) tooltipParts.push(`${numExtracted}/11 Werte`);
+                  if (isRunning) tooltipParts.push("Claude analysiert...");
+                  if (isPending && doc.queue_position) tooltipParts.push(`Warteschlange #${doc.queue_position}`);
+                  if (isFailed) tooltipParts.push(`Fehler: ${doc.extraction_error ?? "?"}`);
+                  return (
+                    <div key={q}
+                      className={`group relative flex flex-col items-center justify-center gap-0.5 rounded border px-1 py-1.5 ${colorClasses}`}
+                      title={tooltipParts.join(" — ")}
+                    >
+                      {isRunning && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {isPending && <span className="text-[8px] font-bold">#{doc.queue_position ?? "?"}</span>}
+                      {isFailed && <AlertTriangle className="h-3 w-3" />}
+                      {isDone && <Check className="h-3 w-3" />}
+                      <span className="text-[9px] font-semibold">{q}</span>
+                      {isDone && numExtracted > 0 && (
+                        <span className="text-[7px] leading-none">{numExtracted}/11</span>
+                      )}
+                      <div className="absolute inset-0 flex items-center justify-center gap-1 rounded bg-white/95 opacity-0 transition-opacity group-hover:opacity-100">
+                        {(isFailed || isDone) && (
+                          <button onClick={async () => {
+                            try { await triggerIRDocumentExtraction(companyId, doc.id); toast.success("Re-Extraktion gestartet"); await onChanged(); }
+                            catch { toast.error("Re-Extraktion fehlgeschlagen"); }
+                          }}
+                            className="rounded p-0.5 text-blue-700 hover:text-blue-900" title="Re-Extraktion">
+                            <RefreshCw className="h-3 w-3" />
+                          </button>
+                        )}
+                        <a href={downloadIRDocumentUrl(companyId, doc.id)} target="_blank" rel="noreferrer"
+                          className="rounded p-0.5 text-emerald-800 hover:text-emerald-950" title="Download">
+                          <Download className="h-3 w-3" />
+                        </a>
+                        <button onClick={async () => {
+                          if (!confirm(`${q} ${yr} loeschen?`)) return;
+                          try { await deleteIRDocument(companyId, doc.id); toast.success("Geloescht"); await onChanged(); }
+                          catch { toast.error("Loeschen fehlgeschlagen"); }
+                        }}
+                          className="rounded p-0.5 text-red-700 hover:text-red-900" title="Löschen">
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <button key={q}
+                    onClick={() => onPick(yr, q)}
+                    disabled={blockedByOtherUpload}
+                    className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-1.5 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-background disabled:hover:text-muted-foreground"
+                    title={blockedByOtherUpload ? "Anderer Upload läuft, bitte warten…" : `${q} ${yr} hochladen`}
+                  >
+                    <Upload className="h-3 w-3" />
+                    <span className="text-[9px] font-semibold">{q}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      <input ref={fileInputRef} type="file" accept="application/pdf" onChange={onFile} className="hidden" />
+      {anyExtracting && <div className="h-px" />}
     </div>
   );
 }
@@ -237,13 +416,15 @@ function ExtraReportsList({
   onChanged: () => void;
   anyExtracting: boolean;
 }) {
+  // Quarterlies handled by dedicated grid above; this list only shows other docs.
   const extras = docs.filter((d) =>
-    d.document_type !== "ANNUAL_REPORT" && d.document_type !== "FORM_10K" && d.document_type !== "FORM_20F"
+    d.document_type !== "ANNUAL_REPORT" && d.document_type !== "FORM_10K"
+    && d.document_type !== "FORM_20F" && d.document_type !== "QUARTERLY_REPORT"
   );
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
-  const [docType, setDocType] = useState("QUARTERLY_REPORT");
+  const [docType, setDocType] = useState("EARNINGS_RELEASE");
   const [periodCov, setPeriodCov] = useState("Q1");
   const [periodYear, setPeriodYear] = useState(new Date().getFullYear());
   const globalUploadActive = useUploadActive();
@@ -286,7 +467,7 @@ function ExtraReportsList({
   return (
     <div className="mt-3 border-t border-border/30 pt-2">
       <div className="mb-1.5 flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-muted-foreground">Zusatzberichte</span>
+        <span className="text-[11px] font-semibold text-muted-foreground">Sonstige Berichte (Earnings, Präsentationen)</span>
         <button
           onClick={() => setShowForm((s) => !s)}
           disabled={blockedByOther}
@@ -294,13 +475,12 @@ function ExtraReportsList({
           className="flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background disabled:hover:text-muted-foreground"
         >
           <Upload className="h-3 w-3" />
-          {showForm ? "abbrechen" : "Quartal / Earnings hochladen"}
+          {showForm ? "abbrechen" : "hochladen"}
         </button>
       </div>
       {showForm && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded border border-dashed border-border bg-muted/20 p-2 text-[11px]">
           <select value={docType} onChange={(e) => setDocType(e.target.value)} className="rounded border border-input bg-background px-1.5 py-0.5 text-[11px]">
-            <option value="QUARTERLY_REPORT">Quarterly Report (10-Q)</option>
             <option value="EARNINGS_RELEASE">Earnings Release</option>
             <option value="INVESTOR_PRESENTATION">Investor Presentation</option>
             <option value="OTHER">Sonstiges</option>

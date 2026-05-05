@@ -210,10 +210,57 @@ def _process_one_key(
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
 
-    providers = get_providers(key)
-    result = None
     fy_end_month = getattr(company, "fiscal_year_end_month", None)
     fy_end_day = getattr(company, "fiscal_year_end_day", None)
+    result = None
+
+    # Priority 0: factor-based estimate from quarterly PDFs for the running FY.
+    # Skips provider chain + Claude-research entirely when applicable.
+    from datetime import date as _date_today
+    is_running_fy = (
+        effective_period_type == "FY"
+        and effective_period_year is not None
+        and effective_period_year >= _date_today.today().year
+    )
+    if is_running_fy:
+        from app.calculations.estimates import compute_estimate, ESTIMABLE_KEYS
+        if key in ESTIMABLE_KEYS:
+            try:
+                est = compute_estimate(db, company_id, key, effective_period_year)
+            except Exception as e:
+                logger.warning("Estimate failed for %s/%s/FY%s: %s", ticker, key, effective_period_year, e)
+                est = None
+            if est is not None:
+                from app.providers.base import ProviderResult as _PR
+                source_label = (
+                    f"Schätzung (Q-Faktor): FY{effective_period_year - 1}"
+                    f" × Faktor {est.factor:.4f}"
+                    if est.method == "flow_factor" and est.factor is not None
+                    else f"Schätzung (Bilanz-Snapshot {','.join(est.quarters_used)} {effective_period_year})"
+                )
+                result = _PR(
+                    value=est.value,
+                    source_name=source_label,
+                    source_link=None,
+                    currency=company.currency if key in CURRENCY_KEYS else None,
+                    extras={"is_forecast": True, "estimate": est.explanation, "estimate_method": est.method},
+                )
+                # Write a system message into the cell's chat so the user can
+                # always see the breakdown by clicking the cell.
+                try:
+                    from app.llm.routes import _get_or_create_conversation
+                    conv = _get_or_create_conversation(db, company_id, key, effective_period_type, effective_period_year)
+                    db.add(LlmMessage(
+                        conversation_id=conv.id,
+                        role="system",
+                        content=est.explanation,
+                        source="estimate",
+                    ))
+                    db.flush()
+                except Exception as e:
+                    logger.warning("Failed to log estimate system message %s/%s: %s", ticker, key, e)
+
+    providers = get_providers(key) if result is None else []
     for provider in providers:
         try:
             try:
@@ -334,6 +381,8 @@ def _process_one_key(
             ticker, key, effective_period_year, existing.currency, result.currency, result.source_name,
         )
 
+    is_forecast_flag = bool((result.extras or {}).get("is_forecast", False)) if result.extras else False
+
     def _apply_update(target: CompanyValue) -> None:
         target.numeric_value = numeric_value
         target.text_value = text_value
@@ -342,6 +391,7 @@ def _process_one_key(
         target.source_link = result.source_link
         target.fetched_at = datetime.now(timezone.utc)
         target.from_ir_pdf = False
+        target.is_forecast = is_forecast_flag
 
     try:
         if existing:
@@ -361,6 +411,7 @@ def _process_one_key(
             source_name=result.source_name,
             source_link=result.source_link,
             fetched_at=datetime.now(timezone.utc),
+            is_forecast=is_forecast_flag,
         )
         try:
             with db.begin_nested():
