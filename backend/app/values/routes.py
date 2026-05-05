@@ -516,14 +516,21 @@ def _fetch_and_store_historical_mcap(
     if result is None or not isinstance(result.value, Decimal):
         return
 
+    # The actual close picked by Yahoo is the last trading day on-or-before
+    # (anchor_year, fy_month, fy_day). Economically that close = price the
+    # investor saw at start of the next trading day, i.e. day-1 of FY=period_year.
+    # We display that day-1 date in the source label so the UI reads cleanly.
+    from datetime import date as _date, timedelta as _td
+    try:
+        fy_start_label = (_date(anchor_year, fy_month, fy_day) + _td(days=1)).strftime("%d.%m.%Y")
+    except ValueError:
+        fy_start_label = f"01.01.{period_year}"
     extras = getattr(result, "extras", None) or {}
     stock_price = extras.get("stock_price") if isinstance(extras, dict) else None
     shares = extras.get("shares_outstanding") if isinstance(extras, dict) else None
-    as_of = extras.get("as_of_date") if isinstance(extras, dict) else None
     shares_source = extras.get("shares_source") if isinstance(extras, dict) else None
-    as_of_label = as_of or f"Anfang FY{period_year}"
     shares_label = shares_source or "current Shares"
-    anchor_note = f"Anfang FY{period_year} = {as_of_label}"
+    anchor_note = f"Anfang FY{period_year} = {fy_start_label}"
 
     _upsert_fy_value(db, company_id, "market_cap", period_year, result.value,
                      f"Yahoo (Close {anchor_note} × {shares_label})", result.source_link, result.currency)
