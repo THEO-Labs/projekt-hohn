@@ -542,11 +542,27 @@ export function CompanyDashboardPage() {
           <div className="flex items-center gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1">
-                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Einzelnes FY</span>
-                {FY_OPTIONS.map((p, i) => {
+                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Estimate</span>
+                {FY_OPTIONS.filter((p) => p.year >= new Date().getFullYear()).map((p) => {
+                  const i = FY_OPTIONS.indexOf(p);
                   const isActive = periodMode === "FY" && fyIdx === i;
                   return (
-                    <button key={i}
+                    <button key={`est-${i}`}
+                      onClick={() => { setPeriodMode("FY"); setFyIdx(i); }}
+                      title="Laufendes FY — Werte basieren auf Q-Faktor-Schätzungen"
+                      className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${isActive ? "bg-violet-600 text-white" : "border border-violet-300 bg-violet-50 text-violet-800 hover:bg-violet-100"}`}
+                    >{p.label.replace("FY ", "")}</button>
+                  );
+                })}
+              </div>
+              <div className="h-6 w-px bg-border" />
+              <div className="flex items-center gap-1">
+                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Abgeschlossen</span>
+                {FY_OPTIONS.filter((p) => p.year < new Date().getFullYear()).map((p) => {
+                  const i = FY_OPTIONS.indexOf(p);
+                  const isActive = periodMode === "FY" && fyIdx === i;
+                  return (
+                    <button key={`hist-${i}`}
                       onClick={() => { setPeriodMode("FY"); setFyIdx(i); }}
                       className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${isActive ? "bg-primary text-primary-foreground" : "border border-border bg-background text-foreground hover:bg-muted"}`}
                     >{p.label.replace("FY ", "")}</button>

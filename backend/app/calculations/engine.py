@@ -33,6 +33,10 @@ FY_CALC_KEYS = {
     "dividend_yield",
     "hohn_return_simple",
     "hohn_return_detailed",
+    # Realised total shareholder return: ((MCap end FY / MCap start FY) - 1)
+    # + dividend yield. Only meaningful when next-year start-of-FY MCap exists
+    # (= end-of-current-FY) AND the FY itself is fully reported (not estimate).
+    "actual_return",
 }
 
 CALCULATED_KEYS = STAMMDATEN_CALC_KEYS | FY_CALC_KEYS
@@ -57,6 +61,7 @@ def calculate_fy(
     current: dict[str, Decimal | None],
     previous: dict[str, Decimal | None] | None,
     stammdaten: dict[str, Decimal | None],
+    next_year_market_cap: Decimal | None = None,
 ) -> dict[str, Decimal | None]:
     results: dict[str, Decimal | None] = {k: None for k in FY_CALC_KEYS}
 
@@ -129,6 +134,21 @@ def calculate_fy(
 
     dividends = current.get("dividends")
     results["dividend_yield"] = _safe_div_pct(dividends, market_cap)
+
+    # Realised Total Shareholder Return for COMPLETED FYs:
+    #   actual_return = (MCap end-of-FY / MCap start-of-FY - 1) * 100 + dividend_yield
+    # Where MCap end-of-FY-N is stored as period_year=N+1 market_cap (because
+    # our convention anchors stammdaten to start-of-FY). Returns None for
+    # the running FY (next_year_market_cap unavailable yet) — caller should
+    # additionally suppress display when the FY itself is a forecast.
+    if (
+        next_year_market_cap is not None
+        and market_cap is not None
+        and market_cap != 0
+    ):
+        price_return_pct = (next_year_market_cap / market_cap - Decimal("1")) * Decimal("100")
+        div_pct = results.get("dividend_yield") or Decimal("0")
+        results["actual_return"] = price_return_pct + div_pct
 
     fcf_yield = results.get("fcf_yield")
     ni_growth = results.get("ni_growth")

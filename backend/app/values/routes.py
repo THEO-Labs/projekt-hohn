@@ -144,7 +144,11 @@ def _run_and_persist_calculations(
             )
             current_rows, current = _load_value_map(db, company_id, "FY", period_year)
 
-        fy_calc = calculate_fy(current, previous, stammdaten)
+        # End-of-FY market cap = start-of-FY+1 market cap (our anchor convention).
+        # Used to compute realised total shareholder return (`actual_return`).
+        _next_rows, next_year = _load_value_map(db, company_id, "FY", period_year + 1)
+        next_mcap = next_year.get("market_cap")
+        fy_calc = calculate_fy(current, previous, stammdaten, next_year_market_cap=next_mcap)
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
             current_rows, fy_calc, FY_CALC_KEYS, company_currency,

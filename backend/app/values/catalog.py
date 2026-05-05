@@ -43,4 +43,5 @@ SEED_VALUES = [
     # HOHN RETURN
     {"key": "hohn_return_simple", "label_de": "Hohn-Rendite (einfach)", "label_en": "Hohn Return (simple)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 70},
     {"key": "hohn_return_detailed", "label_de": "Hohn-Rendite (detailed)", "label_en": "Hohn Return (detailed)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 71},
+    {"key": "actual_return", "label_de": "Tatsächliche Rendite (FY)", "label_en": "Actual Return (FY)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 72},
 ]
