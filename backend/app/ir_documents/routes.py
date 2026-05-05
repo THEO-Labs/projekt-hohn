@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from app.ir_documents.models import (
     IRDocument,
     PeriodCoverage,
 )
+from app.ir_documents.queue import queue_position, wake_worker
 from app.ir_documents.schemas import IRDocumentOut, IRDocumentUpdate
 from app.ir_documents.storage import (
     delete_file,
@@ -182,7 +183,6 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
 @router.post("/{company_id}/ir-documents", response_model=IRDocumentOut, status_code=201)
 async def upload_ir_document(
     company_id: UUID,
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     document_type: str = Form(...),
     period_coverage: str = Form(...),
@@ -233,15 +233,14 @@ async def upload_ir_document(
     db.commit()
     db.refresh(doc)
 
-    background_tasks.add_task(_run_extraction_job, doc.id, company_id)
-    return doc
+    wake_worker()
+    return _attach_queue_position(doc)
 
 
 @router.post("/{company_id}/ir-documents/{doc_id}/extract", response_model=IRDocumentOut)
 def trigger_extraction(
     company_id: UUID,
     doc_id: UUID,
-    background_tasks: BackgroundTasks,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> IRDocument:
@@ -253,7 +252,13 @@ def trigger_extraction(
     doc.extraction_error = None
     db.commit()
     db.refresh(doc)
-    background_tasks.add_task(_run_extraction_job, doc.id, company_id)
+    wake_worker()
+    return _attach_queue_position(doc)
+
+
+def _attach_queue_position(doc: IRDocument) -> IRDocument:
+    """Compute queue_position once and stick it on the ORM instance for serialisation."""
+    setattr(doc, "queue_position", queue_position(doc))
     return doc
 
 
@@ -270,7 +275,7 @@ def list_ir_documents(
         .order_by(IRDocument.period_year.desc(), IRDocument.period_coverage, IRDocument.uploaded_at.desc())
         .all()
     )
-    return rows
+    return [_attach_queue_position(r) for r in rows]
 
 
 @router.patch("/{company_id}/ir-documents/{doc_id}", response_model=IRDocumentOut)

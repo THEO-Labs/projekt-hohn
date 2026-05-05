@@ -16,6 +16,7 @@ export type IRDocument = {
   extraction_error: string | null;
   extraction_results?: Record<string, { value: string | null; currency?: string | null; page?: number | null; reason?: string | null }> | null;
   notes: string | null;
+  queue_position: number | null;
 };
 
 export const listIRDocuments = (companyId: string) =>

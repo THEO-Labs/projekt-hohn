@@ -42,6 +42,15 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     docs.find((d) => d.period_coverage === "FY" && d.period_year === year &&
       (d.document_type === "ANNUAL_REPORT" || d.document_type === "FORM_10K" || d.document_type === "FORM_20F"));
 
+  const queuedDocs = docs.filter((d) => d.extraction_status === "PENDING" || d.extraction_status === "EXTRACTING");
+  const extractingDoc = docs.find((d) => d.extraction_status === "EXTRACTING");
+  const anyExtracting = queuedDocs.length > 0;
+  const blockReason = anyExtracting
+    ? extractingDoc
+      ? `Claude analysiert gerade "${extractingDoc.display_name}". ${queuedDocs.length - 1} weitere in der Warteschlange.`
+      : `${queuedDocs.length} Job(s) in der Warteschlange — Claude startet gleich.`
+    : null;
+
   const onPickYear = (year: number) => {
     setPendingYear(year);
     fileInputRef.current?.click();
@@ -51,20 +60,26 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file || pendingYear == null) return;
-    setUploading(pendingYear);
+    const yr = pendingYear;
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+    setUploading(yr);
+    const toastId = toast.loading(`Lade Annual Report ${yr} hoch (${sizeMb} MB)...`, { duration: Infinity });
     try {
-      await uploadIRDocument(companyId, {
+      const newDoc = await uploadIRDocument(companyId, {
         file,
         document_type: "ANNUAL_REPORT",
         period_coverage: "FY",
-        period_year: pendingYear,
-        display_name: `${companyName} Annual Report ${pendingYear}`,
+        period_year: yr,
+        display_name: `${companyName} Annual Report ${yr}`,
       });
-      toast.success(`Annual Report ${pendingYear} hochgeladen`);
-      await refresh();
+      // Optimistically push the new doc into state so the tile flips immediately
+      // instead of waiting for the next refresh tick.
+      setDocs((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
+      toast.success(`Annual Report ${yr} hochgeladen — eingereiht.`, { id: toastId });
+      refresh();
     } catch (err) {
       const msg = (err as { message?: string })?.message;
-      toast.error(msg || "Upload fehlgeschlagen");
+      toast.error(msg || "Upload fehlgeschlagen", { id: toastId });
     } finally {
       setUploading(null);
       setPendingYear(null);
@@ -98,27 +113,31 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
           const isDeleting = deleting === doc?.id;
           if (doc) {
             const status = doc.extraction_status;
-            const isExtracting = status === "PENDING" || status === "EXTRACTING";
+            const isPending = status === "PENDING";
+            const isRunning = status === "EXTRACTING";
+            const isInQueue = isPending || isRunning;
             const isFailed = status === "FAILED";
             const isDone = status === "DONE";
             const numExtracted = doc.extraction_results
               ? Object.values(doc.extraction_results).filter((v: unknown) => (v as { value?: unknown })?.value != null).length
               : 0;
-            const colorClasses = isExtracting
+            const colorClasses = isInQueue
               ? "border-amber-300 bg-amber-50 text-amber-800"
               : isFailed
               ? "border-red-300 bg-red-50 text-red-800"
               : "border-emerald-300 bg-emerald-50 text-emerald-800";
             const tooltipParts = [doc.display_name];
             if (isDone) tooltipParts.push(`${numExtracted}/11 Werte extrahiert`);
-            if (isExtracting) tooltipParts.push("Claude analysiert PDF...");
+            if (isRunning) tooltipParts.push("Claude analysiert PDF...");
+            if (isPending && doc.queue_position) tooltipParts.push(`Warteschlange: Position ${doc.queue_position}`);
             if (isFailed) tooltipParts.push(`Fehler: ${doc.extraction_error ?? "unbekannt"}`);
             return (
               <div key={year}
                 className={`group relative flex flex-col items-center justify-center gap-0.5 rounded border px-1 py-2 ${colorClasses}`}
                 title={tooltipParts.join(" — ")}
               >
-                {isExtracting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {isRunning && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {isPending && <span className="text-[9px] font-bold">#{doc.queue_position ?? "?"}</span>}
                 {isFailed && <AlertTriangle className="h-3.5 w-3.5" />}
                 {isDone && <Check className="h-3.5 w-3.5" />}
                 <span className="text-[10px] font-semibold">{year}</span>
@@ -156,20 +175,37 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
               </div>
             );
           }
+          if (isUploading) {
+            return (
+              <div key={year}
+                className="flex flex-col items-center justify-center gap-0.5 rounded border border-blue-300 bg-blue-50 px-1 py-2 text-blue-800"
+                title={`Annual Report ${year} wird hochgeladen...`}
+              >
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span className="text-[10px] font-semibold">{year}</span>
+                <span className="text-[8px] leading-none">lädt...</span>
+              </div>
+            );
+          }
           return (
             <button key={year}
               onClick={() => onPickYear(year)}
-              disabled={isUploading}
-              className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-2 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary disabled:opacity-50"
-              title={`Annual Report ${year} hochladen`}
+              className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-2 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary"
+              title={anyExtracting ? `Annual Report ${year} hochladen — wird in Warteschlange aufgenommen.` : `Annual Report ${year} hochladen`}
             >
-              <Upload className={`h-3.5 w-3.5 ${isUploading ? "animate-pulse" : ""}`} />
+              <Upload className="h-3.5 w-3.5" />
               <span className="text-[10px] font-semibold">{year}</span>
             </button>
           );
         })}
       </div>
       <input ref={fileInputRef} type="file" accept="application/pdf" onChange={onFileSelected} className="hidden" />
+      {anyExtracting && (
+        <div className="mt-2 flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+          <span>{blockReason} Weitere Uploads werden eingereiht und nacheinander verarbeitet.</span>
+        </div>
+      )}
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
         Hochgeladene PDFs werden via Claude analysiert und liefern die Werte primaer (vor Yahoo/EDGAR).
       </p>
@@ -178,6 +214,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         companyName={companyName}
         docs={docs}
         onChanged={refresh}
+        anyExtracting={anyExtracting}
       />
     </div>
   );
@@ -188,11 +225,13 @@ function ExtraReportsList({
   companyName,
   docs,
   onChanged,
+  anyExtracting,
 }: {
   companyId: string;
   companyName: string;
   docs: IRDocument[];
   onChanged: () => void;
+  anyExtracting: boolean;
 }) {
   const extras = docs.filter((d) =>
     d.document_type !== "ANNUAL_REPORT" && d.document_type !== "FORM_10K" && d.document_type !== "FORM_20F"
@@ -209,8 +248,10 @@ function ExtraReportsList({
     e.target.value = "";
     if (!file) return;
     setBusy(true);
+    const label = `${companyName} ${docType.replace(/_/g, " ")} ${periodCov} ${periodYear}`;
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+    const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)...`, { duration: Infinity });
     try {
-      const label = `${companyName} ${docType.replace(/_/g, " ")} ${periodCov} ${periodYear}`;
       await uploadIRDocument(companyId, {
         file,
         document_type: docType,
@@ -218,11 +259,11 @@ function ExtraReportsList({
         period_year: periodYear,
         display_name: label,
       });
-      toast.success(`${label} hochgeladen`);
+      toast.success(`${label} hochgeladen — eingereiht.`, { id: toastId });
       setShowForm(false);
       await onChanged();
     } catch (err) {
-      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen");
+      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId });
     } finally {
       setBusy(false);
     }
@@ -273,9 +314,11 @@ function ExtraReportsList({
           <button
             onClick={() => fileRef.current?.click()}
             disabled={busy}
-            className="rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            title={anyExtracting ? "Wird in Warteschlange aufgenommen" : undefined}
+            className="flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "…" : "PDF wählen"}
+            {busy && <Loader2 className="h-3 w-3 animate-spin" />}
+            {busy ? "lädt..." : "PDF wählen"}
           </button>
           <input ref={fileRef} type="file" accept="application/pdf" onChange={onFile} className="hidden" />
         </div>

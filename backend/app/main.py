@@ -1,4 +1,6 @@
 import logging
+from contextlib import asynccontextmanager
+
 import app.auth  # noqa: F401  # Modelle registrieren
 import app.portfolios  # noqa: F401
 import app.companies  # noqa: F401
@@ -12,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.config import settings
+from app.ir_documents.queue import start_worker, stop_worker
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -28,10 +31,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    await start_worker()
+    try:
+        yield
+    finally:
+        await stop_worker()
+
+
 def create_app() -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-    app = FastAPI(title="Hohn-Rendite Tool")
+    app = FastAPI(title="Hohn-Rendite Tool", lifespan=_lifespan)
 
     if settings.origins_list:
         app.add_middleware(
