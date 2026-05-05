@@ -79,11 +79,16 @@ def _persist_calc_results(
         calc_currency = company_currency if key in CURRENCY_KEYS else None
 
         if existing:
+            if existing.manually_overridden:
+                # Defensive: a calculated key should never be manually_overridden
+                # (override_company_value blocks that). Skip rather than silently
+                # reset the flag.
+                continue
             existing.numeric_value = value
             existing.source_name = "Calculated"
             existing.source_link = None
             existing.fetched_at = datetime.now(timezone.utc)
-            existing.manually_overridden = False
+            existing.from_ir_pdf = False
             if calc_currency and not existing.currency:
                 existing.currency = calc_currency
             updated.append(existing)
@@ -196,7 +201,9 @@ def _process_one_key(
     company_id: UUID,
     payload,
     updated: list,
-) -> None:
+) -> bool:
+    """Returns True if a value was actually written/updated, False if skipped
+    (manual override / PDF value / no provider result)."""
     from app.providers.base import ProviderResult
     from app.llm.models import LlmConversation, LlmMessage
 
@@ -205,9 +212,18 @@ def _process_one_key(
 
     providers = get_providers(key)
     result = None
+    fy_end_month = getattr(company, "fiscal_year_end_month", None)
+    fy_end_day = getattr(company, "fiscal_year_end_day", None)
     for provider in providers:
         try:
-            result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
+            try:
+                result = provider.fetch(
+                    ticker, key, payload.period_type, payload.period_year,
+                    fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+                )
+            except TypeError:
+                # Provider doesn't accept fy-end kwargs (e.g. Yahoo)
+                result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
             if result is not None:
                 break
         except Exception as e:
@@ -226,7 +242,7 @@ def _process_one_key(
                 )
             except Exception as e:
                 logger.warning("Claude research failed for %s/%s: %s", ticker, key, e)
-                return
+                return False
 
             if research_val is not None:
                 research_val = validate_claude_value(key, research_val)
@@ -276,7 +292,7 @@ def _process_one_key(
                     logger.warning("Failed to save Claude conversation for %s/%s: %s", ticker, key, e)
 
     if result is None:
-        return
+        return False
 
     eq = (
         db.query(CompanyValue)
@@ -292,9 +308,12 @@ def _process_one_key(
         eq = eq.filter(CompanyValue.period_year.is_(None))
     existing = eq.one_or_none()
 
-    if existing and (existing.manually_overridden or existing.from_ir_pdf):
+    if existing and (
+        existing.manually_overridden
+        or (existing.from_ir_pdf and existing.numeric_value is not None)
+    ):
         updated.append(existing)
-        return
+        return False
 
     numeric_value: Decimal | None = None
     text_value: str | None = None
@@ -303,6 +322,18 @@ def _process_one_key(
     elif result.value is not None:
         text_value = str(result.value)
 
+    if (
+        existing
+        and existing.currency
+        and result.currency
+        and existing.currency != result.currency
+        and key in CURRENCY_KEYS
+    ):
+        logger.warning(
+            "Currency mismatch for %s/%s/%s: existing=%s new=%s (source=%s) — overwriting, downstream calcs may mix currencies",
+            ticker, key, effective_period_year, existing.currency, result.currency, result.source_name,
+        )
+
     def _apply_update(target: CompanyValue) -> None:
         target.numeric_value = numeric_value
         target.text_value = text_value
@@ -310,57 +341,61 @@ def _process_one_key(
         target.source_name = result.source_name
         target.source_link = result.source_link
         target.fetched_at = datetime.now(timezone.utc)
+        target.from_ir_pdf = False
 
     try:
         if existing:
             _apply_update(existing)
             updated.append(existing)
             db.flush()
-        else:
-            cv = CompanyValue(
-                id=uuid4(),
-                company_id=company_id,
-                value_key=key,
-                period_type=effective_period_type,
-                period_year=effective_period_year,
-                numeric_value=numeric_value,
-                text_value=text_value,
-                currency=result.currency,
-                source_name=result.source_name,
-                source_link=result.source_link,
-                fetched_at=datetime.now(timezone.utc),
-            )
-            try:
-                with db.begin_nested():
-                    db.add(cv)
-                    db.flush()
-                updated.append(cv)
-            except IntegrityError:
-                # Concurrent insert from another request — re-query and update
-                eq2 = (
-                    db.query(CompanyValue)
-                    .filter(
-                        CompanyValue.company_id == company_id,
-                        CompanyValue.value_key == key,
-                        CompanyValue.period_type == effective_period_type,
-                    )
+            return True
+        cv = CompanyValue(
+            id=uuid4(),
+            company_id=company_id,
+            value_key=key,
+            period_type=effective_period_type,
+            period_year=effective_period_year,
+            numeric_value=numeric_value,
+            text_value=text_value,
+            currency=result.currency,
+            source_name=result.source_name,
+            source_link=result.source_link,
+            fetched_at=datetime.now(timezone.utc),
+        )
+        try:
+            with db.begin_nested():
+                db.add(cv)
+                db.flush()
+            updated.append(cv)
+            return True
+        except IntegrityError:
+            # Concurrent insert from another request — re-query and update
+            eq2 = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company_id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type == effective_period_type,
                 )
-                if effective_period_year is not None:
-                    eq2 = eq2.filter(CompanyValue.period_year == effective_period_year)
-                else:
-                    eq2 = eq2.filter(CompanyValue.period_year.is_(None))
-                row = eq2.one_or_none()
-                if row is None:
-                    raise
-                if row.manually_overridden:
-                    updated.append(row)
-                else:
-                    _apply_update(row)
-                    updated.append(row)
-                    db.flush()
+            )
+            if effective_period_year is not None:
+                eq2 = eq2.filter(CompanyValue.period_year == effective_period_year)
+            else:
+                eq2 = eq2.filter(CompanyValue.period_year.is_(None))
+            row = eq2.one_or_none()
+            if row is None:
+                raise
+            if row.manually_overridden or (row.from_ir_pdf and row.numeric_value is not None):
+                updated.append(row)
+                return False
+            _apply_update(row)
+            updated.append(row)
+            db.flush()
+            return True
     except Exception as e:
         logger.error("DB save failed for key=%s company=%s: %s", key, ticker, e)
         db.rollback()
+        return False
 
 
 _PREV_YEAR_GROWTH_KEYS = (
@@ -401,11 +436,14 @@ def _upsert_fy_value(
     if existing:
         if existing.manually_overridden:
             return
+        if existing.from_ir_pdf and existing.numeric_value is not None:
+            return  # PDF value wins over Yahoo historical helper
         existing.numeric_value = value
         existing.source_name = source_name
         existing.source_link = source_link
         existing.currency = currency
         existing.fetched_at = now
+        existing.from_ir_pdf = False
     else:
         db.add(CompanyValue(
             id=uuid4(),
@@ -573,9 +611,8 @@ def refresh_company_values(
     try:
         for key in payload.keys:
             update_job(company_id, key)
-            before_count = len(updated)
             try:
-                _process_one_key(
+                wrote = _process_one_key(
                     db=db,
                     key=key,
                     ticker=ticker,
@@ -584,7 +621,7 @@ def refresh_company_values(
                     payload=payload,
                     updated=updated,
                 )
-                if len(updated) > before_count:
+                if wrote:
                     mark_success(company_id)
             except Exception as e:
                 logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
@@ -1045,6 +1082,8 @@ def override_company_value(
         if inherit_currency and not existing.currency:
             existing.currency = inherit_currency
         existing.manually_overridden = True
+        existing.from_ir_pdf = False
+        existing.fetched_at = datetime.now(timezone.utc)
         result_cv = existing
     else:
         cv = CompanyValue(
@@ -1058,6 +1097,8 @@ def override_company_value(
             source_name=payload.source_name,
             currency=inherit_currency,
             manually_overridden=True,
+            from_ir_pdf=False,
+            fetched_at=datetime.now(timezone.utc),
         )
         db.add(cv)
         result_cv = cv

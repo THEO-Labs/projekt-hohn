@@ -120,36 +120,52 @@ class EdgarProvider:
         facts: dict,
         concepts: list[str],
         period_year: int,
+        fy_end_month: int | None = None,
+        fy_end_day: int | None = None,
     ) -> tuple[Decimal | None, str | None, str | None]:
         """Search facts for the first matching concept that has a 10-K entry
-        for FY=period_year. Returns (value, currency, accession-number)."""
+        for FY=period_year. If fy_end_month/day given, prefer entries whose
+        end-date is within ±5 days of that fiscal-year-end (handles Sept-FY
+        like Apple where startswith(year) alone could pick interim periods).
+        Returns (value, currency, accession-number)."""
+        from datetime import date, timedelta
         us_gaap = facts.get("facts", {}).get("us-gaap", {})
+        target_end: date | None = None
+        if fy_end_month and fy_end_day:
+            try:
+                target_end = date(period_year, fy_end_month, fy_end_day)
+            except ValueError:
+                target_end = None
         for concept_name in concepts:
             concept_data = us_gaap.get(concept_name)
             if not concept_data:
                 continue
             units = concept_data.get("units", {})
-            # Prefer USD; fall back to any monetary unit.
             unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
             for unit_name in unit_keys:
                 if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
                     continue
                 entries = units[unit_name]
-                # Filter to entries where the period actually ENDS in period_year
-                # (the `fy` attribute is the filing's fiscal year, not the reporting period —
-                # comparative-prior-years would otherwise leak in).
                 yr_str = str(period_year)
                 candidates = [
                     e for e in entries
                     if e.get("end", "").startswith(yr_str)
                     and e.get("form", "").startswith(("10-K", "20-F"))
                 ]
-                # Prefer entries explicitly marked fp=FY (annual) over Q4/etc.
+                # Tighten by exact FY-end-date if known (±5d tolerance for
+                # week-anchored FYs like Apple's last-Saturday-of-September).
+                if target_end and candidates:
+                    def _within_window(entry: dict) -> bool:
+                        try:
+                            ed = date.fromisoformat(entry.get("end", ""))
+                        except ValueError:
+                            return False
+                        return abs((ed - target_end).days) <= 5
+                    tight = [e for e in candidates if _within_window(e)]
+                    if tight:
+                        candidates = tight
                 annual = [e for e in candidates if e.get("fp") == "FY"]
                 pool = annual or candidates
-                # If still multiple (e.g. same period reported in two consecutive 10-Ks),
-                # take the one filed earliest — that's the original report, not a restatement
-                # comparative. If user wants restated values, they can override manually.
                 if pool:
                     best = min(pool, key=lambda e: e.get("filed", "9999"))
                     return Decimal(str(best["val"])), unit_name, best.get("accn")
@@ -167,6 +183,8 @@ class EdgarProvider:
         key: str,
         period_type: str = "FY",
         period_year: int | None = None,
+        fy_end_month: int | None = None,
+        fy_end_day: int | None = None,
     ) -> ProviderResult | None:
         if period_type != "FY" or period_year is None:
             return None
@@ -180,8 +198,8 @@ class EdgarProvider:
             return None
 
         if key == "fcf":
-            ocf, cur, accn = self._find_value(facts, FCF_OP_CASH_CONCEPTS, period_year)
-            capex, _, _ = self._find_value(facts, FCF_CAPEX_CONCEPTS, period_year)
+            ocf, cur, accn = self._find_value(facts, FCF_OP_CASH_CONCEPTS, period_year, fy_end_month, fy_end_day)
+            capex, _, _ = self._find_value(facts, FCF_CAPEX_CONCEPTS, period_year, fy_end_month, fy_end_day)
             if ocf is None or capex is None:
                 return None
             return ProviderResult(
@@ -213,7 +231,7 @@ class EdgarProvider:
             return None
 
         concepts = CONCEPT_MAP.get(key, [])
-        value, cur, accn = self._find_value(facts, concepts, period_year)
+        value, cur, accn = self._find_value(facts, concepts, period_year, fy_end_month, fy_end_day)
         if value is None:
             return None
         return ProviderResult(

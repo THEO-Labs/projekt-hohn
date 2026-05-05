@@ -193,7 +193,6 @@ class YahooFinanceProvider:
             if key in FINANCIALS_ROWS:
                 return self._fetch_from_financials(ticker, key, period_year, source_link)
             if key in BALANCE_SHEET_ROWS:
-                abs_value = False
                 return self._fetch_from_balance_sheet(ticker, key, period_year, source_link)
             if key in CASHFLOW_ROWS:
                 abs_value = key in {"buyback_volume", "dividends"}

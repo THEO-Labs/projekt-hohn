@@ -89,11 +89,10 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
         source_link = f"/api/companies/{company_id}/ir-documents/{doc_id}/download"
         for key, info in results.items():
             value = info.get("value")
-            if not isinstance(value, Decimal):
-                continue
             page = info.get("page")
             currency = info.get("currency")
-            source_name = f"PDF: {doc.display_name}" + (f" (S.{page})" if page else "")
+            reason = info.get("reason") or "im Bericht nicht gefunden"
+            now = datetime.now(timezone.utc)
 
             existing = (
                 db.query(CompanyValue)
@@ -105,36 +104,77 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                 )
                 .one_or_none()
             )
-            now = datetime.now(timezone.utc)
-            if existing:
-                if existing.manually_overridden:
-                    continue  # never overwrite manual
-                existing.numeric_value = value
-                existing.source_name = source_name
-                existing.source_link = source_link
-                existing.currency = currency
-                existing.fetched_at = now
-                existing.from_ir_pdf = True
+            if existing and existing.manually_overridden:
+                continue  # never overwrite manual
+
+            if isinstance(value, Decimal):
+                source_name = f"PDF: {doc.display_name}" + (f" (S.{page})" if page else "")
+                if existing:
+                    existing.numeric_value = value
+                    existing.source_name = source_name
+                    existing.source_link = source_link
+                    existing.currency = currency
+                    existing.fetched_at = now
+                    existing.from_ir_pdf = True
+                else:
+                    db.add(CompanyValue(
+                        id=uuid4(),
+                        company_id=company_id,
+                        value_key=key,
+                        period_type=period_type,
+                        period_year=period_year,
+                        numeric_value=value,
+                        source_name=source_name,
+                        source_link=source_link,
+                        currency=currency,
+                        fetched_at=now,
+                        from_ir_pdf=True,
+                    ))
             else:
-                db.add(CompanyValue(
-                    id=uuid4(),
-                    company_id=company_id,
-                    value_key=key,
-                    period_type=period_type,
-                    period_year=period_year,
-                    numeric_value=value,
-                    source_name=source_name,
-                    source_link=source_link,
-                    currency=currency,
-                    fetched_at=now,
-                    from_ir_pdf=True,
-                ))
+                # Claude tried but found no value — record an explanatory placeholder
+                # so the user sees "PDF analyzed, value not found: <reason>" instead
+                # of an empty cell.
+                source_name = f"PDF: {doc.display_name} — kein Wert: {reason[:120]}"
+                if existing:
+                    if existing.from_ir_pdf:
+                        # Only overwrite previous PDF-source entries, not API-fetched values
+                        existing.numeric_value = None
+                        existing.source_name = source_name
+                        existing.source_link = source_link
+                        existing.fetched_at = now
+                else:
+                    db.add(CompanyValue(
+                        id=uuid4(),
+                        company_id=company_id,
+                        value_key=key,
+                        period_type=period_type,
+                        period_year=period_year,
+                        numeric_value=None,
+                        source_name=source_name,
+                        source_link=source_link,
+                        currency=currency,
+                        fetched_at=now,
+                        from_ir_pdf=True,
+                    ))
 
         doc.extraction_status = ExtractionStatus.DONE
         doc.extracted_at = datetime.now(timezone.utc)
         doc.extraction_results = json_safe_results
         doc.extraction_error = None
         db.commit()
+
+        # Trigger downstream recalc — same FY (fcf_yield, ni_growth etc.)
+        # plus +1 FY because ni_growth(N+1) and net_debt_change(N+1) depend on N.
+        if period_type == "FY":
+            from app.values.routes import _fy_year_has_data, _run_and_persist_calculations
+            try:
+                _run_and_persist_calculations(db, company_id, "FY", period_year)
+                if _fy_year_has_data(db, company_id, period_year + 1):
+                    _run_and_persist_calculations(db, company_id, "FY", period_year + 1)
+                db.commit()
+            except Exception as e:
+                logger.exception("Post-PDF recalc failed for doc %s: %s", doc_id, e)
+                db.rollback()
     finally:
         db.close()
 

@@ -936,15 +936,29 @@ export function CompanyDashboardPage() {
                             {isQualitative && (
                               <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
                             )}
-                            {!cv && notFound.has(`${company.id}:${d.key}`) ? (
-                              <div className="group/nf flex items-center gap-1.5 cursor-pointer"
-                                title={d.source_type === "CALCULATED"
-                                  ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
-                                  : "Nicht gefunden - Doppelklick zum manuellen Eintragen"}>
-                                <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
-                                <span className="text-xs text-red-500">{d.source_type === "CALCULATED" ? "Inputs fehlen" : "Nicht gefunden"}</span>
-                              </div>
-                            ) : (
+                            {(() => {
+                              const pdfNullSource = cv?.numeric_value == null && cv?.text_value == null
+                                && typeof cv?.source_name === "string" && cv.source_name.includes("kein Wert");
+                              const isMissing = (!cv && notFound.has(`${company.id}:${d.key}`)) || pdfNullSource;
+                              if (!isMissing) return null;
+                              const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
+                              const pdfReason = reasonMatch?.[1]?.trim();
+                              const tooltipText = pdfNullSource
+                                ? `PDF analysiert, kein Wert gefunden${pdfReason ? `: ${pdfReason}` : ""}. Doppelklick zum manuellen Eintragen.`
+                                : d.source_type === "CALCULATED"
+                                ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
+                                : "Nicht gefunden - Doppelklick zum manuellen Eintragen";
+                              const labelText = pdfNullSource
+                                ? "PDF: kein Wert"
+                                : d.source_type === "CALCULATED" ? "Inputs fehlen" : "Nicht gefunden";
+                              const colorClass = pdfNullSource ? "text-amber-600" : "text-red-500";
+                              return (
+                                <div className="group/nf flex items-center gap-1.5 cursor-pointer" title={tooltipText}>
+                                  <AlertTriangle className={`h-3.5 w-3.5 ${colorClass}`} />
+                                  <span className={`text-xs ${colorClass}`}>{labelText}</span>
+                                </div>
+                              );
+                            })() ?? (
                             <>
                               <span className="font-mono text-sm text-foreground">
                                 {d.data_type === "TEXT"
