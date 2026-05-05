@@ -19,6 +19,9 @@ from app.llm.rate_limiter import claude_limiter
 # Heuristic: PDFs above this raw-bytes size are likely too token-heavy as images.
 # We then fall back to extracted text, which is ~5-10x smaller.
 PDF_IMAGE_BYTES_LIMIT = 5 * 1024 * 1024  # 5 MB raw PDF
+# Anthropic's PDF-as-image mode caps at 100 pages per request, so anything
+# longer must go through the text-extraction path regardless of bytes.
+PDF_IMAGE_PAGES_LIMIT = 100
 # Hard cap on text we send to Claude (rough: ~4 chars per token)
 MAX_TEXT_CHARS = 600_000
 
@@ -172,7 +175,19 @@ def extract_values_from_pdf(
     pdf_bytes = pdf_path.read_bytes()
     user_prompt = _build_user_prompt(period_coverage, period_year, document_type, company_name)
 
-    if len(pdf_bytes) <= PDF_IMAGE_BYTES_LIMIT:
+    # Count pages cheaply once so we can decide which mode to use.
+    try:
+        page_count = len(PdfReader(str(pdf_path)).pages)
+    except Exception as e:
+        logger.warning("Could not count pages for %s, assuming >limit: %s", pdf_path, e)
+        page_count = PDF_IMAGE_PAGES_LIMIT + 1
+
+    use_image_mode = (
+        len(pdf_bytes) <= PDF_IMAGE_BYTES_LIMIT
+        and page_count <= PDF_IMAGE_PAGES_LIMIT
+    )
+
+    if use_image_mode:
         # Native PDF — Claude reads visual layout including tables as images
         pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
         content_blocks = [
@@ -186,21 +201,22 @@ def extract_values_from_pdf(
             },
             {"type": "text", "text": user_prompt},
         ]
-        mode_note = "PDF-as-image"
+        mode_note = f"PDF-as-image ({page_count}p)"
     else:
-        # Text-extraction fallback for large PDFs (saves ~5-10x tokens)
+        # Text-extraction fallback for large PDFs / >100 pages (saves tokens
+        # and bypasses Anthropic's PDF-as-image 100-page limit).
         text = _extract_pdf_text(pdf_path)
         content_blocks = [
             {
                 "type": "text",
                 "text": (
-                    f"Text-Extraktion aus PDF ({len(pdf_bytes) // 1024 // 1024} MB Original, zu gross fuer "
-                    f"Image-Modus). Seitenangaben aus '[Page N]'-Markern uebernehmen.\n\n"
+                    f"Text-Extraktion aus PDF ({len(pdf_bytes) // 1024 // 1024} MB, {page_count} Seiten — "
+                    f"zu gross fuer Image-Modus). Seitenangaben aus '[Page N]'-Markern uebernehmen.\n\n"
                     f"{text}\n\n---\n\n{user_prompt}"
                 ),
             },
         ]
-        mode_note = "PDF-as-text"
+        mode_note = f"PDF-as-text ({page_count}p)"
 
     logger.info("PDF extraction mode=%s for %s/%s", mode_note, company_name, period_year)
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)

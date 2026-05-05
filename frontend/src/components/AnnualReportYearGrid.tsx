@@ -9,6 +9,7 @@ import {
   triggerIRDocumentExtraction,
   type IRDocument,
 } from "@/api/irDocuments";
+import { uploadGate, useUploadActive } from "@/lib/uploadGate";
 
 const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019];
 
@@ -23,6 +24,8 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingYear, setPendingYear] = useState<number | null>(null);
+  const globalUploadActive = useUploadActive();
+  const blockedByOtherUpload = globalUploadActive && uploading == null;
 
   const refresh = () => listIRDocuments(companyId).then(setDocs).catch(() => undefined);
 
@@ -63,6 +66,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     const yr = pendingYear;
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     setUploading(yr);
+    uploadGate.start();
     const toastId = toast.loading(`Lade Annual Report ${yr} hoch (${sizeMb} MB)...`, { duration: Infinity });
     try {
       const newDoc = await uploadIRDocument(companyId, {
@@ -72,8 +76,6 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         period_year: yr,
         display_name: `${companyName} Annual Report ${yr}`,
       });
-      // Optimistically push the new doc into state so the tile flips immediately
-      // instead of waiting for the next refresh tick.
       setDocs((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
       toast.success(`Annual Report ${yr} hochgeladen — eingereiht.`, { id: toastId });
       refresh();
@@ -83,6 +85,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     } finally {
       setUploading(null);
       setPendingYear(null);
+      uploadGate.end();
     }
   };
 
@@ -190,8 +193,9 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
           return (
             <button key={year}
               onClick={() => onPickYear(year)}
-              className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-2 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary"
-              title={anyExtracting ? `Annual Report ${year} hochladen — wird in Warteschlange aufgenommen.` : `Annual Report ${year} hochladen`}
+              disabled={blockedByOtherUpload}
+              className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-2 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-background disabled:hover:text-muted-foreground"
+              title={blockedByOtherUpload ? "Anderer Upload läuft, bitte warten…" : anyExtracting ? `Annual Report ${year} hochladen — wird in Warteschlange aufgenommen.` : `Annual Report ${year} hochladen`}
             >
               <Upload className="h-3.5 w-3.5" />
               <span className="text-[10px] font-semibold">{year}</span>
@@ -242,12 +246,15 @@ function ExtraReportsList({
   const [docType, setDocType] = useState("QUARTERLY_REPORT");
   const [periodCov, setPeriodCov] = useState("Q1");
   const [periodYear, setPeriodYear] = useState(new Date().getFullYear());
+  const globalUploadActive = useUploadActive();
+  const blockedByOther = globalUploadActive && !busy;
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
     setBusy(true);
+    uploadGate.start();
     const label = `${companyName} ${docType.replace(/_/g, " ")} ${periodCov} ${periodYear}`;
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)...`, { duration: Infinity });
@@ -266,6 +273,7 @@ function ExtraReportsList({
       toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId });
     } finally {
       setBusy(false);
+      uploadGate.end();
     }
   };
 
@@ -281,7 +289,9 @@ function ExtraReportsList({
         <span className="text-[11px] font-semibold text-muted-foreground">Zusatzberichte</span>
         <button
           onClick={() => setShowForm((s) => !s)}
-          className="flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+          disabled={blockedByOther}
+          title={blockedByOther ? "Anderer Upload läuft, bitte warten…" : undefined}
+          className="flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-background disabled:hover:text-muted-foreground"
         >
           <Upload className="h-3 w-3" />
           {showForm ? "abbrechen" : "Quartal / Earnings hochladen"}
@@ -313,9 +323,9 @@ function ExtraReportsList({
           />
           <button
             onClick={() => fileRef.current?.click()}
-            disabled={busy}
-            title={anyExtracting ? "Wird in Warteschlange aufgenommen" : undefined}
-            className="flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            disabled={busy || blockedByOther}
+            title={blockedByOther ? "Anderer Upload läuft, bitte warten…" : anyExtracting ? "Wird in Warteschlange aufgenommen" : undefined}
+            className="flex items-center gap-1 rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy && <Loader2 className="h-3 w-3 animate-spin" />}
             {busy ? "lädt..." : "PDF wählen"}
