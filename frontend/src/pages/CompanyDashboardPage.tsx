@@ -879,11 +879,24 @@ export function CompanyDashboardPage() {
                                 ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cv?.period_year}`
                                 : `FY${cv?.period_year}`))
                         : null;
+                      // Partial-Hohn detect: if any required component for hohn_return_simple/detailed is missing
+                      let fyPartialMissing: string[] = [];
+                      if (period.value === "FY" && (d.key === "hohn_return_simple" || d.key === "hohn_return_detailed")) {
+                        const requiredKeys = d.key === "hohn_return_simple"
+                          ? ["fcf_yield", "ni_growth", "sbc_yield", "net_debt_change_pct"]
+                          : ["dividend_yield", "ni_growth", "net_buyback_yield", "net_debt_change_pct"];
+                        fyPartialMissing = requiredKeys.filter((k) => {
+                          const c = getVal(company.id, k);
+                          const v = c?.numeric_value;
+                          return v == null || (typeof v === "string" && v === "");
+                        });
+                      }
+                      const fyIsPartial = fyPartialMissing.length > 0 && cv?.numeric_value != null;
 
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg}`}
-                          title={isCalculated ? "Berechneter Wert (Formel) - nicht direkt editierbar. Korrigiere die Eingangswerte." : undefined}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
+                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel) - nicht direkt editierbar. Korrigiere die Eingangswerte." : undefined)}
                           onClick={() => {
                             setDrawer({
                               companyId: company.id,
@@ -947,6 +960,10 @@ export function CompanyDashboardPage() {
                                 >
                                   {cv?.currency}
                                 </span>
+                              )}
+                              {fyIsPartial && (
+                                <AlertTriangle className="h-3 w-3 shrink-0 text-amber-600"
+                                  aria-label={`Partial: ${fyPartialMissing.join(", ")} fehlen`} />
                               )}
                               {fyAsOfBadge && (
                                 <span
