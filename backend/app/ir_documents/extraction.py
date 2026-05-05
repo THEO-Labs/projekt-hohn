@@ -27,6 +27,26 @@ MAX_TEXT_CHARS = 600_000
 
 logger = logging.getLogger(__name__)
 
+# Keys whose value MUST be stored as a non-negative number.
+# Cash-flow statements often show outflows in parentheses or with a leading
+# minus (e.g. "Dividends paid: (174)"). Different filers use different
+# conventions, so we normalise all of these to absolute value at extraction
+# time. Same convention as the Yahoo provider (yahoo.py:_fetch_from_cashflow
+# uses abs_value=True for buyback/dividends).
+ALWAYS_POSITIVE_KEYS = frozenset({
+    # cash outflow events (always reported as positive amount paid)
+    "dividends",
+    "buyback_volume",
+    "sbc",
+    # balance sheet items (always positive when shown)
+    "cash_and_equivalents",
+    "marketable_securities_st",
+    "marketable_securities_lt",
+    "lease_liabilities",
+    "long_term_debt",
+    "shares_outstanding",
+})
+
 # Keys we try to extract from every uploaded IR document.
 # (subset of the catalog — only Primärwerte, no calc-keys)
 EXTRACTION_KEYS: list[tuple[str, str]] = [
@@ -265,6 +285,9 @@ def extract_values_from_pdf(
                 "reason": f"Could not parse value: {raw_val!r}",
             }
             continue
+        # Sign normalisation — see ALWAYS_POSITIVE_KEYS docstring.
+        if key in ALWAYS_POSITIVE_KEYS and decimal_val < 0:
+            decimal_val = abs(decimal_val)
         results[key] = {
             "value": decimal_val,
             "currency": entry.get("currency"),

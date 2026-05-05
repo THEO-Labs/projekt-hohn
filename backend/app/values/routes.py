@@ -707,6 +707,15 @@ def refresh_company_values(
         set_phase(company_id, "calculating", "Berechnete Werte aktualisieren")
         _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
         db.commit()
+        if payload.period_type == "FY" and payload.period_year is not None:
+            set_phase(company_id, "sanity_check", "Forensik-Check über die Werte")
+            try:
+                from app.calculations.sanity import run_sanity_check
+                run_sanity_check(db, company_id, payload.period_year)
+                db.commit()
+            except Exception as e:
+                logger.warning("Sanity check failed: %s", e)
+                db.rollback()
     except Exception:
         finish_job(company_id, status="failed")
         raise
@@ -729,9 +738,35 @@ def calculate_company_values(
     _get_owned_company(db, user, company_id)
     calc_updated = _run_and_persist_calculations(db, company_id, period_type, period_year)
     db.commit()
+    if period_type == "FY" and period_year is not None:
+        try:
+            from app.calculations.sanity import run_sanity_check
+            run_sanity_check(db, company_id, period_year)
+            db.commit()
+        except Exception as e:
+            logger.warning("Auto sanity-check failed: %s", e)
+            db.rollback()
     for cv in calc_updated:
         db.refresh(cv)
     return calc_updated
+
+
+@values_router.post("/{company_id}/values/sanity-check")
+def sanity_check_company(
+    company_id: UUID,
+    period_year: int = Query(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Manual trigger for the LLM forensic-accountant check on FY[period_year].
+    Returns the parsed issues. Also writes flag messages into per-cell chats."""
+    _get_owned_company(db, user, company_id)
+    from app.calculations.sanity import run_sanity_check
+    result = run_sanity_check(db, company_id, period_year)
+    db.commit()
+    if result is None:
+        raise HTTPException(status_code=503, detail="Sanity check unavailable")
+    return result
 
 
 @values_router.post("/recalc-all-fy")
