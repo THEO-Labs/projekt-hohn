@@ -29,6 +29,24 @@ from app.llm.rate_limiter import claude_limiter
 
 logger = logging.getLogger(__name__)
 
+# Module-level shared client — anthropic.Anthropic() is thread-safe and the
+# underlying httpx connection pool benefits from being reused across calls.
+_anthropic_client: anthropic.Anthropic | None = None
+
+
+def _client() -> anthropic.Anthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return _anthropic_client
+
+
+# Sentinel key under which "global" sanity issues (those that span multiple
+# value_keys, e.g. overall data quality flags) are filed. We pin it to the
+# canonical Hohn-Rendite cell because that's the natural place for the user
+# to see a portfolio-wide warning, not net_income.
+_GLOBAL_SANITY_KEY = "hohn_return_simple"
+
 
 SANITY_SYSTEM_PROMPT = """Du bist ein forensischer Accounting-Reviewer.
 Du bekommst die Hohn-Rendite-Inputs und -Resultate eines Unternehmens für ein
@@ -119,8 +137,7 @@ def run_sanity_check(
     )
 
     try:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        response = claude_limiter.call(lambda: client.messages.create(
+        response = claude_limiter.call(lambda: _client().messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=2048,
             system=SANITY_SYSTEM_PROMPT,
@@ -150,10 +167,16 @@ def run_sanity_check(
         try:
             from app.llm.routes import _get_or_create_conversation
             from app.llm.models import LlmMessage
+            from app.values.models import ValueDefinition
+            valid_keys = {row[0] for row in db.query(ValueDefinition.key).all()}
             for issue in issues:
-                key = issue.get("key") or "net_income"  # fallback on a key that always exists
-                if key == "global":
-                    key = "hohn_return_simple"
+                raw_key = issue.get("key") or ""
+                # Map "global" or any unknown key to the canonical Hohn-Rendite
+                # cell instead of dumping into net_income or crashing.
+                if raw_key in ("global", "", None) or raw_key not in valid_keys:
+                    key = _GLOBAL_SANITY_KEY
+                else:
+                    key = raw_key
                 try:
                     conv = _get_or_create_conversation(db, company_id, key, "FY", period_year)
                     severity = issue.get("severity", "low").upper()
@@ -161,7 +184,7 @@ def run_sanity_check(
                         conversation_id=conv.id,
                         role="system",
                         content=(
-                            f"⚠ Sanity-Check [{severity}]: {issue.get('title', '?')}\n"
+                            f"Sanity-Check [{severity}]: {issue.get('title', '?')}\n"
                             f"{issue.get('explanation', '')}"
                         ),
                         source="sanity_check",

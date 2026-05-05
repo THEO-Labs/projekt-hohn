@@ -210,6 +210,31 @@ def _process_one_key(
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
 
+    # Up-front guard: skip everything (estimate, provider, Claude-research,
+    # chat-message side effects) when the existing value is locked by user
+    # override or PDF extraction. Doing this BEFORE compute_estimate avoids
+    # leaking misleading "Schätzung..." breadcrumbs into the cell's chat for
+    # values that won't actually be touched.
+    pre_eq = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == effective_period_type,
+        )
+    )
+    if effective_period_year is not None:
+        pre_eq = pre_eq.filter(CompanyValue.period_year == effective_period_year)
+    else:
+        pre_eq = pre_eq.filter(CompanyValue.period_year.is_(None))
+    pre_existing = pre_eq.one_or_none()
+    if pre_existing and (
+        pre_existing.manually_overridden
+        or (pre_existing.from_ir_pdf and pre_existing.numeric_value is not None)
+    ):
+        updated.append(pre_existing)
+        return False
+
     fy_end_month = getattr(company, "fiscal_year_end_month", None)
     fy_end_day = getattr(company, "fiscal_year_end_day", None)
     result = None
@@ -341,26 +366,11 @@ def _process_one_key(
     if result is None:
         return False
 
-    eq = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_type == effective_period_type,
-        )
-    )
-    if effective_period_year is not None:
-        eq = eq.filter(CompanyValue.period_year == effective_period_year)
-    else:
-        eq = eq.filter(CompanyValue.period_year.is_(None))
-    existing = eq.one_or_none()
-
-    if existing and (
-        existing.manually_overridden
-        or (existing.from_ir_pdf and existing.numeric_value is not None)
-    ):
-        updated.append(existing)
-        return False
+    # `pre_existing` from the up-front guard is a fresh query result; reuse it
+    # so we don't double-query. It can have changed under us only if a
+    # concurrent writer mutated the row, which the SAVEPOINT branch below
+    # handles via IntegrityError.
+    existing = pre_existing
 
     numeric_value: Decimal | None = None
     text_value: str | None = None
@@ -368,6 +378,16 @@ def _process_one_key(
         numeric_value = result.value
     elif result.value is not None:
         text_value = str(result.value)
+
+    # Sign normalisation last-mile: every persistence path (PDF, EDGAR, Yahoo,
+    # Claude-research, factor-estimate) goes through here, so applying abs()
+    # here covers ALL sources at once instead of patching each provider.
+    from app.ir_documents.extraction import ALWAYS_POSITIVE_KEYS
+    if numeric_value is not None and key in ALWAYS_POSITIVE_KEYS and numeric_value < 0:
+        logger.info("Sign-normalising %s/%s/%s: %s -> %s (source=%s)",
+                    ticker, key, effective_period_year, numeric_value, abs(numeric_value),
+                    result.source_name)
+        numeric_value = abs(numeric_value)
 
     if (
         existing
@@ -1291,6 +1311,14 @@ def override_company_value(
         db, company_id, value_key, effective_period_type, effective_period_year, trigger_label,
     )
     db.commit()
+    if effective_period_type == "FY" and effective_period_year is not None:
+        try:
+            from app.calculations.sanity import run_sanity_check
+            run_sanity_check(db, company_id, effective_period_year)
+            db.commit()
+        except Exception as e:
+            logger.warning("Sanity check after override failed: %s", e)
+            db.rollback()
     db.refresh(result_cv)
 
     try:

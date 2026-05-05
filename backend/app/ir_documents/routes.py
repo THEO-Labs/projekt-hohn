@@ -192,11 +192,13 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
 def _trigger_estimate_refresh_for_running_fy(db, company_id, q_period_year: int) -> None:
     """Re-runs the API path for every estimable FY-key for `q_period_year`,
     so the new quarterly value flows into the FY estimate. Only runs if
-    q_period_year is the running FY (>= current calendar year)."""
+    q_period_year is the running FY (>= current calendar year). Also recalcs
+    FY+1 since cross-year metrics (ni_growth, net_debt_change) depend on
+    the updated FY values."""
     from datetime import date as _date_today
     if q_period_year < _date_today.today().year:
         return
-    from app.values.routes import _process_one_key, _run_and_persist_calculations
+    from app.values.routes import _process_one_key, _run_and_persist_calculations, _fy_year_has_data
     from app.calculations.estimates import ESTIMABLE_KEYS
     company = db.query(Company).filter(Company.id == company_id).one_or_none()
     if company is None:
@@ -208,16 +210,31 @@ def _trigger_estimate_refresh_for_running_fy(db, company_id, q_period_year: int)
 
     payload = _Payload()
     updated: list = []
-    for k in ESTIMABLE_KEYS:
+    # Iterate over a sorted view so logging / behaviour is deterministic.
+    for k in sorted(ESTIMABLE_KEYS):
+        # Per-key SAVEPOINT so one failure doesn't roll back the previously-
+        # written keys.
         try:
-            _process_one_key(db, k, company.ticker, company, company_id, payload, updated)
+            with db.begin_nested():
+                _process_one_key(db, k, company.ticker, company, company_id, payload, updated)
         except Exception as e:
             logger.warning("Estimate refresh key=%s failed: %s", k, e)
-            db.rollback()
     try:
         _run_and_persist_calculations(db, company_id, "FY", q_period_year)
+        # Cross-FY cascade: ni_growth and net_debt_change for FY+1 depend on
+        # the (now updated) FY values, so recalc the next year too.
+        if _fy_year_has_data(db, company_id, q_period_year + 1):
+            _run_and_persist_calculations(db, company_id, "FY", q_period_year + 1)
     except Exception as e:
         logger.warning("Estimate refresh calc failed: %s", e)
+        db.rollback()
+    # Sanity-check: catches definition mismatches that the new Q values
+    # might have introduced (e.g. lease basis change between Q and FY).
+    try:
+        from app.calculations.sanity import run_sanity_check
+        run_sanity_check(db, company_id, q_period_year)
+    except Exception as e:
+        logger.warning("Estimate refresh sanity-check failed: %s", e)
         db.rollback()
 
 

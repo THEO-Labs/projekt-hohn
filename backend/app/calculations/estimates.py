@@ -27,6 +27,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.ir_documents.models import ExtractionStatus, IRDocument, PeriodCoverage
 from app.values.models import CompanyValue
 
 
@@ -47,9 +48,15 @@ BALANCE_KEYS = frozenset({
     "shares_outstanding",
 })
 
-ESTIMABLE_KEYS = FLOW_KEYS | BALANCE_KEYS
+ESTIMABLE_KEYS = frozenset(FLOW_KEYS | BALANCE_KEYS)
 
 QUARTERS = ("Q1", "Q2", "Q3", "Q4")
+
+# Threshold below which we refuse to compute a flow factor — denominator too
+# small means a tiny absolute change blows the factor up to absurd magnitudes.
+# Picked relative to the FY base value: if previous-year cumulative quarters
+# are less than 1 % of the FY value, the comparison signal is too weak.
+_NEAR_ZERO_FRACTION = Decimal("0.01")
 
 
 @dataclass
@@ -82,6 +89,75 @@ def _q_value(
     return row.numeric_value if row and row.numeric_value is not None else None
 
 
+def _period_basis(
+    db: Session,
+    company_id: UUID,
+    key: str,
+    quarter: str,
+    period_year: int,
+) -> str | None:
+    """Look up period_basis (YTD vs standalone) from the IRDocument that
+    produced this quarter's value. Returns None if no PDF backed it."""
+    try:
+        doc = (
+            db.query(IRDocument)
+            .filter(
+                IRDocument.company_id == company_id,
+                IRDocument.period_year == period_year,
+                IRDocument.period_coverage == PeriodCoverage(quarter),
+                IRDocument.extraction_status == ExtractionStatus.DONE,
+            )
+            .order_by(IRDocument.uploaded_at.desc())
+            .first()
+        )
+    except (ValueError, KeyError):
+        return None
+    if doc is None or not doc.extraction_results:
+        return None
+    entry = doc.extraction_results.get(key)
+    if not isinstance(entry, dict):
+        return None
+    return entry.get("period_basis")
+
+
+def _gather_flow_cumulative(
+    db: Session,
+    company_id: UUID,
+    key: str,
+    period_year: int,
+) -> tuple[Decimal | None, list[str], bool]:
+    """Combine quarterly flow values into a cumulative figure for `period_year`.
+
+    Returns (value, quarters_used_label, used_ytd). YTD vs standalone is
+    disambiguated via the IRDocument's `period_basis` metadata so we don't
+    double-count Q1+Q2+Q3 when Q3 itself is reported YTD.
+
+    Strategy: if ANY quarter has a YTD-style period_basis, we use the
+    highest-Q YTD value as the entire cumulative (it already includes
+    earlier quarters). Otherwise we sum standalone quarter values.
+    """
+    ytd_entries: list[tuple[str, Decimal]] = []
+    standalone_entries: list[tuple[str, Decimal]] = []
+    for q in QUARTERS:
+        v = _q_value(db, company_id, key, q, period_year)
+        if v is None:
+            continue
+        basis = _period_basis(db, company_id, key, q, period_year)
+        is_ytd = bool(basis and "YTD" in basis.upper())
+        if is_ytd:
+            ytd_entries.append((q, v))
+        else:
+            standalone_entries.append((q, v))
+
+    if ytd_entries:
+        last_q, last_v = ytd_entries[-1]
+        return last_v, [f"{last_q} (YTD)"], True
+    if standalone_entries:
+        total = sum((v for _, v in standalone_entries), Decimal("0"))
+        return total, [q for q, _ in standalone_entries], False
+    return None, [], False
+
+
 def compute_estimate(
     db: Session,
     company_id: UUID,
@@ -89,7 +165,8 @@ def compute_estimate(
     target_fy_year: int,
 ) -> EstimateResult | None:
     """Try to estimate FY[target_fy_year] for `key` from quarterly data.
-    Returns None when inputs are missing — caller should fall back to other sources."""
+    Returns None when inputs are missing or the signal is too noisy
+    (sign flip, near-zero denominator) — caller should fall back to other sources."""
     if key not in ESTIMABLE_KEYS:
         return None
 
@@ -117,34 +194,35 @@ def compute_estimate(
     if prev_fy_val is None or prev_fy_val == 0:
         return None
 
-    cum_target = Decimal("0")
-    cum_prev = Decimal("0")
-    qs_used: list[str] = []
-    pairs: list[dict] = []
-    for q in QUARTERS:
-        v_target = _q_value(db, company_id, key, q, target_fy_year)
-        v_prev = _q_value(db, company_id, key, q, prev_fy)
-        if v_target is None or v_prev is None:
-            continue
-        cum_target += v_target
-        cum_prev += v_prev
-        qs_used.append(q)
-        pairs.append({
-            "quarter": q,
-            "target": str(v_target),
-            "prev": str(v_prev),
-        })
+    cum_target, qs_target, ytd_t = _gather_flow_cumulative(db, company_id, key, target_fy_year)
+    cum_prev, qs_prev, ytd_p = _gather_flow_cumulative(db, company_id, key, prev_fy)
 
-    if not qs_used or cum_prev == 0:
+    if cum_target is None or cum_prev is None:
+        return None
+    if cum_prev == 0:
+        return None
+
+    # Sanity gates: refuse to extrapolate when the signal is unreliable.
+    # 1) Sign flip — a Q1 swinging from negative to positive (or vice-versa)
+    #    multiplied by a same-sign FY base produces a result with the wrong
+    #    sign. Better to fall back to Claude than emit garbage.
+    if (cum_target * cum_prev) < 0:
+        return None
+    # 2) Near-zero denominator — tiny prev-period denominator inflates the
+    #    factor disproportionately. Threshold relative to FY base value.
+    if abs(cum_prev) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
         return None
 
     factor = cum_target / cum_prev
     estimate = prev_fy_val * factor
-    qs_label = "+".join(qs_used)
+    qs_label = "+".join(qs_target) if qs_target == qs_prev else f"{'+'.join(qs_target)} vs {'+'.join(qs_prev)}"
     delta_pct = (factor - Decimal("1")) * Decimal("100")
+    ytd_note = " (YTD)" if (ytd_t or ytd_p) else ""
+
+    pairs = [{"quarter": q, "target": "cumulative", "prev": "cumulative"} for q in qs_target]
 
     explanation = (
-        f"Schätzung FY{target_fy_year} = FY{prev_fy} × Faktor.  "
+        f"Schätzung FY{target_fy_year} = FY{prev_fy} × Faktor.{ytd_note}  "
         f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}.  "
         f"{qs_label} {target_fy_year} = {cum_target:,.0f}, "
         f"{qs_label} {prev_fy} = {cum_prev:,.0f}, "
@@ -156,7 +234,7 @@ def compute_estimate(
         value=estimate,
         method="flow_factor",
         explanation=explanation,
-        quarters_used=qs_used,
+        quarters_used=qs_target,
         factor=factor,
         components={
             "fy_prev_year": prev_fy,
@@ -165,5 +243,6 @@ def compute_estimate(
             "cum_prev": str(cum_prev),
             "factor": str(factor),
             "pairs": pairs,
+            "used_ytd": ytd_t or ytd_p,
         },
     )
