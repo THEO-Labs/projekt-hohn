@@ -73,3 +73,4 @@ class CompanyValue(Base):
     source_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     manually_overridden: Mapped[bool] = mapped_column(Boolean, default=False)
+    from_ir_pdf: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

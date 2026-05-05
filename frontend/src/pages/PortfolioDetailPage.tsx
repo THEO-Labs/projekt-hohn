@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, Plus, Building2, Trash2 } from "lucide-react";
+import { AnnualReportYearGrid } from "@/components/AnnualReportYearGrid";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -209,12 +210,8 @@ export function PortfolioDetailPage() {
         ) : (
           <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
             {companies.map((c, i) => (
-              <div
-                key={c.id}
-                className={`group flex items-center justify-between px-5 py-4 transition-colors hover:bg-muted/30 ${
-                  i > 0 ? "border-t border-border/40" : ""
-                }`}
-              >
+              <div key={c.id} className={`px-5 py-4 transition-colors ${i > 0 ? "border-t border-border/40" : ""}`}>
+                <div className="group flex items-start justify-between">
                 <div className="flex items-center gap-4">
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted/60">
                     <Building2 className="h-4 w-4 text-muted-foreground" />
@@ -301,6 +298,8 @@ export function PortfolioDetailPage() {
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
+                </div>
+                <AnnualReportYearGrid companyId={c.id} companyName={c.name} />
               </div>
             ))}
           </div>
