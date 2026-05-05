@@ -204,8 +204,10 @@ def extract_values_from_pdf(
 
     logger.info("PDF extraction mode=%s for %s/%s", mode_note, company_name, period_year)
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    # Haiku 4.5 is ~4x cheaper than Sonnet for input tokens and is well-suited
+    # for structured extraction tasks like reading financial tables.
     response = claude_limiter.call(lambda: client.messages.create(
-        model="claude-sonnet-4-6",
+        model="claude-haiku-4-5-20251001",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content_blocks}],

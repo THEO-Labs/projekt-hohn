@@ -649,6 +649,9 @@ def call_claude(
             {
                 "type": "text",
                 "text": company_context,
+                # Cache the company context too — repeated chats on the same cell
+                # within 5 min get a ~10x cost reduction on this large block.
+                "cache_control": {"type": "ephemeral"},
             },
         ],
         messages=user_messages,
