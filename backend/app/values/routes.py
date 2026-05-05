@@ -146,8 +146,30 @@ def _run_and_persist_calculations(
 
         # End-of-FY market cap = start-of-FY+1 market cap (our anchor convention).
         # Used to compute realised total shareholder return (`actual_return`).
+        # If the FY+1 anchor is missing AND that FY-end is in the past, try
+        # to fetch it on demand so actual_return doesn't show "Inputs fehlen"
+        # for an already-completed FY.
         _next_rows, next_year = _load_value_map(db, company_id, "FY", period_year + 1)
         next_mcap = next_year.get("market_cap")
+        if next_mcap is None:
+            from datetime import date as _date_today
+            company = db.query(Company).filter(Company.id == company_id).one_or_none()
+            fy_end_in_past = False
+            if company is not None and company.fiscal_year_end_month and company.fiscal_year_end_day:
+                try:
+                    fy_end = _date_today(period_year, company.fiscal_year_end_month, company.fiscal_year_end_day)
+                    fy_end_in_past = fy_end <= _date_today.today()
+                except ValueError:
+                    fy_end_in_past = False
+            if fy_end_in_past and company is not None:
+                try:
+                    _fetch_and_store_historical_mcap(db, company.ticker, company_id, period_year + 1)
+                    db.flush()
+                    _next_rows, next_year = _load_value_map(db, company_id, "FY", period_year + 1)
+                    next_mcap = next_year.get("market_cap")
+                except Exception as e:
+                    logger.warning("Auto-fetch FY+1 anchor for actual_return failed %s/%s: %s",
+                                   company_id, period_year + 1, e)
         fy_calc = calculate_fy(current, previous, stammdaten, next_year_market_cap=next_mcap)
 
         # If we just calculated actual_return, log a one-shot formula
