@@ -292,7 +292,7 @@ def _process_one_key(
         eq = eq.filter(CompanyValue.period_year.is_(None))
     existing = eq.one_or_none()
 
-    if existing and existing.manually_overridden:
+    if existing and (existing.manually_overridden or existing.from_ir_pdf):
         updated.append(existing)
         return
 

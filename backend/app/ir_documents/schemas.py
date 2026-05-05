@@ -20,6 +20,7 @@ class IRDocumentOut(BaseModel):
     extraction_status: str
     extracted_at: datetime | None
     extraction_error: str | None
+    extraction_results: dict | None = None
     notes: str | None
 
 

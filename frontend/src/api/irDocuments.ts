@@ -14,6 +14,7 @@ export type IRDocument = {
   extraction_status: "PENDING" | "EXTRACTING" | "DONE" | "FAILED";
   extracted_at: string | null;
   extraction_error: string | null;
+  extraction_results?: Record<string, { value: string | null; currency?: string | null; page?: number | null; reason?: string | null }> | null;
   notes: string | null;
 };
 
@@ -52,6 +53,9 @@ export async function uploadIRDocument(
 
 export const deleteIRDocument = (companyId: string, docId: string) =>
   api<void>(`/api/companies/${companyId}/ir-documents/${docId}`, { method: "DELETE" });
+
+export const triggerIRDocumentExtraction = (companyId: string, docId: string) =>
+  api<IRDocument>(`/api/companies/${companyId}/ir-documents/${docId}/extract`, { method: "POST" });
 
 export const downloadIRDocumentUrl = (companyId: string, docId: string) =>
   `/api/companies/${companyId}/ir-documents/${docId}/download`;

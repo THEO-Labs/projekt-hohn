@@ -1,0 +1,207 @@
+"""Claude-based extraction of financial values from IR PDFs.
+
+Sends a PDF to Claude (native PDF support) along with a structured-extraction
+prompt for the requested period. Returns a dict keyed by our value_keys.
+"""
+import base64
+import json
+import logging
+import re
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+import anthropic
+
+from app.config import settings
+from app.llm.rate_limiter import claude_limiter
+
+logger = logging.getLogger(__name__)
+
+# Keys we try to extract from every uploaded IR document.
+# (subset of the catalog — only Primärwerte, no calc-keys)
+EXTRACTION_KEYS: list[tuple[str, str]] = [
+    ("net_income", "Net Income (Konzern-Nettogewinn nach Steuern)"),
+    ("fcf", "Free Cash Flow (Operating Cash Flow − CapEx)"),
+    ("sbc", "Stock Based Compensation Expense (anteilsbasierte Vergütung)"),
+    ("buyback_volume", "Aktienrückkäufe / Repurchases of common stock (Cash-Outflow)"),
+    ("dividends", "Dividenden (Cash-Outflow für Dividends Paid)"),
+    ("cash_and_equivalents", "Cash and Cash Equivalents (Bilanz, Stichtag FY-Ende)"),
+    ("marketable_securities_st", "Short-term Marketable Securities / Short-term Investments"),
+    ("marketable_securities_lt", "Long-term Marketable Securities / Long-term Investments"),
+    ("lease_liabilities", "Lease Liabilities (Operating + Finance, Bilanz)"),
+    ("long_term_debt", "Long-term Debt (langfristige Finanzschulden, Bilanz)"),
+    ("shares_outstanding", "Shares Outstanding (zum FY-Ende oder Diluted Weighted Average)"),
+]
+
+
+SYSTEM_PROMPT = """Du bist ein Finanzanalyst mit Spezialisierung auf das Lesen
+von Geschäftsberichten / 10-K / 20-F / Quartalsberichten.
+
+Deine Aufgabe: Extrahiere präzise Finanzkennzahlen aus dem hochgeladenen PDF
+für einen spezifischen Berichts-Zeitraum.
+
+WICHTIGE REGELN:
+1. Antworte AUSSCHLIESSLICH als gültiges JSON. Kein Markdown, keine Erklärungen drumherum.
+2. Werte als Zahl in Base-Units (z.B. 1450000000 für 1,45 Mrd, NICHT '1.45B').
+3. Wenn EUR oder USD, gib die Währung explizit an. Sonst null.
+4. Pro Wert IMMER die Seitenzahl angeben aus dem PDF wo du den Wert gefunden hast.
+5. Wenn ein Wert nicht eindeutig im PDF steht: value=null, reason kurz erklären.
+6. KEINE Schätzungen / Approximationen. Nur was wirklich im Dokument steht.
+7. Bei Quartalsberichten: prüfe ob der Wert YTD (year-to-date kumuliert) ODER
+   nur das einzelne Quartal ist und dokumentiere das im 'period_basis'-Feld.
+"""
+
+
+def _build_user_prompt(period_coverage: str, period_year: int, doc_type: str, company_name: str) -> str:
+    keys_block = "\n".join(f'  "{k}": {{ ... }}    // {desc}' for k, desc in EXTRACTION_KEYS)
+    return f"""Unternehmen: {company_name}
+Berichtstyp: {doc_type}
+Berichts-Zeitraum: {period_coverage} {period_year}
+{"(Achtung: Quartalsbericht — beachte ob YTD oder standalone)" if period_coverage != "FY" else ""}
+
+Extrahiere folgende Werte EXAKT für {period_coverage} {period_year}.
+
+Antworte ausschließlich in diesem JSON-Format:
+
+{{
+{keys_block}
+}}
+
+Pro Key folgendes Schema:
+{{
+  "value": <Zahl in Base-Units oder null>,
+  "currency": "USD" | "EUR" | "GBP" | "CHF" | ... | null,
+  "page": <Seitennummer im PDF>,
+  "quote": "<exaktes Zitat aus dem PDF>",
+  "period_basis": "FY" | "Q1_YTD" | "Q1_standalone" | "H1" | ... ,
+  "reason": null oder kurze Erklärung wenn value=null
+}}
+
+Beispiel für net_income wenn gefunden:
+"net_income": {{
+  "value": 93736000000,
+  "currency": "USD",
+  "page": 31,
+  "quote": "Net income: $93,736 million",
+  "period_basis": "FY",
+  "reason": null
+}}
+
+Beispiel für sbc wenn nicht gefunden:
+"sbc": {{
+  "value": null,
+  "currency": null,
+  "page": null,
+  "quote": null,
+  "period_basis": null,
+  "reason": "Im Cash Flow Statement nicht als separater Posten ausgewiesen"
+}}
+"""
+
+
+def _parse_json_from_response(text: str) -> dict | None:
+    """Best-effort JSON parsing — tolerates ```json fences."""
+    text = text.strip()
+    if text.startswith("```"):
+        # strip code fence
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # try to locate first { ... last }
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            return None
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return None
+
+
+def extract_values_from_pdf(
+    pdf_path: Path,
+    *,
+    company_name: str,
+    document_type: str,
+    period_coverage: str,
+    period_year: int,
+) -> tuple[dict, str | None]:
+    """Run Claude extraction on the PDF. Returns (results_per_key, raw_response).
+
+    results_per_key shape:
+      {"net_income": {"value": Decimal, "currency": "USD", "page": 31, ...}, ...}
+    Failed keys carry value=None.
+    """
+    if not settings.anthropic_api_key:
+        raise ValueError("ANTHROPIC_API_KEY not configured")
+
+    pdf_bytes = pdf_path.read_bytes()
+    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
+    user_prompt = _build_user_prompt(period_coverage, period_year, document_type, company_name)
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = claude_limiter.call(lambda: client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        system=SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_b64,
+                    },
+                },
+                {"type": "text", "text": user_prompt},
+            ],
+        }],
+    ))
+
+    text_parts = []
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            text_parts.append(getattr(block, "text", "") or "")
+    raw = "\n".join(text_parts)
+
+    parsed = _parse_json_from_response(raw)
+    if parsed is None:
+        logger.warning("PDF extraction: could not parse JSON from Claude response. Raw: %s", raw[:500])
+        return ({}, raw)
+
+    results: dict[str, dict] = {}
+    for key, _desc in EXTRACTION_KEYS:
+        entry = parsed.get(key)
+        if not isinstance(entry, dict):
+            results[key] = {"value": None, "reason": "Key missing in response"}
+            continue
+        raw_val = entry.get("value")
+        if raw_val is None:
+            results[key] = {
+                "value": None,
+                "currency": entry.get("currency"),
+                "page": entry.get("page"),
+                "reason": entry.get("reason") or "Not extracted",
+            }
+            continue
+        try:
+            decimal_val = Decimal(str(raw_val))
+        except (InvalidOperation, ValueError):
+            results[key] = {
+                "value": None,
+                "currency": entry.get("currency"),
+                "page": entry.get("page"),
+                "reason": f"Could not parse value: {raw_val!r}",
+            }
+            continue
+        results[key] = {
+            "value": decimal_val,
+            "currency": entry.get("currency"),
+            "page": entry.get("page"),
+            "quote": entry.get("quote"),
+            "period_basis": entry.get("period_basis"),
+        }
+    return (results, raw)

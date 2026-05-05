@@ -1,16 +1,18 @@
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.auth.deps import current_user
 from app.auth.models import User
 from app.companies.models import Company
-from app.db import get_db
+from app.db import SessionLocal, get_db
+from app.ir_documents.extraction import extract_values_from_pdf
 from app.ir_documents.models import (
     DocumentType,
     ExtractionStatus,
@@ -25,6 +27,7 @@ from app.ir_documents.storage import (
     write_bytes,
 )
 from app.portfolios.models import Portfolio
+from app.values.models import CompanyValue
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/companies", tags=["ir-documents"])
@@ -42,9 +45,104 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     return company
 
 
+def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
+    """Background job: pull doc + company from DB, run Claude PDF extraction,
+    persist values + status. Uses its own DB session."""
+    db = SessionLocal()
+    try:
+        doc = db.query(IRDocument).filter(IRDocument.id == doc_id).one_or_none()
+        if doc is None:
+            return
+        company = db.query(Company).filter(Company.id == company_id).one_or_none()
+        if company is None:
+            return
+
+        doc.extraction_status = ExtractionStatus.EXTRACTING
+        db.commit()
+
+        try:
+            results, raw = extract_values_from_pdf(
+                Path(doc.storage_path),
+                company_name=company.name,
+                document_type=doc.document_type.value,
+                period_coverage=doc.period_coverage.value,
+                period_year=doc.period_year,
+            )
+        except Exception as e:
+            logger.exception("PDF extraction failed for doc %s: %s", doc_id, e)
+            doc.extraction_status = ExtractionStatus.FAILED
+            doc.extraction_error = str(e)[:500]
+            db.commit()
+            return
+
+        # Persist as company_values where extraction succeeded.
+        # Cumulative-style storage: each successful key writes a CompanyValue with from_ir_pdf=True.
+        # Period-coverage maps directly to period_type (FY or Q1/Q2/...).
+        json_safe_results: dict[str, dict] = {}
+        for key, info in results.items():
+            json_safe_results[key] = {
+                k: (str(v) if isinstance(v, Decimal) else v)
+                for k, v in info.items()
+            }
+        period_type = doc.period_coverage.value  # "FY" or "Q1" etc.
+        period_year = doc.period_year
+        source_link = f"/api/companies/{company_id}/ir-documents/{doc_id}/download"
+        for key, info in results.items():
+            value = info.get("value")
+            if not isinstance(value, Decimal):
+                continue
+            page = info.get("page")
+            currency = info.get("currency")
+            source_name = f"PDF: {doc.display_name}" + (f" (S.{page})" if page else "")
+
+            existing = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company_id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type == period_type,
+                    CompanyValue.period_year == period_year,
+                )
+                .one_or_none()
+            )
+            now = datetime.now(timezone.utc)
+            if existing:
+                if existing.manually_overridden:
+                    continue  # never overwrite manual
+                existing.numeric_value = value
+                existing.source_name = source_name
+                existing.source_link = source_link
+                existing.currency = currency
+                existing.fetched_at = now
+                existing.from_ir_pdf = True
+            else:
+                db.add(CompanyValue(
+                    id=uuid4(),
+                    company_id=company_id,
+                    value_key=key,
+                    period_type=period_type,
+                    period_year=period_year,
+                    numeric_value=value,
+                    source_name=source_name,
+                    source_link=source_link,
+                    currency=currency,
+                    fetched_at=now,
+                    from_ir_pdf=True,
+                ))
+
+        doc.extraction_status = ExtractionStatus.DONE
+        doc.extracted_at = datetime.now(timezone.utc)
+        doc.extraction_results = json_safe_results
+        doc.extraction_error = None
+        db.commit()
+    finally:
+        db.close()
+
+
 @router.post("/{company_id}/ir-documents", response_model=IRDocumentOut, status_code=201)
 async def upload_ir_document(
     company_id: UUID,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     document_type: str = Form(...),
     period_coverage: str = Form(...),
@@ -94,6 +192,28 @@ async def upload_ir_document(
     db.add(doc)
     db.commit()
     db.refresh(doc)
+
+    background_tasks.add_task(_run_extraction_job, doc.id, company_id)
+    return doc
+
+
+@router.post("/{company_id}/ir-documents/{doc_id}/extract", response_model=IRDocumentOut)
+def trigger_extraction(
+    company_id: UUID,
+    doc_id: UUID,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> IRDocument:
+    _get_owned_company(db, user, company_id)
+    doc = db.query(IRDocument).filter(IRDocument.id == doc_id, IRDocument.company_id == company_id).one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    doc.extraction_status = ExtractionStatus.PENDING
+    doc.extraction_error = None
+    db.commit()
+    db.refresh(doc)
+    background_tasks.add_task(_run_extraction_job, doc.id, company_id)
     return doc
 
 
