@@ -493,8 +493,11 @@ def _fetch_and_store_historical_mcap(
     company_id: UUID,
     period_year: int,
 ) -> None:
-    """Fetch historical Market Cap, Stock Price and current Shares for FY-end approximation
-    (Close FY-end-of-YYYY × current shares). Stores all three as period_type=FY values.
+    """Fetch + store stammdaten for the START of FY `period_year`, i.e. anchored
+    to the FY-end of (period_year-1). For a Dec-FY company this is 31.12.(N-1);
+    for a Jun-FY company (e.g. Microsoft) it's 30.06.(N-1). The resulting
+    market_cap, stock_price, shares_outstanding represent what the investor saw
+    when entering the fiscal year. Stored as period_type=FY, period_year=N.
     Best-effort — failures logged."""
     providers = get_providers("market_cap")
     provider = next((p for p in providers if hasattr(p, "fetch_historical_market_cap")), None)
@@ -504,10 +507,11 @@ def _fetch_and_store_historical_mcap(
     if company is None:
         return
     fy_month, fy_day = _ensure_company_fy_end(db, company)
+    anchor_year = period_year - 1
     try:
-        result = provider.fetch_historical_market_cap(ticker, period_year, fy_month, fy_day)
+        result = provider.fetch_historical_market_cap(ticker, anchor_year, fy_month, fy_day)
     except Exception as e:
-        logger.warning("Historical MCap fetch failed %s/FY%s: %s", ticker, period_year, e)
+        logger.warning("Historical MCap fetch failed %s/FY%s (anchor %s): %s", ticker, period_year, anchor_year, e)
         return
     if result is None or not isinstance(result.value, Decimal):
         return
@@ -517,17 +521,18 @@ def _fetch_and_store_historical_mcap(
     shares = extras.get("shares_outstanding") if isinstance(extras, dict) else None
     as_of = extras.get("as_of_date") if isinstance(extras, dict) else None
     shares_source = extras.get("shares_source") if isinstance(extras, dict) else None
-    as_of_label = as_of or f"FY{period_year}"
+    as_of_label = as_of or f"Anfang FY{period_year}"
     shares_label = shares_source or "current Shares"
+    anchor_note = f"Anfang FY{period_year} = {as_of_label}"
 
     _upsert_fy_value(db, company_id, "market_cap", period_year, result.value,
-                     f"Yahoo (Close {as_of_label} × {shares_label})", result.source_link, result.currency)
+                     f"Yahoo (Close {anchor_note} × {shares_label})", result.source_link, result.currency)
     if isinstance(stock_price, Decimal):
         _upsert_fy_value(db, company_id, "stock_price", period_year, stock_price,
-                         f"Yahoo (Adj Close {as_of_label})", result.source_link, result.currency)
+                         f"Yahoo (Adj Close {anchor_note})", result.source_link, result.currency)
     if isinstance(shares, Decimal):
         _upsert_fy_value(db, company_id, "shares_outstanding", period_year, shares,
-                         f"Yahoo ({shares_label})", result.source_link, None)
+                         f"Yahoo ({shares_label}, {anchor_note})", result.source_link, None)
 
 
 def _ensure_previous_year_inputs(
@@ -675,24 +680,27 @@ def calculate_company_values(
 def recalc_all_fy(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
+    refetch_mcap: bool = Query(default=True, description="Re-fetch historical MCap with start-of-FY anchor"),
 ) -> dict:
-    """Re-run _run_and_persist_calculations for every (company, FY-year) the user
-    owns. Use after changing any calc semantics (e.g. switching the MCap anchor)
-    so all stored Calculated rows reflect the new logic. Returns counts."""
+    """Re-anchor all historical stammdaten to start-of-FY and re-run
+    _run_and_persist_calculations for every (company, FY-year) the user owns.
+    Use after changing the MCap-anchor semantics so stored values + Calculated
+    rows reflect the new logic. Returns counts."""
     owned_pids = (
         db.query(Portfolio.id).filter(Portfolio.owner_user_id == user.id).all()
     )
     pid_set = {p[0] for p in owned_pids}
-    company_ids = (
-        db.query(Company.id).filter(Company.portfolio_id.in_(pid_set)).all()
+    companies = (
+        db.query(Company).filter(Company.portfolio_id.in_(pid_set)).all()
     )
     n_companies = 0
     n_years = 0
-    for (cid,) in company_ids:
+    n_mcap_refetched = 0
+    for c in companies:
         years = (
             db.query(CompanyValue.period_year)
             .filter(
-                CompanyValue.company_id == cid,
+                CompanyValue.company_id == c.id,
                 CompanyValue.period_type == "FY",
                 CompanyValue.period_year.isnot(None),
             )
@@ -702,21 +710,42 @@ def recalc_all_fy(
         if not years:
             continue
         n_companies += 1
-        for (yr,) in years:
+        for (yr,) in sorted(years):
+            if refetch_mcap:
+                # Wipe previous Yahoo-historical row so the new anchor takes effect
+                # without being blocked by the from_ir_pdf=false / non-manual check.
+                for k in ("market_cap", "stock_price", "shares_outstanding"):
+                    db.query(CompanyValue).filter(
+                        CompanyValue.company_id == c.id,
+                        CompanyValue.value_key == k,
+                        CompanyValue.period_type == "FY",
+                        CompanyValue.period_year == yr,
+                        CompanyValue.manually_overridden == False,  # noqa: E712
+                        CompanyValue.from_ir_pdf == False,          # noqa: E712
+                    ).delete(synchronize_session=False)
+                try:
+                    _fetch_and_store_historical_mcap(db, c.ticker, c.id, yr)
+                    n_mcap_refetched += 1
+                except Exception as e:
+                    logger.warning("recalc-all-fy mcap refetch failed company=%s year=%s: %s", c.id, yr, e)
+                    db.rollback()
             try:
-                _run_and_persist_calculations(db, cid, "FY", yr)
+                _run_and_persist_calculations(db, c.id, "FY", yr)
                 n_years += 1
             except Exception as e:
-                logger.warning("recalc-all-fy failed for company=%s year=%s: %s", cid, yr, e)
+                logger.warning("recalc-all-fy failed for company=%s year=%s: %s", c.id, yr, e)
                 db.rollback()
-        # SNAPSHOT-level too (in case stammdaten changed)
         try:
-            _run_and_persist_calculations(db, cid, "SNAPSHOT", None)
+            _run_and_persist_calculations(db, c.id, "SNAPSHOT", None)
         except Exception as e:
-            logger.warning("recalc-all-fy SNAPSHOT failed for company=%s: %s", cid, e)
+            logger.warning("recalc-all-fy SNAPSHOT failed for company=%s: %s", c.id, e)
             db.rollback()
     db.commit()
-    return {"companies_processed": n_companies, "fy_rows_recalculated": n_years}
+    return {
+        "companies_processed": n_companies,
+        "fy_rows_recalculated": n_years,
+        "mcap_anchors_refetched": n_mcap_refetched,
+    }
 
 
 _CUM_INPUT_KEYS_FY: tuple[str, ...] = (
@@ -914,11 +943,11 @@ def get_cumulative_values(
         for k in ("net_income", "net_debt", "cash_and_equivalents", "marketable_securities_st", "marketable_securities_lt", "lease_liabilities", "long_term_debt", "debt_sum", "cash_sum")
     }
 
-    pre_mcap = pre_data.get("market_cap")
+    first_year_mcap = year_data.get(from_year, {}).get("market_cap")
     snap_mcap = stammdaten.get("market_cap")
-    anchor_mcap = pre_mcap if pre_mcap is not None else snap_mcap
+    anchor_mcap = first_year_mcap if first_year_mcap is not None else snap_mcap
     anchor_label = (
-        f"FY{pre_year}-Ende" if pre_mcap is not None
+        f"Anfang FY{from_year}" if first_year_mcap is not None
         else "SNAPSHOT (Fallback — historischer MCap fehlt)"
     )
     return {

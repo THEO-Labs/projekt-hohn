@@ -60,16 +60,11 @@ def calculate_fy(
 ) -> dict[str, Decimal | None]:
     results: dict[str, Decimal | None] = {k: None for k in FY_CALC_KEYS}
 
-    # Yield denominator is anchored to the START of the FY = end of previous FY.
-    # That matches the "investor entry-point" view (Hohn-style backtest semantics):
-    # what would an investor who bought at FY-start get vs. the FCF/SBC/etc. that
-    # the company subsequently delivered. Falls back to current FY-end MCap, then
-    # SNAPSHOT MCap, when prior data is unavailable.
-    market_cap = (
-        (previous.get("market_cap") if previous else None)
-        or current.get("market_cap")
-        or stammdaten.get("market_cap")
-    )
+    # `current.market_cap` is now stored as the START-of-FY snapshot (anchor
+    # = FY-end of period_year-1) by _fetch_and_store_historical_mcap, so this
+    # gives the investor-entry-point denominator directly. SNAPSHOT MCap is
+    # only used as fallback when historical hasn't been fetched yet.
+    market_cap = current.get("market_cap") or stammdaten.get("market_cap")
 
     cash_eq = current.get("cash_and_equivalents")
     mkt_st = current.get("marketable_securities_st")
@@ -249,15 +244,17 @@ def calculate_cumulative(
     cum/pa_avg/pa_cagr may be None or partial."""
     results: dict[str, dict] = {k: _empty_cell() for k in CUMULATIVE_KEYS}
 
-    # Anchor MCap to start of period (end of pre_year). Falls back to SNAPSHOT
-    # so cumulative views still work for ranges where historical MCap was never
-    # fetched.
-    market_cap = pre_period_data.get("market_cap") or stammdaten.get("market_cap")
     years = sorted(year_data.keys())
     n = len(years)
     if n == 0:
         return results
     last_data = year_data[years[-1]]
+    first_data = year_data[years[0]]
+    # FY rows now store stammdaten anchored to the START of that FY, so the
+    # MCap of year_data[from_year] is exactly the entry-point denominator we
+    # want for the whole cumulative window. Fall back to SNAPSHOT only if the
+    # historical fetch hasn't run yet.
+    market_cap = first_data.get("market_cap") or stammdaten.get("market_cap")
 
     if market_cap is None or market_cap == 0:
         for k in CUMULATIVE_KEYS:
