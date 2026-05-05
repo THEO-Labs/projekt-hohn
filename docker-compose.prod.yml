@@ -22,8 +22,11 @@ services:
       COOKIE_SECURE: 'true'
       ALLOWED_ORIGINS: https://hohn.18-196-0-127.sslip.io,http://18.196.0.127,http://localhost
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      IR_DOCS_ROOT: /data/ir-docs
     expose:
       - "8000"
+    volumes:
+      - ir_docs:/data/ir-docs
 
   caddy:
     image: caddy:2-alpine
@@ -42,3 +45,4 @@ volumes:
   hohn_db:
   caddy_data:
   caddy_config:
+  ir_docs:
