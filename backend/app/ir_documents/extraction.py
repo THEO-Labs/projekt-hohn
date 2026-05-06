@@ -176,6 +176,40 @@ WICHTIGE REGELN:
 
 def _build_user_prompt(period_coverage: str, period_year: int, doc_type: str, company_name: str) -> str:
     keys_block = "\n".join(f'  "{k}": {{ ... }}    // {desc}' for k, desc in EXTRACTION_KEYS)
+    is_quarterly = period_coverage in ("Q1", "Q2", "Q3", "Q4", "H1", "H2")
+    guidance_keys_block = "\n".join(f'  "{k}": {{ ... }}' for k, _ in EXTRACTION_KEYS)
+    guidance_section = (
+        f"""
+
+ZUSAETZLICH (NUR bei Quartalsberichten / Earnings Releases): Suche nach
+Management Guidance / Outlook fuer das gesamte FY{period_year}. Typische
+Stellen: 'Outlook'-Sektion, 'Guidance'-Block im Earnings Release, Highlights-
+Folie ('FY{period_year} Outlook'), Management-Report-Schluss. Phrasen wie:
+- 'Wir erwarten Net Income FY{period_year} im Bereich X bis Y'
+- 'FY{period_year} Free Cash Flow guidance: ~Z'
+- 'Confirmed dividend payout policy of N%'
+
+Wenn eine Range gegeben ist (X bis Y), nimm den Mittelwert als value und
+notiere die Range im quote-Feld. Wenn nur ein Punktwert: nimm den.
+
+Output unter dem Extra-Schluessel "guidance_fy" mit gleichem Schema wie oben:
+
+  "guidance_fy": {{
+{guidance_keys_block}
+  }}
+
+Pro Guidance-Key:
+{{
+  "value": <Zahl in Base-Units oder null>,
+  "currency": ...,
+  "page": ...,
+  "quote": "<Originalzitat inkl. Range falls gegeben>",
+  "reason": null oder "Keine Guidance fuer diesen Wert im Bericht"
+}}
+
+Wenn der Bericht KEINE Guidance enthaelt: setze "guidance_fy": {{}} (leeres Objekt).
+""" if is_quarterly else ""
+    )
     return f"""Unternehmen: {company_name}
 Berichtstyp: {doc_type}
 Berichts-Zeitraum: {period_coverage} {period_year}
@@ -197,7 +231,7 @@ Pro Key folgendes Schema:
   "quote": "<exaktes Zitat aus dem PDF>",
   "period_basis": "FY" | "Q1_YTD" | "Q1_standalone" | "H1" | ... ,
   "reason": null oder kurze Erklärung wenn value=null
-}}
+}}{guidance_section}
 
 Beispiel für net_income wenn gefunden:
 "net_income": {{
@@ -520,6 +554,7 @@ def extract_values_from_pdf(
             and missed IFRS-style placements (Equity Statement, Notes).
 
     Returns ({key: {value, currency, page, quote, period_basis, reason}, ...},
+             {key: {value, currency, page, quote, reason}, ...}  guidance_fy_results,
              raw_first_response_text).
     """
     if not settings.anthropic_api_key:
@@ -542,9 +577,10 @@ def extract_values_from_pdf(
     if parsed is None:
         logger.warning("PDF extraction pass=1 JSON parse failed for %s/%s. Raw: %s",
                        company_name, period_year, raw_first[:500])
-        return ({}, raw_first)
+        return ({}, {}, raw_first)
 
     results: dict[str, dict] = {key: _parse_one_entry(key, parsed.get(key)) for key, _ in EXTRACTION_KEYS}
+    guidance_fy = _parse_guidance_block(parsed.get("guidance_fy"))
 
     # Identify keys we still don't have — but skip those Claude marked
     # explicitly as "Kein X in der Periode" (e.g. no buyback this year).
@@ -553,9 +589,10 @@ def extract_values_from_pdf(
         if r.get("value") is None and "kein" not in (r.get("reason") or "").lower()
     ]
     if not missing_keys:
-        logger.info("PDF extraction %s/%s: all %d keys found in pass 1",
-                    company_name, period_year, len(EXTRACTION_KEYS))
-        return (results, raw_first)
+        logger.info("PDF extraction %s/%s: all %d keys found in pass 1 (%d guidance entries)",
+                    company_name, period_year, len(EXTRACTION_KEYS),
+                    len([k for k, v in guidance_fy.items() if v.get("value") is not None]))
+        return (results, guidance_fy, raw_first)
 
     logger.info("PDF extraction pass=2 retrying %d missing keys for %s/%s: %s",
                 len(missing_keys), company_name, period_year, missing_keys)
@@ -564,12 +601,12 @@ def extract_values_from_pdf(
         raw_second = _call_extraction_with_escalation(client, pdf_path, pdf_bytes, page_count, retry_prompt)
     except Exception as e:
         logger.warning("PDF extraction pass=2 failed for %s/%s: %s", company_name, period_year, e)
-        return (results, raw_first)
+        return (results, guidance_fy, raw_first)
 
     parsed_second = _parse_json_from_response(raw_second)
     if parsed_second is None:
         logger.warning("PDF extraction pass=2 JSON parse failed for %s/%s", company_name, period_year)
-        return (results, raw_first)
+        return (results, guidance_fy, raw_first)
 
     recovered = 0
     for key in missing_keys:
@@ -578,8 +615,22 @@ def extract_values_from_pdf(
             results[key] = new_entry
             recovered += 1
         elif new_entry.get("reason"):
-            # Update the reason with the more thorough second-pass explanation
             results[key] = {**results[key], "reason": new_entry["reason"]}
     logger.info("PDF extraction %s/%s pass=2 recovered %d/%d missing",
                 company_name, period_year, recovered, len(missing_keys))
-    return (results, raw_first)
+    return (results, guidance_fy, raw_first)
+
+
+def _parse_guidance_block(raw: dict | None) -> dict[str, dict]:
+    """Parse the optional 'guidance_fy' block from Claude's JSON.
+    Returns dict {key: entry} for keys with non-null values, ignores empty/null entries.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for key, _desc in EXTRACTION_KEYS:
+        entry = raw.get(key)
+        parsed = _parse_one_entry(key, entry)
+        if parsed.get("value") is not None:
+            out[key] = parsed
+    return out

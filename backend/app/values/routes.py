@@ -363,23 +363,6 @@ def _process_one_key(
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
 
-    pre_eq = db.query(CompanyValue).filter(
-        CompanyValue.company_id == company_id,
-        CompanyValue.value_key == key,
-        CompanyValue.period_type == effective_period_type,
-    )
-    if effective_period_year is not None:
-        pre_eq = pre_eq.filter(CompanyValue.period_year == effective_period_year)
-    else:
-        pre_eq = pre_eq.filter(CompanyValue.period_year.is_(None))
-    pre_existing = pre_eq.one_or_none()
-    if pre_existing and (
-        pre_existing.manually_overridden
-        or (pre_existing.from_ir_pdf and pre_existing.numeric_value is not None)
-    ):
-        updated.append(pre_existing)
-        return False
-
     from datetime import date as _date_today
     from app.calculations.estimates import ESTIMABLE_KEYS
 
@@ -389,6 +372,43 @@ def _process_one_key(
         and effective_period_year is not None
         and effective_period_year >= _date_today.today().year
     )
+
+    # Priority-Lookup: erst actuals (is_forecast=False), dann forecast.
+    # Actuals trumpfen Forecast/Guidance, Manual und PDF blockieren Estimate.
+    def _query_for(is_forecast_val: bool):
+        q = db.query(CompanyValue).filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == effective_period_type,
+            CompanyValue.is_forecast.is_(is_forecast_val),
+        )
+        if effective_period_year is not None:
+            q = q.filter(CompanyValue.period_year == effective_period_year)
+        else:
+            q = q.filter(CompanyValue.period_year.is_(None))
+        return q.one_or_none()
+
+    actuals_existing = _query_for(False)
+    forecast_existing = _query_for(True) if is_running_fy else None
+
+    # Actuals trumpfen alles wenn manual oder PDF.
+    if actuals_existing and (
+        actuals_existing.manually_overridden
+        or (actuals_existing.from_ir_pdf and actuals_existing.numeric_value is not None)
+    ):
+        updated.append(actuals_existing)
+        return False
+    # Im Estimate-Modus: Guidance (PDF-Forecast) trumpft Factor-Estimate.
+    if forecast_existing and (
+        forecast_existing.manually_overridden
+        or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None)
+    ):
+        updated.append(forecast_existing)
+        return False
+
+    # Pre-existing fuer den Update-Pfad: bei is_running_fy nutzen wir die
+    # forecast-Row (falls vorhanden), sonst die actuals-Row.
+    pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
     # Laufendes FY: Q-Faktor-Estimate aus Quartals-PDFs versuchen (mit
@@ -481,13 +501,16 @@ def _process_one_key(
             updated.append(cv)
             return True
         except IntegrityError:
-            # Concurrent insert from another request — re-query and update
+            # Concurrent insert from another request — re-query and update.
+            # Filter MUST include is_forecast — sonst kollidiert ein
+            # Forecast-Row mit einem Actuals-Row im Result.
             eq2 = (
                 db.query(CompanyValue)
                 .filter(
                     CompanyValue.company_id == company_id,
                     CompanyValue.value_key == key,
                     CompanyValue.period_type == effective_period_type,
+                    CompanyValue.is_forecast.is_(is_forecast_flag),
                 )
             )
             if effective_period_year is not None:

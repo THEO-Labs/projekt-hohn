@@ -62,7 +62,7 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
         db.commit()
 
         try:
-            results, raw = extract_values_from_pdf(
+            results, guidance_fy, raw = extract_values_from_pdf(
                 Path(doc.storage_path),
                 company_name=company.name,
                 document_type=doc.document_type.value,
@@ -159,6 +159,21 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                         from_ir_pdf=True,
                     ))
 
+        # Guidance-Werte aus Q-Berichten in FY-Forecast-Rows mappen.
+        # Nur fuer Quartal/Halbjahresberichte sinnvoll — AR ist selbst die
+        # FY-Definition. Guidance gilt fuer FY der gleichen period_year.
+        if period_type in ("Q1", "Q2", "Q3", "Q4", "H1", "H2") and guidance_fy:
+            _persist_guidance_as_fy_forecast(
+                db, company_id=company_id, doc=doc,
+                fy_target=period_year,
+                guidance=guidance_fy,
+                source_link=source_link,
+            )
+            json_safe_results["_guidance_fy"] = {
+                k: {kk: (str(vv) if isinstance(vv, Decimal) else vv) for kk, vv in v.items()}
+                for k, v in guidance_fy.items()
+            }
+
         doc.extraction_status = ExtractionStatus.DONE
         doc.extracted_at = datetime.now(timezone.utc)
         doc.extraction_results = json_safe_results
@@ -188,6 +203,91 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                 db.rollback()
     finally:
         db.close()
+
+
+def _persist_guidance_as_fy_forecast(
+    db,
+    *,
+    company_id,
+    doc,
+    fy_target: int,
+    guidance: dict[str, dict],
+    source_link: str,
+) -> None:
+    """Schreibt Guidance-Werte aus einem Q-PDF als FY-Forecast-Rows.
+
+    is_forecast=True, from_ir_pdf=True, source_name='Guidance from Q1 2026 (S.X)'.
+    Spaeterer Q-Upload ueberschreibt (gleiche Row), spaeterer AR-Upload
+    ueberschreibt mit Actuals (is_forecast=False).
+    Manuelle Overrides werden nicht angefasst.
+    """
+    now = datetime.now(timezone.utc)
+    written = 0
+    for key, info in guidance.items():
+        value = info.get("value")
+        if not isinstance(value, Decimal):
+            continue
+        page = info.get("page")
+        currency = info.get("currency")
+
+        existing = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == fy_target,
+                CompanyValue.is_forecast.is_(True),
+            )
+            .one_or_none()
+        )
+        if existing and existing.manually_overridden:
+            continue
+        # Wenn ein NICHT-forecast Wert (Actuals aus AR) schon existiert, NICHT
+        # mit Guidance ueberschreiben — Actuals trumpfen Guidance.
+        actuals_exists = (
+            db.query(CompanyValue.id)
+            .filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == fy_target,
+                CompanyValue.is_forecast.is_(False),
+            )
+            .first()
+            is not None
+        )
+        if actuals_exists:
+            continue
+
+        source_name = f"Guidance from {doc.display_name}" + (f" (S.{page})" if page else "")
+        if existing:
+            existing.numeric_value = value
+            existing.source_name = source_name
+            existing.source_link = source_link
+            existing.currency = currency
+            existing.fetched_at = now
+            existing.from_ir_pdf = True
+            existing.is_forecast = True
+        else:
+            db.add(CompanyValue(
+                id=uuid4(),
+                company_id=company_id,
+                value_key=key,
+                period_type="FY",
+                period_year=fy_target,
+                numeric_value=value,
+                source_name=source_name,
+                source_link=source_link,
+                currency=currency,
+                fetched_at=now,
+                from_ir_pdf=True,
+                is_forecast=True,
+            ))
+        written += 1
+    if written:
+        logger.info("Persisted %d guidance values as FY%s forecast for company=%s",
+                    written, fy_target, company_id)
 
 
 def _trigger_estimate_refresh_for_running_fy(db, company_id, q_period_year: int) -> None:
