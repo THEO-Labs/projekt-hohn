@@ -77,6 +77,11 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     e.target.value = "";
     if (!file || pendingYear == null) return;
     const yr = pendingYear;
+    if (uploadGate.isActive()) {
+      toast.error("Anderer Upload läuft noch — bitte warten bis er fertig ist.", { duration: 5000 });
+      setPendingYear(null);
+      return;
+    }
     if (!checkSize(file, `Annual Report ${yr}`)) {
       setPendingYear(null);
       return;
@@ -84,7 +89,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     setUploading(yr);
     uploadGate.start();
-    const toastId = toast.loading(`Lade Annual Report ${yr} hoch (${sizeMb} MB)...`, { duration: Infinity });
+    const toastId = toast.loading(`Lade Annual Report ${yr} hoch (${sizeMb} MB)…`, { duration: Infinity });
     try {
       const newDoc = await uploadIRDocument(companyId, {
         file,
@@ -94,11 +99,11 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         display_name: `${companyName} Annual Report ${yr}`,
       });
       setDocs((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
-      toast.success(`Annual Report ${yr} hochgeladen — eingereiht.`, { id: toastId });
+      toast.success(`Annual Report ${yr} hochgeladen — eingereiht.`, { id: toastId, duration: 4000 });
       refresh();
     } catch (err) {
       const msg = (err as { message?: string })?.message;
-      toast.error(msg || "Upload fehlgeschlagen", { id: toastId });
+      toast.error(msg || "Upload fehlgeschlagen", { id: toastId, duration: 8000 });
     } finally {
       setUploading(null);
       setPendingYear(null);
@@ -290,6 +295,11 @@ function QuarterlyReportGrid({
     if (!file || !pending) return;
     const key = `${pending.year}-${pending.q}`;
     const label = `${companyName} ${pending.q} ${pending.year}`;
+    if (uploadGate.isActive()) {
+      toast.error("Anderer Upload läuft noch — bitte warten bis er fertig ist.", { duration: 5000 });
+      setPending(null);
+      return;
+    }
     if (!checkSize(file, label)) {
       setPending(null);
       return;
@@ -297,7 +307,7 @@ function QuarterlyReportGrid({
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     setUploading(key);
     uploadGate.start();
-    const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)...`, { duration: Infinity });
+    const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)…`, { duration: Infinity });
     try {
       await uploadIRDocument(companyId, {
         file,
@@ -306,10 +316,10 @@ function QuarterlyReportGrid({
         period_year: pending.year,
         display_name: label,
       });
-      toast.success(`${label} hochgeladen — eingereiht.`, { id: toastId });
+      toast.success(`${label} hochgeladen — eingereiht.`, { id: toastId, duration: 4000 });
       await onChanged();
     } catch (err) {
-      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId });
+      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId, duration: 8000 });
     } finally {
       setUploading(null);
       setPending(null);
@@ -458,11 +468,15 @@ function ExtraReportsList({
     e.target.value = "";
     if (!file) return;
     const label = `${companyName} ${docType.replace(/_/g, " ")} ${periodCov} ${periodYear}`;
+    if (uploadGate.isActive()) {
+      toast.error("Anderer Upload läuft noch — bitte warten bis er fertig ist.", { duration: 5000 });
+      return;
+    }
     if (!checkSize(file, label)) return;
     setBusy(true);
     uploadGate.start();
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
-    const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)...`, { duration: Infinity });
+    const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)…`, { duration: Infinity });
     try {
       await uploadIRDocument(companyId, {
         file,
@@ -471,11 +485,11 @@ function ExtraReportsList({
         period_year: periodYear,
         display_name: label,
       });
-      toast.success(`${label} hochgeladen — eingereiht.`, { id: toastId });
+      toast.success(`${label} hochgeladen — eingereiht.`, { id: toastId, duration: 4000 });
       setShowForm(false);
       await onChanged();
     } catch (err) {
-      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId });
+      toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId, duration: 8000 });
     } finally {
       setBusy(false);
       uploadGate.end();
