@@ -297,11 +297,15 @@ def _try_factor_estimate(
     if est is None:
         return None
 
-    source_label = (
-        f"Schätzung (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
-        if est.method == "flow_factor" and est.factor is not None
-        else f"Schätzung (Bilanz-Snapshot {','.join(est.quarters_used)} {target_fy})"
-    )
+    if est.method == "flow_factor" and est.factor is not None:
+        source_label = f"Schätzung (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
+    elif est.method == "balance_snapshot":
+        qs = ",".join(est.quarters_used) if est.quarters_used else "?"
+        source_label = f"Schätzung (Bilanz-Snapshot {qs} {target_fy})"
+    elif est.method == "fy_fallback":
+        source_label = f"Schätzung (FY{target_fy - 1}-Wert, keine Q-Daten)"
+    else:
+        source_label = f"Schätzung ({est.method})"
     try:
         conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
         db.add(LlmMessage(conversation_id=conv.id, role="system", content=est.explanation, source="estimate"))
@@ -376,12 +380,22 @@ def _process_one_key(
         updated.append(pre_existing)
         return False
 
+    from datetime import date as _date_today
+    from app.calculations.estimates import ESTIMABLE_KEYS
+
     is_stammdaten = key in ALWAYS_CURRENT_KEYS
+    is_running_fy = (
+        effective_period_type == "FY"
+        and effective_period_year is not None
+        and effective_period_year >= _date_today.today().year
+    )
     result = None
 
-    # Q-Faktor-Estimates fuer das laufende FY sind aktuell deaktiviert.
-    # Code in app/calculations/estimates.py bleibt vorhanden, _try_factor_estimate
-    # wird hier bewusst NICHT aufgerufen.
+    # Laufendes FY: Q-Faktor-Estimate aus Quartals-PDFs versuchen (mit
+    # FY-Fallback wenn keine Q-Daten). Estimate-Pfad ueberspringt Provider-
+    # Chain und Claude komplett — bleibt damit konsistent zur PDF-Strategie.
+    if is_running_fy and key in ESTIMABLE_KEYS:
+        result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
 
     if result is None and (is_stammdaten or is_us_company(company)):
         result = _try_providers(
