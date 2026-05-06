@@ -13,13 +13,18 @@ from app.db import Base
 
 class ValueCategory(str, enum.Enum):
     STAMMDATEN = "STAMMDATEN"
-    CASH_DEBT = "CASH_DEBT"
-    BUYBACKS_SBC = "BUYBACKS_SBC"
+    CASH = "CASH"
+    DEBT = "DEBT"
+    SBC = "SBC"
+    BUYBACKS = "BUYBACKS"
     FCF = "FCF"
     NI_GROWTH = "NI_GROWTH"
     DELTA_ND = "DELTA_ND"
     DIVIDENDS = "DIVIDENDS"
     HOHN_RETURN = "HOHN_RETURN"
+    # legacy — bleibt als enum-Wert wegen Bestandsdaten, wird im Code nicht mehr genutzt
+    CASH_DEBT = "CASH_DEBT"
+    BUYBACKS_SBC = "BUYBACKS_SBC"
 
 
 class SourceType(str, enum.Enum):

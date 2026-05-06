@@ -31,8 +31,8 @@ import { getFxRates } from "@/api/fx";
 import { parseNumericInput } from "@/lib/parseNumeric";
 
 const CATEGORY_ORDER = [
-  "HOHN_RETURN", "FCF", "NI_GROWTH", "BUYBACKS_SBC",
-  "DIVIDENDS", "DELTA_ND", "CASH_DEBT", "STAMMDATEN",
+  "HOHN_RETURN", "FCF", "NI_GROWTH", "SBC", "BUYBACKS",
+  "DIVIDENDS", "DELTA_ND", "CASH", "DEBT", "STAMMDATEN",
 ];
 
 const FACTOR_KEYS = new Set([
@@ -72,17 +72,21 @@ const CATEGORY_LABELS: Record<string, string> = {
   HOHN_RETURN: "Hohn-Rendite",
   FCF: "FCF Yield",
   NI_GROWTH: "Net Income Growth",
-  BUYBACKS_SBC: "Buybacks & SBC",
+  SBC: "SBC",
+  BUYBACKS: "Buybacks",
   DIVIDENDS: "Dividend Yield",
   DELTA_ND: "ΔNet Debt / MCap",
-  CASH_DEBT: "Cash & Debt (Inputs)",
+  CASH: "Cash",
+  DEBT: "Debt",
   STAMMDATEN: "Stammdaten",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
   STAMMDATEN: "bg-slate-100 text-slate-700 border-slate-200",
-  CASH_DEBT: "bg-blue-50 text-blue-700 border-blue-200",
-  BUYBACKS_SBC: "bg-amber-50 text-amber-700 border-amber-200",
+  CASH: "bg-blue-50 text-blue-700 border-blue-200",
+  DEBT: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  SBC: "bg-amber-50 text-amber-700 border-amber-200",
+  BUYBACKS: "bg-orange-50 text-orange-700 border-orange-200",
   FCF: "bg-teal-50 text-teal-700 border-teal-200",
   NI_GROWTH: "bg-violet-50 text-violet-700 border-violet-200",
   DELTA_ND: "bg-rose-50 text-rose-700 border-rose-200",
@@ -501,7 +505,7 @@ export function CompanyDashboardPage() {
   const showPrevYear = period.value === "FY" && period.year !== undefined;
   const prevYear = showPrevYear ? (period.year as number) - 1 : null;
 
-  const HIDDEN_IN_CUM_SECTIONS = new Set(["CASH_DEBT", "STAMMDATEN"]);
+  const HIDDEN_IN_CUM_SECTIONS = new Set(["CASH", "DEBT", "STAMMDATEN"]);
   const grouped = CATEGORY_ORDER.filter((cat) => !(isCumMode && HIDDEN_IN_CUM_SECTIONS.has(cat))).map((cat) => {
     const allDefs = definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order);
     const factorDefs = allDefs.filter((d) => FACTOR_KEYS.has(d.key));

@@ -5,23 +5,27 @@ SEED_VALUES = [
     {"key": "stock_price", "label_de": "Aktienkurs", "label_en": "Stock Price", "category": "STAMMDATEN", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 3},
     {"key": "shares_outstanding", "label_de": "Ausstehende Aktien", "label_en": "Shares Outstanding", "category": "STAMMDATEN", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 4},
 
-    # CASH & DEBT (Inputs fuer Net Debt; selbst keine direkten Hohn-Faktoren)
-    {"key": "ev", "label_de": "Enterprise Value", "label_en": "Enterprise Value", "category": "CASH_DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 10},
-    {"key": "debt_sum", "label_de": "Debt Sum", "label_en": "Debt Sum", "category": "CASH_DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 11},
-    {"key": "cash_sum", "label_de": "Cash Sum", "label_en": "Cash Sum", "category": "CASH_DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 12},
-    {"key": "cash_and_equivalents", "label_de": "Cash & Equivalents", "label_en": "Cash and Cash Equivalents", "category": "CASH_DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 13},
-    {"key": "marketable_securities_st", "label_de": "Marktwertpapiere (ST)", "label_en": "Marketable Securities (ST)", "category": "CASH_DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 14},
-    {"key": "marketable_securities_lt", "label_de": "Marktwertpapiere (LT)", "label_en": "Long-term Marketable Securities", "category": "CASH_DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 15},
-    {"key": "lease_liabilities", "label_de": "Lease Liabilities", "label_en": "Lease Liabilities", "category": "CASH_DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 16},
-    {"key": "long_term_debt", "label_de": "Long-term Debt", "label_en": "Long-term Debt", "category": "CASH_DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 17},
+    # CASH (Bilanz Aktiva — Cash + Marketable Securities)
+    {"key": "cash_sum", "label_de": "Cash Sum", "label_en": "Cash Sum", "category": "CASH", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 12},
+    {"key": "cash_and_equivalents", "label_de": "Cash & Equivalents", "label_en": "Cash and Cash Equivalents", "category": "CASH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 13},
+    {"key": "marketable_securities_st", "label_de": "Marktwertpapiere (ST)", "label_en": "Marketable Securities (ST)", "category": "CASH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 14},
+    {"key": "marketable_securities_lt", "label_de": "Marktwertpapiere (LT)", "label_en": "Long-term Marketable Securities", "category": "CASH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 15},
 
-    # BUYBACKS & SBC (Yields zuerst, dann Inputs)
-    {"key": "sbc_yield", "label_de": "SBC / Market Cap", "label_en": "SBC / Market Cap", "category": "BUYBACKS_SBC", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 20},
-    {"key": "net_buyback_yield", "label_de": "Net Buyback / Market Cap", "label_en": "Net Buyback / Market Cap", "category": "BUYBACKS_SBC", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 21},
-    {"key": "buyback_yield", "label_de": "Buyback / Market Cap", "label_en": "Buyback / Market Cap", "category": "BUYBACKS_SBC", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 22},
-    {"key": "net_buyback", "label_de": "Net Buyback", "label_en": "Net Buyback", "category": "BUYBACKS_SBC", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 23},
-    {"key": "sbc", "label_de": "Stock Based Compensation", "label_en": "Stock Based Compensation", "category": "BUYBACKS_SBC", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 24},
-    {"key": "buyback_volume", "label_de": "Buyback-Volumen", "label_en": "Buyback Volume", "category": "BUYBACKS_SBC", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 25},
+    # DEBT (Bilanz Passiva — LT-Debt + Lease + Aggregate Debt + EV)
+    {"key": "ev", "label_de": "Enterprise Value", "label_en": "Enterprise Value", "category": "DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 10},
+    {"key": "debt_sum", "label_de": "Debt Sum", "label_en": "Debt Sum", "category": "DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 11},
+    {"key": "lease_liabilities", "label_de": "Lease Liabilities", "label_en": "Lease Liabilities", "category": "DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 16},
+    {"key": "long_term_debt", "label_de": "Long-term Debt", "label_en": "Long-term Debt", "category": "DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 17},
+
+    # SBC (eigenes Feld)
+    {"key": "sbc_yield", "label_de": "SBC / Market Cap", "label_en": "SBC / Market Cap", "category": "SBC", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 19},
+    {"key": "sbc", "label_de": "Stock Based Compensation", "label_en": "Stock Based Compensation", "category": "SBC", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 20},
+
+    # BUYBACKS (eigenes Feld) — Buyback Volume → Net Buyback → Buyback / MCap → Net Buyback / MCap
+    {"key": "buyback_volume", "label_de": "Buyback-Volumen", "label_en": "Buyback Volume", "category": "BUYBACKS", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 25},
+    {"key": "net_buyback", "label_de": "Net Buyback", "label_en": "Net Buyback", "category": "BUYBACKS", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 26},
+    {"key": "buyback_yield", "label_de": "Buyback / Market Cap", "label_en": "Buyback / Market Cap", "category": "BUYBACKS", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 27},
+    {"key": "net_buyback_yield", "label_de": "Net Buyback / Market Cap", "label_en": "Net Buyback / Market Cap", "category": "BUYBACKS", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 28},
 
     # FCF (Yield zuerst, dann Input)
     {"key": "fcf_yield", "label_de": "FCF-Rendite", "label_en": "FCF Yield", "category": "FCF", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 30},
