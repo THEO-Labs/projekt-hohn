@@ -177,16 +177,32 @@ WICHTIGE REGELN:
 def _build_user_prompt(period_coverage: str, period_year: int, doc_type: str, company_name: str) -> str:
     keys_block = "\n".join(f'  "{k}": {{ ... }}    // {desc}' for k, desc in EXTRACTION_KEYS)
     is_quarterly = period_coverage in ("Q1", "Q2", "Q3", "Q4", "H1", "H2")
+    is_annual = period_coverage == "FY" and doc_type in ("ANNUAL_REPORT", "FORM_10K", "FORM_20F")
+    # Guidance-Zieljahr:
+    #  - Q-Bericht: gleiches FY (Q1 2026 → Outlook FY2026)
+    #  - Annual Report: NAECHSTES FY (AR2025 → Outlook FY2026)
+    if is_quarterly:
+        guidance_target = period_year
+    elif is_annual:
+        guidance_target = period_year + 1
+    else:
+        guidance_target = None
+
     guidance_keys_block = "\n".join(f'  "{k}": {{ ... }}' for k, _ in EXTRACTION_KEYS)
     guidance_section = (
         f"""
 
-ZUSAETZLICH (NUR bei Quartalsberichten / Earnings Releases): Suche nach
-Management Guidance / Outlook fuer das gesamte FY{period_year}. Typische
-Stellen: 'Outlook'-Sektion, 'Guidance'-Block im Earnings Release, Highlights-
-Folie ('FY{period_year} Outlook'), Management-Report-Schluss. Phrasen wie:
-- 'Wir erwarten Net Income FY{period_year} im Bereich X bis Y'
-- 'FY{period_year} Free Cash Flow guidance: ~Z'
+ZUSAETZLICH: Suche nach Management Guidance / Outlook fuer das gesamte
+FY{guidance_target}. Typische Stellen:
+- 'Outlook'-/'Guidance'-/'Forecast'-Sektion (oft am Ende des Management Reports)
+- Earnings Release / Press Release zum Quartal
+- Highlights-Folie ('FY{guidance_target} Outlook')
+- Annual Report Schluss-Kapitel 'Outlook for {guidance_target}'
+
+Phrasen wie:
+- 'We expect Net Income FY{guidance_target} in the range X to Y'
+- 'FY{guidance_target} Free Cash Flow guidance: ~Z'
+- 'Wir erwarten Nettofinanzschulden FY{guidance_target} von X'
 - 'Confirmed dividend payout policy of N%'
 
 Wenn eine Range gegeben ist (X bis Y), nimm den Mittelwert als value und
@@ -208,7 +224,7 @@ Pro Guidance-Key:
 }}
 
 Wenn der Bericht KEINE Guidance enthaelt: setze "guidance_fy": {{}} (leeres Objekt).
-""" if is_quarterly else ""
+""" if guidance_target is not None else ""
     )
     return f"""Unternehmen: {company_name}
 Berichtstyp: {doc_type}

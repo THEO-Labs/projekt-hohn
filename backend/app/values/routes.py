@@ -275,6 +275,71 @@ def list_company_values(
     return q.all()
 
 
+def _try_web_guidance(
+    db: Session,
+    company,
+    company_id: UUID,
+    key: str,
+    target_fy: int,
+):
+    """Web-Recherche fuer FY-Guidance. Wird vor dem Q-Faktor-Proxy versucht.
+
+    Nutzt Claude mit Web-Search-Tool, fragt gezielt nach Management-Guidance
+    / Analysten-Konsens / Outlook fuer den gegebenen Wert + FY. Speichert
+    user/assistant-Messages im Chat (User sieht die Recherche-Begruendung)
+    und gibt einen ProviderResult mit is_forecast=True zurueck.
+    """
+    from app.config import settings
+    if not settings.anthropic_api_key:
+        return None
+    from app.llm.claude import research_value, validate_claude_value
+    from app.llm.models import LlmMessage
+    from app.llm.routes import _get_or_create_conversation
+    from app.providers.base import ProviderResult
+
+    vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+    if vd is None or vd.source_type != SourceType.API:
+        return None
+
+    label = f"{vd.label_en} ({vd.label_de})"
+    try:
+        val, source, url, user_prompt, assistant_response = research_value(
+            company.name, company.ticker, label, company.currency,
+            period_type="FY", period_year=target_fy, value_key=key,
+        )
+    except Exception as e:
+        logger.warning("Web-Guidance Claude call failed for %s/%s/FY%s: %s",
+                       company.ticker, key, target_fy, e)
+        return None
+
+    if val is None:
+        return None
+    val = validate_claude_value(key, val)
+    if val is None:
+        return None
+
+    # Chat-Message persistieren damit der User die Web-Begruendung sieht.
+    if user_prompt and assistant_response:
+        try:
+            conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
+            db.add(LlmMessage(conversation_id=conv.id, role="user", content=user_prompt, source="web_guidance"))
+            db.add(LlmMessage(
+                conversation_id=conv.id, role="assistant", content=assistant_response,
+                score_suggestion=val, source="web_guidance",
+            ))
+            db.flush()
+        except Exception as e:
+            logger.warning("Web-Guidance chat persist failed: %s", e)
+
+    return ProviderResult(
+        value=val,
+        source_name=f"Web-Guidance: {source}" if source else "Web-Guidance (Claude-Recherche)",
+        source_link=url,
+        currency=company.currency if key in CURRENCY_KEYS else None,
+        extras={"is_forecast": True, "guidance_method": "web_research"},
+    )
+
+
 def _try_factor_estimate(
     db: Session,
     company,
@@ -282,8 +347,9 @@ def _try_factor_estimate(
     key: str,
     target_fy: int,
 ):
-    """Q-Faktor-Estimate für laufende FY. Schreibt eine system-message
-    in den Chat der Zelle, damit der Nutzer den Breakdown nachvollziehen kann."""
+    """Q-Faktor-Estimate als Proxy für laufende FY. Wird nur als Backup
+    verwendet wenn weder PDF-Guidance noch Web-Research einen Wert liefert.
+    Source wird entsprechend mit 'Proxy' markiert."""
     from app.calculations.estimates import compute_estimate
     from app.providers.base import ProviderResult
     from app.llm.models import LlmMessage
@@ -298,14 +364,14 @@ def _try_factor_estimate(
         return None
 
     if est.method == "flow_factor" and est.factor is not None:
-        source_label = f"Schätzung (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
+        source_label = f"Proxy (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
     elif est.method == "balance_snapshot":
         qs = ",".join(est.quarters_used) if est.quarters_used else "?"
-        source_label = f"Schätzung (Bilanz-Snapshot {qs} {target_fy})"
+        source_label = f"Proxy (Bilanz-Snapshot {qs} {target_fy})"
     elif est.method == "fy_fallback":
-        source_label = f"Schätzung (FY{target_fy - 1}-Wert, keine Q-Daten)"
+        source_label = f"Proxy (FY{target_fy - 1}-Wert, no-growth-Annahme)"
     else:
-        source_label = f"Schätzung ({est.method})"
+        source_label = f"Proxy ({est.method})"
     try:
         conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
         db.add(LlmMessage(conversation_id=conv.id, role="system", content=est.explanation, source="estimate"))
@@ -411,11 +477,17 @@ def _process_one_key(
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
-    # Laufendes FY: Q-Faktor-Estimate aus Quartals-PDFs versuchen (mit
-    # FY-Fallback wenn keine Q-Daten). Estimate-Pfad ueberspringt Provider-
-    # Chain und Claude komplett — bleibt damit konsistent zur PDF-Strategie.
+    # Laufendes FY: Estimate-Priority-Kette
+    #  1. PDF-Guidance (Q-Bericht / AR-Outlook FY+1) — schon im pre_existing
+    #     guard oben abgehandelt, wir kommen nur hier her wenn keine existiert.
+    #  2. Web-Recherche (Claude Web-Search) nach Management-Guidance / Konsens
+    #  3. Q-Faktor-Proxy (mit Marker "Proxy")
+    #  4. FY-Fallback (mit Marker "Proxy")
+    # Estimate-Pfad ueberspringt anschliessend Provider-Chain.
     if is_running_fy and key in ESTIMABLE_KEYS:
-        result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+        result = _try_web_guidance(db, company, company_id, key, effective_period_year)
+        if result is None:
+            result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
 
     if result is None and (is_stammdaten or is_us_company(company)):
         result = _try_providers(

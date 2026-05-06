@@ -159,19 +159,29 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                         from_ir_pdf=True,
                     ))
 
-        # Guidance-Werte aus Q-Berichten in FY-Forecast-Rows mappen.
-        # Nur fuer Quartal/Halbjahresberichte sinnvoll — AR ist selbst die
-        # FY-Definition. Guidance gilt fuer FY der gleichen period_year.
-        if period_type in ("Q1", "Q2", "Q3", "Q4", "H1", "H2") and guidance_fy:
+        # Guidance-Werte als FY-Forecast-Rows mappen.
+        #  - Q-Berichte: Guidance gilt fuer FY der gleichen period_year (Q1 2026 → FY2026)
+        #  - Annual Report: 'Outlook for next year' → FY = period_year + 1 (AR2025 → FY2026)
+        guidance_target_fy: int | None = None
+        if period_type in ("Q1", "Q2", "Q3", "Q4", "H1", "H2"):
+            guidance_target_fy = period_year
+        elif period_type == "FY" and doc.document_type.value in (
+            "ANNUAL_REPORT", "FORM_10K", "FORM_20F",
+        ):
+            guidance_target_fy = period_year + 1
+        if guidance_target_fy is not None and guidance_fy:
             _persist_guidance_as_fy_forecast(
                 db, company_id=company_id, doc=doc,
-                fy_target=period_year,
+                fy_target=guidance_target_fy,
                 guidance=guidance_fy,
                 source_link=source_link,
             )
             json_safe_results["_guidance_fy"] = {
-                k: {kk: (str(vv) if isinstance(vv, Decimal) else vv) for kk, vv in v.items()}
-                for k, v in guidance_fy.items()
+                "target_fy": guidance_target_fy,
+                "values": {
+                    k: {kk: (str(vv) if isinstance(vv, Decimal) else vv) for kk, vv in v.items()}
+                    for k, v in guidance_fy.items()
+                },
             }
 
         doc.extraction_status = ExtractionStatus.DONE
