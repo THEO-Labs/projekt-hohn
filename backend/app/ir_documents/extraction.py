@@ -346,7 +346,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
     return "".join(final)
 
 
-EXTRACTION_MODEL = "claude-sonnet-4-6"
+EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _build_pdf_content_blocks(pdf_path: Path, pdf_bytes: bytes, page_count: int, user_prompt: str) -> tuple[list, str]:
