@@ -148,21 +148,22 @@ def _delete_old_sanity_messages(
     company_id: UUID,
     period_year: int,
 ) -> None:
-    """Aeltere Sanity-Check-Messages weg, damit nicht stapelt."""
+    """ALLE Sanity-Check-Messages fuer dieses FY weg — egal welcher value_key.
+    Verhindert Stapeln + entfernt auch Legacy-Messages aus alten Code-Versionen
+    (z.B. fuer market_cap, stock_price etc., die wir aktuell nicht checken)."""
     from app.llm.models import LlmConversation, LlmMessage
     convs = (
-        db.query(LlmConversation)
+        db.query(LlmConversation.id)
         .filter(
             LlmConversation.company_id == company_id,
             LlmConversation.period_type == "FY",
             LlmConversation.period_year == period_year,
-            LlmConversation.value_key.in_(_ALL_CHECKED_KEYS),
         )
         .all()
     )
     if not convs:
         return
-    conv_ids = [c.id for c in convs]
+    conv_ids = [c[0] for c in convs]
     db.query(LlmMessage).filter(
         LlmMessage.conversation_id.in_(conv_ids),
         LlmMessage.source == "sanity_check",
