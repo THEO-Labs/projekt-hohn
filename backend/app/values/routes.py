@@ -312,13 +312,9 @@ def _try_web_guidance(
                        company.ticker, key, target_fy, e)
         return None
 
-    if val is None:
-        return None
-    val = validate_claude_value(key, val)
-    if val is None:
-        return None
-
-    # Chat-Message persistieren damit der User die Web-Begruendung sieht.
+    # Chat IMMER persistieren — auch bei val=None, damit der User im Drawer
+    # sieht WAS Claude geantwortet hat (NICHT_GEFUNDEN-Begruendung etc.).
+    persisted = False
     if user_prompt and assistant_response:
         try:
             conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
@@ -328,8 +324,20 @@ def _try_web_guidance(
                 score_suggestion=val, source="web_guidance",
             ))
             db.flush()
+            persisted = True
         except Exception as e:
             logger.warning("Web-Guidance chat persist failed: %s", e)
+
+    if val is None:
+        logger.info("Web-Guidance %s/%s/FY%s: no value extracted (chat persisted=%s)",
+                    company.ticker, key, target_fy, persisted)
+        return None
+    val_validated = validate_claude_value(key, val)
+    if val_validated is None:
+        logger.info("Web-Guidance %s/%s/FY%s: value %s failed sanity-range",
+                    company.ticker, key, target_fy, val)
+        return None
+    val = val_validated
 
     return ProviderResult(
         value=val,
