@@ -934,7 +934,7 @@ export function CompanyDashboardPage() {
                 if (showDual) {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor");
                   const web = buildVariantValues(cRows, cPrev, "web");
-                  const isRunning = refreshStatuses.get(company.id)?.status === "running";
+                  const isRefreshingThis = refreshStatuses.get(company.id)?.status === "running";
                   const renderEstimateRow = (
                     label: "Q-Faktor (Proxy)" | "Web-Guidance",
                     vals: VariantValues,
@@ -957,12 +957,12 @@ export function CompanyDashboardPage() {
                           </span>
                           <button
                             onClick={() => handleRefreshCompany(company)}
-                            disabled={isRunning}
-                            title={`Werte für ${label} neu berechnen (triggert beide Methoden)`}
+                            disabled={isRefreshingThis}
+                            title={`Werte fuer ${label} neu berechnen (triggert beide Methoden parallel — Web und Q-Faktor)`}
                             className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            <RefreshCw className={`h-3 w-3 ${isRunning ? "animate-spin" : ""}`} />
-                            {isRunning ? "Berechnet…" : "Werte berechnen"}
+                            <RefreshCw className={`h-3 w-3 ${isRefreshingThis ? "animate-spin" : ""}`} />
+                            {isRefreshingThis ? "Berechnet…" : "Werte berechnen"}
                           </button>
                         </div>
                       </td>
@@ -972,7 +972,20 @@ export function CompanyDashboardPage() {
                         }
                         return g.defs.map((d) => {
                           if (d.isPrevYear) {
-                            return <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 bg-muted/20 px-3 py-2"></td>;
+                            // Prev-year-Wert ist Actuals und gleich fuer beide Varianten.
+                            const baseKey = (d as { basedOnKey?: string }).basedOnKey as string | undefined;
+                            const prevCv = baseKey ? cPrev.find((v) => v.value_key === baseKey) : undefined;
+                            const prevRaw = prevCv?.numeric_value ?? null;
+                            const prevNum = prevRaw == null ? null : (typeof prevRaw === "string" ? parseFloat(prevRaw) : prevRaw);
+                            const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
+                            const prevDisplay = shouldConvert ? (convertCurrency(prevNum, prevCv?.currency ?? null) ?? prevNum) : prevNum;
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`} className="whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground">
+                                <span className="font-mono text-sm italic">
+                                  {prevNum == null ? "—" : formatValue(prevDisplay, d.unit, displayCurrency)}
+                                </span>
+                              </td>
+                            );
                           }
                           const av = availabilityMap.get(company.id);
                           const hohnLockedHere = HOHN_LOCKED_KEYS.has(d.key) && period.value === "FY" && isHohnLocked(av, period.year);
@@ -985,9 +998,12 @@ export function CompanyDashboardPage() {
                           }
                           const val = vals.get(d.key) ?? null;
                           if (val == null) {
+                            // Variant hat keinen Wert — bei Web heisst das meist "Recherche fehlgeschlagen / Anthropic 529".
+                            const isWebRow = label === "Web-Guidance";
                             return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2 text-xs text-muted-foreground/40">
-                                —
+                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2 text-xs text-muted-foreground/50"
+                                title={isWebRow ? "Web-Recherche hat fuer diesen Wert nichts geliefert. 'Werte berechnen' nochmal klicken um erneut zu versuchen." : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate)."}>
+                                {isWebRow ? "Web fehlt" : "—"}
                               </td>
                             );
                           }
