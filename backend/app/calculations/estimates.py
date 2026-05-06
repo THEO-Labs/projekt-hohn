@@ -55,6 +55,12 @@ QUARTERS = ("Q1", "Q2", "Q3")
 # den FY-Fallback zurueck.
 _NEAR_ZERO_FRACTION = Decimal("0.01")
 
+# Hard-Cap fuer den Faktor — saisonale Q1-FCF-Werte (Working-Capital-Aufbau,
+# typisch negativ bei Industrials) produzieren mathematisch korrekte aber
+# wirtschaftlich unsinnige Faktoren wenn man sie auf einen positiven
+# FY-Cashflow skaliert. Ueber 5x in beiden Richtungen → FY-Fallback.
+_MAX_FACTOR = Decimal("5")
+
 
 @dataclass
 class EstimateResult:
@@ -273,6 +279,20 @@ def compute_estimate(
         )
 
     factor = target_v / prev_v
+
+    # Hard-Cap: extreme Faktoren entstehen oft aus saisonal verzerrten
+    # Q-Werten (z.B. Q1 FCF negativ in beiden Jahren bei Industrials).
+    if abs(factor) > _MAX_FACTOR:
+        return _fy_fallback(
+            prev_fy_val, target_fy_year, prev_fy, key,
+            method="fy_fallback",
+            reason=(
+                f"Faktor {q} {target_fy_year}/{q} {prev_fy} = {factor:.2f} liegt ueber "
+                f"+/-{_MAX_FACTOR} (vermutlich Saisonalitaet) — Faktor zu unzuverlaessig, "
+                f"FY-Fallback statt extrapolieren."
+            ),
+        )
+
     estimate = prev_fy_val * factor
     delta_pct = (factor - Decimal("1")) * Decimal("100")
     ytd_note = " (YTD)" if is_ytd_pair else ""
