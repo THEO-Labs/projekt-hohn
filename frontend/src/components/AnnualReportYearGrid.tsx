@@ -283,7 +283,7 @@ function QuarterlyReportGrid({
         period_year: pending.year,
         display_name: label,
       });
-      toast.success(`${label} hochgeladen — eingereiht. Estimate FY${currentYear} wird automatisch aktualisiert.`, { id: toastId });
+      toast.success(`${label} hochgeladen — eingereiht.`, { id: toastId });
       await onChanged();
     } catch (err) {
       toast.error((err as { message?: string })?.message || "Upload fehlgeschlagen", { id: toastId });
@@ -300,7 +300,7 @@ function QuarterlyReportGrid({
         <FileText className="h-3.5 w-3.5" />
         Quartalsberichte
         <span className="ml-1 text-[9px] font-normal text-muted-foreground/70">
-          — werden für Faktor-Estimate FY{currentYear} verwendet
+          — Estimate-Modus aktuell pausiert, Uploads werden archiviert
         </span>
       </div>
       <div className="space-y-1.5">

@@ -128,22 +128,6 @@ export const getCumulativeValues = (
   return api<CumulativeValuesResponse>(`/api/companies/${companyId}/values/cumulative?${params}`);
 };
 
-export type StockReturnResponse = {
-  company_id: string;
-  ticker: string;
-  requested_start: string;
-  start_close: number;
-  end_close: number;
-  start_actual_date: string | null;
-  end_actual_date: string | null;
-  total_return_pct: number;
-  cagr_pct: number | null;
-  n_years: number;
-};
-
-export const getStockReturn = (companyId: string, startDate: string) =>
-  api<StockReturnResponse>(`/api/companies/${companyId}/stock-return?start_date=${startDate}`);
-
 export const fetchHistoricalStammdaten = (companyId: string, periodYear: number) =>
   api<{ stored: boolean; reason?: string; period_year?: number }>(
     `/api/companies/${companyId}/values/historical-stammdaten?period_year=${periodYear}`,

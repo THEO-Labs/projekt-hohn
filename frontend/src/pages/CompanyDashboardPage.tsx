@@ -93,8 +93,8 @@ type PeriodOption =
   | { label: string; value: "FY"; year: number; from_year?: undefined; to_year?: undefined }
   | { label: string; value: "CUM"; year?: undefined; from_year: number; to_year: number };
 
+// Estimate-Modus aktuell deaktiviert — laufende FYs werden nicht angezeigt.
 const FY_OPTIONS: { label: string; year: number }[] = [
-  { label: "FY 2026e", year: 2026 },
   { label: "FY 2025", year: 2025 },
   { label: "FY 2024", year: 2024 },
   { label: "FY 2023", year: 2023 },
@@ -550,34 +550,12 @@ export function CompanyDashboardPage() {
         <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-semibold tracking-tight text-foreground">{t.dashboard}</h2>
-            <Link to={`/portfolios/${pid}/backtest`}
-              className="rounded-md border border-primary/40 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
-              title="Backtest: Hohn-Rendite vs. realisierte Stock-Performance"
-            >
-              📈 Backtest
-            </Link>
           </div>
           <div className="flex items-center gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1">
-                <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Estimate</span>
-                {FY_OPTIONS.filter((p) => p.year >= new Date().getFullYear()).map((p) => {
-                  const i = FY_OPTIONS.indexOf(p);
-                  const isActive = periodMode === "FY" && fyIdx === i;
-                  return (
-                    <button key={`est-${i}`}
-                      onClick={() => { setPeriodMode("FY"); setFyIdx(i); }}
-                      title="Laufendes FY — Werte basieren auf Q-Faktor-Schätzungen"
-                      className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${isActive ? "bg-violet-600 text-white" : "border border-violet-300 bg-violet-50 text-violet-800 hover:bg-violet-100"}`}
-                    >{p.label.replace("FY ", "")}</button>
-                  );
-                })}
-              </div>
-              <div className="h-6 w-px bg-border" />
-              <div className="flex items-center gap-1">
                 <span className="mr-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Abgeschlossen</span>
-                {FY_OPTIONS.filter((p) => p.year < new Date().getFullYear()).map((p) => {
-                  const i = FY_OPTIONS.indexOf(p);
+                {FY_OPTIONS.map((p, i) => {
                   const isActive = periodMode === "FY" && fyIdx === i;
                   return (
                     <button key={`hist-${i}`}

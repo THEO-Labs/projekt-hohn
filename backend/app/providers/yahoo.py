@@ -288,54 +288,6 @@ class YahooFinanceProvider:
             return None
 
 
-    def fetch_stock_return(self, ticker: str, start_date) -> dict | None:
-        """Fetch total return (Adj Close based) from start_date until today.
-        Returns dict {start_close, end_close, start_actual_date, end_actual_date,
-        total_return_pct, cagr_pct, n_years}."""
-        try:
-            from datetime import date, timedelta
-            t = yfinance.Ticker(ticker)
-            today = date.today()
-
-            # Window around start_date for first available trading day
-            start_window_begin = start_date - timedelta(days=5)
-            start_window_end = start_date + timedelta(days=10)
-            hist_start = t.history(start=start_window_begin.isoformat(), end=start_window_end.isoformat(), auto_adjust=False)
-            if hist_start is None or hist_start.empty:
-                return None
-
-            # Window around today for last available trading day
-            end_window_begin = today - timedelta(days=10)
-            hist_end = t.history(start=end_window_begin.isoformat(), end=(today + timedelta(days=1)).isoformat(), auto_adjust=False)
-            if hist_end is None or hist_end.empty:
-                return None
-
-            close_col_s = "Adj Close" if "Adj Close" in hist_start.columns else "Close"
-            close_col_e = "Adj Close" if "Adj Close" in hist_end.columns else "Close"
-            start_close = float(hist_start[close_col_s].iloc[0])
-            end_close = float(hist_end[close_col_e].iloc[-1])
-            start_actual = hist_start.index[0].date() if hasattr(hist_start.index[0], "date") else None
-            end_actual = hist_end.index[-1].date() if hasattr(hist_end.index[-1], "date") else None
-
-            if start_close <= 0:
-                return None
-            n_days = (end_actual - start_actual).days if start_actual and end_actual else (today - start_date).days
-            n_years = n_days / 365.25 if n_days > 0 else 0
-            total_ret = end_close / start_close - 1
-            cagr = (end_close / start_close) ** (1.0 / n_years) - 1 if n_years > 0 else None
-
-            return {
-                "start_close": start_close,
-                "end_close": end_close,
-                "start_actual_date": start_actual.isoformat() if start_actual else None,
-                "end_actual_date": end_actual.isoformat() if end_actual else None,
-                "total_return_pct": total_ret * 100,
-                "cagr_pct": cagr * 100 if cagr is not None else None,
-                "n_years": n_years,
-            }
-        except Exception as e:
-            logger.warning("Yahoo stock-return failed for %s/%s: %s", ticker, start_date, e)
-            return None
 
     def detect_fiscal_year_end(self, ticker: str) -> tuple[int, int] | None:
         """Detect FY-end (month, day) from Yahoo annual financials columns.

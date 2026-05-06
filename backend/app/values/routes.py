@@ -376,19 +376,12 @@ def _process_one_key(
         updated.append(pre_existing)
         return False
 
-    from datetime import date as _date_today
-    from app.calculations.estimates import ESTIMABLE_KEYS
-
     is_stammdaten = key in ALWAYS_CURRENT_KEYS
-    is_running_fy = (
-        effective_period_type == "FY"
-        and effective_period_year is not None
-        and effective_period_year >= _date_today.today().year
-    )
     result = None
 
-    if is_running_fy and key in ESTIMABLE_KEYS:
-        result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+    # Q-Faktor-Estimates fuer das laufende FY sind aktuell deaktiviert.
+    # Code in app/calculations/estimates.py bleibt vorhanden, _try_factor_estimate
+    # wird hier bewusst NICHT aufgerufen.
 
     if result is None and (is_stammdaten or is_us_company(company)):
         result = _try_providers(
@@ -997,36 +990,6 @@ def _cell_to_dict(cell: dict) -> dict:
         "pa_avg": _decimal_to_str(cell.get("pa_avg")),
         "pa_cagr": _decimal_to_str(cell.get("pa_cagr")),
         "missing": cell.get("missing", []),
-    }
-
-
-@values_router.get("/{company_id}/stock-return")
-def get_stock_return(
-    company_id: UUID,
-    start_date: str = Query(..., description="ISO YYYY-MM-DD"),
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Returns total return + CAGR of the stock from start_date until today,
-    based on Adj Close. Used for backtest-comparison vs Hohn-Rendite."""
-    company = _get_owned_company(db, user, company_id)
-    from datetime import date as _date
-    try:
-        sd = _date.fromisoformat(start_date)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must be ISO YYYY-MM-DD")
-    providers = get_providers("stock_price")
-    provider = next((p for p in providers if hasattr(p, "fetch_stock_return")), None)
-    if provider is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No stock-return provider available")
-    result = provider.fetch_stock_return(company.ticker, sd)
-    if result is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No price data for {company.ticker} from {start_date}")
-    return {
-        "company_id": str(company_id),
-        "ticker": company.ticker,
-        "requested_start": start_date,
-        **result,
     }
 
 
