@@ -233,7 +233,9 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
 }
 
 
-const QUARTERS = ["Q1", "Q2", "Q3", "Q4"] as const;
+// Q4 weggelassen: ist immer im Annual Report enthalten (FY-Werte = Q1+Q2+Q3+Q4),
+// daher kein separates Q4-Filing noetig. Q3 reicht als letzter Stand vor AR.
+const QUARTERS = ["Q1", "Q2", "Q3"] as const;
 
 function QuarterlyReportGrid({
   companyId,
@@ -307,7 +309,7 @@ function QuarterlyReportGrid({
         {years.map((yr) => (
           <div key={yr} className="flex items-center gap-1.5">
             <span className="w-10 shrink-0 text-[10px] font-semibold text-muted-foreground">{yr}</span>
-            <div className="grid grid-cols-4 flex-1 gap-1.5">
+            <div className="grid grid-cols-3 flex-1 gap-1.5">
               {QUARTERS.map((q) => {
                 const doc = docFor(yr, q);
                 const tileKey = `${yr}-${q}`;
