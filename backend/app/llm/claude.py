@@ -206,12 +206,9 @@ ANALYSIS_MODE_KEYS: frozenset[str] = frozenset({
     "ni_growth",
     "net_debt_change",
     "net_debt_change_pct",
-    "net_debt",
-    "ev",
-    "cash_sum",
-    "debt_sum",
     "net_buyback",
     "market_cap_calc",
+    "actual_return",
 })
 
 
@@ -418,10 +415,11 @@ _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "shares_outstanding": (0, 1_000_000_000_000),
     "sbc": (0, 500_000_000_000),
     "net_income": (-5_000_000_000_000, 5_000_000_000_000),
-    "op_cash_flow": (-5_000_000_000_000, 5_000_000_000_000),
-    "capex": (0, 5_000_000_000_000),
-    "debt": (0, 10_000_000_000_000),
-    "cash": (0, 5_000_000_000_000),
+    "fcf": (-5_000_000_000_000, 5_000_000_000_000),
+    "buyback_volume": (0, 1_000_000_000_000),
+    "dividends": (0, 1_000_000_000_000),
+    # net_debt darf negativ sein (Net Cash Position) — daher symmetrische Range.
+    "net_debt": (-5_000_000_000_000, 10_000_000_000_000),
 }
 
 
@@ -448,25 +446,12 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
         "Dividenden-Cashout im Geschaeftsjahr. Cash Flow Statement → "
         "'Dividends paid' / 'Cash dividends'. Immer POSITIV als Auszahlungsbetrag."
     ),
-    "cash_and_equivalents": (
-        "Cash and Cash Equivalents zum Bilanzstichtag (Ende FY). Balance Sheet "
-        "Asset-Seite ganz oben. OHNE Marketable Securities."
-    ),
-    "marketable_securities_st": (
-        "Short-Term Investments / Marketable Securities (current). Balance Sheet, "
-        "current assets. NUR der kurzfristige Anteil."
-    ),
-    "marketable_securities_lt": (
-        "Long-Term Investments / Marketable Securities (non-current). Balance Sheet, "
-        "non-current assets."
-    ),
-    "lease_liabilities": (
-        "Lease Liabilities (Operating + Finance Leases zusammen, current + non-current). "
-        "Balance Sheet. Wenn nur eine Position vorhanden, diese; sonst Summe. POSITIV."
-    ),
-    "long_term_debt": (
-        "Long-Term Debt (langfristige Finanzverbindlichkeiten). Balance Sheet → "
-        "'Long-term debt'. ohne current portion. POSITIV."
+    "net_debt": (
+        "Net Financial Debt / Nettofinanzschulden zum Bilanzstichtag. EINE Zahl, "
+        "Vorzeichen erhalten — POSITIV = mehr Debt als Cash, NEGATIV = Net Cash. "
+        "Suchorte: Highlights, Management Report (Liquidity/Capital Structure), "
+        "Notes zu Borrowings (Net-Debt-Reconciliation). Bei Versicherern KEINE "
+        "Long-term Marketable Securities als Cash zaehlen — die decken Reserven."
     ),
     "shares_outstanding": (
         "Diluted Weighted Average Shares Outstanding aus der Income Statement, "

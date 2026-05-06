@@ -11,44 +11,6 @@ def test_stammdaten_market_cap_calc():
     assert result["market_cap_calc"] == Decimal("103600")
 
 
-def test_cash_sum_three_components():
-    result = calculate_fy(
-        {
-            "cash_and_equivalents": Decimal("3726"),
-            "marketable_securities_st": Decimal("2558"),
-            "marketable_securities_lt": Decimal("3771"),
-        },
-        None,
-        {},
-    )
-    assert result["cash_sum"] == Decimal("10055")
-
-
-def test_debt_sum_two_components():
-    result = calculate_fy(
-        {"lease_liabilities": Decimal("800"), "long_term_debt": Decimal("1491")},
-        None,
-        {},
-    )
-    assert result["debt_sum"] == Decimal("2291")
-
-
-def test_net_debt_and_ev():
-    result = calculate_fy(
-        {
-            "cash_and_equivalents": Decimal("3726"),
-            "marketable_securities_st": Decimal("2558"),
-            "marketable_securities_lt": Decimal("3771"),
-            "lease_liabilities": Decimal("800"),
-            "long_term_debt": Decimal("1491"),
-        },
-        None,
-        {"market_cap": Decimal("101100")},
-    )
-    assert result["net_debt"] == Decimal("-7764")
-    assert result["ev"] == Decimal("93336")
-
-
 def test_net_buyback():
     result = calculate_fy(
         {"buyback_volume": Decimal("1840"), "sbc": Decimal("1955")},
@@ -87,6 +49,18 @@ def test_ni_growth():
     assert abs(result["ni_growth"] - Decimal("22.67")) < Decimal("0.1")
 
 
+def test_ni_growth_negative_prev_correct_sign():
+    """Turnaround: NI war negativ, jetzt positiv → Growth muss POSITIV sein."""
+    result = calculate_fy(
+        {"net_income": Decimal("764")},
+        {"net_income": Decimal("-75")},
+        {},
+    )
+    # |prev|=75, change=839, growth=839/75*100 ≈ +1118.67
+    assert result["ni_growth"] is not None
+    assert result["ni_growth"] > Decimal("1000")
+
+
 def test_dividend_yield():
     result = calculate_fy(
         {"dividends": Decimal("200")},
@@ -96,48 +70,39 @@ def test_dividend_yield():
     assert result["dividend_yield"] == Decimal("0.2")
 
 
-def test_net_debt_change_pct():
-    current = {
-        "cash_and_equivalents": Decimal("3726"),
-        "marketable_securities_st": Decimal("2558"),
-        "marketable_securities_lt": Decimal("3771"),
-        "lease_liabilities": Decimal("800"),
-        "long_term_debt": Decimal("1491"),
-    }
-    previous = {
-        "cash_and_equivalents": Decimal("2304"),
-        "marketable_securities_st": Decimal("3458"),
-        "marketable_securities_lt": Decimal("2500"),
-        "lease_liabilities": Decimal("750"),
-        "long_term_debt": Decimal("1489"),
-    }
+def test_net_debt_change_pct_from_primary_net_debt():
+    """Net Debt kommt jetzt direkt aus current/previous, nicht summiert."""
+    current = {"net_debt": Decimal("-7764")}
+    previous = {"net_debt": Decimal("-6023")}
     stammdaten = {"market_cap": Decimal("101100")}
     result = calculate_fy(current, previous, stammdaten)
-    # curr net_debt = 2291 - 10055 = -7764; prev = 2239 - 8262 = -6023
-    # change = prev - curr = -6023 - (-7764) = 1741
-    # pct = 1741 / 101100 * 100 ≈ 1.72
+    # change = prev - curr = -6023 - (-7764) = 1741 (positiv = Schulden-Abbau)
     assert result["net_debt_change"] == Decimal("1741")
+    # 1741 / 101100 * 100 ≈ 1.722
     assert abs(result["net_debt_change_pct"] - Decimal("1.722")) < Decimal("0.01")
+
+
+def test_net_debt_change_missing_prev():
+    """Ohne Vorjahres-Net-Debt → kein change."""
+    result = calculate_fy(
+        {"net_debt": Decimal("100")},
+        {},
+        {"market_cap": Decimal("1000")},
+    )
+    assert result["net_debt_change"] is None
+    assert result["net_debt_change_pct"] is None
 
 
 def test_hohn_return_simple_servicenow():
     current = {
-        "cash_and_equivalents": Decimal("3726"),
-        "marketable_securities_st": Decimal("2558"),
-        "marketable_securities_lt": Decimal("3771"),
-        "lease_liabilities": Decimal("800"),
-        "long_term_debt": Decimal("1491"),
+        "net_debt": Decimal("-7764"),  # Net Cash Position
         "fcf": Decimal("4636"),
         "net_income": Decimal("1748"),
         "sbc": Decimal("1900"),
     }
     previous = {
         "net_income": Decimal("1425"),
-        "cash_and_equivalents": Decimal("2304"),
-        "marketable_securities_st": Decimal("3458"),
-        "marketable_securities_lt": Decimal("2500"),
-        "lease_liabilities": Decimal("750"),
-        "long_term_debt": Decimal("1489"),
+        "net_debt": Decimal("-6023"),
     }
     stammdaten = {"market_cap": Decimal("101100")}
     result = calculate_fy(current, previous, stammdaten)
@@ -179,3 +144,14 @@ def test_zero_market_cap_safe():
 def test_all_inputs_missing():
     assert calculate_fy({}, None, {})["hohn_return_simple"] is None
     assert calculate_fy({}, None, {})["hohn_return_detailed"] is None
+
+
+def test_actual_return_from_next_year_mcap():
+    result = calculate_fy(
+        {"net_income": Decimal("100")},
+        None,
+        {"market_cap": Decimal("1000")},
+        next_year_market_cap=Decimal("1200"),
+    )
+    # (1200 / 1000 - 1) * 100 = 20%
+    assert result["actual_return"] == Decimal("20")

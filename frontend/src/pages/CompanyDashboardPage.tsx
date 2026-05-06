@@ -32,7 +32,7 @@ import { parseNumericInput } from "@/lib/parseNumeric";
 
 const CATEGORY_ORDER = [
   "HOHN_RETURN", "FCF", "NI_GROWTH", "SBC", "BUYBACKS",
-  "DIVIDENDS", "DELTA_ND", "CASH", "DEBT", "STAMMDATEN",
+  "DIVIDENDS", "DEBT", "STAMMDATEN",
 ];
 
 // Faktoren die in der Hohn-Formel auftauchen — die zeigen wir in der
@@ -62,11 +62,7 @@ const CUM_INPUT_FY_KEYS = [
   "sbc",
   "buyback_volume",
   "dividends",
-  "cash_and_equivalents",
-  "marketable_securities_st",
-  "marketable_securities_lt",
-  "lease_liabilities",
-  "long_term_debt",
+  "net_debt",
 ];
 
 
@@ -77,21 +73,17 @@ const CATEGORY_LABELS: Record<string, string> = {
   SBC: "SBC",
   BUYBACKS: "Buybacks",
   DIVIDENDS: "Dividend Yield",
-  DELTA_ND: "ΔNet Debt / MCap",
-  CASH: "Cash",
-  DEBT: "Debt",
+  DEBT: "Net Debt",
   STAMMDATEN: "Stammdaten",
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
   STAMMDATEN: "bg-slate-100 text-slate-700 border-slate-200",
-  CASH: "bg-blue-50 text-blue-700 border-blue-200",
-  DEBT: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  DEBT: "bg-rose-50 text-rose-700 border-rose-200",
   SBC: "bg-amber-50 text-amber-700 border-amber-200",
   BUYBACKS: "bg-orange-50 text-orange-700 border-orange-200",
   FCF: "bg-teal-50 text-teal-700 border-teal-200",
   NI_GROWTH: "bg-violet-50 text-violet-700 border-violet-200",
-  DELTA_ND: "bg-rose-50 text-rose-700 border-rose-200",
   DIVIDENDS: "bg-emerald-50 text-emerald-700 border-emerald-200",
   HOHN_RETURN: "bg-sky-100 text-sky-800 border-sky-300",
 };
@@ -127,20 +119,18 @@ const CURRENCIES = ["USD", "EUR", "GBP", "CHF", "JPY", "KRW", "CNY", "HKD"];
 
 const FORMULAS: Record<string, string> = {
   market_cap_calc: "Stock Price × Shares Outstanding",
-  cash_sum: "Cash & Equivalents + Mkt Sec ST + LT",
-  debt_sum: "Lease Liabilities + Long-term Debt",
-  net_debt: "Debt Sum − Cash Sum",
-  ev: "Market Cap + Net Debt",
   net_buyback: "Buyback-Volumen − SBC",
   sbc_yield: "SBC / Market Cap × 100",
+  buyback_yield: "Buyback Volume / Market Cap × 100",
   net_buyback_yield: "Net Buyback / Market Cap × 100",
   fcf_yield: "FCF / Market Cap × 100",
-  ni_growth: "(NI[Y] / NI[Y−1] − 1) × 100",
+  ni_growth: "(NI[Y] − NI[Y−1]) / |NI[Y−1]| × 100",
   net_debt_change: "Net Debt[Y−1] − Net Debt[Y]",
   net_debt_change_pct: "ΔNet Debt / Market Cap × 100",
   dividend_yield: "Dividends / Market Cap × 100",
   hohn_return_simple: "FCF Yield + NI Growth − SBC/MCap + ΔND/MCap",
   hohn_return_detailed: "Dividend Yield + NI Growth + Net Buyback/MCap + ΔND/MCap",
+  actual_return: "(MCap Ende FY / MCap Anfang FY − 1) × 100  [TSR via Yahoo Adj Close]",
 };
 
 type ColorTier = "excellent" | "good" | "neutral" | "weak" | "bad";
@@ -507,7 +497,7 @@ export function CompanyDashboardPage() {
   const showPrevYear = period.value === "FY" && period.year !== undefined;
   const prevYear = showPrevYear ? (period.year as number) - 1 : null;
 
-  const HIDDEN_IN_CUM_SECTIONS = new Set(["CASH", "DEBT", "STAMMDATEN"]);
+  const HIDDEN_IN_CUM_SECTIONS = new Set(["STAMMDATEN"]);
   const grouped = CATEGORY_ORDER.filter((cat) => !(isCumMode && HIDDEN_IN_CUM_SECTIONS.has(cat))).map((cat) => {
     const allDefs = definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order);
     const factorDefs = allDefs.filter((d) => FACTOR_KEYS.has(d.key));

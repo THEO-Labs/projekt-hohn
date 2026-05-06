@@ -20,10 +20,6 @@ STAMMDATEN_CALC_KEYS = {"market_cap_calc"}
 HOHN_KEYS = {"hohn_return_simple", "hohn_return_detailed"}
 
 FY_CALC_KEYS = {
-    "cash_sum",
-    "debt_sum",
-    "net_debt",
-    "ev",
     "net_buyback",
     "sbc_yield",
     "net_buyback_yield",
@@ -68,25 +64,9 @@ def calculate_fy(
     # only used as fallback when historical hasn't been fetched yet.
     market_cap = current.get("market_cap") or stammdaten.get("market_cap")
 
-    cash_eq = current.get("cash_and_equivalents")
-    mkt_st = current.get("marketable_securities_st")
-    mkt_lt = current.get("marketable_securities_lt")
-    if any(v is not None for v in (cash_eq, mkt_st, mkt_lt)):
-        results["cash_sum"] = sum((v for v in (cash_eq, mkt_st, mkt_lt) if v is not None), Decimal("0"))
-
-    leases = current.get("lease_liabilities")
-    lt_debt = current.get("long_term_debt")
-    if any(v is not None for v in (leases, lt_debt)):
-        results["debt_sum"] = sum((v for v in (leases, lt_debt) if v is not None), Decimal("0"))
-
-    debt_sum = results["debt_sum"]
-    cash_sum = results["cash_sum"]
-    if debt_sum is not None and cash_sum is not None:
-        results["net_debt"] = debt_sum - cash_sum
-    net_debt = results["net_debt"]
-
-    if market_cap is not None and net_debt is not None:
-        results["ev"] = market_cap + net_debt
+    # net_debt kommt jetzt direkt aus der Extraktion (Primary Key) — keine
+    # Aggregation aus Cash/Lease/LT-Debt-Subkomponenten mehr.
+    net_debt = current.get("net_debt")
 
     buyback_vol = current.get("buyback_volume")
     sbc = current.get("sbc")
@@ -109,27 +89,10 @@ def calculate_fy(
             # von Verlust → Gewinn = positives Wachstum, nicht negatives).
             results["ni_growth"] = (ni - ni_prev) / abs(ni_prev) * Decimal("100")
 
-        # ΔNet Debt = previous - current (positive = Schulden-Abbau / Cash-Wachstum).
+        # ΔNet Debt = previous − current (positive = Schulden-Abbau / Cash-Wachstum).
         prev_net_debt = previous.get("net_debt")
-        if prev_net_debt is None:
-            prev_debt = previous.get("debt_sum")
-            prev_cash = previous.get("cash_sum")
-            if prev_debt is None and (previous.get("lease_liabilities") is not None or previous.get("long_term_debt") is not None):
-                prev_debt = sum(
-                    (v for v in (previous.get("lease_liabilities"), previous.get("long_term_debt")) if v is not None),
-                    Decimal("0"),
-                )
-            if prev_cash is None and any(previous.get(k) is not None for k in ("cash_and_equivalents", "marketable_securities_st", "marketable_securities_lt")):
-                prev_cash = sum(
-                    (v for v in (previous.get("cash_and_equivalents"), previous.get("marketable_securities_st"), previous.get("marketable_securities_lt")) if v is not None),
-                    Decimal("0"),
-                )
-            if prev_debt is not None and prev_cash is not None:
-                prev_net_debt = prev_debt - prev_cash
-
-        eff_net_debt = net_debt if net_debt is not None else current.get("net_debt")
-        if prev_net_debt is not None and eff_net_debt is not None:
-            results["net_debt_change"] = prev_net_debt - eff_net_debt
+        if prev_net_debt is not None and net_debt is not None:
+            results["net_debt_change"] = prev_net_debt - net_debt
             results["net_debt_change_pct"] = _safe_div_pct(results["net_debt_change"], market_cap)
 
     dividends = current.get("dividends")
@@ -216,20 +179,7 @@ def _yield_cell(sum_value: Decimal | None, market_cap: Decimal | None, n: int, m
 
 
 def _net_debt_of(data: dict[str, Decimal | None]) -> Decimal | None:
-    nd = data.get("net_debt")
-    if nd is not None:
-        return nd
-    debt_components = [data.get("lease_liabilities"), data.get("long_term_debt")]
-    cash_components = [
-        data.get("cash_and_equivalents"),
-        data.get("marketable_securities_st"),
-        data.get("marketable_securities_lt"),
-    ]
-    if not any(v is not None for v in debt_components + cash_components):
-        return None
-    debt = sum((v for v in debt_components if v is not None), Decimal("0"))
-    cash = sum((v for v in cash_components if v is not None), Decimal("0"))
-    return debt - cash
+    return data.get("net_debt")
 
 
 def _sum_over_years(year_data: dict[int, dict[str, Decimal | None]], key: str) -> tuple[Decimal | None, list[str]]:

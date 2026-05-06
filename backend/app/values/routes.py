@@ -499,11 +499,7 @@ def _process_one_key(
 _PREV_YEAR_GROWTH_KEYS = (
     "net_income",
     "fcf",
-    "cash_and_equivalents",
-    "marketable_securities_st",
-    "marketable_securities_lt",
-    "lease_liabilities",
-    "long_term_debt",
+    "net_debt",
     "sbc",
     "buyback_volume",
     "dividends",
@@ -972,11 +968,7 @@ _CUM_INPUT_KEYS_FY: tuple[str, ...] = (
     "sbc",
     "buyback_volume",
     "dividends",
-    "cash_and_equivalents",
-    "marketable_securities_st",
-    "marketable_securities_lt",
-    "lease_liabilities",
-    "long_term_debt",
+    "net_debt",
 )
 
 
@@ -1130,7 +1122,7 @@ def get_cumulative_values(
         }
     pre_breakdown = {
         k: _decimal_to_str(pre_data.get(k))
-        for k in ("net_income", "net_debt", "cash_and_equivalents", "marketable_securities_st", "marketable_securities_lt", "lease_liabilities", "long_term_debt", "debt_sum", "cash_sum")
+        for k in ("net_income", "net_debt")
     }
 
     first_year_mcap = year_data.get(from_year, {}).get("market_cap")
@@ -1157,11 +1149,7 @@ def get_cumulative_values(
 
 _CROSS_YEAR_TRIGGER_INPUTS: frozenset[str] = frozenset({
     "net_income",
-    "cash_and_equivalents",
-    "marketable_securities_st",
-    "marketable_securities_lt",
-    "lease_liabilities",
-    "long_term_debt",
+    "net_debt",
 })
 
 

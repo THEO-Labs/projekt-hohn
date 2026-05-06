@@ -40,11 +40,7 @@ FLOW_KEYS = frozenset({
 })
 
 BALANCE_KEYS = frozenset({
-    "cash_and_equivalents",
-    "marketable_securities_st",
-    "marketable_securities_lt",
-    "lease_liabilities",
-    "long_term_debt",
+    "net_debt",
     "shares_outstanding",
 })
 

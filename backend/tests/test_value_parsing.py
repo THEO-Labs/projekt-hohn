@@ -226,8 +226,14 @@ class TestValidateClaudeValue:
         val = Decimal("999999999999999")
         assert validate_claude_value("some_unknown_key", val) == val
 
-    def test_capex_negative_rejected(self):
-        assert validate_claude_value("capex", Decimal("-1")) is None
+    def test_buyback_negative_rejected(self):
+        # buyback_volume is always-positive in our model; negative → reject
+        assert validate_claude_value("buyback_volume", Decimal("-1")) is None
+
+    def test_net_debt_negative_accepted(self):
+        # net_debt CAN be negative (Net Cash Position) — must NOT be rejected.
+        val = Decimal("-50000000000")  # 50B Net Cash
+        assert validate_claude_value("net_debt", val) == val
 
 
 # ---------------------------------------------------------------------------

@@ -36,11 +36,11 @@ def cid():
 
 def test_balance_snapshot_picks_latest_quarter(cid):
     values = {
-        ("cash_and_equivalents", "Q1", 2026): Decimal("10"),
-        ("cash_and_equivalents", "Q3", 2026): Decimal("30"),  # latest available
+        ("net_debt", "Q1", 2026): Decimal("10"),
+        ("net_debt", "Q3", 2026): Decimal("30"),  # latest available
     }
     with patch.object(estimates, "_q_value", _stub_q_value(values)):
-        r = compute_estimate(None, cid, "cash_and_equivalents", 2026)
+        r = compute_estimate(None, cid, "net_debt", 2026)
     assert r is not None
     assert r.method == "balance_snapshot"
     assert r.value == Decimal("30")

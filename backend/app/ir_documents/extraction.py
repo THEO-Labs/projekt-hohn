@@ -68,12 +68,9 @@ ALWAYS_POSITIVE_KEYS = frozenset({
     "buyback_volume",
     "sbc",
     # balance sheet items (always positive when shown)
-    "cash_and_equivalents",
-    "marketable_securities_st",
-    "marketable_securities_lt",
-    "lease_liabilities",
-    "long_term_debt",
     "shares_outstanding",
+    # NOTE: net_debt absichtlich NICHT hier — kann legitim negativ sein
+    # (Net Cash Position bei cash-rich Firmen wie Apple oder Allianz).
 })
 
 # Keys we try to extract from every uploaded IR document.
@@ -114,34 +111,17 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "Suchorte: (1) Cash Flow Statement → 'Dividends paid to shareholders' / 'Cash dividends' im Financing-Abschnitt. "
      "(2) Statement of Changes in Equity → 'Dividends paid' / 'Dividenden-Ausschüttung'. "
      "WERT: POSITIV als Auszahlungsbetrag. Wenn KEINE Dividende, value=0 und reason='Keine Dividendenzahlung in der Periode'."),
-    ("cash_and_equivalents",
-     "Cash and Cash Equivalents zum Bilanzstichtag. "
-     "Suchorte: (1) Balance Sheet → ASSETS-Seite oben 'Cash and cash equivalents'. "
-     "(2) IFRS: 'Cash and cash equivalents' / 'Liquide Mittel'. "
-     "OHNE Marketable Securities (die werden separat extrahiert). "
-     "Wenn nur ein aggregierter Wert 'Cash and short-term investments' ausgewiesen ist, diesen unter cash_and_equivalents nehmen und marketable_securities_st auf 0 setzen mit Begründung."),
-    ("marketable_securities_st",
-     "Short-term Marketable Securities / Short-term Investments (current assets). "
-     "Suchorte: (1) Balance Sheet → current assets, separat NACH 'Cash and equivalents'. "
-     "(2) Bezeichnungen: 'Short-term investments', 'Marketable securities', 'Investment securities (current)', 'Wertpapiere (kurzfristig)'. "
-     "Falls nicht separat ausgewiesen: value=0 mit reason='Nicht separat im Balance Sheet'."),
-    ("marketable_securities_lt",
-     "Long-term Marketable Securities / Long-term Investments (non-current assets). "
-     "Suchorte: (1) Balance Sheet → non-current assets, 'Long-term investments' / 'Other investments'. "
-     "(2) Notes zur Investments-Aufschlüsselung. "
-     "Falls nicht separat ausgewiesen: value=0 mit reason='Nicht separat'."),
-    ("lease_liabilities",
-     "Lease Liabilities = Operating Lease Liabilities + Finance Lease Liabilities, current + non-current zusammen. "
-     "Suchorte: (1) Balance Sheet → 'Lease liabilities (current)' UND 'Lease liabilities (non-current)' summieren. "
-     "(2) IFRS 16: 'Leasingverbindlichkeiten kurzfristig + langfristig'. "
-     "(3) Notes zu Leasing → Total Lease Liabilities. "
-     "Wenn nur eine Position vorhanden, diese; sonst Summe. POSITIV. "
-     "Falls Lease Liabilities nicht separat ausgewiesen sind (z.B. in 'Other liabilities' versteckt), value=null und reason='In Other liabilities aggregiert'."),
-    ("long_term_debt",
-     "Long-term Debt / langfristige Finanzschulden zum Bilanzstichtag. "
-     "Suchorte: (1) Balance Sheet → non-current liabilities 'Long-term debt' / 'Bonds and notes' / 'Borrowings (non-current)'. "
-     "(2) IFRS: 'Langfristige Finanzverbindlichkeiten' / 'Anleihen' / 'Bankdarlehen'. "
-     "OHNE current portion of long-term debt, OHNE Lease Liabilities (separat). POSITIV."),
+    ("net_debt",
+     "Net Financial Debt / Nettofinanzschulden / Net Debt zum Bilanzstichtag. "
+     "EINE einzige Zahl, wie sie das Unternehmen selbst definiert (Total Financial Debt minus Cash & near-Cash). "
+     "Vorzeichen-konvention: POSITIV = mehr Debt als Cash, NEGATIV = Net Cash Position (z.B. Apple, Allianz). "
+     "Suchorte (PRÜFE ALLE bevor du auf Null schließt — der Wert ist fast immer im Bericht prominent ausgewiesen):"
+     " (1) HIGHLIGHTS / Financial Highlights / Five-Year-Summary am Anfang des AR — meist als 'Net Financial Debt: X' oder 'Net Debt: X' direkt angegeben (höchste Konfidenz). "
+     " (2) Management Report / Operating & Financial Review → Sektion 'Liquidity', 'Financial Position' oder 'Capital Structure' — typische Bridge: 'Cash and equivalents − Total borrowings = Net Cash/Debt'. "
+     " (3) Notes zu 'Borrowings' / 'Financial Liabilities' — am Ende der Note steht oft eine Net-Debt-Reconciliation. "
+     " (4) IFRS-Filer: 'Nettofinanzschulden' / 'Nettoverschuldung' im Lagebericht. "
+     " (5) Letzter Fallback: ableiten als (Total Borrowings + Lease Liabilities) − (Cash + Short-term Investments). KEINE long-term marketable securities reinrechnen — bei Versicherern/Banken sind das Reserve-Assets, kein freies Cash. "
+     "VORZEICHEN ERHALTEN — Net Cash Position muss negativ sein. NICHT abs() anwenden."),
     ("shares_outstanding",
      "Shares Outstanding — entweder (a) Diluted Weighted Average Shares Outstanding aus dem Income Statement (für Earnings-Berechnung) oder (b) Shares Outstanding zum Bilanzstichtag (für Market Cap). "
      "Suchorte: (1) Income Statement Bottom: 'Diluted weighted average shares outstanding'. "
