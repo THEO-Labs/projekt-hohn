@@ -22,8 +22,37 @@ PDF_IMAGE_BYTES_LIMIT = 5 * 1024 * 1024  # 5 MB raw PDF
 # Anthropic's PDF-as-image mode caps at 100 pages per request, so anything
 # longer must go through the text-extraction path regardless of bytes.
 PDF_IMAGE_PAGES_LIMIT = 100
-# Hard cap on text we send to Claude (rough: ~4 chars per token)
-MAX_TEXT_CHARS = 600_000
+# Hard cap on text we send to Claude. Sonnet 4.6 mit 1M-context-Beta
+# erlaubt ~3M chars Eingabe — wir lassen viel Headroom fuer System-Prompt
+# + Per-Key-Beschreibungen + Claude's eigene Antwort, und damit smart
+# truncation bei wirklich riesigen PDFs (38 MB Adidas 2025) noch greifen
+# kann ohne unter die wichtigen Notes zu rutschen.
+MAX_TEXT_CHARS = 1_500_000
+
+# Keywords whose presence on a page signals "this is a financial statement
+# or a note that we very likely need". Used to prioritise pages when a PDF's
+# raw text exceeds MAX_TEXT_CHARS — typically at the END of long IFRS
+# annual reports where statements + notes live behind ~200 pages of narrative.
+_HIGH_VALUE_PAGE_PATTERNS = re.compile(
+    r"\b("
+    r"consolidated balance sheet|consolidated income statement|"
+    r"consolidated statement of (financial position|cash flows?|comprehensive income|changes in equity|profit or loss)|"
+    r"konzernbilanz|konzern-?gewinn- und verlustrechnung|konzern-?kapitalflussrechnung|"
+    r"konzern-?eigenkapitalveraenderungsrechnung|kapitalflussrechnung|gewinn- und verlustrechnung|"
+    r"cash flows from (operating|investing|financing) activities|"
+    r"net cash (provided by|used in) (operating|investing|financing) activities|"
+    r"share-based payment|stock-based compensation|equity-settled|"
+    r"long-?term debt|borrowings|lease liabilit(ies|y)|leasingverbindlichkeiten|"
+    r"cash and cash equivalents|liquide mittel|"
+    r"marketable securities|short-?term investments|"
+    r"shares outstanding|share capital|grundkapital|"
+    r"net income( attributable| for the period)?|nettogewinn|"
+    r"dividends paid|dividenden(zahlung|ausschuettung)?|"
+    r"repurchase of (common|treasury) (stock|shares)|aktienrueckkauf|"
+    r"^\s*note\s+\d+|^\s*nr\.\s+\d+\s+—"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,26 +261,89 @@ def _parse_json_from_response(text: str) -> dict | None:
             return None
 
 
+def _score_page(text: str) -> int:
+    """Score a page by how likely it is to contain financial-statement data.
+    Counts matches of high-value patterns (Balance Sheet keywords, Notes,
+    cash flow lines etc.) — pages with score>0 are prioritised when the
+    PDF is too big to fit MAX_TEXT_CHARS."""
+    if not text:
+        return 0
+    return len(_HIGH_VALUE_PAGE_PATTERNS.findall(text))
+
+
 def _extract_pdf_text(pdf_path: Path) -> str:
-    """Extract text from all pages of a PDF, prefixed with [Page N] markers
-    so Claude can cite page numbers. Truncated to MAX_TEXT_CHARS."""
+    """Extract text from all pages, prefixed with [Page N] markers so Claude
+    can cite page numbers.
+
+    If the raw text exceeds MAX_TEXT_CHARS, do smart truncation: keep ALL
+    high-value pages (statements + notes detected via _HIGH_VALUE_PAGE_PATTERNS)
+    plus a buffer of 2 surrounding pages, and drop low-value narrative pages
+    until budget fits. This rescues IFRS reports where statements live behind
+    150-200 pages of management commentary.
+    """
     reader = PdfReader(str(pdf_path))
-    parts: list[str] = []
-    total = 0
+    pages: list[tuple[int, str, int]] = []  # (page_num, text, score)
+    total_chars = 0
     for i, page in enumerate(reader.pages, start=1):
         try:
             text = page.extract_text() or ""
         except Exception:
             text = ""
-        chunk = f"\n\n[Page {i}]\n{text}"
-        total += len(chunk)
-        if total > MAX_TEXT_CHARS:
-            chunk = chunk[: MAX_TEXT_CHARS - (total - len(chunk))]
-            parts.append(chunk)
-            parts.append(f"\n\n[... PDF truncated at page {i}, {len(reader.pages)} pages total ...]")
-            break
-        parts.append(chunk)
-    return "".join(parts)
+        pages.append((i, text, _score_page(text)))
+        total_chars += len(text)
+
+    n = len(pages)
+    if total_chars + n * 12 <= MAX_TEXT_CHARS:
+        # All pages fit comfortably — no truncation needed.
+        return "".join(f"\n\n[Page {i}]\n{t}" for i, t, _ in pages)
+
+    # Smart truncation: select pages by priority.
+    # 1. ALWAYS keep high-value pages (score > 0) and their +/-2 neighbours.
+    keep: set[int] = set()
+    for i, _, score in pages:
+        if score > 0:
+            for j in range(max(1, i - 2), min(n, i + 2) + 1):
+                keep.add(j)
+    # 2. ALWAYS keep first 5 pages (highlights / summary often sit there).
+    for j in range(1, min(5, n) + 1):
+        keep.add(j)
+    # 3. Build kept-pages chunks, count chars.
+    kept_pages = [(i, t) for i, t, _ in pages if i in keep]
+    chars_used = sum(len(t) + 12 for _, t in kept_pages)
+
+    # 4. Fill remaining budget with neutral pages (score=0) PROXIMATE to
+    #    high-value pages (i.e. not at the very start of the doc).
+    if chars_used < MAX_TEXT_CHARS:
+        candidates = [(i, t) for i, t, _ in pages if i not in keep]
+        # Prefer later pages (IFRS reports tend to put valuable stuff at the end).
+        candidates.sort(key=lambda x: -x[0])
+        for i, t in candidates:
+            cost = len(t) + 12
+            if chars_used + cost > MAX_TEXT_CHARS:
+                continue
+            keep.add(i)
+            chars_used += cost
+
+    # 5. Output in page-number order with a marker for skipped runs.
+    final: list[str] = []
+    last_page = 0
+    skipped = 0
+    for i, t, _ in pages:
+        if i not in keep:
+            skipped += 1
+            last_page = i
+            continue
+        if skipped > 0:
+            final.append(f"\n\n[... {skipped} pages skipped (low-value, e.g. narrative/CSR) ...]")
+            skipped = 0
+        final.append(f"\n\n[Page {i}]\n{t}")
+        last_page = i
+    if skipped > 0:
+        final.append(f"\n\n[... {skipped} trailing pages skipped ...]")
+    n_kept = len(keep)
+    logger.info("PDF text smart-truncation: kept %d/%d pages (%d chars) of %s",
+                n_kept, n, chars_used, pdf_path.name)
+    return "".join(final)
 
 
 EXTRACTION_MODEL = "claude-sonnet-4-6"
@@ -287,7 +379,12 @@ def _build_pdf_content_blocks(pdf_path: Path, pdf_bytes: bytes, page_count: int,
 
 
 def _call_claude_extraction(client, content_blocks: list) -> str:
-    """Single Claude call with retry on transient errors. Returns raw text."""
+    """Single Claude call with retry on transient errors. Returns raw text.
+
+    Sonnet 4.6 mit 1M-Context-Beta laesst grosse PDFs (>200k Tokens) in einem
+    Call durch; ohne den Header wuerde der Request mit 400 abgelehnt sobald
+    wir ueber das Standard-Context-Limit gehen.
+    """
     last_exc: Exception | None = None
     for attempt in range(2):
         try:
@@ -296,6 +393,7 @@ def _call_claude_extraction(client, content_blocks: list) -> str:
                 max_tokens=8192,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": content_blocks}],
+                extra_headers={"anthropic-beta": "context-1m-2025-08-07"},
             ))
             text_parts = [
                 getattr(b, "text", "") or ""
