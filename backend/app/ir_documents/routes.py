@@ -102,6 +102,7 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                     CompanyValue.value_key == key,
                     CompanyValue.period_type == period_type,
                     CompanyValue.period_year == period_year,
+                    CompanyValue.is_forecast.is_(False),
                 )
                 .one_or_none()
             )
