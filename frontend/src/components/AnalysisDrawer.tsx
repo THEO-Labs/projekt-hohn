@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Sparkles, Send, Search, FileSearch, Database, BrainCircuit, HelpCircle, TrendingUp, ShieldCheck, Calculator, Scale } from "lucide-react";
+import { X, Sparkles, Send, Search, FileSearch, BrainCircuit, HelpCircle, TrendingUp, ShieldCheck, Calculator, Scale } from "lucide-react";
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
@@ -116,44 +116,31 @@ const NO_VALUE_PROMPTS: QuickPrompt[] = [
   },
 ];
 
-type ThinkingMode = "research" | "analysis-quick" | "analysis-deep" | "qualitative";
+type ThinkingMode = "web" | "context" | "qualitative";
 
 const STAGES_BY_MODE: Record<ThinkingMode, { icon: typeof Search; text: string }[]> = {
-  research: [
-    { icon: BrainCircuit, text: "Analysiere Frage und Kontext…" },
-    { icon: Search, text: "Durchsuche Investor-Relations-Seite…" },
-    { icon: FileSearch, text: "Prüfe 10-K / SEC EDGAR Filings…" },
-    { icon: Database, text: "Scanne Finanzdaten-Aggregatoren…" },
-    { icon: FileSearch, text: "Verifiziere Zahlen gegen Quartalsberichte…" },
-    { icon: BrainCircuit, text: "Fasse Ergebnis zusammen…" },
+  web: [
+    { icon: BrainCircuit, text: "Liest Frage und vorhandenen Kontext…" },
+    { icon: Search, text: "Sucht im Web (IR-Seiten, Aggregatoren, Earnings-Transcripts)…" },
+    { icon: FileSearch, text: "Wertet gefundene Quellen aus…" },
+    { icon: BrainCircuit, text: "Stellt Antwort zusammen…" },
   ],
-  "analysis-quick": [
-    { icon: BrainCircuit, text: "Lese Komponenten aus dem Kontext…" },
-    { icon: Calculator, text: "Berechne Beiträge der einzelnen Komponenten…" },
-    { icon: TrendingUp, text: "Identifiziere Treiber und Effekte…" },
-    { icon: BrainCircuit, text: "Formuliere Analyse…" },
-  ],
-  "analysis-deep": [
-    { icon: BrainCircuit, text: "Lese Komponenten aus dem Kontext…" },
-    { icon: Calculator, text: "Berechne Beiträge…" },
-    { icon: Search, text: "Suche nach One-Time-Items und Sondereffekten…" },
-    { icon: FileSearch, text: "Prüfe Earnings-Call-Transcripts…" },
-    { icon: ShieldCheck, text: "Bewerte Plausibilität…" },
-    { icon: BrainCircuit, text: "Fasse Analyse zusammen…" },
+  context: [
+    { icon: BrainCircuit, text: "Liest die vorhandenen Werte aus dem Kontext…" },
+    { icon: Calculator, text: "Verarbeitet die Frage…" },
+    { icon: BrainCircuit, text: "Stellt Antwort zusammen…" },
   ],
   qualitative: [
-    { icon: BrainCircuit, text: "Analysiere die Bewertungskriterien…" },
-    { icon: Search, text: "Sammle Informationen zur Firma…" },
-    { icon: Scale, text: "Wäge positive und negative Faktoren ab…" },
-    { icon: BrainCircuit, text: "Formuliere Score und Begründung…" },
+    { icon: BrainCircuit, text: "Analysiert die Bewertungskriterien…" },
+    { icon: Scale, text: "Wägt Faktoren ab…" },
+    { icon: BrainCircuit, text: "Formuliert Score und Begründung…" },
   ],
 };
 
 const MODE_HINT_TEXT: Record<ThinkingMode, (sec: number) => string> = {
-  research: (sec) => sec < 10 ? "Claude recherchiert…" : `Claude recherchiert seit ${sec}s (kann bis zu 60s dauern)`,
-  "analysis-quick": (sec) => sec < 8 ? "Claude analysiert…" : `Claude analysiert seit ${sec}s`,
-  "analysis-deep": (sec) => sec < 10 ? "Claude prüft Plausibilität…" : `Claude recherchiert seit ${sec}s (kann bis zu 60s dauern)`,
-  qualitative: (sec) => sec < 8 ? "Claude bewertet…" : `Claude bewertet seit ${sec}s`,
+  web: (sec) => sec < 10 ? "Claude recherchiert im Web…" : `Web-Recherche läuft seit ${sec}s (kann bis zu 60s dauern)`,
+  context: (sec) => sec < 6 ? "Claude denkt nach…" : `Antwort wird erstellt seit ${sec}s`,
+  qualitative: (sec) => sec < 8 ? "Claude bewertet…" : `Bewertung seit ${sec}s`,
 };
 
 function ClaudeThinking({ mode }: { mode: ThinkingMode }) {
@@ -239,11 +226,7 @@ export function AnalysisDrawer({
   const [sending, setSending] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
-  const defaultThinkingMode: ThinkingMode = isFactorType
-    ? "qualitative"
-    : isCalculated
-    ? "analysis-quick"
-    : "research";
+  const defaultThinkingMode: ThinkingMode = isFactorType ? "qualitative" : "context";
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(defaultThinkingMode);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -289,13 +272,7 @@ export function AnalysisDrawer({
     if (!text || sending) return;
     if (overrideText === undefined) setInputText("");
     setSending(true);
-    setThinkingMode(
-      isFactorType
-        ? "qualitative"
-        : isCalculated
-        ? (enableSearch ? "analysis-deep" : "analysis-quick")
-        : "research"
-    );
+    setThinkingMode(isFactorType ? "qualitative" : enableSearch ? "web" : "context");
     const optimisticId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const optimisticUserMsg: LlmMessage = {
       id: optimisticId,
