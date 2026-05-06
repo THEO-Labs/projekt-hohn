@@ -272,6 +272,20 @@ def compute_estimate(
                 f"({target_v:,.0f}) im Vorzeichen — Faktor unzuverlaessig."
             ),
         )
+    # Seasonality-Gate: wenn Q-Werte ein anderes Vorzeichen haben als die
+    # FY-Basis (z.B. negatives Q1-FCF bei industriellen Working-Capital-
+    # Aufbau, aber positives FY-FCF), wuerde der "positive Faktor × positive
+    # FY = inflated estimate"-Effekt zuschlagen. → FY-Fallback.
+    if (target_v * prev_fy_val) < 0 or (prev_v * prev_fy_val) < 0:
+        return _fy_fallback(
+            prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
+            method="fy_fallback",
+            reason=(
+                f"{q}-Werte ({target_v:,.0f} / {prev_v:,.0f}) haben anderes Vorzeichen "
+                f"als FY{prev_fy} ({prev_fy_val:,.0f}) — saisonale Verzerrung, "
+                f"Faktor wuerde Estimate uebertreiben."
+            ),
+        )
     if abs(prev_v) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
         return _fy_fallback(
             prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
