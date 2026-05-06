@@ -17,6 +17,10 @@ const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019];
 const MAX_UPLOAD_MB = 50;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
+// Anzahl der Werte die wir aus jedem PDF extrahieren — muss zur EXTRACTION_KEYS-Liste
+// in backend/app/ir_documents/extraction.py passen.
+const TOTAL_EXTRACTION_KEYS = 7;
+
 function checkSize(file: File, label: string): boolean {
   if (file.size > MAX_UPLOAD_BYTES) {
     const mb = (file.size / 1024 / 1024).toFixed(1);
@@ -152,7 +156,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
               ? "border-red-300 bg-red-50 text-red-800"
               : "border-emerald-300 bg-emerald-50 text-emerald-800";
             const tooltipParts = [doc.display_name];
-            if (isDone) tooltipParts.push(`${numExtracted}/11 Werte extrahiert`);
+            if (isDone) tooltipParts.push(`${numExtracted}/{TOTAL_EXTRACTION_KEYS} Werte extrahiert`);
             if (isRunning) tooltipParts.push("Claude analysiert PDF...");
             if (isPending && doc.queue_position) tooltipParts.push(`Warteschlange: Position ${doc.queue_position}`);
             if (isFailed) tooltipParts.push(`Fehler: ${doc.extraction_error ?? "unbekannt"}`);
@@ -167,7 +171,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
                 {isDone && <Check className="h-3.5 w-3.5" />}
                 <span className="text-[10px] font-semibold">{year}</span>
                 {isDone && numExtracted > 0 && (
-                  <span className="text-[8px] tabular leading-none">{numExtracted}/11</span>
+                  <span className="text-[8px] tabular leading-none">{numExtracted}/{TOTAL_EXTRACTION_KEYS}</span>
                 )}
                 <div className="absolute inset-0 flex items-center justify-center gap-1 rounded bg-white/95 opacity-0 transition-opacity group-hover:opacity-100">
                   {(isFailed || isDone) && (
@@ -371,7 +375,7 @@ function QuarterlyReportGrid({
                     ? "border-red-300 bg-red-50 text-red-800"
                     : "border-emerald-300 bg-emerald-50 text-emerald-800";
                   const tooltipParts = [doc.display_name];
-                  if (isDone) tooltipParts.push(`${numExtracted}/11 Werte`);
+                  if (isDone) tooltipParts.push(`${numExtracted}/{TOTAL_EXTRACTION_KEYS} Werte`);
                   if (isRunning) tooltipParts.push("Claude analysiert...");
                   if (isPending && doc.queue_position) tooltipParts.push(`Warteschlange #${doc.queue_position}`);
                   if (isFailed) tooltipParts.push(`Fehler: ${doc.extraction_error ?? "?"}`);
@@ -386,7 +390,7 @@ function QuarterlyReportGrid({
                       {isDone && <Check className="h-3 w-3" />}
                       <span className="text-[9px] font-semibold">{q}</span>
                       {isDone && numExtracted > 0 && (
-                        <span className="text-[7px] leading-none">{numExtracted}/11</span>
+                        <span className="text-[7px] leading-none">{numExtracted}/{TOTAL_EXTRACTION_KEYS}</span>
                       )}
                       <div className="absolute inset-0 flex items-center justify-center gap-1 rounded bg-white/95 opacity-0 transition-opacity group-hover:opacity-100">
                         {(isFailed || isDone) && (
