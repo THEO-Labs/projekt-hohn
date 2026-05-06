@@ -14,10 +14,11 @@ export type ValueDefinition = {
 };
 
 export type ForecastAlternate = {
-  method: string;       // z.B. "q_factor_proxy"
-  value: string | null; // Decimal-String wie numeric_value
+  method: string;       // "q_factor_proxy" | "web_guidance"
+  value: string | null; // Decimal-String wie numeric_value, null wenn Methode failed
   currency: string | null;
   source: string | null;
+  error_reason?: string; // gesetzt wenn value=null und Methode bewusst fehlschlug
 };
 
 export type CompanyValue = {

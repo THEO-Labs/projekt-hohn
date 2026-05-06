@@ -146,11 +146,15 @@ def analyze_value(
         .all()
     )
     if not force and existing_messages:
+        # Nur Antworten aus 'analyze' oder 'chat' zaehlen als gueltige
+        # zwischengespeicherte Analyse — system-messages aus 'estimate'/'sanity_check'/
+        # 'web_guidance'/'research' sind eigene Pipelines und keine Analyse-Antworten.
         last_assistant = next(
-            (m for m in reversed(existing_messages) if m.role == "assistant"),
+            (m for m in reversed(existing_messages)
+             if m.role == "assistant" and m.source in ("analyze", "chat")),
             None,
         )
-        if last_assistant and last_assistant.source != "research":
+        if last_assistant:
             return {"conversation_id": conv.id, "message": last_assistant}
 
     context = _build_company_context(db, company, period_type, period_year)
@@ -394,6 +398,10 @@ def get_chat_history(
     if source_filter:
         sources = [s.strip() for s in source_filter.split(",") if s.strip()]
         if sources:
+            # User-Folge-Nachrichten ('chat') gehoeren IMMER zum aktiven Variant-Chat —
+            # sonst verschwinden sie nach dem naechsten Drawer-Open.
+            if "chat" not in sources:
+                sources.append("chat")
             msg_q = msg_q.filter(LlmMessage.source.in_(sources))
     messages = msg_q.order_by(LlmMessage.created_at, LlmMessage.id).all()
 

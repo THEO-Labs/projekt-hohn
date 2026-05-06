@@ -464,13 +464,6 @@ def _process_one_key(
     ):
         updated.append(actuals_existing)
         return False
-    # Im Estimate-Modus: Guidance (PDF-Forecast) trumpft Factor-Estimate.
-    if forecast_existing and (
-        forecast_existing.manually_overridden
-        or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None)
-    ):
-        updated.append(forecast_existing)
-        return False
 
     # Pre-existing fuer den Update-Pfad: bei is_running_fy nutzen wir die
     # forecast-Row (falls vorhanden), sonst die actuals-Row.
@@ -478,25 +471,75 @@ def _process_one_key(
     result = None
 
     # Laufendes FY: BEIDE Methoden parallel rechnen — Web-Guidance UND
-    # Q-Faktor-Proxy. Primary = Web wenn verfuegbar, Q-Faktor sonst. Die
-    # andere Methode landet als Alternate-Eintrag im JSONB-Feld
-    # forecast_alternates und wird im Frontend untereinander angezeigt.
+    # Q-Faktor-Proxy. Primary = PDF-Guidance > Web > Q-Faktor. Alle anderen
+    # gefundenen Methoden landen als Alternate-Eintraege im JSONB-Feld
+    # forecast_alternates und werden im Frontend angezeigt.
     forecast_alternates: list[dict] | None = None
     if is_running_fy and key in ESTIMABLE_KEYS:
         web_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
         proxy_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
 
-        if web_result is not None:
+        # PDF-Guidance: ist primary wenn vorhanden — Web/Q-Faktor wandern in alternates.
+        pdf_is_primary = bool(
+            forecast_existing
+            and (forecast_existing.manually_overridden
+                 or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None))
+        )
+
+        # Stub-Eintrag fuer fehlgeschlagene Web-Recherche, damit das Frontend
+        # 'Web fehlte: <Grund>' anzeigen kann statt nur 'Wert nicht gefunden'.
+        web_alt: dict | None
+        if web_result is not None and isinstance(web_result.value, Decimal):
+            web_alt = {
+                "method": "web_guidance",
+                "value": str(web_result.value),
+                "currency": web_result.currency,
+                "source": web_result.source_name,
+            }
+        else:
+            web_alt = {
+                "method": "web_guidance",
+                "value": None,
+                "currency": None,
+                "source": None,
+                "error_reason": "Claude-Recherche lieferte keinen Wert (Aggregator-Suche, Konsens, Approximation versucht). Erneut versuchen ueber 'Recherchieren'-Button.",
+            }
+        proxy_alt: dict | None = None
+        if proxy_result is not None and isinstance(proxy_result.value, Decimal):
+            proxy_alt = {
+                "method": "q_factor_proxy",
+                "value": str(proxy_result.value),
+                "currency": proxy_result.currency,
+                "source": proxy_result.source_name,
+            }
+
+        if pdf_is_primary:
+            # Primary bleibt PDF-Forecast — wir schreiben nur die Alternates.
+            alternates_list: list[dict] = []
+            if web_alt is not None:
+                alternates_list.append(web_alt)
+            if proxy_alt is not None:
+                alternates_list.append(proxy_alt)
+            if alternates_list:
+                forecast_existing.forecast_alternates = alternates_list
+                db.flush()
+            updated.append(forecast_existing)
+            return True
+        elif web_result is not None:
             result = web_result
-            if proxy_result is not None and isinstance(proxy_result.value, Decimal):
-                forecast_alternates = [{
-                    "method": "q_factor_proxy",
-                    "value": str(proxy_result.value),
-                    "currency": proxy_result.currency,
-                    "source": proxy_result.source_name,
-                }]
+            if proxy_alt is not None:
+                forecast_alternates = [proxy_alt]
         elif proxy_result is not None:
             result = proxy_result
+            forecast_alternates = [web_alt]
+    else:
+        # Kein Estimate-Pfad — alter Block: PDF-Guidance trumpft auch hier.
+        if forecast_existing and (
+            forecast_existing.manually_overridden
+            or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None)
+        ):
+            updated.append(forecast_existing)
+            return False
 
     if result is None and (is_stammdaten or is_us_company(company)):
         result = _try_providers(

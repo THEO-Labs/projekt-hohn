@@ -190,13 +190,14 @@ function _getFaktorValue(cv: CompanyValue): number | null {
     const n = cv.numeric_value;
     return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
   }
-  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
-  if (isWebPrimary) {
-    const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
-    return alt?.value != null ? parseFloat(alt.value) : null;
+  const isProxyPrimary = (cv.source_name || "").includes("Proxy");
+  if (isProxyPrimary) {
+    const n = cv.numeric_value;
+    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
   }
-  const n = cv.numeric_value;
-  return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
+  // Web oder PDF ist primary -> Q-Faktor steht im alternates
+  const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+  return alt?.value != null ? parseFloat(alt.value) : null;
 }
 
 function _getWebValue(cv: CompanyValue): number | null {
@@ -209,8 +210,18 @@ function _getWebValue(cv: CompanyValue): number | null {
     const n = cv.numeric_value;
     return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
   }
-  // Primary ist Q-Faktor → Web-Variant nicht im DB gespeichert
-  return null;
+  // Primary ist Q-Faktor oder PDF -> Web steht im alternates (mit value oder error_reason)
+  const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
+  return alt?.value != null ? parseFloat(alt.value) : null;
+}
+
+function _getWebErrorReason(cv: CompanyValue): string | null {
+  if (!cv.is_forecast) return null;
+  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
+  if (isWebPrimary) return null;
+  const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
+  if (!alt || alt.value != null) return null;
+  return (alt as { error_reason?: string }).error_reason ?? "Web-Recherche lieferte keinen Wert.";
 }
 
 function _safeYield(v: number | null, mcap: number | null): number | null {
@@ -1015,12 +1026,16 @@ export function CompanyDashboardPage() {
                                 : ["dividend_yield", "ni_growth", "net_buyback_yield", "net_debt_change_pct"];
                               hohnMissing = reqKeys.filter((k) => vals.get(k) == null);
                             }
+                            // Konkreter Web-Fehler aus alternates (gesetzt wenn Web bewusst fehlschlug).
+                            const webErr = isWebRow && cellCv ? _getWebErrorReason(cellCv) : null;
                             const tip = isHohn
                               ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}. Klick auf die fehlenden Felder um zu recherchieren.`
+                              : isWebRow && webErr
+                              ? `Web-Recherche fehlte: ${webErr} Klick 'Recherchieren' fuer einen erneuten Versuch.`
                               : isWebRow
                               ? "Web-Recherche hat fuer diesen Wert (noch) nichts geliefert. Klick 'Recherchieren' fuer einen erneuten Versuch — Claude soll im Zweifel eine Approximation liefern."
                               : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
-                            const labelText = isHohn ? "Komponenten fehlen" : "Wert nicht gefunden";
+                            const labelText = isHohn ? "Komponenten fehlen" : (isWebRow && webErr ? "Web fehlte" : "Wert nicht gefunden");
                             const canResearch = !isHohn && !isCalcMissing;
                             const researchKey = `${company.id}:${d.key}`;
                             const isResearching = researching === researchKey;
