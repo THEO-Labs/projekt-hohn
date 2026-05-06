@@ -934,15 +934,36 @@ export function CompanyDashboardPage() {
                 if (showDual) {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor");
                   const web = buildVariantValues(cRows, cPrev, "web");
-                  const renderEstimateRow = (label: "Q-Faktor (Proxy)" | "Web-Guidance", vals: VariantValues, accent: string) => (
-                    <tr key={`${company.id}-${label}`} className={`border-b border-border/30 ${accent}`}>
+                  const isRunning = refreshStatuses.get(company.id)?.status === "running";
+                  const renderEstimateRow = (
+                    label: "Q-Faktor (Proxy)" | "Web-Guidance",
+                    vals: VariantValues,
+                    accent: string,
+                    isFirst: boolean,
+                  ) => (
+                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t" : "border-b"} border-border/30 ${accent}`}>
                       <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${accent}`}>
                         <div className="flex items-center gap-2">
-                          <span className="font-medium text-foreground">{company.name}</span>
-                          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                          {isFirst ? (
+                            <>
+                              <span className="font-medium text-foreground">{company.name}</span>
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground/50">↳</span>
+                          )}
                           <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
                             {label}
                           </span>
+                          <button
+                            onClick={() => handleRefreshCompany(company)}
+                            disabled={isRunning}
+                            title={`Werte für ${label} neu berechnen (triggert beide Methoden)`}
+                            className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${isRunning ? "animate-spin" : ""}`} />
+                            {isRunning ? "Berechnet…" : "Werte berechnen"}
+                          </button>
                         </div>
                       </td>
                       {grouped.flatMap((g) => {
@@ -989,8 +1010,8 @@ export function CompanyDashboardPage() {
                     </tr>
                   );
                   return [
-                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30"),
-                    renderEstimateRow("Web-Guidance", web, "bg-violet-50/30"),
+                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", true),
+                    renderEstimateRow("Web-Guidance", web, "bg-violet-50/30", false),
                   ];
                 }
                 return [(
