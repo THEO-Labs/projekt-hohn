@@ -185,37 +185,32 @@ const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"])
 
 type VariantValues = Map<string, number | null>;
 
+function _toNum(n: number | string | null | undefined): number | null {
+  if (n == null) return null;
+  return typeof n === "string" ? parseFloat(n) : n;
+}
+
 function _getFaktorValue(cv: CompanyValue): number | null {
-  if (!cv.is_forecast) {
-    const n = cv.numeric_value;
-    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
-  }
+  // Manuelle Override / Actuals: gilt fuer beide Varianten als "die Wahrheit".
+  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
   const isProxyPrimary = (cv.source_name || "").includes("Proxy");
-  if (isProxyPrimary) {
-    const n = cv.numeric_value;
-    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
-  }
+  if (isProxyPrimary) return _toNum(cv.numeric_value);
   // Web oder PDF ist primary -> Q-Faktor steht im alternates
   const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
   return alt?.value != null ? parseFloat(alt.value) : null;
 }
 
 function _getWebValue(cv: CompanyValue): number | null {
-  if (!cv.is_forecast) {
-    const n = cv.numeric_value;
-    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
-  }
+  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
   const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
-  if (isWebPrimary) {
-    const n = cv.numeric_value;
-    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
-  }
+  if (isWebPrimary) return _toNum(cv.numeric_value);
   // Primary ist Q-Faktor oder PDF -> Web steht im alternates (mit value oder error_reason)
   const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
   return alt?.value != null ? parseFloat(alt.value) : null;
 }
 
 function _getWebErrorReason(cv: CompanyValue): string | null {
+  if (cv.manually_overridden) return null;
   if (!cv.is_forecast) return null;
   const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
   if (isWebPrimary) return null;
@@ -1040,8 +1035,26 @@ export function CompanyDashboardPage() {
                             const researchKey = `${company.id}:${d.key}`;
                             const isResearching = researching === researchKey;
                             return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2"
-                                title={tip}>
+                              <td key={`${company.id}-${label}-${d.key}`}
+                                className={`border-r border-border/40 px-3 py-2 ${isHohn || isCalcMissing ? "" : "cursor-pointer hover:bg-amber-50/50"}`}
+                                title={tip}
+                                onClick={isHohn || isCalcMissing ? undefined : () => {
+                                  setDrawer({
+                                    companyId: company.id,
+                                    valueKey: d.key,
+                                    companyName: company.name,
+                                    valueLabel: d.label_en,
+                                    currentScore: null,
+                                    currentText: cellCv?.text_value ?? undefined,
+                                    isQualitative: false,
+                                    isAlwaysCurrent: false,
+                                    isCalculated: false,
+                                    dataType: d.data_type,
+                                    sourceFilter: variantSource,
+                                  });
+                                  setDrawerOpen(true);
+                                }}
+                              >
                                 <div className="flex items-center gap-1.5">
                                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
                                   <span className="text-xs text-amber-700">{labelText}</span>
