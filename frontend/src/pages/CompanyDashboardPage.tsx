@@ -324,6 +324,7 @@ export function CompanyDashboardPage() {
     isAlwaysCurrent: boolean;
     isCalculated: boolean;
     dataType: string;
+    sourceFilter?: string;
   } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cumDrawer, setCumDrawer] = useState<{ companyId: string; companyName: string; valueKey: string; valueLabel: string } | null>(null);
@@ -999,10 +1000,14 @@ export function CompanyDashboardPage() {
                             );
                           }
                           const val = vals.get(d.key) ?? null;
+                          const isWebRow = label === "Web-Guidance";
+                          // Q-Faktor-Row: nur Formel-Erklaerung + Sanity-Check zeigen.
+                          // Web-Row: nur Original-Prompt + Claude-Antwort zeigen.
+                          const variantSource = isWebRow ? "web_guidance" : "estimate,sanity_check";
+                          const cellCv = cRows.find((r) => r.value_key === d.key) ?? null;
                           if (val == null) {
-                            const isWebRow = label === "Web-Guidance";
                             const isHohn = d.key === "hohn_return_simple" || d.key === "hohn_return_detailed";
-                            // Hohn-Rendite: zeige fehlende Komponenten auf, statt generisch "Web fehlt".
+                            const isCalcMissing = d.source_type === "CALCULATED";
                             let hohnMissing: string[] = [];
                             if (isHohn) {
                               const reqKeys = d.key === "hohn_return_simple"
@@ -1011,20 +1016,43 @@ export function CompanyDashboardPage() {
                               hohnMissing = reqKeys.filter((k) => vals.get(k) == null);
                             }
                             const tip = isHohn
-                              ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}`
+                              ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}. Klick auf die fehlenden Felder um zu recherchieren.`
                               : isWebRow
-                              ? "Web-Recherche hat fuer diesen Wert (noch) nichts geliefert. 'Werte berechnen' nochmal klicken — Claude soll im Zweifel eine Approximation liefern."
+                              ? "Web-Recherche hat fuer diesen Wert (noch) nichts geliefert. Klick 'Recherchieren' fuer einen erneuten Versuch — Claude soll im Zweifel eine Approximation liefern."
                               : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
-                            const txt = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlt" : "—");
+                            const labelText = isHohn ? "Komponenten fehlen" : "Wert nicht gefunden";
+                            const canResearch = !isHohn && !isCalcMissing;
+                            const researchKey = `${company.id}:${d.key}`;
+                            const isResearching = researching === researchKey;
                             return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2 text-xs text-muted-foreground/50"
+                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2"
                                 title={tip}>
-                                {txt}
+                                <div className="flex items-center gap-1.5">
+                                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                                  <span className="text-xs text-amber-700">{labelText}</span>
+                                  {canResearch && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleResearch(company.id, company.name, d.key, d.label_en, d.data_type);
+                                      }}
+                                      disabled={isResearching || researching !== null}
+                                      className="ml-0.5 inline-flex items-center gap-0.5 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      title="Mit Claude Web-Recherche den Wert finden"
+                                    >
+                                      {isResearching ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <Search className="h-3 w-3" />
+                                      )}
+                                      {isResearching ? "Recherche…" : "Recherchieren"}
+                                    </button>
+                                  )}
+                                </div>
                               </td>
                             );
                           }
                           let display: number | null = val;
-                          const cellCv = cRows.find((r) => r.value_key === d.key) ?? null;
                           if (d.is_currency && d.data_type === "NUMERIC") {
                             const cur = cellCv?.currency ?? null;
                             const conv = convertCurrency(val, cur);
@@ -1033,8 +1061,9 @@ export function CompanyDashboardPage() {
                           const tier = colorTier(d.key, display);
                           const tierBg = tier ? TIER_BG[tier] : "";
                           const isCalcCell = d.source_type === "CALCULATED";
-                          // Chat: beim Klick Drawer oeffnen mit aktueller Variant-Quelle
-                          // (Web-Guidance speichert User+Assistant-Messages, Q-Faktor System-Message).
+                          // Chat: beim Klick Drawer mit korrektem source_filter oeffnen.
+                          //   Q-Faktor-Row -> 'estimate' (nur Formel + System-Erklaerung)
+                          //   Web-Row     -> 'web_guidance' (Original-Prompt + Claude-Antwort)
                           return (
                             <td
                               key={`${company.id}-${label}-${d.key}`}
@@ -1046,12 +1075,13 @@ export function CompanyDashboardPage() {
                                   valueKey: d.key,
                                   companyName: company.name,
                                   valueLabel: d.label_en,
-                                  currentScore: display ?? undefined,
+                                  currentScore: display ?? null,
                                   currentText: cellCv?.text_value ?? undefined,
                                   isQualitative: false,
                                   isAlwaysCurrent: false,
                                   isCalculated: false,
                                   dataType: d.data_type,
+                                  sourceFilter: variantSource,
                                 });
                                 setDrawerOpen(true);
                               }}
@@ -1436,6 +1466,7 @@ export function CompanyDashboardPage() {
             isCalculated={drawer.isCalculated}
             periodType={period.value}
             periodYear={period.year}
+            sourceFilter={drawer.sourceFilter}
             onAcceptScore={async (score, textValue) => {
               const effPeriodType = (drawer.isQualitative || drawer.isAlwaysCurrent) ? "SNAPSHOT" : period.value;
               const effPeriodYear = (drawer.isQualitative || drawer.isAlwaysCurrent) ? undefined : period.year;

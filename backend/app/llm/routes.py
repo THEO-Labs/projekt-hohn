@@ -369,9 +369,13 @@ def get_chat_history(
     value_key: str,
     period_type: str = "SNAPSHOT",
     period_year: int | None = None,
+    source_filter: str | None = None,
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
+    """source_filter: comma-separated list of LlmMessage.source values to include
+    (z.B. 'estimate' fuer Q-Faktor-Variant, 'web_guidance' fuer Web-Variant).
+    Wenn None: alle Messages."""
     _get_owned_company(db, user, company_id)
     q = db.query(LlmConversation).filter(
         LlmConversation.company_id == company_id,
@@ -386,11 +390,11 @@ def get_chat_history(
     if not conv:
         return {"conversation_id": None, "messages": []}
 
-    messages = (
-        db.query(LlmMessage)
-        .filter(LlmMessage.conversation_id == conv.id)
-        .order_by(LlmMessage.created_at, LlmMessage.id)
-        .all()
-    )
+    msg_q = db.query(LlmMessage).filter(LlmMessage.conversation_id == conv.id)
+    if source_filter:
+        sources = [s.strip() for s in source_filter.split(",") if s.strip()]
+        if sources:
+            msg_q = msg_q.filter(LlmMessage.source.in_(sources))
+    messages = msg_q.order_by(LlmMessage.created_at, LlmMessage.id).all()
 
     return {"conversation_id": conv.id, "messages": messages}

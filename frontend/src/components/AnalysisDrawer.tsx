@@ -26,6 +26,9 @@ type AnalysisDrawerProps = {
   isCalculated?: boolean;
   periodType?: string;
   periodYear?: number;
+  // Optional Source-Filter fuer History-Lookup (z.B. "estimate" oder "web_guidance"
+  // im Estimate-Dual-Row, damit nur Faktor-Erklaerung bzw. Web-Prompt+Antwort sichtbar sind).
+  sourceFilter?: string;
   onAcceptScore: (score: number | null, textValue?: string) => Promise<void>;
 };
 
@@ -207,6 +210,7 @@ export function AnalysisDrawer({
   isCalculated = false,
   periodType,
   periodYear,
+  sourceFilter,
   onAcceptScore,
 }: AnalysisDrawerProps) {
   const isFactorType = dataType === "FACTOR";
@@ -245,7 +249,7 @@ export function AnalysisDrawer({
 
   useEffect(() => {
     if (!open) return;
-    getChatHistory(companyId, valueKey, periodType, periodYear)
+    getChatHistory(companyId, valueKey, periodType, periodYear, sourceFilter)
       .then((res) => {
         setMessages(res.messages);
         const lastSuggestion = [...res.messages]
@@ -259,7 +263,7 @@ export function AnalysisDrawer({
       })
       .catch(() => setMessages([]))
       .finally(() => setHistoryLoaded(true));
-  }, [open, companyId, valueKey, periodType, periodYear, currentScore]);
+  }, [open, companyId, valueKey, periodType, periodYear, sourceFilter, currentScore]);
 
   useEffect(() => {
     if (open) {
