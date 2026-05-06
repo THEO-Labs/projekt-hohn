@@ -290,7 +290,7 @@ def _try_factor_estimate(
     from app.llm.routes import _get_or_create_conversation
 
     try:
-        est = compute_estimate(db, company_id, key, target_fy)
+        est = compute_estimate(db, company_id, key, target_fy, currency=company.currency)
     except Exception as e:
         logger.warning("Estimate failed for %s/%s/FY%s: %s", company.ticker, key, target_fy, e)
         return None

@@ -178,13 +178,15 @@ def _fy_fallback(
     key: str,
     method: str,
     reason: str,
+    currency: str | None = None,
 ) -> EstimateResult:
     """FY[N-1]-Wert als Estimate ohne Wachstumsannahme."""
+    cur = f" {currency}" if currency else ""
     return EstimateResult(
         value=prev_fy_val,
         method=method,
         explanation=(
-            f"Schaetzung FY{target_fy_year} = FY{prev_fy}-Wert ({key}) = {prev_fy_val:,.0f}. "
+            f"Schaetzung FY{target_fy_year} = FY{prev_fy}-Wert ({key}) = {prev_fy_val:,.0f}{cur}. "
             f"{reason}"
         ),
     )
@@ -195,6 +197,8 @@ def compute_estimate(
     company_id: UUID,
     key: str,
     target_fy_year: int,
+    *,
+    currency: str | None = None,
 ) -> EstimateResult | None:
     """Estimate fuer FY[target_fy_year] berechnen.
 
@@ -224,7 +228,7 @@ def compute_estimate(
             )
         if prev_fy_val is not None:
             return _fy_fallback(
-                prev_fy_val, target_fy_year, prev_fy, key,
+                prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
                 reason="Keine Quartalsberichte hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
             )
@@ -237,7 +241,7 @@ def compute_estimate(
         # Kein gemeinsames Quartal → FY-Fallback wenn moeglich.
         if prev_fy_val is not None:
             return _fy_fallback(
-                prev_fy_val, target_fy_year, prev_fy, key,
+                prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
                 reason=(
                     "Keine gemeinsamen Quartalsberichte fuer Vergleich verfuegbar — "
@@ -253,7 +257,7 @@ def compute_estimate(
 
     if prev_v == 0:
         return _fy_fallback(
-            prev_fy_val, target_fy_year, prev_fy, key,
+            prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
             reason=f"{q} {prev_fy} ist 0 — kein Wachstumsfaktor moeglich.",
         )
@@ -261,7 +265,7 @@ def compute_estimate(
     # Sanity-Gates: Faktor-Pfad nur wenn Signal robust.
     if (target_v * prev_v) < 0:
         return _fy_fallback(
-            prev_fy_val, target_fy_year, prev_fy, key,
+            prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
             reason=(
                 f"{q} swingt zwischen {prev_fy} ({prev_v:,.0f}) und {target_fy_year} "
@@ -270,7 +274,7 @@ def compute_estimate(
         )
     if abs(prev_v) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
         return _fy_fallback(
-            prev_fy_val, target_fy_year, prev_fy, key,
+            prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
             reason=(
                 f"{q} {prev_fy} = {prev_v:,.0f} ist < 1 % des FY{prev_fy}-Werts "
@@ -284,7 +288,7 @@ def compute_estimate(
     # Q-Werten (z.B. Q1 FCF negativ in beiden Jahren bei Industrials).
     if abs(factor) > _MAX_FACTOR:
         return _fy_fallback(
-            prev_fy_val, target_fy_year, prev_fy, key,
+            prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
             reason=(
                 f"Faktor {q} {target_fy_year}/{q} {prev_fy} = {factor:.2f} liegt ueber "
@@ -296,13 +300,15 @@ def compute_estimate(
     estimate = prev_fy_val * factor
     delta_pct = (factor - Decimal("1")) * Decimal("100")
     ytd_note = " (YTD)" if is_ytd_pair else ""
+    cur = f" {currency}" if currency else ""
 
     explanation = (
         f"Schaetzung FY{target_fy_year} = FY{prev_fy} × Faktor (gleiches Quartal{ytd_note}).  "
-        f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}.  "
-        f"{q} {target_fy_year} = {target_v:,.0f}, {q} {prev_fy} = {prev_v:,.0f}, "
+        f"Werte in Originalwaehrung{f' ({currency})' if currency else ''} — UI rechnet ggf. in Anzeige-Waehrung um.  "
+        f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}{cur}.  "
+        f"{q} {target_fy_year} = {target_v:,.0f}{cur}, {q} {prev_fy} = {prev_v:,.0f}{cur}, "
         f"Faktor = {factor:.4f} ({delta_pct:+.2f} % YoY).  "
-        f"Resultat = {estimate:,.0f}."
+        f"Resultat = {estimate:,.0f}{cur}."
     )
 
     return EstimateResult(

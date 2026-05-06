@@ -1,18 +1,19 @@
-"""LLM-based consistency check over a company's FY values.
+"""LLM-based per-value sanity check for a company's FY values.
 
-After all values for an FY are populated (whether from PDF, EDGAR, Yahoo,
-Claude-research or factor-estimate), we send the full picture to Claude with
-a 'forensic accountant' prompt and ask it to flag obvious inconsistencies:
+Nach jedem FY-Refresh (egal ob Estimate oder abgeschlossen) bewertet Claude
+JEDEN Primaerwert einzeln (Net Income, FCF, SBC, Buyback Volume, Dividends,
+Net Debt, Shares Outstanding) und stellt eine Einschaetzung als System-Message
+in den Chat der jeweiligen Zelle.
 
-- Definition mismatches between years (e.g. lease_liabilities 82B in one FY
-  vs 7B in the next — clearly not the same accounting treatment).
-- Sign issues (cash outflow accidentally stored as negative).
-- Outliers vs. industry sense check.
-- Currency mixing across periods.
-- Cumulative Hohn-Rendite > 50 % p.a. is suspicious for non-startups.
+Status pro Wert:
+- ok      → Wert plausibel, keine Auffaelligkeit
+- low     → leichte Auffaelligkeit, Hinweis
+- medium  → mittlere Konzern, Vorsicht
+- high    → starke Auffaelligkeit, vermutlich Datenfehler
 
-The output is appended to a dedicated `consistency` chat message on the FY
-period so the user sees a flag in the cell tooltip and can drill in.
+Damit hat JEDE primaere Zelle eine Sanity-Begruendung im Chat — nicht nur
+die mit Issues. User sieht konsistent ob wir einen Wert fuer plausibel
+halten.
 """
 import json
 import logging
@@ -29,8 +30,6 @@ from app.llm.rate_limiter import claude_limiter
 
 logger = logging.getLogger(__name__)
 
-# Module-level shared client — anthropic.Anthropic() is thread-safe and the
-# underlying httpx connection pool benefits from being reused across calls.
 _anthropic_client: anthropic.Anthropic | None = None
 
 
@@ -41,45 +40,77 @@ def _client() -> anthropic.Anthropic:
     return _anthropic_client
 
 
-# Sentinel key under which "global" sanity issues (those that span multiple
-# value_keys, e.g. overall data quality flags) are filed. We pin it to the
-# canonical Hohn-Rendite cell because that's the natural place for the user
-# to see a portfolio-wide warning, not net_income.
-_GLOBAL_SANITY_KEY = "hohn_return_simple"
+# Werte die wir individuell sanity-checken — die 7 Primaerwerte aus der
+# PDF-Extraktion (siehe app/ir_documents/extraction.py:EXTRACTION_KEYS) plus
+# die zwei Hohn-Rendite-Aggregate als zusaetzlicher Cross-Check.
+_PRIMARY_KEYS = (
+    "net_income",
+    "fcf",
+    "sbc",
+    "buyback_volume",
+    "dividends",
+    "net_debt",
+    "shares_outstanding",
+)
+_AGGREGATE_KEYS = (
+    "hohn_return_simple",
+    "hohn_return_detailed",
+)
+_ALL_CHECKED_KEYS = _PRIMARY_KEYS + _AGGREGATE_KEYS
 
 
 SANITY_SYSTEM_PROMPT = """Du bist ein forensischer Accounting-Reviewer.
-Du bekommst die Hohn-Rendite-Inputs und -Resultate eines Unternehmens für ein
-oder mehrere Geschäftsjahre. Deine Aufgabe: Auffälligkeiten zu finden, die auf
-Definitions-Mix, Vorzeichenfehler, Datenquellen-Inkonsistenzen oder unrealistische
-Werte hindeuten.
+Du bekommst die Hohn-Rendite-Inputs und -Resultate eines Unternehmens fuer
+das aktuelle und das Vorjahres-Geschaeftsjahr.
 
-Konzentriere dich auf:
-1. Sprünge zwischen Jahren, die NICHT durch operatives Geschäft erklärbar sind
-   (z.B. lease_liabilities 82 Mrd in 2025 vs 7 Mrd in 2026 → Definitionswechsel).
-2. Negative Werte bei Posten die immer positiv sein sollten (dividends, buyback,
-   sbc, cash, debt).
-3. Hohn-Rendite > 30 % p.a. oder < -30 % p.a. — fast immer ein Datenproblem.
-4. ni_growth > 100 % oder < -50 % zwischen zwei Jahren — Sondereffekt prüfen.
-5. net_debt-Sprünge > 50 % YoY ohne erkennbaren M&A-Anlass.
-6. Mismatch zwischen Bilanz-Posten (cash_sum vs debt_sum sollte plausibel skalieren).
+Aufgabe: Bewerte JEDEN der folgenden Werte einzeln auf Plausibilitaet:
+- net_income, fcf, sbc, buyback_volume, dividends, net_debt, shares_outstanding
+- hohn_return_simple, hohn_return_detailed
+
+Pro Wert vergibst du einen severity-Tag und eine kurze Begruendung:
+
+- "ok"      → Wert plausibel, in normaler Range, kein Hinweis noetig
+- "low"     → leichter Hinweis (z.B. ungewoehnlicher YoY-Trend, aber noch im Rahmen)
+- "medium"  → klare Auffaelligkeit (z.B. Q-Faktor verzerrt durch Saisonalitaet,
+              Definition-Mix, hohe Volatilitaet — User sollte verifizieren)
+- "high"    → vermutlich Datenfehler (Vorzeichen, Definitionswechsel,
+              unrealistische Magnitude — vermutlich nicht nutzbar)
+
+Beruecksichtige bei is_forecast=true Werten:
+- Q-Faktor-Estimates haben Saisonalitaets-Risiko (Q1 oft nicht repraesentativ)
+- FY-Fallback sind no-growth-Annahmen — kennzeichne als 'low' wenn FY-Wachstum
+  in der Branche typisch ist.
+
+Pruefe insbesondere:
+- Vorzeichen (Cash-Outflows wie SBC/Buyback/Dividenden sollten POSITIV sein)
+- YoY-Spruenge > 100% oder < -50% ohne erkennbaren Grund
+- Hohn-Rendite > 30% oder < -30% (fast immer Datenproblem)
+- ni_growth bei Turnaround (Vorjahr negativ → grosse Wachstumsraten sind Artefakt)
+- net_debt-Spruenge > 50% YoY ohne M&A-Hinweis
 
 Antworte AUSSCHLIESSLICH als JSON in diesem Format:
 {
-  "ok": true|false,
-  "issues": [
-    {
-      "severity": "high"|"medium"|"low",
-      "key": "<betroffener value_key oder 'global'>",
+  "checks": {
+    "net_income": {
+      "severity": "ok|low|medium|high",
       "title": "<einzeiliger Titel>",
-      "explanation": "<2-3 Sätze: was auffällig ist, woran es vermutlich liegt, was zu prüfen wäre>"
-    }
-  ],
-  "summary": "<1 Satz Gesamtbild — z.B. 'Daten plausibel' oder 'Lease-Definitionsmix verzerrt Hohn-Rendite'>"
+      "explanation": "<2-3 Saetze>"
+    },
+    "fcf": { ... },
+    "sbc": { ... },
+    "buyback_volume": { ... },
+    "dividends": { ... },
+    "net_debt": { ... },
+    "shares_outstanding": { ... },
+    "hohn_return_simple": { ... },
+    "hohn_return_detailed": { ... }
+  },
+  "summary": "<1 Satz Gesamtbild>"
 }
 
-Wenn alles plausibel: {"ok": true, "issues": [], "summary": "..."}
-Keine Markdown-Zäune, kein Text drumherum.
+Wenn ein Wert fehlt (None/null in den Daten), gib severity=ok und
+explanation='Wert nicht verfuegbar — kein Sanity-Check moeglich.'
+Keine Markdown-Zaeune, kein Text drumherum.
 """
 
 
@@ -88,7 +119,7 @@ def _gather_period_data(
     company_id: UUID,
     period_year: int,
 ) -> dict:
-    """Collect all FY values for the year + the previous year for context."""
+    """Sammle FY-Werte fuer aktuelles + Vorjahr."""
     out = {"period_year": period_year, "current": {}, "previous": {}}
     for label, year in (("current", period_year), ("previous", period_year - 1)):
         rows = (
@@ -104,7 +135,7 @@ def _gather_period_data(
             v = r.numeric_value
             out[label][r.value_key] = {
                 "value": str(v) if isinstance(v, Decimal) else None,
-                "source": (r.source_name or "")[:80],
+                "source": (r.source_name or "")[:120],
                 "currency": r.currency,
                 "is_forecast": r.is_forecast,
                 "manually_overridden": r.manually_overridden,
@@ -112,14 +143,40 @@ def _gather_period_data(
     return out
 
 
+def _delete_old_sanity_messages(
+    db: Session,
+    company_id: UUID,
+    period_year: int,
+) -> None:
+    """Aeltere Sanity-Check-Messages weg, damit nicht stapelt."""
+    from app.llm.models import LlmConversation, LlmMessage
+    convs = (
+        db.query(LlmConversation)
+        .filter(
+            LlmConversation.company_id == company_id,
+            LlmConversation.period_type == "FY",
+            LlmConversation.period_year == period_year,
+            LlmConversation.value_key.in_(_ALL_CHECKED_KEYS),
+        )
+        .all()
+    )
+    if not convs:
+        return
+    conv_ids = [c.id for c in convs]
+    db.query(LlmMessage).filter(
+        LlmMessage.conversation_id.in_(conv_ids),
+        LlmMessage.source == "sanity_check",
+    ).delete(synchronize_session=False)
+
+
 def run_sanity_check(
     db: Session,
     company_id: UUID,
     period_year: int,
 ) -> dict | None:
-    """Run forensic-accountant LLM check over FY[period_year]. Returns parsed
-    JSON dict or None on failure. Also writes a system message to the FY's
-    chat thread so the user sees flagged issues inline."""
+    """Run per-value LLM sanity check ueber FY[period_year]. Persistiert eine
+    System-Message pro Primaer-/Aggregat-Wert in dessen Chat — sowohl OK als
+    auch Auffaelligkeit. Returns das geparste JSON dict oder None bei Fehler."""
     if not settings.anthropic_api_key:
         return None
 
@@ -128,18 +185,23 @@ def run_sanity_check(
         return None
 
     data = _gather_period_data(db, company_id, period_year)
+    fy_end = (
+        f"{company.fiscal_year_end_day:02d}.{company.fiscal_year_end_month:02d}."
+        if company.fiscal_year_end_day and company.fiscal_year_end_month
+        else "unbekannt"
+    )
     user_prompt = (
         f"Unternehmen: {company.name} ({company.ticker}, Currency: {company.currency})\n"
-        f"FY-End-Stichtag: {company.fiscal_year_end_day:02d}.{company.fiscal_year_end_month:02d}.\n\n"
+        f"FY-End-Stichtag: {fy_end}\n\n"
         f"Daten FY{period_year} und FY{period_year-1} (Vorjahr als Vergleich):\n\n"
         f"{json.dumps(data, indent=2, ensure_ascii=False)}\n\n"
-        f"Prüfe auf Auffälligkeiten und antworte als JSON."
+        f"Bewerte jeden der genannten Werte einzeln und antworte als JSON."
     )
 
     try:
         response = claude_limiter.call(lambda: _client().messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=2048,
+            max_tokens=4096,
             system=SANITY_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
         ))
@@ -161,38 +223,36 @@ def run_sanity_check(
                        company_id, period_year, text[:300])
         return None
 
-    # Persist as system messages on the affected cell chats so user sees a flag.
-    issues = parsed.get("issues", []) or []
-    if issues:
-        try:
-            from app.llm.routes import _get_or_create_conversation
-            from app.llm.models import LlmMessage
-            from app.values.models import ValueDefinition
-            valid_keys = {row[0] for row in db.query(ValueDefinition.key).all()}
-            for issue in issues:
-                raw_key = issue.get("key") or ""
-                # Map "global" or any unknown key to the canonical Hohn-Rendite
-                # cell instead of dumping into net_income or crashing.
-                if raw_key in ("global", "", None) or raw_key not in valid_keys:
-                    key = _GLOBAL_SANITY_KEY
-                else:
-                    key = raw_key
-                try:
-                    conv = _get_or_create_conversation(db, company_id, key, "FY", period_year)
-                    severity = issue.get("severity", "low").upper()
-                    db.add(LlmMessage(
-                        conversation_id=conv.id,
-                        role="system",
-                        content=(
-                            f"Sanity-Check [{severity}]: {issue.get('title', '?')}\n"
-                            f"{issue.get('explanation', '')}"
-                        ),
-                        source="sanity_check",
-                    ))
-                except Exception as e:
-                    logger.warning("Sanity-check msg write failed for %s/%s: %s", company_id, key, e)
-            db.flush()
-        except Exception as e:
-            logger.warning("Sanity-check persistence failed for %s/FY%s: %s", company_id, period_year, e)
+    checks = parsed.get("checks", {}) or {}
+    if not isinstance(checks, dict):
+        logger.warning("Sanity check: 'checks' missing or not dict for %s/FY%s", company_id, period_year)
+        return parsed
+
+    # Alte Sanity-Messages weg, dann neue schreiben — pro Wert genau eine.
+    _delete_old_sanity_messages(db, company_id, period_year)
+
+    try:
+        from app.llm.routes import _get_or_create_conversation
+        from app.llm.models import LlmMessage
+        for key in _ALL_CHECKED_KEYS:
+            check = checks.get(key)
+            if not isinstance(check, dict):
+                continue
+            severity = (check.get("severity") or "ok").upper()
+            title = check.get("title") or "Sanity-Check"
+            explanation = check.get("explanation") or ""
+            try:
+                conv = _get_or_create_conversation(db, company_id, key, "FY", period_year)
+                db.add(LlmMessage(
+                    conversation_id=conv.id,
+                    role="system",
+                    content=f"Sanity-Check [{severity}]: {title}\n{explanation}",
+                    source="sanity_check",
+                ))
+            except Exception as e:
+                logger.warning("Sanity-check msg write failed for %s/%s: %s", company_id, key, e)
+        db.flush()
+    except Exception as e:
+        logger.warning("Sanity-check persistence failed for %s/FY%s: %s", company_id, period_year, e)
 
     return parsed
