@@ -808,20 +808,33 @@ export function CompanyDashboardPage() {
               {companies.map((company) => (
                 <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">
                   <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 font-medium text-foreground">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleRefreshCompany(company)}
-                        disabled={refreshStatuses.get(company.id)?.status === "running"}
-                        title="Nur diese Firma berechnen"
-                        className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
-                      >
-                        <RefreshCw className={`h-3.5 w-3.5 ${refreshStatuses.get(company.id)?.status === "running" ? "animate-spin" : ""}`} />
-                      </button>
-                      <span>{company.name}</span>
-                      <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">
-                        {company.ticker}
-                      </span>
-                    </div>
+                    {(() => {
+                      const av = availabilityMap.get(company.id);
+                      const isRunning = refreshStatuses.get(company.id)?.status === "running";
+                      const hasAnyAR = (av?.annual_report_years.length ?? 0) > 0;
+                      const isUS = av?.is_us ?? false;
+                      const canCompute = isUS || hasAnyAR;
+                      const disabledReason = canCompute
+                        ? null
+                        : "Lade zuerst mindestens einen Annual Report hoch (Non-US-Firma).";
+                      return (
+                        <div className="flex items-center gap-2">
+                          <span>{company.name}</span>
+                          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">
+                            {company.ticker}
+                          </span>
+                          <button
+                            onClick={() => handleRefreshCompany(company)}
+                            disabled={isRunning || !canCompute}
+                            title={disabledReason ?? "Werte für diese Firma neu berechnen"}
+                            className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-primary/5"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${isRunning ? "animate-spin" : ""}`} />
+                            {isRunning ? "Berechnet…" : "Werte berechnen"}
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </td>
                   {grouped.flatMap((g) => {
                     if (g.defs.length === 0) {
