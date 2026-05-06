@@ -957,22 +957,27 @@ export function CompanyDashboardPage() {
                             <>
                               <span className="font-medium text-foreground">{company.name}</span>
                               <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
+                                {label}
+                              </span>
+                              <button
+                                onClick={() => handleRefreshCompany(company)}
+                                disabled={isRefreshingThis}
+                                title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
+                                className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <RefreshCw className={`h-3 w-3 ${isRefreshingThis ? "animate-spin" : ""}`} />
+                                {isRefreshingThis ? "Berechnet…" : "Werte berechnen"}
+                              </button>
                             </>
                           ) : (
-                            <span className="text-muted-foreground/50">↳</span>
+                            <>
+                              <span className="text-muted-foreground/50">↳</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
+                                {label}
+                              </span>
+                            </>
                           )}
-                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
-                            {label}
-                          </span>
-                          <button
-                            onClick={() => handleRefreshCompany(company)}
-                            disabled={isRefreshingThis}
-                            title={`Werte fuer ${label} neu berechnen (triggert beide Methoden parallel — Web und Q-Faktor)`}
-                            className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            <RefreshCw className={`h-3 w-3 ${isRefreshingThis ? "animate-spin" : ""}`} />
-                            {isRefreshingThis ? "Berechnet…" : "Werte berechnen"}
-                          </button>
                         </div>
                       </td>
                       {grouped.flatMap((g) => {

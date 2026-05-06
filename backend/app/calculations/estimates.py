@@ -161,14 +161,17 @@ def _latest_quarter_value(
     company_id: UUID,
     key: str,
     period_year: int,
-) -> tuple[Decimal | None, str | None]:
-    """Holt den letzten verfuegbaren Quartals-Wert (Q3 → Q2 → Q1).
-    Returns (value, quarter_label) oder (None, None)."""
-    for q in reversed(QUARTERS):
-        v = _value_at(db, company_id, key, q, period_year)
-        if v is not None:
-            return v, q
-    return None, None
+) -> tuple[Decimal | None, str | None, int | None]:
+    """Holt den letzten verfuegbaren Quartals-Wert.
+    Reihenfolge: target_year Q3→Q2→Q1, dann prev_year Q3→Q2→Q1.
+    Fuer BALANCE-Snapshots ist auch ein Vorjahres-Q3 besser als FY[N-2].
+    Returns (value, quarter_label, year) oder (None, None, None)."""
+    for year in (period_year, period_year - 1):
+        for q in reversed(QUARTERS):
+            v = _value_at(db, company_id, key, q, year)
+            if v is not None:
+                return v, q, year
+    return None, None, None
 
 
 def _fy_fallback(
@@ -215,22 +218,23 @@ def compute_estimate(
     prev_fy_val = _value_at(db, company_id, key, "FY", prev_fy)
 
     if key in BALANCE_KEYS:
-        snap, snap_q = _latest_quarter_value(db, company_id, key, target_fy_year)
+        snap, snap_q, snap_year = _latest_quarter_value(db, company_id, key, target_fy_year)
         if snap is not None:
+            note = "" if snap_year == target_fy_year else f" (juengster verfuegbarer Q-Snapshot — kein FY{target_fy_year}-Q-Report hochgeladen)"
             return EstimateResult(
                 value=snap,
                 method="balance_snapshot",
                 explanation=(
-                    f"Bilanz-Snapshot {snap_q} {target_fy_year} = {snap:,.0f} "
+                    f"Bilanz-Snapshot {snap_q} {snap_year} = {snap:,.0f}{note} "
                     f"(Punkt-in-Zeit; bei Bilanzposten keine Faktor-Hochrechnung)."
                 ),
-                quarters_used=[snap_q] if snap_q else [],
+                quarters_used=[f"{snap_q} {snap_year}"] if snap_q else [],
             )
         if prev_fy_val is not None:
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
-                reason="Keine Quartalsberichte hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
+                reason=f"Keine Q-Reports fuer FY{target_fy_year} oder FY{prev_fy} hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
             )
         return None
 
@@ -240,13 +244,18 @@ def compute_estimate(
     if pair is None:
         # Kein gemeinsames Quartal → FY-Fallback wenn moeglich.
         if prev_fy_val is not None:
+            # Diagnose: welche Q-Reports fehlen genau?
+            target_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, target_fy_year) is not None]
+            prev_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, prev_fy) is not None]
+            missing = (
+                f"FY{target_fy_year} hat {target_qs or 'keine'} Q-Reports, "
+                f"FY{prev_fy} hat {prev_qs or 'keine'}. "
+                "Faktor-Methode braucht das gleiche Quartal in BEIDEN Jahren."
+            )
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
-                reason=(
-                    "Keine gemeinsamen Quartalsberichte fuer Vergleich verfuegbar — "
-                    "Annahme: keine Veraenderung ggue. Vorjahr."
-                ),
+                reason=f"{missing} Annahme: keine Veraenderung ggue. Vorjahr.",
             )
         return None
 
