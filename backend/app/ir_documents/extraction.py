@@ -52,7 +52,17 @@ ALWAYS_POSITIVE_KEYS = frozenset({
 EXTRACTION_KEYS: list[tuple[str, str]] = [
     ("net_income", "Net Income (Konzern-Nettogewinn nach Steuern)"),
     ("fcf", "Free Cash Flow (Operating Cash Flow − CapEx)"),
-    ("sbc", "Stock Based Compensation Expense (anteilsbasierte Vergütung)"),
+    ("sbc",
+     "Stock Based Compensation Expense (anteilsbasierte Vergütung). "
+     "Suchorte (PRÜFE ALLE in dieser Reihenfolge):"
+     " (1) Cash Flow Statement → 'Stock-based compensation' / 'Share-based payment expense' "
+     "(typisch bei US-GAAP-Filern, als Add-back im operativen CF). "
+     " (2) Statement of Changes in Equity → Spalte 'Equity-settled share-based payment' "
+     "(typisch bei IFRS-Filern wie Adidas, BMW, Siemens — Summe der bewegten Werte für die Periode). "
+     " (3) Notes-Abschnitt 'Share-based payments' / 'Anteilsbasierte Vergütung' / Note zu LTIP — "
+     "dort ist meist der gesamte SBC-Aufwand für die Periode quantifiziert. "
+     "WERT: immer POSITIV als Aufwandsbetrag (Vorzeichen ignorieren). "
+     "Nur 'value=null' wenn KEINE der drei Quellen einen Betrag liefert."),
     ("buyback_volume", "Aktienrückkäufe / Repurchases of common stock (Cash-Outflow)"),
     ("dividends", "Dividenden (Cash-Outflow für Dividends Paid)"),
     ("cash_and_equivalents", "Cash and Cash Equivalents (Bilanz, Stichtag FY-Ende)"),
