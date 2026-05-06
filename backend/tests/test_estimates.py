@@ -110,9 +110,8 @@ def test_flow_near_zero_denominator_falls_back_to_fy(cid):
     assert r.method == "fy_fallback"
 
 
-def test_flow_ytd_used_directly_no_summing(cid):
-    """Wenn Q3 YTD-period_basis hat, enthaelt es schon Q1+Q2+Q3 — darf
-    NICHT mit Q1+Q2 standalone summiert werden."""
+def test_flow_uses_latest_common_quarter_ytd(cid):
+    """Beide Jahre haben Q3-YTD → Q3 wird verglichen, nicht Q1 oder Q2."""
     values = {
         ("net_income", "FY", 2025): Decimal("1000"),
         ("net_income", "Q1", 2025): Decimal("200"),
@@ -135,8 +134,54 @@ def test_flow_ytd_used_directly_no_summing(cid):
             r = compute_estimate(None, cid, "net_income", 2026)
     assert r is not None
     assert r.method == "flow_factor"
-    # factor = 700/650, NICHT (220+230+700)/(200+210+650)
     assert r.factor == Decimal("700") / Decimal("650")
+    assert r.quarters_used == ["Q3 (YTD)"]
+
+
+def test_flow_target_only_q1_compares_against_prev_q1_not_q3_ytd(cid):
+    """Bug-fix: target hat nur Q1 (3 Monate), prev hat Q1+Q2+Q3-YTD (9 Monate).
+    Ohne Fix wuerde prev=Q3-YTD gegen target=Q1 verglichen → 3M vs 9M = Apples-to-Oranges.
+    Korrekt: latest gemeinsames Q ist Q1 in beiden Jahren."""
+    values = {
+        ("net_income", "FY", 2025): Decimal("5221"),
+        ("net_income", "Q1", 2025): Decimal("793"),
+        ("net_income", "Q2", 2025): Decimal("1500"),
+        ("net_income", "Q3", 2025): Decimal("3000"),  # YTD 9M
+        ("net_income", "Q1", 2026): Decimal("586"),
+    }
+    bases = {
+        ("net_income", "Q3", 2025): "Q3_YTD",
+    }
+    with patch.object(estimates, "_value_at", _stub_value_at(values)):
+        with patch.object(estimates, "_period_basis", _stub_period_basis(bases)):
+            r = compute_estimate(None, cid, "net_income", 2026)
+    assert r is not None
+    assert r.method == "flow_factor"
+    # MUSS Q1 vs Q1 sein (586/793), NICHT Q1 vs Q3-YTD (586/3000)
+    assert r.factor == Decimal("586") / Decimal("793")
+    assert r.quarters_used == ["Q1"]
+
+
+def test_flow_basis_mismatch_falls_back_to_lower_q(cid):
+    """Q2 in target: standalone, in prev: YTD → Mismatch. Fallback auf Q1."""
+    values = {
+        ("net_income", "FY", 2025): Decimal("1000"),
+        ("net_income", "Q1", 2025): Decimal("200"),
+        ("net_income", "Q2", 2025): Decimal("400"),  # YTD
+        ("net_income", "Q1", 2026): Decimal("220"),
+        ("net_income", "Q2", 2026): Decimal("230"),  # standalone
+    }
+    bases = {
+        ("net_income", "Q2", 2025): "Q2_YTD",
+        ("net_income", "Q2", 2026): "Q2_standalone",
+    }
+    with patch.object(estimates, "_value_at", _stub_value_at(values)):
+        with patch.object(estimates, "_period_basis", _stub_period_basis(bases)):
+            r = compute_estimate(None, cid, "net_income", 2026)
+    assert r is not None
+    assert r.method == "flow_factor"
+    assert r.factor == Decimal("220") / Decimal("200")
+    assert r.quarters_used == ["Q1"]
 
 
 def test_flow_missing_prev_year_q_falls_back_to_fy(cid):

@@ -498,8 +498,14 @@ export function CompanyDashboardPage() {
   const prevYear = showPrevYear ? (period.year as number) - 1 : null;
 
   const HIDDEN_IN_CUM_SECTIONS = new Set(["STAMMDATEN"]);
+  // Im Estimate-Modus (laufende FY) gibt's noch keinen FY-Ende-MCap → actual_return
+  // ist immer null und sollte gar nicht angezeigt werden.
+  const isEstimateMode = period.value === "FY"
+    && period.year !== undefined
+    && period.year >= new Date().getFullYear();
   const grouped = CATEGORY_ORDER.filter((cat) => !(isCumMode && HIDDEN_IN_CUM_SECTIONS.has(cat))).map((cat) => {
-    const allDefs = definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order);
+    const allDefsRaw = definitions.filter((d) => d.category === cat).sort((a, b) => a.sort_order - b.sort_order);
+    const allDefs = isEstimateMode ? allDefsRaw.filter((d) => d.key !== "actual_return") : allDefsRaw;
     const factorDefs = allDefs.filter((d) => FACTOR_KEYS.has(d.key));
     const inputDefs = allDefs.filter((d) => !FACTOR_KEYS.has(d.key));
     const isExpanded = !isCumMode && expandedSections.has(cat);

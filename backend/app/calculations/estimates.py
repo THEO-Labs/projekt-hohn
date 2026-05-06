@@ -116,39 +116,38 @@ def _period_basis(
     return entry.get("period_basis")
 
 
-def _gather_flow_cumulative(
+def _is_ytd(basis: str | None) -> bool:
+    return bool(basis and "YTD" in basis.upper())
+
+
+def _matched_quarter_pair(
     db: Session,
     company_id: UUID,
     key: str,
-    period_year: int,
-) -> tuple[Decimal | None, list[str], bool]:
-    """Aggregiert die verfuegbaren Quartals-Werte zu einer Cumulative-Zahl.
+    target_year: int,
+    prev_year: int,
+) -> tuple[str, Decimal, Decimal, bool] | None:
+    """Findet das spaeteste gemeinsame Quartal beider Jahre und gibt
+    (quarter, target_value, prev_value, ytd_note) zurueck.
 
-    Returns (value, quarters_used_label, used_ytd).
-
-    Wenn EIN Quartal YTD-Format hat, nehmen wir das hoechste-Q-YTD direkt
-    (enthaelt schon die fruehen Quartale). Sonst summieren wir standalone.
+    Apples-to-apples-Regel: die period_basis (YTD vs standalone) muss
+    bei target und prev passen, sonst skippen wir das Quartal und probieren
+    ein frueheres. Q1 ist Sonderfall — YTD-Q1 = standalone-Q1 (beides
+    3-Monatsfenster), also egal welcher Basis-Tag dranklebt.
     """
-    ytd_entries: list[tuple[str, Decimal]] = []
-    standalone_entries: list[tuple[str, Decimal]] = []
-    for q in QUARTERS:
-        v = _value_at(db, company_id, key, q, period_year)
-        if v is None:
+    for q in reversed(QUARTERS):  # Q3 → Q2 → Q1
+        tv = _value_at(db, company_id, key, q, target_year)
+        pv = _value_at(db, company_id, key, q, prev_year)
+        if tv is None or pv is None:
             continue
-        basis = _period_basis(db, company_id, key, q, period_year)
-        is_ytd = bool(basis and "YTD" in basis.upper())
-        if is_ytd:
-            ytd_entries.append((q, v))
-        else:
-            standalone_entries.append((q, v))
-
-    if ytd_entries:
-        last_q, last_v = ytd_entries[-1]
-        return last_v, [f"{last_q} (YTD)"], True
-    if standalone_entries:
-        total = sum((v for _, v in standalone_entries), Decimal("0"))
-        return total, [q for q, _ in standalone_entries], False
-    return None, [], False
+        if q == "Q1":
+            return (q, tv, pv, False)
+        target_basis = _period_basis(db, company_id, key, q, target_year)
+        prev_basis = _period_basis(db, company_id, key, q, prev_year)
+        if _is_ytd(target_basis) == _is_ytd(prev_basis):
+            return (q, tv, pv, _is_ytd(target_basis))
+        # Basis-Mismatch (z.B. target standalone, prev YTD) → frueher probieren
+    return None
 
 
 def _latest_quarter_value(
@@ -225,70 +224,63 @@ def compute_estimate(
             )
         return None
 
-    # FLOW key
-    cum_target, qs_target, ytd_t = _gather_flow_cumulative(db, company_id, key, target_fy_year)
+    # FLOW key — Apples-to-apples-Vergleich des spaetesten gemeinsamen Quartals.
+    pair = _matched_quarter_pair(db, company_id, key, target_fy_year, prev_fy)
 
-    if cum_target is None:
-        # Keine Quartalsdaten → FY-Fallback wenn moeglich.
+    if pair is None:
+        # Kein gemeinsames Quartal → FY-Fallback wenn moeglich.
         if prev_fy_val is not None:
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key,
                 method="fy_fallback",
-                reason="Keine Quartalsberichte hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
+                reason=(
+                    "Keine gemeinsamen Quartalsberichte fuer Vergleich verfuegbar — "
+                    "Annahme: keine Veraenderung ggue. Vorjahr."
+                ),
             )
         return None
 
     if prev_fy_val is None or prev_fy_val == 0:
-        # Kein FY-Basiswert → wir koennten nicht skalieren. Nehmen den
-        # Q-Cumulative selbst als Untergrenze, aber das ist nur ehrlich wenn
-        # Q3-YTD vorliegt (≈ 75 % des Jahres). Sonst None.
         return None
 
-    cum_prev, qs_prev, ytd_p = _gather_flow_cumulative(db, company_id, key, prev_fy)
+    q, target_v, prev_v, is_ytd_pair = pair
 
-    if cum_prev is None:
-        # Keine Vorjahres-Q-Daten → kein Faktor moeglich, FY-Fallback.
+    if prev_v == 0:
         return _fy_fallback(
             prev_fy_val, target_fy_year, prev_fy, key,
             method="fy_fallback",
-            reason=f"Q{prev_fy}-Daten fehlen — kein Wachstumsfaktor moeglich.",
-        )
-
-    if cum_prev == 0:
-        return _fy_fallback(
-            prev_fy_val, target_fy_year, prev_fy, key,
-            method="fy_fallback",
-            reason=f"Vorjahres-Cumulative-Q ist 0 — kein Wachstumsfaktor moeglich.",
+            reason=f"{q} {prev_fy} ist 0 — kein Wachstumsfaktor moeglich.",
         )
 
     # Sanity-Gates: Faktor-Pfad nur wenn Signal robust.
-    # 1) Sign-flip — Q swing von negativ zu positiv (oder vice versa) wuerde
-    #    den FY-Estimate mit falschem Vorzeichen versehen.
-    if (cum_target * cum_prev) < 0:
+    if (target_v * prev_v) < 0:
         return _fy_fallback(
             prev_fy_val, target_fy_year, prev_fy, key,
             method="fy_fallback",
-            reason=f"Q-Werte haben Vorzeichenwechsel zwischen {prev_fy}/{target_fy_year} — Faktor unzuverlaessig.",
+            reason=(
+                f"{q} swingt zwischen {prev_fy} ({prev_v:,.0f}) und {target_fy_year} "
+                f"({target_v:,.0f}) im Vorzeichen — Faktor unzuverlaessig."
+            ),
         )
-    # 2) Near-zero Nenner — kleine prev-Q-Zahl macht den Faktor instabil.
-    if abs(cum_prev) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
+    if abs(prev_v) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
         return _fy_fallback(
             prev_fy_val, target_fy_year, prev_fy, key,
             method="fy_fallback",
-            reason=f"Vorjahres-Cumulative-Q < 1 % des FY{prev_fy}-Werts — Faktor unzuverlaessig.",
+            reason=(
+                f"{q} {prev_fy} = {prev_v:,.0f} ist < 1 % des FY{prev_fy}-Werts "
+                f"({prev_fy_val:,.0f}) — Faktor unzuverlaessig."
+            ),
         )
 
-    factor = cum_target / cum_prev
+    factor = target_v / prev_v
     estimate = prev_fy_val * factor
-    qs_label = "+".join(qs_target) if qs_target == qs_prev else f"{'+'.join(qs_target)} vs {'+'.join(qs_prev)}"
     delta_pct = (factor - Decimal("1")) * Decimal("100")
-    ytd_note = " (YTD)" if (ytd_t or ytd_p) else ""
+    ytd_note = " (YTD)" if is_ytd_pair else ""
 
     explanation = (
-        f"Schaetzung FY{target_fy_year} = FY{prev_fy} × Faktor.{ytd_note}  "
+        f"Schaetzung FY{target_fy_year} = FY{prev_fy} × Faktor (gleiches Quartal{ytd_note}).  "
         f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}.  "
-        f"{qs_label} {target_fy_year} = {cum_target:,.0f}, "
-        f"{qs_label} {prev_fy} = {cum_prev:,.0f}, "
+        f"{q} {target_fy_year} = {target_v:,.0f}, {q} {prev_fy} = {prev_v:,.0f}, "
         f"Faktor = {factor:.4f} ({delta_pct:+.2f} % YoY).  "
         f"Resultat = {estimate:,.0f}."
     )
@@ -297,6 +289,6 @@ def compute_estimate(
         value=estimate,
         method="flow_factor",
         explanation=explanation,
-        quarters_used=qs_target,
+        quarters_used=[f"{q} (YTD)"] if is_ytd_pair else [q],
         factor=factor,
     )
