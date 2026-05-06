@@ -38,6 +38,7 @@ const CATEGORY_ORDER = [
 const FACTOR_KEYS = new Set([
   "hohn_return_simple",
   "hohn_return_detailed",
+  "actual_return",
   "fcf_yield",
   "ni_growth",
   "sbc_yield",
@@ -506,7 +507,8 @@ export function CompanyDashboardPage() {
     const factorDefs = allDefs.filter((d) => FACTOR_KEYS.has(d.key));
     const inputDefs = allDefs.filter((d) => !FACTOR_KEYS.has(d.key));
     const isExpanded = !isCumMode && expandedSections.has(cat);
-    const cumFactorDefs = factorDefs.filter((d) => d.key !== "market_cap");
+    // actual_return ist FY-spezifisch (Yahoo MCap-Anker), CUM rechnet ueber mehrere FYs.
+    const cumFactorDefs = factorDefs.filter((d) => d.key !== "market_cap" && d.key !== "actual_return");
     const baseVisibleDefs = isCumMode ? cumFactorDefs : (isExpanded ? allDefs : factorDefs);
     const visibleSectionDefs: (ValueDefinition & { isPrevYear?: boolean; basedOnKey?: string })[] = [];
     for (const d of baseVisibleDefs) {
@@ -982,9 +984,9 @@ export function CompanyDashboardPage() {
 
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "cursor-pointer hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
-                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel) — Klick auf die Eingangswerte, um zu chatten / zu editieren." : undefined)}
-                          onClick={isCalculated ? undefined : () => {
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
+                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert — Klick zum Zerlegen / Plausibilität via Claude. Editieren nur bei Eingangswerten." : undefined)}
+                          onClick={() => {
                             setDrawer({
                               companyId: company.id,
                               valueKey: d.key,

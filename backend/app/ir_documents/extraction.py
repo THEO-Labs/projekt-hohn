@@ -22,12 +22,12 @@ PDF_IMAGE_BYTES_LIMIT = 5 * 1024 * 1024  # 5 MB raw PDF
 # Anthropic's PDF-as-image mode caps at 100 pages per request, so anything
 # longer must go through the text-extraction path regardless of bytes.
 PDF_IMAGE_PAGES_LIMIT = 100
-# Hard cap on text we send to Claude. Sonnet 4.6 mit 1M-context-Beta
-# erlaubt ~3M chars Eingabe — wir lassen viel Headroom fuer System-Prompt
-# + Per-Key-Beschreibungen + Claude's eigene Antwort, und damit smart
-# truncation bei wirklich riesigen PDFs (38 MB Adidas 2025) noch greifen
-# kann ohne unter die wichtigen Notes zu rutschen.
-MAX_TEXT_CHARS = 1_500_000
+# Hard cap on text we send to Claude. Tuned per model context window:
+#   - Haiku 4.5  : 200k token context, KEIN 1M-Beta-Support → ~600k chars budget
+#   - Sonnet 4.6 : 1M-Beta-Support → ~2.5M chars budget
+# Smart truncation kuerzt bei Bedarf intelligent (high-value pages first).
+MAX_TEXT_CHARS_HAIKU = 600_000
+MAX_TEXT_CHARS_SONNET = 2_500_000
 
 # Keywords whose presence on a page signals "this is a financial statement
 # or a note that we very likely need". Used to prioritise pages when a PDF's
@@ -271,11 +271,11 @@ def _score_page(text: str) -> int:
     return len(_HIGH_VALUE_PAGE_PATTERNS.findall(text))
 
 
-def _extract_pdf_text(pdf_path: Path) -> str:
+def _extract_pdf_text(pdf_path: Path, max_chars: int) -> str:
     """Extract text from all pages, prefixed with [Page N] markers so Claude
     can cite page numbers.
 
-    If the raw text exceeds MAX_TEXT_CHARS, do smart truncation: keep ALL
+    If the raw text exceeds max_chars, do smart truncation: keep ALL
     high-value pages (statements + notes detected via _HIGH_VALUE_PAGE_PATTERNS)
     plus a buffer of 2 surrounding pages, and drop low-value narrative pages
     until budget fits. This rescues IFRS reports where statements live behind
@@ -293,7 +293,7 @@ def _extract_pdf_text(pdf_path: Path) -> str:
         total_chars += len(text)
 
     n = len(pages)
-    if total_chars + n * 12 <= MAX_TEXT_CHARS:
+    if total_chars + n * 12 <= max_chars:
         # All pages fit comfortably — no truncation needed.
         return "".join(f"\n\n[Page {i}]\n{t}" for i, t, _ in pages)
 
@@ -311,33 +311,43 @@ def _extract_pdf_text(pdf_path: Path) -> str:
     kept_pages = [(i, t) for i, t, _ in pages if i in keep]
     chars_used = sum(len(t) + 12 for _, t in kept_pages)
 
-    # 4. Fill remaining budget with neutral pages (score=0) PROXIMATE to
+    # 4. Wenn high-value pages selbst schon ueber Budget — dann Score-prio
+    #    droppen (kleinste Scores zuerst) bis Budget passt.
+    if chars_used > max_chars:
+        scored = sorted(
+            ((i, t, s) for i, t, s in pages if i in keep),
+            key=lambda x: (x[2], -x[0]),  # niedriger Score zuerst raus, dann fruehe Seiten
+        )
+        for i, t, _ in scored:
+            if chars_used <= max_chars:
+                break
+            keep.discard(i)
+            chars_used -= len(t) + 12
+
+    # 5. Fill remaining budget with neutral pages (score=0) PROXIMATE to
     #    high-value pages (i.e. not at the very start of the doc).
-    if chars_used < MAX_TEXT_CHARS:
+    if chars_used < max_chars:
         candidates = [(i, t) for i, t, _ in pages if i not in keep]
         # Prefer later pages (IFRS reports tend to put valuable stuff at the end).
         candidates.sort(key=lambda x: -x[0])
         for i, t in candidates:
             cost = len(t) + 12
-            if chars_used + cost > MAX_TEXT_CHARS:
+            if chars_used + cost > max_chars:
                 continue
             keep.add(i)
             chars_used += cost
 
-    # 5. Output in page-number order with a marker for skipped runs.
+    # 6. Output in page-number order with a marker for skipped runs.
     final: list[str] = []
-    last_page = 0
     skipped = 0
     for i, t, _ in pages:
         if i not in keep:
             skipped += 1
-            last_page = i
             continue
         if skipped > 0:
             final.append(f"\n\n[... {skipped} pages skipped (low-value, e.g. narrative/CSR) ...]")
             skipped = 0
         final.append(f"\n\n[Page {i}]\n{t}")
-        last_page = i
     if skipped > 0:
         final.append(f"\n\n[... {skipped} trailing pages skipped ...]")
     n_kept = len(keep)
@@ -346,10 +356,13 @@ def _extract_pdf_text(pdf_path: Path) -> str:
     return "".join(final)
 
 
-EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
+EXTRACTION_MODEL_CHEAP = "claude-haiku-4-5-20251001"
+EXTRACTION_MODEL_BIG = "claude-sonnet-4-6"
 
 
-def _build_pdf_content_blocks(pdf_path: Path, pdf_bytes: bytes, page_count: int, user_prompt: str) -> tuple[list, str]:
+def _build_pdf_content_blocks(
+    pdf_path: Path, pdf_bytes: bytes, page_count: int, user_prompt: str, max_chars: int,
+) -> tuple[list, str]:
     """Returns (content_blocks, mode_note) — Image mode for small PDFs, Text fallback for large."""
     use_image_mode = (
         len(pdf_bytes) <= PDF_IMAGE_BYTES_LIMIT
@@ -365,7 +378,7 @@ def _build_pdf_content_blocks(pdf_path: Path, pdf_bytes: bytes, page_count: int,
             {"type": "text", "text": user_prompt},
         ], f"PDF-as-image ({page_count}p)")
 
-    text = _extract_pdf_text(pdf_path)
+    text = _extract_pdf_text(pdf_path, max_chars=max_chars)
     return ([
         {
             "type": "text",
@@ -375,21 +388,25 @@ def _build_pdf_content_blocks(pdf_path: Path, pdf_bytes: bytes, page_count: int,
                 f"{text}\n\n---\n\n{user_prompt}"
             ),
         },
-    ], f"PDF-as-text ({page_count}p)")
+    ], f"PDF-as-text ({page_count}p, ~{len(text)//1000}k chars)")
 
 
-def _call_claude_extraction(client, content_blocks: list) -> str:
+def _is_context_too_long(exc: Exception) -> bool:
+    """Heuristik: war es ein 'prompt too long'-Fehler?"""
+    msg = str(exc).lower()
+    return "prompt is too long" in msg or "max_tokens" in msg and "exceed" in msg
+
+
+def _call_claude_extraction(client, content_blocks: list, model: str) -> str:
     """Single Claude call with retry on transient errors. Returns raw text.
 
-    Sonnet 4.6 mit 1M-Context-Beta laesst grosse PDFs (>200k Tokens) in einem
-    Call durch; ohne den Header wuerde der Request mit 400 abgelehnt sobald
-    wir ueber das Standard-Context-Limit gehen.
+    1M-Context-Beta wird mitgeschickt — Sonnet 4.6 nutzt es, Haiku ignoriert es.
     """
     last_exc: Exception | None = None
     for attempt in range(2):
         try:
             response = claude_limiter.call(lambda: client.messages.create(
-                model=EXTRACTION_MODEL,
+                model=model,
                 max_tokens=8192,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": content_blocks}],
@@ -403,8 +420,34 @@ def _call_claude_extraction(client, content_blocks: list) -> str:
             return "\n".join(text_parts)
         except anthropic.APIError as e:
             last_exc = e
+            # Bei "prompt too long" sofort raus — Retry mit gleichem Modell wuerde
+            # nichts aendern. Caller soll auf groesseres Modell eskalieren.
+            if _is_context_too_long(e):
+                raise
             logger.warning("Claude extraction attempt %d failed: %s", attempt + 1, e)
     raise last_exc or RuntimeError("Claude extraction failed without exception")
+
+
+def _call_extraction_with_escalation(
+    client, pdf_path: Path, pdf_bytes: bytes, page_count: int, user_prompt: str,
+) -> str:
+    """Versucht Haiku mit kleinem Char-Budget. Bei Context-Overflow → Sonnet
+    mit grossem Budget (1M-Beta)."""
+    blocks_haiku, mode_haiku = _build_pdf_content_blocks(
+        pdf_path, pdf_bytes, page_count, user_prompt, max_chars=MAX_TEXT_CHARS_HAIKU,
+    )
+    logger.info("Extraction mode=%s model=haiku", mode_haiku)
+    try:
+        return _call_claude_extraction(client, blocks_haiku, EXTRACTION_MODEL_CHEAP)
+    except anthropic.APIError as e:
+        if not _is_context_too_long(e):
+            raise
+        logger.info("Haiku context too long → eskaliere auf Sonnet 1M-context")
+    blocks_sonnet, mode_sonnet = _build_pdf_content_blocks(
+        pdf_path, pdf_bytes, page_count, user_prompt, max_chars=MAX_TEXT_CHARS_SONNET,
+    )
+    logger.info("Extraction mode=%s model=sonnet (escalated)", mode_sonnet)
+    return _call_claude_extraction(client, blocks_sonnet, EXTRACTION_MODEL_BIG)
 
 
 def _parse_one_entry(key: str, entry: dict | None) -> dict:
@@ -510,11 +553,10 @@ def extract_values_from_pdf(
         page_count = PDF_IMAGE_PAGES_LIMIT + 1
 
     user_prompt = _build_user_prompt(period_coverage, period_year, document_type, company_name)
-    content_blocks, mode_note = _build_pdf_content_blocks(pdf_path, pdf_bytes, page_count, user_prompt)
-    logger.info("PDF extraction pass=1 mode=%s for %s/%s", mode_note, company_name, period_year)
-
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    raw_first = _call_claude_extraction(client, content_blocks)
+    logger.info("PDF extraction pass=1 for %s/%s (%d pages)", company_name, period_year, page_count)
+
+    raw_first = _call_extraction_with_escalation(client, pdf_path, pdf_bytes, page_count, user_prompt)
 
     parsed = _parse_json_from_response(raw_first)
     if parsed is None:
@@ -538,9 +580,8 @@ def extract_values_from_pdf(
     logger.info("PDF extraction pass=2 retrying %d missing keys for %s/%s: %s",
                 len(missing_keys), company_name, period_year, missing_keys)
     retry_prompt = _build_retry_prompt(missing_keys, period_coverage, period_year, company_name)
-    retry_blocks, _ = _build_pdf_content_blocks(pdf_path, pdf_bytes, page_count, retry_prompt)
     try:
-        raw_second = _call_claude_extraction(client, retry_blocks)
+        raw_second = _call_extraction_with_escalation(client, pdf_path, pdf_bytes, page_count, retry_prompt)
     except Exception as e:
         logger.warning("PDF extraction pass=2 failed for %s/%s: %s", company_name, period_year, e)
         return (results, raw_first)

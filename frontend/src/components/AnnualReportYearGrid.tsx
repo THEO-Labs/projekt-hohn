@@ -13,6 +13,19 @@ import { uploadGate, useUploadActive } from "@/lib/uploadGate";
 
 const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019];
 
+// Muss zum Backend MAX_PDF_SIZE in app/ir_documents/routes.py passen.
+const MAX_UPLOAD_MB = 50;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+
+function checkSize(file: File, label: string): boolean {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    const mb = (file.size / 1024 / 1024).toFixed(1);
+    toast.error(`${label}: PDF ist ${mb} MB — Maximum sind ${MAX_UPLOAD_MB} MB. Komprimiere das PDF oder lade nur den relevanten Teil hoch.`);
+    return false;
+  }
+  return true;
+}
+
 type Props = {
   companyId: string;
   companyName: string;
@@ -64,6 +77,10 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
     e.target.value = "";
     if (!file || pendingYear == null) return;
     const yr = pendingYear;
+    if (!checkSize(file, `Annual Report ${yr}`)) {
+      setPendingYear(null);
+      return;
+    }
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     setUploading(yr);
     uploadGate.start();
@@ -211,7 +228,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         </div>
       )}
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
-        Annual Reports sind die Hauptquelle für Finanzdaten. Bei US-Filern (ISIN US…) liefert zusätzlich EDGAR Daten — bei Non-US-Firmen ist die Hohn-Rendite ohne hochgeladenen Annual Report gesperrt.
+        Annual Reports sind die Hauptquelle für Finanzdaten. Bei US-Filern (ISIN US…) liefert zusätzlich EDGAR Daten — bei Non-US-Firmen ist die Hohn-Rendite ohne hochgeladenen Annual Report gesperrt. Max {MAX_UPLOAD_MB} MB pro PDF.
       </p>
       <QuarterlyReportGrid
         companyId={companyId}
@@ -273,6 +290,10 @@ function QuarterlyReportGrid({
     if (!file || !pending) return;
     const key = `${pending.year}-${pending.q}`;
     const label = `${companyName} ${pending.q} ${pending.year}`;
+    if (!checkSize(file, label)) {
+      setPending(null);
+      return;
+    }
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     setUploading(key);
     uploadGate.start();
@@ -436,9 +457,10 @@ function ExtraReportsList({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    const label = `${companyName} ${docType.replace(/_/g, " ")} ${periodCov} ${periodYear}`;
+    if (!checkSize(file, label)) return;
     setBusy(true);
     uploadGate.start();
-    const label = `${companyName} ${docType.replace(/_/g, " ")} ${periodCov} ${periodYear}`;
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     const toastId = toast.loading(`Lade ${label} hoch (${sizeMb} MB)...`, { duration: Infinity });
     try {
