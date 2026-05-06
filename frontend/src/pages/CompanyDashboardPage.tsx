@@ -984,9 +984,9 @@ export function CompanyDashboardPage() {
 
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
-                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert — Klick zum Zerlegen / Plausibilität via Claude. Editieren nur bei Eingangswerten." : undefined)}
-                          onClick={() => {
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "cursor-pointer hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
+                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel) — Diskussion gehoert zu den Eingangswerten." : undefined)}
+                          onClick={isCalculated ? undefined : () => {
                             setDrawer({
                               companyId: company.id,
                               valueKey: d.key,

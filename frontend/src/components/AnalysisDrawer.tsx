@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Sparkles, Send, RefreshCw, Search, FileSearch, Database, BrainCircuit, HelpCircle, TrendingUp, ShieldCheck, Calculator, Scale } from "lucide-react";
+import { X, Sparkles, Send, Search, FileSearch, Database, BrainCircuit, HelpCircle, TrendingUp, ShieldCheck, Calculator, Scale } from "lucide-react";
 import { toast } from "sonner";
 import { t } from "@/lib/i18n";
 import { formatValue } from "@/lib/format";
 import { parseNumericInput } from "@/lib/parseNumeric";
 import {
-  analyzeValue,
   sendChatMessage,
   getChatHistory,
   type LlmMessage,
@@ -63,31 +62,57 @@ function parseMarkdown(text: string): string {
     .replace(/\n/g, "<br />");
 }
 
-const CALC_QUICK_PROMPTS: {
+type QuickPrompt = {
   icon: typeof Search;
   label: string;
   prompt: string;
   enableSearch: boolean;
   hint?: string;
-}[] = [
+};
+
+// Quick-Prompts wenn der Wert vorhanden ist — Validierung + Erklaerung.
+const HAS_VALUE_PROMPTS: QuickPrompt[] = [
+  {
+    icon: ShieldCheck,
+    label: "Plausibilitäts-Check",
+    prompt: "Pruefe die Plausibilitaet dieses Werts gegen den Annual Report, historische Werte derselben Firma und ggf. Branchen-Vergleichswerte. Recherchiere aktiv nach One-Time-Items, Restructuring-Charges, Akquisitions-Effekten, Yeezy/Special-Cases o.ae. die diesen Wert verzerren koennten. Nutze web_search auf IR-Seite, Aggregatoren (stockanalysis.com, macrotrends.net) und Earnings-Call-Transcripts.",
+    enableSearch: true,
+    hint: "ca. 30s, mit Web-Recherche",
+  },
   {
     icon: HelpCircle,
-    label: "Zerlege das Ergebnis",
-    prompt: "Zerlege die Kennzahl ausschliesslich auf Basis der Daten im Kontext: zeige die Komponenten-Tabelle (Wert + Effekt) und identifiziere die 2-3 wichtigsten Treiber. Keine Web-Recherche notwendig.",
+    label: "Was bedeutet dieser Wert?",
+    prompt: "Erklaere kurz und klar was diese Kennzahl in diesem Geschaeftsjahr fuer einen langfristigen Aktionaer bedeutet. Wie ordnet sich der Wert ein (gut/normal/schwach), und was sind die operativen Implikationen? 3-5 Saetze, keine Web-Recherche noetig.",
     enableSearch: false,
   },
   {
     icon: TrendingUp,
-    label: "Was treibt diesen Wert?",
-    prompt: "Was sind die wichtigsten Treiber hinter diesem Wert? Liste positive und negative Faktoren mit Bezug auf operative Metriken im Kontext. Falls Industrie-Kontext oder allgemeines Business-Wissen hilft, einbauen, aber keine Web-Recherche.",
+    label: "Vergleich zum Vorjahr",
+    prompt: "Vergleiche diesen Wert mit dem Vorjahr (siehe Kontext). Berechne die absolute und prozentuale Veraenderung, identifiziere die 1-2 wichtigsten Treiber des Unterschieds. Falls operative Hintergruende noetig sind, kurz Industrie-Kontext einbauen.",
+    enableSearch: false,
+  },
+];
+
+// Quick-Prompts wenn der Wert FEHLT — Recherche + Approximation.
+const NO_VALUE_PROMPTS: QuickPrompt[] = [
+  {
+    icon: Search,
+    label: "Mit Claude im Web recherchieren",
+    prompt: "Der Wert konnte nicht aus dem Annual Report extrahiert werden. Recherchiere aktiv via web_search bei Daten-Aggregatoren (stockanalysis.com, macrotrends.net, wsj.com, wisesheets.io, simplywall.st) und liefere den Wert im strikten WERT/EINHEIT/QUELLE/QUELLE_URL/ZEITRAUM/KONFIDENZ/BEGRUENDUNG-Format zurueck. Nutze nur verifizierbare Aggregator-Daten, keine Schaetzungen.",
+    enableSearch: true,
+    hint: "ca. 30s, mit Web-Recherche",
+  },
+  {
+    icon: Calculator,
+    label: "Aus verfügbaren Werten approximieren",
+    prompt: "Der Wert fehlt. Nutze die anderen verfuegbaren Werte derselben Firma im Kontext (Bilanz, GuV, Cashflow), um einen plausiblen Approximations-Wert herzuleiten — z.B. FCF = Operating Cash Flow − CapEx, Total Debt aus Komponenten, etc. Erklaere die Herleitung Schritt fuer Schritt und gib die KONFIDENZ klar an. Keine Web-Recherche.",
     enableSearch: false,
   },
   {
-    icon: ShieldCheck,
-    label: "Plausibilität & Sondereffekte",
-    prompt: "Pruefe die Plausibilitaet dieses Werts. Recherchiere aktiv nach One-Time-Items, Tax-Settlements, Restructuring-Charges, Akquisitions-Effekten oder Earnings-Call-Commentary die diesen Wert verzerren koennten. Nutze web_search auf IR-Seite und 10-K.",
-    enableSearch: true,
-    hint: "ca. 30s, mit Web-Recherche",
+    icon: FileSearch,
+    label: "Im Bericht nochmal gezielt suchen",
+    prompt: "Der Wert wurde im PDF nicht gefunden. Geh nochmal SYSTEMATISCH durch alle typischen Stellen eines Annual Reports: Cash Flow Statement, Statement of Changes in Equity, Notes (Personnel, Other liabilities, Equity, Share-based payments). Bei IFRS-Filern oft NICHT im CF-Statement! Liste exakt welche Seiten du geprueft hast und was du gefunden / nicht gefunden hast.",
+    enableSearch: false,
   },
 ];
 
@@ -210,7 +235,7 @@ export function AnalysisDrawer({
   );
   const [textValue, setTextValue] = useState<string>("");
   const [inputText, setInputText] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
+  const analyzing = false;
   const [sending, setSending] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -258,33 +283,6 @@ export function AnalysisDrawer({
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, open]);
-
-  const handleAnalyze = async (force = false) => {
-    setAnalyzing(true);
-    setThinkingMode(defaultThinkingMode);
-    try {
-      const res = await analyzeValue(companyId, valueKey, periodType, periodYear, force);
-      // Refetch full history so the canned user-prompt appears BEFORE the assistant response.
-      try {
-        const fresh = await getChatHistory(companyId, valueKey, periodType, periodYear);
-        setMessages(fresh.messages);
-      } catch {
-        // fallback: at least append the assistant message
-        setMessages((prev) => {
-          const exists = prev.some((m) => m.id === res.message.id);
-          return exists ? prev : [...prev, res.message];
-        });
-      }
-      if (res.message.score_suggestion != null) {
-        applySliderValue(toNum(res.message.score_suggestion));
-      }
-    } catch (e) {
-      const detail = (e as { message?: string })?.message;
-      toast.error(detail || "Analyse fehlgeschlagen. Bitte erneut versuchen.");
-    } finally {
-      setAnalyzing(false);
-    }
-  };
 
   const handleSend = async (overrideText?: string, enableSearch = false) => {
     const text = (overrideText ?? inputText).trim();
@@ -344,8 +342,6 @@ export function AnalysisDrawer({
       setAccepting(false);
     }
   };
-
-  const hasMessages = messages.length > 0;
 
   const acceptLabel = isTextType
     ? "Einschätzung übernehmen"
@@ -436,101 +432,51 @@ export function AnalysisDrawer({
           )}
         </div>
 
-        {hasMessages && !isCalculated && hasValue && (
-          <div className="shrink-0 border-b border-border px-5 py-2">
-            <button
-              onClick={() => handleAnalyze(true)}
-              disabled={analyzing}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3 w-3 ${analyzing ? "animate-spin" : ""}`} />
-              Neue Analyse starten
-            </button>
-          </div>
-        )}
+        {(() => {
+          const promptSet = hasValue ? HAS_VALUE_PROMPTS : NO_VALUE_PROMPTS;
+          const headline = hasValue
+            ? "Wert vorhanden — Claude kann erklären / validieren"
+            : "Wert fehlt — Claude kann recherchieren / approximieren";
+          return (
+            <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {headline}
+              </p>
+              <div className="grid grid-cols-1 gap-1.5">
+                {promptSet.map((q) => {
+                  const Icon = q.icon;
+                  return (
+                    <button
+                      key={q.label}
+                      onClick={() => handleSend(q.prompt, q.enableSearch)}
+                      disabled={sending || analyzing}
+                      className="flex items-start gap-2.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:opacity-50"
+                    >
+                      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                      <div className="flex flex-col">
+                        <span className="font-medium">{q.label}</span>
+                        {q.hint && (
+                          <span className="text-[10px] text-muted-foreground">{q.hint}</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {historyLoaded && messages.length === 0 ? (
-            !hasValue ? (
-              <div className="flex h-full flex-col items-center justify-center gap-4 px-4 text-center">
-                <div className="rounded-full bg-muted p-4">
-                  <Sparkles className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">Noch kein Wert vorhanden</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {isCalculated
-                      ? "Sobald die Eingangswerte gepflegt sind und die Formel ein Ergebnis liefert, kannst du Claude dazu befragen."
-                      : "Trage einen Wert ein oder klick \"Recherchieren\" in der Tabelle, damit Claude den Wert via Web-Recherche findet."}
-                  </p>
-                </div>
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
+              <div className="rounded-full bg-muted p-3">
+                <Sparkles className="h-6 w-6 text-muted-foreground" />
               </div>
-            ) : isCalculated ? (
-              <div className="flex h-full flex-col items-center justify-center gap-4 px-2 text-center">
-                <div className="rounded-full bg-primary/10 p-4">
-                  <Sparkles className="h-8 w-8 text-primary" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">Plausibilitäts-Check mit Claude</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Wähle einen Quick-Prompt oder stelle eine eigene Frage unten im Chat.
-                  </p>
-                </div>
-                <div className="flex w-full flex-col gap-2">
-                  {CALC_QUICK_PROMPTS.map((q) => {
-                    const Icon = q.icon;
-                    return (
-                      <button
-                        key={q.label}
-                        onClick={() => handleSend(q.prompt, q.enableSearch)}
-                        disabled={sending}
-                        className="flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-2.5 text-left text-sm text-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 disabled:opacity-50"
-                      >
-                        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                        <div className="flex flex-col">
-                          <span className="font-medium">{q.label}</span>
-                          {q.hint && (
-                            <span className="text-[10px] text-muted-foreground">{q.hint}</span>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-                <div className="rounded-full bg-primary/10 p-4">
-                  <Sparkles className="h-8 w-8 text-primary" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">Noch keine Analyse vorhanden</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Starte eine Claude-Analyse um eine Einschätzung zu erhalten.
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleAnalyze(false)}
-                  disabled={analyzing}
-                  className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-                >
-                  {analyzing ? (
-                    <>
-                      <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                      </svg>
-                      {t.analyzing}
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="h-4 w-4" />
-                      {t.analyzeStart}
-                    </>
-                  )}
-                </button>
-              </div>
-            )
+              <p className="text-xs text-muted-foreground max-w-[280px]">
+                Noch keine Konversation. Wähle einen Quick-Prompt oben oder stelle eine eigene Frage unten.
+              </p>
+            </div>
           ) : (
             <div className="space-y-3">
               {messages.map((msg) => {
@@ -633,16 +579,6 @@ export function AnalysisDrawer({
               className="w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
             >
               {accepting ? "..." : acceptLabel}
-            </button>
-          )}
-          {historyLoaded && messages.filter((m) => m.role !== "system").length === 0 && !analyzing && !isCalculated && hasValue && (
-            <button
-              onClick={() => handleAnalyze(false)}
-              disabled={analyzing}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-60"
-            >
-              <Sparkles className="h-4 w-4" />
-              {t.analyzeStart}
             </button>
           )}
         </footer>
