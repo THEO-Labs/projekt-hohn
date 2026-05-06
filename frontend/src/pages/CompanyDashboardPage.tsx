@@ -1039,7 +1039,8 @@ export function CompanyDashboardPage() {
                               onBlur={handleSaveEdit}
                             />
                           ) : (
-                          <div className="flex items-center gap-1.5">
+                          <div className={`flex gap-1.5 ${cv?.is_forecast && cv.forecast_alternates && cv.forecast_alternates.length > 0 ? "flex-col items-start" : "items-center"}`}>
+                            <div className="flex items-center gap-1.5">
                             {isQualitative && (
                               <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
                             )}
@@ -1138,6 +1139,38 @@ export function CompanyDashboardPage() {
                                 className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground">
                                 <Info className="h-3 w-3" />
                               </button>
+                            )}
+                            </div>
+                            {cv?.is_forecast && cv.forecast_alternates && cv.forecast_alternates.length > 0 && (
+                              <div className="flex w-full flex-col gap-0.5 border-t border-border/30 pt-0.5">
+                                <div className="flex items-center gap-1 text-[9px] uppercase tracking-wide text-muted-foreground">
+                                  <span className="rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">primary</span>
+                                  <span className="truncate" title={cv.source_name ?? ""}>
+                                    {cv.source_name?.includes("Web-Guidance") ? "Web-Guidance" : cv.source_name?.split(":")[0] ?? "Estimate"}
+                                  </span>
+                                </div>
+                                {cv.forecast_alternates.map((alt) => {
+                                  const altNum = alt.value != null ? parseFloat(alt.value) : null;
+                                  const altConverted = (altNum != null && d.is_currency && d.data_type === "NUMERIC" && alt.currency)
+                                    ? convertCurrency(altNum, alt.currency)
+                                    : altNum;
+                                  const altDisplay = altConverted ?? altNum;
+                                  const methodLabel = alt.method === "q_factor_proxy"
+                                    ? "Q-Faktor (Proxy)"
+                                    : alt.method;
+                                  return (
+                                    <div key={alt.method} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                                      <span className="rounded bg-amber-50 px-1 py-0.5 text-[9px] font-semibold text-amber-700"
+                                        title={alt.source ?? ""}>
+                                        {methodLabel}
+                                      </span>
+                                      <span className="font-mono">
+                                        {altDisplay == null ? "—" : formatValue(altDisplay, d.unit, displayCurrency)}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             )}
                           </div>
                           )}

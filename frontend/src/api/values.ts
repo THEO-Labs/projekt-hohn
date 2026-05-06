@@ -13,6 +13,13 @@ export type ValueDefinition = {
   is_currency: boolean;
 };
 
+export type ForecastAlternate = {
+  method: string;       // z.B. "q_factor_proxy"
+  value: string | null; // Decimal-String wie numeric_value
+  currency: string | null;
+  source: string | null;
+};
+
 export type CompanyValue = {
   id: string;
   company_id: string;
@@ -27,6 +34,7 @@ export type CompanyValue = {
   source_link: string | null;
   fetched_at: string | null;
   manually_overridden: boolean;
+  forecast_alternates: ForecastAlternate[] | null;
 };
 
 export const getValueDefinitions = () =>

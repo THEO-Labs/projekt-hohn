@@ -43,6 +43,7 @@ class CompanyValueOut(BaseModel):
     source_link: str | None
     fetched_at: datetime | None
     manually_overridden: bool
+    forecast_alternates: list[dict] | None = None
 
     model_config = {"from_attributes": True}
 

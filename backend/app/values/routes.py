@@ -477,17 +477,26 @@ def _process_one_key(
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
-    # Laufendes FY: Estimate-Priority-Kette
-    #  1. PDF-Guidance (Q-Bericht / AR-Outlook FY+1) — schon im pre_existing
-    #     guard oben abgehandelt, wir kommen nur hier her wenn keine existiert.
-    #  2. Web-Recherche (Claude Web-Search) nach Management-Guidance / Konsens
-    #  3. Q-Faktor-Proxy (mit Marker "Proxy")
-    #  4. FY-Fallback (mit Marker "Proxy")
-    # Estimate-Pfad ueberspringt anschliessend Provider-Chain.
+    # Laufendes FY: BEIDE Methoden parallel rechnen — Web-Guidance UND
+    # Q-Faktor-Proxy. Primary = Web wenn verfuegbar, Q-Faktor sonst. Die
+    # andere Methode landet als Alternate-Eintrag im JSONB-Feld
+    # forecast_alternates und wird im Frontend untereinander angezeigt.
+    forecast_alternates: list[dict] | None = None
     if is_running_fy and key in ESTIMABLE_KEYS:
-        result = _try_web_guidance(db, company, company_id, key, effective_period_year)
-        if result is None:
-            result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+        web_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
+        proxy_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+
+        if web_result is not None:
+            result = web_result
+            if proxy_result is not None and isinstance(proxy_result.value, Decimal):
+                forecast_alternates = [{
+                    "method": "q_factor_proxy",
+                    "value": str(proxy_result.value),
+                    "currency": proxy_result.currency,
+                    "source": proxy_result.source_name,
+                }]
+        elif proxy_result is not None:
+            result = proxy_result
 
     if result is None and (is_stammdaten or is_us_company(company)):
         result = _try_providers(
@@ -545,6 +554,7 @@ def _process_one_key(
         target.fetched_at = datetime.now(timezone.utc)
         target.from_ir_pdf = False
         target.is_forecast = is_forecast_flag
+        target.forecast_alternates = forecast_alternates
 
     try:
         if existing:
@@ -565,6 +575,7 @@ def _process_one_key(
             source_link=result.source_link,
             fetched_at=datetime.now(timezone.utc),
             is_forecast=is_forecast_flag,
+            forecast_alternates=forecast_alternates,
         )
         try:
             with db.begin_nested():
