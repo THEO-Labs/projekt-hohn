@@ -183,6 +183,108 @@ const TIER_BG: Record<ColorTier, string> = {
 
 const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"]);
 
+type VariantValues = Map<string, number | null>;
+
+function _getFaktorValue(cv: CompanyValue): number | null {
+  if (!cv.is_forecast) {
+    const n = cv.numeric_value;
+    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
+  }
+  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
+  if (isWebPrimary) {
+    const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+    return alt?.value != null ? parseFloat(alt.value) : null;
+  }
+  const n = cv.numeric_value;
+  return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
+}
+
+function _getWebValue(cv: CompanyValue): number | null {
+  if (!cv.is_forecast) {
+    const n = cv.numeric_value;
+    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
+  }
+  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
+  if (isWebPrimary) {
+    const n = cv.numeric_value;
+    return n == null ? null : (typeof n === "string" ? parseFloat(n) : n);
+  }
+  // Primary ist Q-Faktor → Web-Variant nicht im DB gespeichert
+  return null;
+}
+
+function _safeYield(v: number | null, mcap: number | null): number | null {
+  if (v == null || mcap == null || mcap === 0) return null;
+  return (v / mcap) * 100;
+}
+
+function buildVariantValues(
+  rows: CompanyValue[],
+  prevRows: CompanyValue[],
+  variant: "faktor" | "web",
+): VariantValues {
+  const pick = variant === "faktor" ? _getFaktorValue : _getWebValue;
+  const raw = new Map<string, number | null>();
+  for (const r of rows) {
+    raw.set(r.value_key, pick(r));
+  }
+  const prev = new Map<string, number | null>();
+  for (const r of prevRows) {
+    const n = r.numeric_value;
+    prev.set(r.value_key, n == null ? null : (typeof n === "string" ? parseFloat(n) : n));
+  }
+
+  const fcf = raw.get("fcf") ?? null;
+  const sbc = raw.get("sbc") ?? null;
+  const buyback = raw.get("buyback_volume") ?? null;
+  const dividends = raw.get("dividends") ?? null;
+  const netIncome = raw.get("net_income") ?? null;
+  const netDebt = raw.get("net_debt") ?? null;
+  const marketCap = raw.get("market_cap") ?? null;
+  const niPrev = prev.get("net_income") ?? null;
+  const ndPrev = prev.get("net_debt") ?? null;
+
+  const fcfYield = _safeYield(fcf, marketCap);
+  const sbcYield = _safeYield(sbc, marketCap);
+  const divYield = _safeYield(dividends, marketCap);
+  const buybackYield = _safeYield(buyback, marketCap);
+  const netBuyback = (buyback != null && sbc != null) ? buyback - sbc : null;
+  const netBuybackYield = _safeYield(netBuyback, marketCap);
+
+  let niGrowth: number | null = null;
+  if (netIncome != null && niPrev != null && niPrev !== 0) {
+    niGrowth = ((netIncome - niPrev) / Math.abs(niPrev)) * 100;
+  }
+  let ndChange: number | null = null;
+  let ndChangePct: number | null = null;
+  if (netDebt != null && ndPrev != null) {
+    ndChange = ndPrev - netDebt;
+    ndChangePct = _safeYield(ndChange, marketCap);
+  }
+
+  const sumOptional = (parts: (number | null)[]): number | null => {
+    const present = parts.filter((p) => p != null) as number[];
+    return present.length > 0 ? present.reduce((a, b) => a + b, 0) : null;
+  };
+  const hohnSimple = sumOptional([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
+  const hohnDetailed = sumOptional([divYield, niGrowth, netBuybackYield, ndChangePct]);
+
+  return new Map<string, number | null>([
+    ["fcf", fcf], ["sbc", sbc], ["buyback_volume", buyback], ["dividends", dividends],
+    ["net_income", netIncome], ["net_debt", netDebt],
+    ["market_cap", marketCap], ["shares_outstanding", raw.get("shares_outstanding") ?? null],
+    ["stock_price", raw.get("stock_price") ?? null], ["market_cap_calc", raw.get("market_cap_calc") ?? null],
+    ["fcf_yield", fcfYield], ["sbc_yield", sbcYield], ["dividend_yield", divYield],
+    ["buyback_yield", buybackYield], ["net_buyback", netBuyback], ["net_buyback_yield", netBuybackYield],
+    ["ni_growth", niGrowth], ["net_debt_change", ndChange], ["net_debt_change_pct", ndChangePct],
+    ["hohn_return_simple", hohnSimple], ["hohn_return_detailed", hohnDetailed],
+  ]);
+}
+
+function hasAnyAlternate(rows: CompanyValue[]): boolean {
+  return rows.some((r) => r.is_forecast && r.forecast_alternates && r.forecast_alternates.length > 0);
+}
+
 function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
   if (!av || periodYear === undefined) return false;
   if (periodYear >= new Date().getFullYear()) return false;
@@ -825,7 +927,73 @@ export function CompanyDashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {companies.map((company) => (
+              {companies.flatMap((company) => {
+                const cRows = valuesMap.get(company.id) ?? [];
+                const cPrev = prevYearValuesMap.get(company.id) ?? [];
+                const showDual = isEstimateMode && hasAnyAlternate(cRows);
+                if (showDual) {
+                  const faktor = buildVariantValues(cRows, cPrev, "faktor");
+                  const web = buildVariantValues(cRows, cPrev, "web");
+                  const renderEstimateRow = (label: "Q-Faktor (Proxy)" | "Web-Guidance", vals: VariantValues, accent: string) => (
+                    <tr key={`${company.id}-${label}`} className={`border-b border-border/30 ${accent}`}>
+                      <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${accent}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-foreground">{company.name}</span>
+                          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
+                            {label}
+                          </span>
+                        </div>
+                      </td>
+                      {grouped.flatMap((g) => {
+                        if (g.defs.length === 0) {
+                          return [<td key={`${company.id}-${label}-${g.category}-empty`} className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">—</td>];
+                        }
+                        return g.defs.map((d) => {
+                          if (d.isPrevYear) {
+                            return <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 bg-muted/20 px-3 py-2"></td>;
+                          }
+                          const av = availabilityMap.get(company.id);
+                          const hohnLockedHere = HOHN_LOCKED_KEYS.has(d.key) && period.value === "FY" && isHohnLocked(av, period.year);
+                          if (hohnLockedHere) {
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
+                                <div className="flex items-center gap-1"><Lock className="h-3 w-3" /> Locked</div>
+                              </td>
+                            );
+                          }
+                          const val = vals.get(d.key) ?? null;
+                          if (val == null) {
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2 text-xs text-muted-foreground/40">
+                                —
+                              </td>
+                            );
+                          }
+                          let display: number | null = val;
+                          if (d.is_currency && d.data_type === "NUMERIC") {
+                            const cv = (cRows.find((r) => r.value_key === d.key)) ?? null;
+                            const cur = cv?.currency ?? null;
+                            const conv = convertCurrency(val, cur);
+                            display = conv ?? val;
+                          }
+                          const tier = colorTier(d.key, display);
+                          const tierBg = tier ? TIER_BG[tier] : "";
+                          return (
+                            <td key={`${company.id}-${label}-${d.key}`} className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg}`}>
+                              <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
+                            </td>
+                          );
+                        });
+                      })}
+                    </tr>
+                  );
+                  return [
+                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30"),
+                    renderEstimateRow("Web-Guidance", web, "bg-violet-50/30"),
+                  ];
+                }
+                return [(
                 <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">
                   <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 font-medium text-foreground">
                     {(() => {
@@ -1039,8 +1207,7 @@ export function CompanyDashboardPage() {
                               onBlur={handleSaveEdit}
                             />
                           ) : (
-                          <div className={`flex gap-1.5 ${cv?.is_forecast && cv.forecast_alternates && cv.forecast_alternates.length > 0 ? "flex-col items-start" : "items-center"}`}>
-                            <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5">
                             {isQualitative && (
                               <Sparkles className="h-3 w-3 shrink-0 text-primary/60" />
                             )}
@@ -1140,38 +1307,6 @@ export function CompanyDashboardPage() {
                                 <Info className="h-3 w-3" />
                               </button>
                             )}
-                            </div>
-                            {cv?.is_forecast && cv.forecast_alternates && cv.forecast_alternates.length > 0 && (
-                              <div className="flex w-full flex-col gap-0.5 border-t border-border/30 pt-0.5">
-                                <div className="flex items-center gap-1 text-[9px] uppercase tracking-wide text-muted-foreground">
-                                  <span className="rounded bg-primary/10 px-1 py-0.5 font-semibold text-primary">primary</span>
-                                  <span className="truncate" title={cv.source_name ?? ""}>
-                                    {cv.source_name?.includes("Web-Guidance") ? "Web-Guidance" : cv.source_name?.split(":")[0] ?? "Estimate"}
-                                  </span>
-                                </div>
-                                {cv.forecast_alternates.map((alt) => {
-                                  const altNum = alt.value != null ? parseFloat(alt.value) : null;
-                                  const altConverted = (altNum != null && d.is_currency && d.data_type === "NUMERIC" && alt.currency)
-                                    ? convertCurrency(altNum, alt.currency)
-                                    : altNum;
-                                  const altDisplay = altConverted ?? altNum;
-                                  const methodLabel = alt.method === "q_factor_proxy"
-                                    ? "Q-Faktor (Proxy)"
-                                    : alt.method;
-                                  return (
-                                    <div key={alt.method} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                                      <span className="rounded bg-amber-50 px-1 py-0.5 text-[9px] font-semibold text-amber-700"
-                                        title={alt.source ?? ""}>
-                                        {methodLabel}
-                                      </span>
-                                      <span className="font-mono">
-                                        {altDisplay == null ? "—" : formatValue(altDisplay, d.unit, displayCurrency)}
-                                      </span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
                           </div>
                           )}
                         </td>
@@ -1179,7 +1314,8 @@ export function CompanyDashboardPage() {
                     });
                   })}
                 </tr>
-              ))}
+                )];
+              })}
               {companies.length === 0 && (
                 <tr>
                   <td colSpan={visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1}
