@@ -355,68 +355,42 @@ def extract_value(text: str) -> Decimal | None:
     return _apply_unit_scale(value, text, raw)
 
 
-RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Dir wird eine Finanzkennzahl für ein Unternehmen gefragt,
-die nicht über die API verfügbar war. Recherchiere den Wert aktiv via web_search.
+RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Recherchiere EINE konkrete Finanzkennzahl
+fuer ein Unternehmen via web_search und liefere genau eine Zahl + kurze Begruendung.
 
-WICHTIG — web_search liefert nur Snippets (keine vollen PDFs/10-Ks).
-Das heisst: direkte SEC-10-K-Links sind OFT NICHT nutzbar (zu lang, PDF-Text
-wird im Snippet gekuerzt). Suche stattdessen gezielt auf Datenaggregatoren,
-die bereits die Bilanzposten aus 10-Ks extrahiert haben:
+VORGEHEN
+1. Such gezielt mit explizitem Jahr UND Site-Hint, z.B.:
+     "Allianz net_income FY2024 stockanalysis"
+     "ASML lease liabilities 2024 macrotrends"
+2. Bevorzuge Aggregatoren (Snippet-tauglich):
+     - Cash-Flow:  stockanalysis.com/.../cash-flow-statement/
+     - Bilanz:     stockanalysis.com/.../balance-sheet/, wsj.com/market-data/quotes/.../financials/annual/balance-sheet
+     - GuV:        macrotrends.net/.../net-income, stockanalysis.com/.../financials/
+     - Guidance:   investor.<domain>/, seekingalpha.com (Transcripts), Yahoo Analyst Estimates
+   Direkte 10-K/PDF-Links liefern via web_search meist nur leeren Snippet — vermeiden.
+3. Kreuz-Check mind. 2 Quellen wenn moeglich. Bei Konflikt die mit hoeherer Konfidenz.
+4. Fallback nur wenn Aggregatoren nichts liefern: Analysten-Konsens / IR-Guidance —
+   QUELLE muss das ehrlich kennzeichnen.
 
-FUER BILANZPOSITIONEN (Cash, Debt, Leases, Marketable Securities):
-  - stockanalysis.com/stocks/<TICKER>/financials/balance-sheet/
-  - macrotrends.net/stocks/charts/<TICKER>/<company>/balance-sheet
-  - wisesheets.io
-  - simplywall.st
-  - wsj.com/market-data/quotes/<TICKER>/financials/annual/balance-sheet
-
-FUER CASH-FLOW-POSITIONEN (SBC, CapEx, FCF, Buybacks):
-  - stockanalysis.com/stocks/<TICKER>/financials/cash-flow-statement/
-  - macrotrends.net/stocks/charts/<TICKER>/<company>/cash-flow-statement
-
-FUER GEWINN/UMSATZ (Net Income, Sales):
-  - stockanalysis.com/stocks/<TICKER>/financials/
-  - macrotrends.net/stocks/charts/<TICKER>/<company>/net-income
-
-FUER FORWARD/GUIDANCE-ZAHLEN:
-  - Investor-Relations-Seite (investor.<domain>) mit 'earnings press release'
-    oder 'Q4 earnings call transcript'
-  - seekingalpha.com/article/ (Earnings Call Transcripts)
-  - Yahoo Finance 'analyst estimates'
-
-Starte Such-Queries MIT EXPLIZITEM JAHR (z.B. 'Visa lease liabilities
-2025 stockanalysis' oder 'NOW stock based compensation FY2024
-macrotrends'). Wenn erste Suche nichts liefert, probiere eine andere
-Site-Query.
-
-Fallback (wirklich letztes Mittel): Analysten-Konsens/Schaetzung — mit
-expliziter QUELLE-Kennzeichnung 'Schaetzung basierend auf Trend/Konsens'.
-
-Antworte NUR in diesem Format:
-WERT: [Zahl]
-EINHEIT: [z.B. USD, EUR, %, keine]
-QUELLE: [Kurze Beschreibung der Quelle]
-QUELLE_URL: [Direkte URL zur Quelle, z.B. https://www.allianz.com/en/investor_relations/ oder https://finance.yahoo.com/quote/ALV.DE/ oder https://www.wsj.com/... ]
+ANTWORT — exakt dieses Format, nichts anderes davor/danach:
+WERT: [Zahl in Base-Units]
+EINHEIT: [USD/EUR/...|%|keine]
+QUELLE: [Kurzbezeichnung, z.B. "stockanalysis.com FY2024 Income Statement"]
+QUELLE_URL: [echte direkte URL]
 ZEITRAUM: [z.B. FY2024, TTM, aktuell]
-KONFIDENZ: [hoch/mittel/niedrig]
+KONFIDENZ: [hoch|mittel|niedrig]
+BEGRUENDUNG: [1-2 Saetze: woher der Wert genau stammt + ggf. Sondereffekte]
 
-Wenn du den Wert nicht findest, antworte mit:
+Wenn nichts Verifizierbares findbar ist:
 WERT: NICHT_GEFUNDEN
+BEGRUENDUNG: [1 Satz warum]
 
-Wichtig:
-- Gib nur verifizierbare Zahlen an. Im Zweifel NICHT_GEFUNDEN.
-- Die QUELLE_URL muss eine echte, existierende URL sein (Investor Relations Seite, Yahoo Finance, Bloomberg, Reuters, etc.)
-- Keine erfundenen URLs.
-- ZAHLENFORMAT: WERT MUSS die volle Zahl in Base-Units sein, ohne 'Mio', 'Mrd',
-  'Million', 'Billion' etc. als Suffix oder in EINHEIT.
-  RICHTIG:   WERT: 1450000000   EINHEIT: USD
-  FALSCH:    WERT: 1450          EINHEIT: USD Mio.
-  RICHTIG:   WERT: 139947000000  EINHEIT: EUR
-  FALSCH:    WERT: 139.9 Mrd     EINHEIT: EUR
-  Prozente direkt als Prozentwert: WERT: 4.38  EINHEIT: %
-- EINHEIT enthaelt NUR die Waehrung / 'keine' / '%', niemals einen
-  Skalierungs-Hinweis wie 'Mio' oder 'Mrd'.
-- Verwende Punkt als Dezimalzeichen (z.B. 27.65), kein Komma."""
+ZAHLENFORMAT — strikt:
+- Volle Zahl in Base-Units, OHNE Suffix.  RICHTIG: 1450000000 USD.  FALSCH: 1450 USD Mio.
+- Prozente direkt als Wert.  RICHTIG: 4.38 %.  FALSCH: 0.0438.
+- EINHEIT enthaelt NUR Waehrung / "%" / "keine" — NIE "Mio"/"Mrd".
+- Punkt als Dezimaltrenner.
+- Keine erfundenen URLs."""
 
 
 def extract_research_value(text: str) -> Decimal | None:
@@ -452,41 +426,51 @@ _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
 
 
 KEY_RESEARCH_HINTS: dict[str, str] = {
-    "sbc": (
-        "Stock Based Compensation (SBC): jaehrlicher Betrag aus dem 10-K "
-        "(oder 20-F bei Non-US-Filern) unter 'Share-based compensation "
-        "expense' bzw. im Cash Flow Statement als 'Stock-based compensation'. "
-        "Primaer von der IR-Seite (Annual Report PDF), sekundaer SEC Edgar."
-    ),
     "net_income": (
-        "Net Income (Nettogewinn) fuer das exakte Geschaeftsjahr. Primaer "
-        "IR-Seite (Press Release / Annual Report), sekundaer 10-K. Keine TTM, "
-        "keine non-GAAP-Adjustments."
+        "Net Income (Nettogewinn, GAAP) zum Ende des exakten Geschaeftsjahrs. "
+        "Income Statement → letzte Zeile 'Net Income'. Keine TTM, keine non-GAAP-Adjustments."
     ),
-    "op_cash_flow": (
-        "Operating Cash Flow (Net cash provided by operating activities) "
-        "fuer das exakte Geschaeftsjahr. Primaer IR-Press-Release, sekundaer "
-        "Cashflow-Statement im 10-K. Fuer das laufende Jahr sind Guidance-"
-        "Zahlen akzeptabel — dann QUELLE explizit als 'IR Guidance FY XXXX'."
+    "fcf": (
+        "Free Cash Flow = Operating Cash Flow − Capital Expenditures. Manche "
+        "Aggregatoren weisen FCF separat aus (stockanalysis.com), sonst die "
+        "beiden Komponenten suchen und subtrahieren. POSITIV bei normaler Cash-Generierung."
     ),
-    "capex": (
-        "Capital Expenditures fuer das exakte Geschaeftsjahr, Zeile 'Purchase "
-        "of property and equipment' / 'Capital expenditures'. Immer POSITIV. "
-        "Primaer IR-Seite, sekundaer 10-K. Fuer laufendes Jahr Guidance ok."
+    "sbc": (
+        "Stock-Based Compensation Expense (Aufwand). Cash Flow Statement → "
+        "'Stock-based compensation' (Add-back im operativen CF). Immer POSITIV."
     ),
-    "debt": (
-        "Total Debt aus dem Balance Sheet zum Ende des exakten Geschaeftsjahrs. "
-        "Long-Term Debt + Short-Term Debt + Lease Liabilities (sofern als "
-        "Finanzschuld klassifiziert). Primaer IR (Annual Report), sekundaer 10-K."
+    "buyback_volume": (
+        "Aktienrueckkaeufe in Cash, jaehrliches Volumen. Cash Flow Statement → "
+        "'Repurchase of common stock' / 'Treasury stock purchases'. Immer POSITIV "
+        "(Output-Sicht; Aggregatoren zeigen es teils negativ — Vorzeichen ignorieren)."
     ),
-    "cash": (
-        "Cash and Cash Equivalents + Short-Term Investments/Marketable "
-        "Securities aus dem Balance Sheet zum Ende des exakten Geschaeftsjahrs. "
-        "Primaer IR, sekundaer 10-K."
+    "dividends": (
+        "Dividenden-Cashout im Geschaeftsjahr. Cash Flow Statement → "
+        "'Dividends paid' / 'Cash dividends'. Immer POSITIV als Auszahlungsbetrag."
+    ),
+    "cash_and_equivalents": (
+        "Cash and Cash Equivalents zum Bilanzstichtag (Ende FY). Balance Sheet "
+        "Asset-Seite ganz oben. OHNE Marketable Securities."
+    ),
+    "marketable_securities_st": (
+        "Short-Term Investments / Marketable Securities (current). Balance Sheet, "
+        "current assets. NUR der kurzfristige Anteil."
+    ),
+    "marketable_securities_lt": (
+        "Long-Term Investments / Marketable Securities (non-current). Balance Sheet, "
+        "non-current assets."
+    ),
+    "lease_liabilities": (
+        "Lease Liabilities (Operating + Finance Leases zusammen, current + non-current). "
+        "Balance Sheet. Wenn nur eine Position vorhanden, diese; sonst Summe. POSITIV."
+    ),
+    "long_term_debt": (
+        "Long-Term Debt (langfristige Finanzverbindlichkeiten). Balance Sheet → "
+        "'Long-term debt'. ohne current portion. POSITIV."
     ),
     "shares_outstanding": (
-        "Diluted Weighted Average Shares Outstanding aus dem jeweiligen 10-K "
-        "(oder aktuelle Zahl zum letzten Stichtag aus IR)."
+        "Diluted Weighted Average Shares Outstanding aus der Income Statement, "
+        "ODER (bei Stammdaten-Snapshot) aktueller Bestand zum letzten Stichtag aus IR."
     ),
 }
 

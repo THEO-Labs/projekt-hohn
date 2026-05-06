@@ -9,22 +9,25 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from app.config import settings
 from app.auth.deps import current_user
 from app.auth.models import User
 from app.calculations.engine import (
     CALCULATED_KEYS,
-    CUMULATIVE_KEYS,
     FY_CALC_KEYS,
+    HOHN_KEYS,
     STAMMDATEN_CALC_KEYS,
     calculate_cumulative,
     calculate_fy,
     calculate_stammdaten,
 )
+from app.calculations.lock import (
+    annual_report_years,
+    is_hohn_locked,
+    is_us_company,
+)
 from app.companies.models import Company
 from app.db import get_db
 from app.portfolios.models import Portfolio
-from app.llm.claude import research_value, validate_claude_value
 from app.providers.registry import get_providers
 from app.values.always_current import ALWAYS_CURRENT_KEYS
 from app.values.currency_keys import CURRENCY_KEYS
@@ -133,6 +136,16 @@ def _run_and_persist_calculations(
     )
 
     if period_type == "FY" and period_year is not None:
+        hohn_locked = company is not None and is_hohn_locked(db, company, period_year)
+        if hohn_locked:
+            db.query(CompanyValue).filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == period_year,
+                CompanyValue.value_key.in_(HOHN_KEYS),
+            ).delete(synchronize_session=False)
+            db.flush()
+
         current_rows, current = _load_value_map(db, company_id, "FY", period_year)
         _prev_rows, previous = _load_value_map(db, company_id, "FY", period_year - 1)
 
@@ -213,9 +226,10 @@ def _run_and_persist_calculations(
                     db.flush()
             except Exception as e:
                 logger.warning("Failed to log actual_return formula message: %s", e)
+        allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
-            current_rows, fy_calc, FY_CALC_KEYS, company_currency,
+            current_rows, fy_calc, allowed_fy_keys, company_currency,
         )
 
     return updated
@@ -261,6 +275,66 @@ def list_company_values(
     return q.all()
 
 
+def _try_factor_estimate(
+    db: Session,
+    company,
+    company_id: UUID,
+    key: str,
+    target_fy: int,
+):
+    """Q-Faktor-Estimate für laufende FY. Schreibt eine system-message
+    in den Chat der Zelle, damit der Nutzer den Breakdown nachvollziehen kann."""
+    from app.calculations.estimates import compute_estimate
+    from app.providers.base import ProviderResult
+    from app.llm.models import LlmMessage
+    from app.llm.routes import _get_or_create_conversation
+
+    try:
+        est = compute_estimate(db, company_id, key, target_fy)
+    except Exception as e:
+        logger.warning("Estimate failed for %s/%s/FY%s: %s", company.ticker, key, target_fy, e)
+        return None
+    if est is None:
+        return None
+
+    source_label = (
+        f"Schätzung (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
+        if est.method == "flow_factor" and est.factor is not None
+        else f"Schätzung (Bilanz-Snapshot {','.join(est.quarters_used)} {target_fy})"
+    )
+    try:
+        conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
+        db.add(LlmMessage(conversation_id=conv.id, role="system", content=est.explanation, source="estimate"))
+        db.flush()
+    except Exception as e:
+        logger.warning("Failed to log estimate system message %s/%s: %s", company.ticker, key, e)
+
+    return ProviderResult(
+        value=est.value,
+        source_name=source_label,
+        source_link=None,
+        currency=company.currency if key in CURRENCY_KEYS else None,
+        extras={"is_forecast": True, "estimate": est.explanation, "estimate_method": est.method},
+    )
+
+
+def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day):
+    for provider in get_providers(key):
+        try:
+            try:
+                result = provider.fetch(
+                    ticker, key, payload.period_type, payload.period_year,
+                    fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+                )
+            except TypeError:
+                result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
+            if result is not None:
+                return result
+        except Exception as e:
+            logger.warning("Provider fetch failed for %s/%s: %s", ticker, key, e)
+    return None
+
+
 def _process_one_key(
     db: Session,
     key: str,
@@ -271,25 +345,24 @@ def _process_one_key(
     updated: list,
 ) -> bool:
     """Returns True if a value was actually written/updated, False if skipped
-    (manual override / PDF value / no provider result)."""
-    from app.providers.base import ProviderResult
-    from app.llm.models import LlmConversation, LlmMessage
+    (manual override / PDF value / no provider result).
 
+    Source-Strategie:
+      - Stammdaten (stock_price/shares/market_cap): immer Yahoo
+      - Laufende FY + estimable key: Q-Faktor-Estimate aus Quartals-PDFs
+      - US-Filer (ISIN US...): EDGAR + Yahoo Provider-Chain
+      - Non-US: keine Provider — der Wert kommt ausschliesslich aus dem
+        Annual-Report-PDF (oder bleibt fehlend, dann muss der User explizit
+        "Mit Claude recherchieren" klicken)
+    Claude wird NIE automatisch aufgerufen.
+    """
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
 
-    # Up-front guard: skip everything (estimate, provider, Claude-research,
-    # chat-message side effects) when the existing value is locked by user
-    # override or PDF extraction. Doing this BEFORE compute_estimate avoids
-    # leaking misleading "Schätzung..." breadcrumbs into the cell's chat for
-    # values that won't actually be touched.
-    pre_eq = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_type == effective_period_type,
-        )
+    pre_eq = db.query(CompanyValue).filter(
+        CompanyValue.company_id == company_id,
+        CompanyValue.value_key == key,
+        CompanyValue.period_type == effective_period_type,
     )
     if effective_period_year is not None:
         pre_eq = pre_eq.filter(CompanyValue.period_year == effective_period_year)
@@ -303,133 +376,26 @@ def _process_one_key(
         updated.append(pre_existing)
         return False
 
-    fy_end_month = getattr(company, "fiscal_year_end_month", None)
-    fy_end_day = getattr(company, "fiscal_year_end_day", None)
-    result = None
-
-    # Priority 0: factor-based estimate from quarterly PDFs for the running FY.
-    # Skips provider chain + Claude-research entirely when applicable.
     from datetime import date as _date_today
+    from app.calculations.estimates import ESTIMABLE_KEYS
+
+    is_stammdaten = key in ALWAYS_CURRENT_KEYS
     is_running_fy = (
         effective_period_type == "FY"
         and effective_period_year is not None
         and effective_period_year >= _date_today.today().year
     )
-    if is_running_fy:
-        from app.calculations.estimates import compute_estimate, ESTIMABLE_KEYS
-        if key in ESTIMABLE_KEYS:
-            try:
-                est = compute_estimate(db, company_id, key, effective_period_year)
-            except Exception as e:
-                logger.warning("Estimate failed for %s/%s/FY%s: %s", ticker, key, effective_period_year, e)
-                est = None
-            if est is not None:
-                from app.providers.base import ProviderResult as _PR
-                source_label = (
-                    f"Schätzung (Q-Faktor): FY{effective_period_year - 1}"
-                    f" × Faktor {est.factor:.4f}"
-                    if est.method == "flow_factor" and est.factor is not None
-                    else f"Schätzung (Bilanz-Snapshot {','.join(est.quarters_used)} {effective_period_year})"
-                )
-                result = _PR(
-                    value=est.value,
-                    source_name=source_label,
-                    source_link=None,
-                    currency=company.currency if key in CURRENCY_KEYS else None,
-                    extras={"is_forecast": True, "estimate": est.explanation, "estimate_method": est.method},
-                )
-                # Write a system message into the cell's chat so the user can
-                # always see the breakdown by clicking the cell.
-                try:
-                    from app.llm.routes import _get_or_create_conversation
-                    conv = _get_or_create_conversation(db, company_id, key, effective_period_type, effective_period_year)
-                    db.add(LlmMessage(
-                        conversation_id=conv.id,
-                        role="system",
-                        content=est.explanation,
-                        source="estimate",
-                    ))
-                    db.flush()
-                except Exception as e:
-                    logger.warning("Failed to log estimate system message %s/%s: %s", ticker, key, e)
+    result = None
 
-    providers = get_providers(key) if result is None else []
-    for provider in providers:
-        try:
-            try:
-                result = provider.fetch(
-                    ticker, key, payload.period_type, payload.period_year,
-                    fy_end_month=fy_end_month, fy_end_day=fy_end_day,
-                )
-            except TypeError:
-                # Provider doesn't accept fy-end kwargs (e.g. Yahoo)
-                result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
-            if result is not None:
-                break
-        except Exception as e:
-            logger.warning("Provider fetch failed for %s/%s: %s", ticker, key, e)
-            continue
+    if is_running_fy and key in ESTIMABLE_KEYS:
+        result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
 
-    if result is None:
-        vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
-        if vd and vd.source_type.value in ("API",) and settings.anthropic_api_key:
-            label = f"{vd.label_en} ({vd.label_de})"
-            try:
-                research_val, research_source, research_url, user_prompt, assistant_response = research_value(
-                    company.name, ticker, label, company.currency,
-                    period_type=effective_period_type, period_year=effective_period_year,
-                    value_key=key,
-                )
-            except Exception as e:
-                logger.warning("Claude research failed for %s/%s: %s", ticker, key, e)
-                return False
-
-            if research_val is not None:
-                research_val = validate_claude_value(key, research_val)
-
-            if research_val is not None:
-                result = ProviderResult(
-                    value=research_val,
-                    source_name=research_source or "Claude-Recherche",
-                    source_link=research_url,
-                    currency=company.currency if key in CURRENCY_KEYS else None,
-                )
-
-            if user_prompt and assistant_response:
-                try:
-                    q = db.query(LlmConversation).filter(
-                        LlmConversation.company_id == company_id,
-                        LlmConversation.value_key == key,
-                        LlmConversation.period_type == effective_period_type,
-                    )
-                    if effective_period_year is None:
-                        q = q.filter(LlmConversation.period_year.is_(None))
-                    else:
-                        q = q.filter(LlmConversation.period_year == effective_period_year)
-                    existing_conv = q.first()
-                    if not existing_conv:
-                        existing_conv = LlmConversation(
-                            company_id=company_id, value_key=key,
-                            period_type=effective_period_type, period_year=effective_period_year,
-                        )
-                        db.add(existing_conv)
-                        db.flush()
-                    msg_count = (
-                        db.query(LlmMessage)
-                        .filter(LlmMessage.conversation_id == existing_conv.id)
-                        .count()
-                    )
-                    if msg_count == 0:
-                        db.add(LlmMessage(conversation_id=existing_conv.id, role="user", content=user_prompt))
-                        db.add(LlmMessage(
-                            conversation_id=existing_conv.id,
-                            role="assistant",
-                            content=assistant_response,
-                            score_suggestion=research_val,
-                        ))
-                        db.flush()
-                except Exception as e:
-                    logger.warning("Failed to save Claude conversation for %s/%s: %s", ticker, key, e)
+    if result is None and (is_stammdaten or is_us_company(company)):
+        result = _try_providers(
+            ticker, key, payload,
+            getattr(company, "fiscal_year_end_month", None),
+            getattr(company, "fiscal_year_end_day", None),
+        )
 
     if result is None:
         return False
@@ -839,6 +805,84 @@ def calculate_company_values(
     return calc_updated
 
 
+@values_router.post("/{company_id}/values/{value_key}/research")
+def research_company_value(
+    company_id: UUID,
+    value_key: str,
+    period_type: str = Query(default="FY"),
+    period_year: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Manueller Trigger fuer Claude-Web-Recherche zu einer einzelnen Zelle.
+
+    Speichert NUR die Chat-Konversation (User-Frage + Claude-Antwort mit
+    score_suggestion = recherchierter Wert). Persistiert NICHT als
+    CompanyValue — der User entscheidet im Drawer per "Wert übernehmen", ob
+    Claudes Vorschlag uebernommen werden soll.
+
+    Returns AnalyzeResponse-Shape: { conversation_id, message }.
+    """
+    from app.config import settings
+    from app.llm.claude import research_value, validate_claude_value
+    from app.llm.models import LlmMessage
+    from app.llm.routes import _get_or_create_conversation
+    from app.llm.schemas import LlmMessageOut
+
+    company = _get_owned_company(db, user, company_id)
+
+    if not settings.anthropic_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Claude-API nicht konfiguriert")
+    if value_key in CALCULATED_KEYS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Berechnete Werte können nicht recherchiert werden")
+
+    vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
+    if vd is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unbekannter Wert")
+    if vd.source_type == SourceType.QUALITATIVE:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Qualitative Werte gehen über die Analyse, nicht Recherche")
+
+    eff_period_type = "SNAPSHOT" if value_key in ALWAYS_CURRENT_KEYS else period_type
+    eff_period_year = None if value_key in ALWAYS_CURRENT_KEYS else period_year
+
+    label = f"{vd.label_en} ({vd.label_de})"
+    research_val, research_source, research_url, user_prompt, assistant_response = research_value(
+        company.name, company.ticker, label, company.currency,
+        period_type=eff_period_type, period_year=eff_period_year, value_key=value_key,
+    )
+    if research_val is not None:
+        research_val = validate_claude_value(value_key, research_val)
+
+    conv = _get_or_create_conversation(db, company_id, value_key, eff_period_type, eff_period_year)
+
+    if not user_prompt or not assistant_response:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Claude-Recherche fehlgeschlagen — keine Antwort erhalten")
+
+    db.add(LlmMessage(conversation_id=conv.id, role="user", content=user_prompt, source="research"))
+    assistant_msg = LlmMessage(
+        conversation_id=conv.id,
+        role="assistant",
+        content=assistant_response,
+        score_suggestion=research_val,
+        source="research",
+    )
+    db.add(assistant_msg)
+    db.commit()
+    db.refresh(assistant_msg)
+
+    return {
+        "conversation_id": str(conv.id),
+        "message": LlmMessageOut.model_validate(assistant_msg).model_dump(mode="json"),
+        "value_found": research_val is not None,
+        "source_label": research_source,
+        "source_url": research_url,
+    }
+
+
 @values_router.post("/{company_id}/values/sanity-check")
 def sanity_check_company(
     company_id: UUID,
@@ -1043,7 +1087,7 @@ def get_fy_availability(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _get_owned_company(db, user, company_id)
+    company = _get_owned_company(db, user, company_id)
     rows = (
         db.query(CompanyValue.period_year, CompanyValue.value_key)
         .filter(
@@ -1072,6 +1116,8 @@ def get_fy_availability(
         "fy_years_with_data": sorted(keys_per_year.keys()),
         "keys_per_year": {str(y): sorted(set(ks)) for y, ks in keys_per_year.items()},
         "has_snapshot_market_cap": snap_market_cap,
+        "is_us": is_us_company(company),
+        "annual_report_years": annual_report_years(db, company_id),
     }
 
 
@@ -1306,7 +1352,7 @@ def override_company_value(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> CompanyValue:
-    from app.llm.models import LlmConversation, LlmMessage
+    from app.llm.models import LlmMessage
     from app.llm.routes import _get_or_create_conversation
 
     company = _get_owned_company(db, user, company_id)

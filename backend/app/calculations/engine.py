@@ -17,6 +17,8 @@ def _cagr_pct(growth_factor: Decimal, n: int) -> Decimal | None:
 
 STAMMDATEN_CALC_KEYS = {"market_cap_calc"}
 
+HOHN_KEYS = {"hohn_return_simple", "hohn_return_detailed"}
+
 FY_CALC_KEYS = {
     "cash_sum",
     "debt_sum",
@@ -31,13 +33,8 @@ FY_CALC_KEYS = {
     "net_debt_change",
     "net_debt_change_pct",
     "dividend_yield",
-    "hohn_return_simple",
-    "hohn_return_detailed",
-    # Realised total shareholder return: ((MCap end FY / MCap start FY) - 1)
-    # + dividend yield. Only meaningful when next-year start-of-FY MCap exists
-    # (= end-of-current-FY) AND the FY itself is fully reported (not estimate).
     "actual_return",
-}
+} | HOHN_KEYS
 
 CALCULATED_KEYS = STAMMDATEN_CALC_KEYS | FY_CALC_KEYS
 

@@ -211,7 +211,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         </div>
       )}
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
-        Hochgeladene PDFs werden via Claude analysiert und liefern die Werte primaer (vor Yahoo/EDGAR).
+        Annual Reports sind die Hauptquelle für Finanzdaten. Bei US-Filern (ISIN US…) liefert zusätzlich EDGAR Daten — bei Non-US-Firmen ist die Hohn-Rendite ohne hochgeladenen Annual Report gesperrt.
       </p>
       <QuarterlyReportGrid
         companyId={companyId}

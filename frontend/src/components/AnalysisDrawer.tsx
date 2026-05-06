@@ -461,7 +461,7 @@ export function AnalysisDrawer({
                   <p className="mt-1 text-xs text-muted-foreground">
                     {isCalculated
                       ? "Sobald die Eingangswerte gepflegt sind und die Formel ein Ergebnis liefert, kannst du Claude dazu befragen."
-                      : "Trage zuerst einen Wert ein (oder lass ihn per Refresh holen), dann kannst du Claude dazu befragen."}
+                      : "Trage einen Wert ein oder klick \"Recherchieren\" in der Tabelle, damit Claude den Wert via Web-Recherche findet."}
                   </p>
                 </div>
               </div>

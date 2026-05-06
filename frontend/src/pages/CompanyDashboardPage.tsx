@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle, Loader2, Lock, Search } from "lucide-react";
+import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
 import { useAuth } from "@/hooks/useAuth";
@@ -15,6 +16,7 @@ import {
   getRefreshStatus,
   refreshValues,
   overrideValue,
+  researchValue,
   fetchHistoricalStammdaten,
   type ValueDefinition,
   type CompanyValue,
@@ -182,6 +184,15 @@ const TIER_BG: Record<ColorTier, string> = {
   bad: "bg-red-100/60",
 };
 
+const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"]);
+
+function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
+  if (!av || periodYear === undefined) return false;
+  if (periodYear >= new Date().getFullYear()) return false;
+  if (av.is_us) return false;
+  return !av.annual_report_years.includes(periodYear);
+}
+
 type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
 
 export function CompanyDashboardPage() {
@@ -195,7 +206,6 @@ export function CompanyDashboardPage() {
   const [fyIdx, setFyIdx] = useState(0);
   const [cumIdx, setCumIdx] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
-  const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
   const [isLoadingPeriod, setIsLoadingPeriod] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
@@ -222,6 +232,7 @@ export function CompanyDashboardPage() {
   const [availabilityMap, setAvailabilityMap] = useState<Map<string, FyAvailability>>(new Map());
   const [refreshStatuses, setRefreshStatuses] = useState<Map<string, RefreshStatus>>(new Map());
   const [fxRates, setFxRates] = useState<Record<string, number>>(FALLBACK_FX_RATES);
+  const [researching, setResearching] = useState<string | null>(null);
 
   const period: PeriodOption = periodMode === "FY"
     ? { label: FY_OPTIONS[fyIdx].label, value: "FY", year: FY_OPTIONS[fyIdx].year }
@@ -237,7 +248,7 @@ export function CompanyDashboardPage() {
         try {
           availMap.set(c.id, await getFyAvailability(c.id));
         } catch {
-          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false });
+          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [] });
         }
       })
     );
@@ -372,7 +383,7 @@ export function CompanyDashboardPage() {
         try {
           map.set(c.id, await getFyAvailability(c.id));
         } catch {
-          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false });
+          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [] });
         }
       })
     );
@@ -403,38 +414,8 @@ export function CompanyDashboardPage() {
     });
   };
 
-  const handleRefreshColumn = async (key: string) => {
-    const loadKey = key;
-    setLoadingKeys((prev) => new Set([...prev, loadKey]));
-    try {
-      await Promise.all(
-        companies.map(async (c) => {
-          const updated = await refreshValues(c.id, [key], period.value, period.year);
-          setValuesMap((prev) => {
-            const next = new Map(prev);
-            const existing = next.get(c.id) ?? [];
-            const merged = new Map(existing.map((v) => [`${v.value_key}:${v.period_type}:${v.period_year}`, v]));
-            for (const u of updated) merged.set(`${u.value_key}:${u.period_type}:${u.period_year}`, u);
-            next.set(c.id, Array.from(merged.values()));
-            return next;
-          });
-          const hasValue = updated.some((u) => u.value_key === key);
-          const nfKey = `${c.id}:${key}`;
-          if (!hasValue) {
-            setNotFound((prev) => new Set([...prev, nfKey]));
-          } else {
-            setNotFound((prev) => { const n = new Set(prev); n.delete(nfKey); return n; });
-          }
-        })
-      );
-    } finally {
-      setLoadingKeys((prev) => { const n = new Set(prev); n.delete(loadKey); return n; });
-    }
-  };
-
   const handleRefreshCompany = async (c: Company) => {
     const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
-    setLoadingKeys((prev) => new Set([...prev, ...apiKeys]));
     setRefreshStatuses((prev) => new Map(prev).set(c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }));
     try {
       const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
@@ -458,9 +439,46 @@ export function CompanyDashboardPage() {
     } catch (err) {
       console.error(`Refresh failed for ${c.name}:`, err);
     } finally {
-      setLoadingKeys(new Set());
       await pollStatuses(companies);
       await loadAllValues();
+    }
+  };
+
+  const handleResearch = async (
+    companyId: string,
+    companyName: string,
+    key: string,
+    valueLabel: string,
+    dataType: string,
+  ) => {
+    const researchKey = `${companyId}:${key}`;
+    if (researching) return;
+    setResearching(researchKey);
+    try {
+      const res = await researchValue(companyId, key, period.value, period.year);
+      const score = res.message.score_suggestion;
+      const numericScore = score == null ? null : (typeof score === "string" ? parseFloat(score) : score);
+      if (!res.value_found) {
+        toast.warning("Claude konnte keinen verifizierbaren Wert finden — siehe Chat für Details");
+      }
+      setDrawer({
+        companyId,
+        valueKey: key,
+        companyName,
+        valueLabel,
+        currentScore: numericScore,
+        currentText: undefined,
+        isQualitative: false,
+        isAlwaysCurrent: key === "stock_price" || key === "shares_outstanding" || key === "market_cap",
+        isCalculated: false,
+        dataType,
+      });
+      setDrawerOpen(true);
+    } catch (e) {
+      const detail = (e as { message?: string })?.message;
+      toast.error(detail || "Recherche fehlgeschlagen");
+    } finally {
+      setResearching(null);
     }
   };
 
@@ -627,6 +645,33 @@ export function CompanyDashboardPage() {
           )}
         </div>
 
+        {period.value === "FY" && period.year !== undefined && period.year < new Date().getFullYear() && (() => {
+          const locked = companies.filter((c) => isHohnLocked(availabilityMap.get(c.id), period.year));
+          if (locked.length === 0) return null;
+          return (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+              <div className="flex items-center gap-2 font-semibold">
+                <Lock className="h-4 w-4 text-amber-600" />
+                Hohn-Rendite gesperrt für {locked.length} {locked.length === 1 ? "Firma" : "Firmen"} (FY{period.year})
+              </div>
+              <p className="mt-1 text-[11px] text-amber-800/90">
+                Bei Non-US-Unternehmen ist die Hohn-Rendite für abgeschlossene FYs nur berechenbar, wenn ein
+                fertig extrahierter Annual Report vorliegt. Lade den Geschäftsbericht in der Firmen-Verwaltung hoch.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {locked.map((c) => (
+                  <Link key={c.id} to={`/portfolios/${pid}/manage`}
+                    className="rounded border border-amber-200 bg-white/70 px-2 py-0.5 font-mono text-[11px] font-medium text-amber-900 hover:bg-white"
+                    title="Annual Report hochladen"
+                  >
+                    {c.ticker}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {period.value === "CUM" && (() => {
           type Gap = { company: Company; mcapMissing: boolean; missingPerYear: { year: number; isPre: boolean; missingKeys: string[] }[] };
           const gaps: Gap[] = [];
@@ -775,17 +820,7 @@ export function CompanyDashboardPage() {
                   return g.defs.map((d) => (
                     <th key={d.key}
                       className={`whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground ${d.isPrevYear ? "bg-muted/20 italic" : ""}`}>
-                      <div className="flex items-center gap-1">
-                        <span className="truncate" title={d.label_de}>{d.label_en}</span>
-                        {d.source_type === "API" && !d.isPrevYear && (
-                          <button onClick={() => handleRefreshColumn(d.key)}
-                            disabled={loadingKeys.has(d.key)}
-                            className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
-                            title={t.calculate}>
-                            <RefreshCw className={`h-3 w-3 ${loadingKeys.has(d.key) ? "animate-spin" : ""}`} />
-                          </button>
-                        )}
-                      </div>
+                      <span className="truncate" title={d.label_de}>{d.label_en}</span>
                     </th>
                   ));
                 })}
@@ -877,6 +912,24 @@ export function CompanyDashboardPage() {
                           </td>
                         );
                       }
+                      const av = availabilityMap.get(company.id);
+                      const hohnLockedHere = HOHN_LOCKED_KEYS.has(d.key)
+                        && period.value === "FY"
+                        && isHohnLocked(av, period.year);
+                      if (hohnLockedHere) {
+                        return (
+                          <td key={`${company.id}-${d.key}`}
+                            className="whitespace-nowrap border-r border-border/40 bg-amber-50/70 px-3 py-2 cursor-help"
+                            title={`Hohn-Rendite gesperrt — kein Annual Report für FY${period.year} hochgeladen. Lade den Geschäftsbericht hoch, dann lassen sich Werte verifizieren und Hohn-Rendite berechnen.`}
+                          >
+                            <div className="flex items-center gap-1.5 text-amber-800">
+                              <Lock className="h-3.5 w-3.5 shrink-0" />
+                              <span className="text-xs font-medium">Annual Report fehlt</span>
+                            </div>
+                          </td>
+                        );
+                      }
+
                       const cv = getVal(company.id, d.key);
                       const rawStr = cv?.numeric_value ?? null;
                       const raw: number | null = rawStr == null ? null : (typeof rawStr === "string" ? parseFloat(rawStr) : rawStr);
@@ -989,19 +1042,39 @@ export function CompanyDashboardPage() {
                               const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
                               const pdfReason = reasonMatch?.[1]?.trim();
                               const isCalc = d.source_type === "CALCULATED";
+                              const canResearch = !isCalc && !isQualitative;
                               const tooltipText = pdfNullSource
-                                ? `PDF analysiert, kein Wert gefunden${pdfReason ? `: ${pdfReason}` : ""}. Doppelklick zum manuellen Eintragen.`
+                                ? `Annual Report analysiert, kein Wert für diese Kennzahl gefunden${pdfReason ? `: ${pdfReason}` : ""}.`
                                 : isCalc
                                 ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
-                                : `Wert fehlt - keine Daten von Yahoo/EDGAR/PDF/Claude. Refresh ausführen oder Doppelklick für manuelle Eingabe.`;
+                                : `Wert fehlt - weder im PDF noch von Yahoo/EDGAR.`;
                               const labelText = pdfNullSource
-                                ? "PDF: kein Wert"
-                                : isCalc ? "Inputs fehlen" : "Wert fehlt";
-                              const colorClass = pdfNullSource || isCalc ? "text-amber-600" : "text-amber-600";
+                                ? "Im Bericht nicht gefunden"
+                                : isCalc ? "Inputs fehlen" : "Wert nicht gefunden";
+                              const researchKey = `${company.id}:${d.key}`;
+                              const isResearching = researching === researchKey;
                               return (
-                                <div className="group/nf flex items-center gap-1.5 cursor-pointer" title={tooltipText}>
-                                  <AlertTriangle className={`h-3.5 w-3.5 ${colorClass}`} />
-                                  <span className={`text-xs ${colorClass}`}>{labelText}</span>
+                                <div className="group/nf flex items-center gap-1.5" title={tooltipText}>
+                                  <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                                  <span className="text-xs text-amber-700">{labelText}</span>
+                                  {canResearch && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleResearch(company.id, company.name, d.key, d.label_en, d.data_type);
+                                      }}
+                                      disabled={isResearching || researching !== null}
+                                      className="ml-0.5 inline-flex items-center gap-0.5 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      title="Mit Claude Web-Recherche den Wert finden"
+                                    >
+                                      {isResearching ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <Search className="h-3 w-3" />
+                                      )}
+                                      {isResearching ? "Recherche…" : "Recherchieren"}
+                                    </button>
+                                  )}
                                 </div>
                               );
                             })() ?? (

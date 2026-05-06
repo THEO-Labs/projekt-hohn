@@ -89,6 +89,8 @@ export type FyAvailability = {
   fy_years_with_data: number[];
   keys_per_year: Record<string, string[]>;
   has_snapshot_market_cap: boolean;
+  is_us: boolean;
+  annual_report_years: number[];
 };
 
 export const getFyAvailability = (companyId: string) =>
@@ -147,6 +149,35 @@ export const fetchHistoricalStammdaten = (companyId: string, periodYear: number)
     `/api/companies/${companyId}/values/historical-stammdaten?period_year=${periodYear}`,
     { method: "POST" }
   );
+
+export type ResearchResult = {
+  conversation_id: string;
+  message: {
+    id: string;
+    role: string;
+    content: string;
+    score_suggestion: number | string | null;
+    source: string | null;
+    created_at: string;
+  };
+  value_found: boolean;
+  source_label: string | null;
+  source_url: string | null;
+};
+
+export const researchValue = (
+  companyId: string,
+  valueKey: string,
+  periodType: string = "FY",
+  periodYear?: number,
+) => {
+  const params = new URLSearchParams();
+  params.set("period_type", periodType);
+  if (periodYear) params.set("period_year", String(periodYear));
+  return api<ResearchResult>(`/api/companies/${companyId}/values/${valueKey}/research?${params}`, {
+    method: "POST",
+  });
+};
 
 export const overrideValue = (
   companyId: string,
