@@ -35,6 +35,9 @@ const CATEGORY_ORDER = [
   "DIVIDENDS", "DELTA_ND", "CASH", "DEBT", "STAMMDATEN",
 ];
 
+// Faktoren die in der Hohn-Formel auftauchen — die zeigen wir in der
+// kompakten Ansicht. buyback_yield (brutto) ist NICHT in der Formel,
+// nur net_buyback_yield (= Buybacks − SBC) — daher hier raus.
 const FACTOR_KEYS = new Set([
   "hohn_return_simple",
   "hohn_return_detailed",
@@ -43,7 +46,6 @@ const FACTOR_KEYS = new Set([
   "ni_growth",
   "sbc_yield",
   "net_buyback_yield",
-  "buyback_yield",
   "dividend_yield",
   "net_debt_change_pct",
   "market_cap",
