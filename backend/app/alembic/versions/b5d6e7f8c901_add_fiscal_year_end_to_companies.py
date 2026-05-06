@@ -42,13 +42,9 @@ def upgrade() -> None:
             sa.Column("from_ir_pdf", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         )
 
-    # source_name war urspruenglich VARCHAR(128), Modell zeigt jetzt 512 —
-    # PDF-Quellen-Strings ueberschreiten 128 schnell ("PDF: ... — kein Wert: ...").
-    op.execute("ALTER TABLE company_values ALTER COLUMN source_name TYPE varchar(512)")
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE company_values ALTER COLUMN source_name TYPE varchar(128)")
     op.drop_column("company_values", "from_ir_pdf")
     op.drop_column("companies", "fiscal_year_end_day")
     op.drop_column("companies", "fiscal_year_end_month")
