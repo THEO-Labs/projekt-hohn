@@ -262,12 +262,14 @@ function buildVariantValues(
     ndChangePct = _safeYield(ndChange, marketCap);
   }
 
-  const sumOptional = (parts: (number | null)[]): number | null => {
-    const present = parts.filter((p) => p != null) as number[];
-    return present.length > 0 ? present.reduce((a, b) => a + b, 0) : null;
+  // Hohn-Rendite NUR wenn ALLE Komponenten vorhanden sind (kein Partial-Sum,
+  // sonst entstehen irrefuehrende "Werte" aus 1-2 Teilen).
+  const sumIfAllPresent = (parts: (number | null)[]): number | null => {
+    if (parts.some((p) => p == null)) return null;
+    return (parts as number[]).reduce((a, b) => a + b, 0);
   };
-  const hohnSimple = sumOptional([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
-  const hohnDetailed = sumOptional([divYield, niGrowth, netBuybackYield, ndChangePct]);
+  const hohnSimple = sumIfAllPresent([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
+  const hohnDetailed = sumIfAllPresent([divYield, niGrowth, netBuybackYield, ndChangePct]);
 
   return new Map<string, number | null>([
     ["fcf", fcf], ["sbc", sbc], ["buyback_volume", buyback], ["dividends", dividends],
@@ -998,26 +1000,62 @@ export function CompanyDashboardPage() {
                           }
                           const val = vals.get(d.key) ?? null;
                           if (val == null) {
-                            // Variant hat keinen Wert — bei Web heisst das meist "Recherche fehlgeschlagen / Anthropic 529".
                             const isWebRow = label === "Web-Guidance";
+                            const isHohn = d.key === "hohn_return_simple" || d.key === "hohn_return_detailed";
+                            // Hohn-Rendite: zeige fehlende Komponenten auf, statt generisch "Web fehlt".
+                            let hohnMissing: string[] = [];
+                            if (isHohn) {
+                              const reqKeys = d.key === "hohn_return_simple"
+                                ? ["fcf_yield", "ni_growth", "sbc_yield", "net_debt_change_pct"]
+                                : ["dividend_yield", "ni_growth", "net_buyback_yield", "net_debt_change_pct"];
+                              hohnMissing = reqKeys.filter((k) => vals.get(k) == null);
+                            }
+                            const tip = isHohn
+                              ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}`
+                              : isWebRow
+                              ? "Web-Recherche hat fuer diesen Wert (noch) nichts geliefert. 'Werte berechnen' nochmal klicken — Claude soll im Zweifel eine Approximation liefern."
+                              : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
+                            const txt = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlt" : "—");
                             return (
                               <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 px-3 py-2 text-xs text-muted-foreground/50"
-                                title={isWebRow ? "Web-Recherche hat fuer diesen Wert nichts geliefert. 'Werte berechnen' nochmal klicken um erneut zu versuchen." : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate)."}>
-                                {isWebRow ? "Web fehlt" : "—"}
+                                title={tip}>
+                                {txt}
                               </td>
                             );
                           }
                           let display: number | null = val;
+                          const cellCv = cRows.find((r) => r.value_key === d.key) ?? null;
                           if (d.is_currency && d.data_type === "NUMERIC") {
-                            const cv = (cRows.find((r) => r.value_key === d.key)) ?? null;
-                            const cur = cv?.currency ?? null;
+                            const cur = cellCv?.currency ?? null;
                             const conv = convertCurrency(val, cur);
                             display = conv ?? val;
                           }
                           const tier = colorTier(d.key, display);
                           const tierBg = tier ? TIER_BG[tier] : "";
+                          const isCalcCell = d.source_type === "CALCULATED";
+                          // Chat: beim Klick Drawer oeffnen mit aktueller Variant-Quelle
+                          // (Web-Guidance speichert User+Assistant-Messages, Q-Faktor System-Message).
                           return (
-                            <td key={`${company.id}-${label}-${d.key}`} className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg}`}>
+                            <td
+                              key={`${company.id}-${label}-${d.key}`}
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isCalcCell ? "" : "cursor-pointer hover:bg-muted/30"}`}
+                              title={isCalcCell ? "Berechneter Wert — klick auf die Eingangswerte um zu chatten." : `Chat zu ${d.label_de} (${label})`}
+                              onClick={isCalcCell ? undefined : () => {
+                                setDrawer({
+                                  companyId: company.id,
+                                  valueKey: d.key,
+                                  companyName: company.name,
+                                  valueLabel: d.label_en,
+                                  currentScore: display ?? undefined,
+                                  currentText: cellCv?.text_value ?? undefined,
+                                  isQualitative: false,
+                                  isAlwaysCurrent: false,
+                                  isCalculated: false,
+                                  dataType: d.data_type,
+                                });
+                                setDrawerOpen(true);
+                              }}
+                            >
                               <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
                             </td>
                           );
@@ -1253,18 +1291,25 @@ export function CompanyDashboardPage() {
                                 && typeof cv?.source_name === "string" && cv.source_name.includes("kein Wert");
                               const cvEmpty = cv && cv.numeric_value == null && cv.text_value == null && !pdfNullSource;
                               const noCv = !cv && !isQualitative;
-                              const isMissing = noCv || pdfNullSource || cvEmpty || notFound.has(`${company.id}:${d.key}`);
+                              // Hohn-Rendite: wenn auch nur eine Komponente fehlt → wie "Wert fehlt"
+                              // behandeln (kein irrefuehrender Partial-Wert).
+                              const hohnPartialBlock = fyPartialMissing.length > 0;
+                              const isMissing = noCv || pdfNullSource || cvEmpty || hohnPartialBlock || notFound.has(`${company.id}:${d.key}`);
                               if (!isMissing) return null;
                               const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
                               const pdfReason = reasonMatch?.[1]?.trim();
                               const isCalc = d.source_type === "CALCULATED";
-                              const canResearch = !isCalc && !isQualitative;
-                              const tooltipText = pdfNullSource
+                              const canResearch = !isCalc && !isQualitative && !hohnPartialBlock;
+                              const tooltipText = hohnPartialBlock
+                                ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${fyPartialMissing.join(", ")}. Klick auf die fehlenden Felder um sie zu fuellen.`
+                                : pdfNullSource
                                 ? `Annual Report analysiert, kein Wert für diese Kennzahl gefunden${pdfReason ? `: ${pdfReason}` : ""}.`
                                 : isCalc
                                 ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
                                 : `Wert fehlt - weder im PDF noch von Yahoo/EDGAR.`;
-                              const labelText = pdfNullSource
+                              const labelText = hohnPartialBlock
+                                ? "Komponenten fehlen"
+                                : pdfNullSource
                                 ? "Im Bericht nicht gefunden"
                                 : isCalc ? "Inputs fehlen" : "Wert nicht gefunden";
                               const researchKey = `${company.id}:${d.key}`;

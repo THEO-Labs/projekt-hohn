@@ -353,34 +353,46 @@ def extract_value(text: str) -> Decimal | None:
 
 
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Recherchiere EINE konkrete Finanzkennzahl
-fuer ein Unternehmen via web_search und liefere genau eine Zahl + kurze Begruendung.
+fuer ein Unternehmen via web_search und liefere IMMER eine Zahl + kurze Begruendung.
+
+GRUNDREGEL — NIE LEER ANTWORTEN:
+Du MUSST in jedem Fall einen numerischen WERT liefern. NICHT_GEFUNDEN ist
+verboten ausser bei voellig unbekannten Tickern (kein Treffer in Google).
+Reihenfolge der Strategien:
+  1. Exakter Wert aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
+  2. Management-Guidance / Investor-Day-Outlook (IR-Seite, Earnings Call Transcript)
+  3. Analysten-Konsens (Yahoo, Seeking Alpha, Bloomberg-Snippets, Reuters)
+  4. Approximation aus juengstem bekannten Wert (letzter 10-K/10-Q + plausible
+     Wachstumsrate aus Industrie/Unternehmen, oder TTM extrapoliert)
+  5. Branchen-Approximation (vergleichbare Firma, gleiche Groessenordnung)
+Markiere jede Strategie ehrlich in QUELLE und KONFIDENZ.
 
 VORGEHEN
-1. Such gezielt mit explizitem Jahr UND Site-Hint, z.B.:
+1. Suche gezielt mit explizitem Jahr UND Site-Hint, z.B.:
+     "Airbus net_income FY2026 guidance" / "Airbus 2026 outlook EBIT"
+     "ASML free cash flow 2026 analyst consensus"
      "Allianz net_income FY2024 stockanalysis"
-     "ASML lease liabilities 2024 macrotrends"
-2. Bevorzuge Aggregatoren (Snippet-tauglich):
-     - Cash-Flow:  stockanalysis.com/.../cash-flow-statement/
-     - Bilanz:     stockanalysis.com/.../balance-sheet/, wsj.com/market-data/quotes/.../financials/annual/balance-sheet
-     - GuV:        macrotrends.net/.../net-income, stockanalysis.com/.../financials/
-     - Guidance:   investor.<domain>/, seekingalpha.com (Transcripts), Yahoo Analyst Estimates
-   Direkte 10-K/PDF-Links liefern via web_search meist nur leeren Snippet — vermeiden.
-3. Kreuz-Check mind. 2 Quellen wenn moeglich. Bei Konflikt die mit hoeherer Konfidenz.
-4. Fallback nur wenn Aggregatoren nichts liefern: Analysten-Konsens / IR-Guidance —
-   QUELLE muss das ehrlich kennzeichnen.
+2. Bevorzuge Aggregatoren fuer Istwerte (Snippet-tauglich):
+     - Cash-Flow: stockanalysis.com/.../cash-flow-statement/
+     - Bilanz:    stockanalysis.com/.../balance-sheet/, wsj.com/market-data/quotes
+     - GuV:       macrotrends.net/.../net-income, stockanalysis.com/.../financials/
+3. Fuer Forward-Year (zukuenftige FY): Guidance + Konsens zuerst, dann Approximation.
+4. Bei Approximation: Begruende den Schaetzweg (z.B. "FY2025-Wert + 5% Industrie-Growth"
+   oder "Q3-2025 YTD * 4/3"). Setze KONFIDENZ: niedrig.
 
 ANTWORT — exakt dieses Format, nichts anderes davor/danach:
 WERT: [Zahl in Base-Units]
 EINHEIT: [USD/EUR/...|%|keine]
-QUELLE: [Kurzbezeichnung, z.B. "stockanalysis.com FY2024 Income Statement"]
-QUELLE_URL: [echte direkte URL]
-ZEITRAUM: [z.B. FY2024, TTM, aktuell]
+QUELLE: [Kurzbezeichnung, z.B. "stockanalysis.com FY2024 Income Statement" oder
+         "Approximation: FY2025-Istwert + 5% Industrie-Growth (kein FY2026-Konsens findbar)"]
+QUELLE_URL: [echte direkte URL — bei Approximation URL der Datenbasis, NICHT erfunden]
+ZEITRAUM: [z.B. FY2024, FY2026e, TTM, aktuell]
 KONFIDENZ: [hoch|mittel|niedrig]
-BEGRUENDUNG: [1-2 Saetze: woher der Wert genau stammt + ggf. Sondereffekte]
+BEGRUENDUNG: [2-3 Saetze: woher der Wert stammt, bei Approximation der Schaetzweg
+              + warum kein exakter Wert verfuegbar war]
 
-Wenn nichts Verifizierbares findbar ist:
-WERT: NICHT_GEFUNDEN
-BEGRUENDUNG: [1 Satz warum]
+WERT: NICHT_GEFUNDEN ist NUR erlaubt wenn der Ticker komplett unbekannt ist
+oder das Unternehmen nicht existiert. In ALLEN anderen Faellen einen Schaetzwert.
 
 ZAHLENFORMAT — strikt:
 - Volle Zahl in Base-Units, OHNE Suffix.  RICHTIG: 1450000000 USD.  FALSCH: 1450 USD Mio.
@@ -505,10 +517,14 @@ def research_value(
         forward_block = "\n\n" + FORWARD_YEAR_HINT.replace("{YEAR}", str(period_year))
         historical_constraint = ""
         not_found_clause = (
-            "Wenn wirklich weder Guidance noch Analysten-Konsens noch ein "
-            "historischer Referenzwert auffindbar ist, antworte mit "
-            "WERT: NICHT_GEFUNDEN — sonst immer einen Zahlenwert liefern "
-            "und die QUELLE entsprechend markieren."
+            "PFLICHT: Liefere IMMER einen Wert. Reihenfolge:\n"
+            f"  1. Konkrete Management-Guidance fuer FY{period_year} aus IR/Earnings-Calls\n"
+            f"  2. Analysten-Konsens fuer FY{period_year} (Yahoo, Seeking Alpha, Reuters)\n"
+            f"  3. Approximation: FY{period_year - 1} Istwert × plausibler Wachstumsrate "
+            "(Industrie-Growth, historische CAGR der letzten 3-5 Jahre, Q-trend "
+            f"YTD-Hochrechnung). Begruende die Wachstumsrate.\n"
+            f"  4. Fallback-Approximation: FY{period_year - 1} Istwert ohne Growth.\n"
+            "WERT: NICHT_GEFUNDEN ist verboten ausser bei unbekanntem Ticker."
         )
     else:
         forward_block = ""
