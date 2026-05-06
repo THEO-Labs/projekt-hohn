@@ -104,7 +104,10 @@ def calculate_fy(
     if previous:
         ni_prev = previous.get("net_income")
         if ni is not None and ni_prev is not None and ni_prev != 0:
-            results["ni_growth"] = (ni / ni_prev - Decimal("1")) * Decimal("100")
+            # |ni_prev| im Nenner, damit das Vorzeichen des Wachstums auch
+            # bei negativem Vorjahres-Net-Income korrekt bleibt (Turnaround
+            # von Verlust → Gewinn = positives Wachstum, nicht negatives).
+            results["ni_growth"] = (ni - ni_prev) / abs(ni_prev) * Decimal("100")
 
         # ΔNet Debt = previous - current (positive = Schulden-Abbau / Cash-Wachstum).
         prev_net_debt = previous.get("net_debt")
@@ -303,9 +306,12 @@ def calculate_cumulative(
     if ni_start is None:
         ni_missing.append(f"net_income FY{years[0] - 1} (pre-period)")
     if ni_end is not None and ni_start is not None and ni_start != 0:
+        # Vorzeichen-stabile Wachstumsdefinition (|ni_start| als Nenner).
+        # CAGR braucht eine echte positive Ratio — nur dann sinnvoll
+        # berechenbar, sonst None.
+        cum_growth = (ni_end - ni_start) / abs(ni_start) * Decimal("100")
         ratio = ni_end / ni_start
-        cum_growth = (ratio - Decimal("1")) * Decimal("100")
-        cagr = _cagr_pct(ratio, n)
+        cagr = _cagr_pct(ratio, n) if ratio > 0 else None
         results["ni_growth"] = {
             "cum": cum_growth,
             "pa_avg": cum_growth / Decimal(n),
