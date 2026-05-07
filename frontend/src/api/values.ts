@@ -20,7 +20,7 @@ export type ForecastAlternate = {
   source: string | null;
   explanation?: string;
   error_reason?: string;
-  fallback_from?: string;
+  fallback_from?: string; // gesetzt wenn Web=Proxy-Fallback (Recherche fehlte)
 };
 
 export type CompanyValue = {

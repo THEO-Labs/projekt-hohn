@@ -478,7 +478,7 @@ def _process_one_key(
                     "method": "web_guidance",
                     "value": str(proxy_result.value),
                     "currency": proxy_result.currency,
-                    "source": f"Web-Fallback (Recherche fehlte): {proxy_result.source_name}",
+                    "source": f"Web-Recherche hat keine Zahlen gefunden, Fallback auf Proxy-Berechnung auf Basis von Quartalszahl vom Vorjahr ({proxy_result.source_name})",
                     "fallback_from": "q_factor_proxy",
                 },
             ]

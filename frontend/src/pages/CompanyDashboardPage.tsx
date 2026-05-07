@@ -1108,6 +1108,10 @@ export function CompanyDashboardPage() {
                           // — Drilldown zeigt FY[N-1]-Wert + Faktor + Resultat.
                           const variantKey: "faktor" | "web" = label === "Q-Faktor (Proxy)" ? "faktor" : "web";
                           const isClickableEstimate = variantKey === "faktor" && ESTIMATE_PRIMARY_KEYS.has(d.key);
+                          // Erkenne Web-Fallback-Wert (Web fand nichts, zeigt Proxy)
+                          // → visuell ausgrauen damit User sieht es ist kein echter Web-Treffer.
+                          const webAlt = cellCv?.forecast_alternates?.find((a) => a.method === "web_guidance");
+                          const isWebFallbackToProxy = label === "Web-Recherche" && webAlt?.fallback_from === "q_factor_proxy";
                           const onCellClick = isClickableEstimate ? (e: React.MouseEvent<HTMLElement>) => {
                             e.stopPropagation();
                             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1116,11 +1120,21 @@ export function CompanyDashboardPage() {
                           } : undefined;
                           return (
                             <td key={`${company.id}-${label}-${d.key}`}
-                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""}${groupSep(d.key)}`}
-                              title={isClickableEstimate ? "Klick für Drilldown: FY-Vorjahres-Wert + Faktor-Berechnung" : undefined}
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""} ${isWebFallbackToProxy ? "opacity-60" : ""}${groupSep(d.key)}`}
+                              title={isClickableEstimate
+                                ? "Klick für Drilldown: FY-Vorjahres-Wert + Faktor-Berechnung"
+                                : isWebFallbackToProxy
+                                ? "Web-Recherche hat keine Zahlen gefunden — Wert ist Proxy-Fallback (identisch zur Q-Faktor-Zeile)"
+                                : undefined}
                               onClick={onCellClick}>
                               <div className="flex items-center gap-1.5">
-                                <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
+                                <span className={`font-mono text-sm ${isWebFallbackToProxy ? "italic" : ""}`}>{formatValue(display, d.unit, displayCurrency)}</span>
+                                {isWebFallbackToProxy && (
+                                  <span className="shrink-0 rounded bg-orange-100 px-1 py-0.5 text-[9px] font-bold uppercase text-orange-700"
+                                    title="Web-Recherche fehlte — Proxy-Fallback">
+                                    Fallback
+                                  </span>
+                                )}
                                 {fxUnknownDual && (
                                   <span
                                     title={`Wechselkurs ${cellCv?.currency} → ${displayCurrency} unbekannt, Wert bleibt in ${cellCv?.currency}`}

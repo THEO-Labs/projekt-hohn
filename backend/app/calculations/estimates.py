@@ -287,6 +287,20 @@ def compute_estimate(
             reason=f"{q} {prev_fy} ist 0 — kein Wachstumsfaktor möglich.",
         )
 
+    # Target = 0: Faktor wuerde 0 ergeben → estimate = 0. Das ist meist falsch
+    # (Buyback/Dividend/Capex sind unregelmaessig pro Quartal — ein Q ohne
+    # Aktivitaet heisst nicht dass FY auch 0 ist). Lieber FY-Fallback.
+    if target_v == 0:
+        return _fy_fallback(
+            prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
+            method="fy_fallback",
+            reason=(
+                f"{q} {target_fy_year} ist 0 (z.B. Buyback/Dividend nicht in dem Quartal). "
+                f"Faktor-Berechnung wuerde Estimate auf 0 setzen — unrealistisch fuer "
+                f"unregelmaessige Cash-Outflows."
+            ),
+        )
+
     # Sanity-Gates: Faktor-Pfad nur wenn Signal robust.
     if (target_v * prev_v) < 0:
         return _fy_fallback(
@@ -341,13 +355,25 @@ def compute_estimate(
     ytd_note = " (YTD)" if is_ytd_pair else ""
     cur = f" {currency}" if currency else ""
 
+    # Caveat wenn nur Q1-Datapoint verwendet — bei stark saisonalen Industrials
+    # (z.B. Aircraft-Hersteller mit Q4-lastigen Deliveries) ist Q1-Faktor wenig
+    # repraesentativ fuer das ganze Jahr. User-Hinweis im Drilldown.
+    confidence_note = ""
+    if q == "Q1" and not is_ytd_pair:
+        confidence_note = (
+            "  HINWEIS: Estimate basiert auf einem einzelnen Q1-Datapoint — bei "
+            "saisonalen Geschaeftsmodellen (z.B. Industrials mit Q4-lastigen "
+            "Deliveries oder Retail mit Q4-Weihnachtsgeschaeft) limited aussagekraeftig. "
+            "Mit Q2/Q3-Daten wird der Estimate robuster."
+        )
+
     explanation = (
         f"Schätzung FY{target_fy_year} = FY{prev_fy} × Faktor (gleiches Quartal{ytd_note}).  "
         f"Werte in Originalwaehrung{f' ({currency})' if currency else ''} — UI rechnet ggf. in Anzeige-Währung um.  "
         f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}{cur}.  "
         f"{q} {target_fy_year} = {target_v:,.0f}{cur}, {q} {prev_fy} = {prev_v:,.0f}{cur}, "
         f"Faktor = {factor:.4f} ({delta_pct:+.2f} % YoY).  "
-        f"Resultat = {estimate:,.0f}{cur}."
+        f"Resultat = {estimate:,.0f}{cur}.{confidence_note}"
     )
 
     return EstimateResult(
