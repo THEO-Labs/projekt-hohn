@@ -139,20 +139,19 @@ Konzernabschlüssen sowie Quartalsberichten.
 DEINE AUFGABE: Extrahiere präzise Finanzkennzahlen aus dem hochgeladenen
 PDF für genau den angegebenen Berichts-Zeitraum.
 
-KERN-DISZIPLIN — value DARF NIE null sein. Wenn die Kennzahl im PDF nicht
-direkt ausgewiesen ist, setze value=0 mit ehrlicher Begründung:
+KERN-DISZIPLIN — bevor du value=null lieferst, MUSST du:
 - ALLE im Per-Key-Hinweis genannten Suchorte explizit prüfen
 - Sowohl Cash Flow Statement ALS AUCH Statement of Changes in Equity
   ALS AUCH die Notes durchgehen (typische Suchreihenfolge unten)
 - Bei IFRS-Filern (20-F, deutsche/EU-Konzernabschlüsse, Adidas/BMW/Siemens/
   ASML/SAP/etc.) zusätzlich gezielt im Equity Statement und im Notes-
   Abschnitt suchen — IFRS gliedert anders als US-GAAP
-- Im 'reason'-Feld dokumentieren WO du gesucht hast und WARUM 0 angenommen
-  wurde (z.B. "geprüft: CF-Statement S.91, Equity Statement S.97, Notes 27 —
-  überall keine separate SBC-Zeile, in Note 28 'Personnel costs' nur Total
-  ohne Aufgliederung — 0 angenommen, da konzeptuell nicht ausgewiesen").
-- value=0 ist die einzig erlaubte Antwort wenn der Wert nicht im PDF steht
-  — NIE value=null.
+- Im 'reason'-Feld dokumentieren WO du gesucht hast und WARUM nichts da war
+  (z.B. "geprüft: CF-Statement S.91, Equity Statement S.97, Notes 27 —
+  ueberall keine separate SBC-Zeile").
+- value=null ist OK wenn die Kennzahl wirklich nicht im PDF steht — der
+  auto-web-fallback im Backend approximiert dann via Web-Recherche statt
+  dass du Zahlen aus der Luft erfindest.
 
 TYPISCHE ABSCHNITTE in einem Annual Report (in dieser Reihenfolge prüfen):
 1. Highlights / Five-Year Overview (oft alle Kernzahlen kompakt)
@@ -170,9 +169,8 @@ WICHTIGE REGELN:
 4. Pro gefundenem Wert: Seitenzahl + exaktes Quote-Snippet aus dem PDF.
 5. Bei Quartalsberichten: 'period_basis' angeben (Q1_YTD vs Q1_standalone vs H1).
 6. KEINE Schätzungen, keine Hochrechnungen. Nur was wirklich im PDF steht.
-7. value DARF NIE null sein. Wenn nicht direkt im PDF ausgewiesen: value=0
-   mit konkreter 'reason' was geprueft wurde und warum 0 (z.B. konzeptuelle
-   Abwesenheit bei Versicherer/Bank).
+7. Wenn Wert null: 'reason' MUSS konkret die geprueften Stellen nennen
+   (Auto-Web-Fallback approximiert dann via Web-Recherche).
 8. Vorzeichen-Regel: Net Income mit echtem Vorzeichen (Verluste negativ),
    Bilanz-Posten und Cash-Outflows (SBC, Buyback, Dividends) immer POSITIV
    als Betrag (Vorzeichen ignorieren).
@@ -246,19 +244,20 @@ Antworte ausschließlich in diesem JSON-Format:
 
 Pro Key folgendes Schema:
 {{
-  "value": <Zahl in Base-Units — IMMER eine Zahl, im aller-letzten Fall 0>,
+  "value": <Zahl in Base-Units oder null>,
   "currency": "USD" | "EUR" | "GBP" | "CHF" | ... | null,
-  "page": <Seitennummer im PDF oder null wenn 0-Fallback>,
-  "quote": "<exaktes Zitat aus dem PDF oder null wenn 0-Fallback>",
+  "page": <Seitennummer im PDF>,
+  "quote": "<exaktes Zitat aus dem PDF>",
   "period_basis": "FY" | "Q1_YTD" | "Q1_standalone" | "H1" | ... ,
-  "reason": null wenn Wert direkt gefunden, sonst Erklärung warum 0 (z.B.
-            "Konzeptuell nicht im Bericht ausgewiesen — angenommen 0")
+  "reason": null wenn Wert gefunden, sonst Erklärung welche Stellen geprueft
+            wurden und warum nichts da war (Auto-Web-Fallback approximiert dann)
 }}{guidance_section}
 
-ABSOLUTE GRUNDREGEL: value DARF NIE null sein. Wenn die Kennzahl im Bericht
-nicht direkt steht (z.B. weil Versicherer kein klassisches Cash Flow Statement
-ausweisen, oder kein separater SBC-Posten), nimm 0 mit ehrlicher Begründung in
-'reason'. NIE value: null — IMMER eine Zahl.
+PDF-DISZIPLIN: value=null ist ehrlich, wenn die Kennzahl wirklich nicht im
+hochgeladenen Dokument steht (z.B. Versicherer-Financial-Supplement ohne
+Cash Flow Statement). LIEFERE keine erfundenen Zahlen aus diesem PDF — der
+auto-web-fallback im Backend approximiert dann mit echter Web-Recherche.
+'reason' MUSS konkret sein (welche Seiten/Notes du geprueft hast).
 
 Beispiel für net_income wenn gefunden:
 "net_income": {{
@@ -270,14 +269,14 @@ Beispiel für net_income wenn gefunden:
   "reason": null
 }}
 
-Beispiel für sbc wenn nicht im Bericht ausgewiesen (Versicherer):
+Beispiel für sbc wenn nicht im Bericht ausgewiesen:
 "sbc": {{
-  "value": 0,
+  "value": null,
   "currency": null,
   "page": null,
   "quote": null,
   "period_basis": null,
-  "reason": "Im Cash Flow Statement nicht als separater Posten ausgewiesen — angenommen 0 (Versicherer-typisch)"
+  "reason": "Geprueft: CF-Statement S.91, Equity Statement S.97, Notes 27 — keine separate SBC-Zeile gefunden"
 }}
 """
 
@@ -493,33 +492,27 @@ def _call_extraction_with_escalation(
 
 def _parse_one_entry(key: str, entry: dict | None) -> dict:
     """Normalize a single key's entry from Claude's JSON output.
-    User-Anforderung: NIE value=None — Claude soll 0 liefern wenn nicht
-    findbar. Falls Claude trotzdem null/missing schickt, coercen wir zu 0
-    mit eindeutiger Begruendung."""
+    PDF-Extraction ist ehrlich: wenn der Wert nicht im PDF steht, returnen wir
+    None mit reason. Der Auto-Web-Fallback approximiert dann (= echte Zahl)
+    statt dass PDF-Claude Zahlen aus der Luft erfindet."""
     if not isinstance(entry, dict):
-        logger.info("extraction: key %s missing in response — coerce zu 0", key)
-        return {"value": Decimal("0"), "reason": "Key missing in response — angenommen 0"}
+        return {"value": None, "reason": "Key missing in response"}
     raw_val = entry.get("value")
     if raw_val is None:
-        reason = entry.get("reason") or "Konzeptuell nicht im Bericht ausgewiesen"
-        logger.info("extraction: key %s value=null — coerce zu 0 (%s)", key, reason[:80])
         return {
-            "value": Decimal("0"),
+            "value": None,
             "currency": entry.get("currency"),
             "page": entry.get("page"),
-            "quote": entry.get("quote"),
-            "period_basis": entry.get("period_basis"),
-            "reason": f"{reason} — angenommen 0",
+            "reason": entry.get("reason") or "Im Bericht nicht ausgewiesen",
         }
     try:
         decimal_val = Decimal(str(raw_val))
     except (InvalidOperation, ValueError):
-        logger.warning("extraction: key %s unparseable value %r — coerce zu 0", key, raw_val)
         return {
-            "value": Decimal("0"),
+            "value": None,
             "currency": entry.get("currency"),
             "page": entry.get("page"),
-            "reason": f"Could not parse value {raw_val!r} — angenommen 0",
+            "reason": f"Could not parse value: {raw_val!r}",
         }
     if key in ALWAYS_POSITIVE_KEYS and decimal_val < 0:
         decimal_val = abs(decimal_val)

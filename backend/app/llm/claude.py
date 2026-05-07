@@ -42,8 +42,8 @@ FORWARD_YEAR_HINT = (
     "als Approximation. Kennzeichne QUELLE explizit als "
     "'Approximation: letzter 10-Q/10-K-Wert per <Stichtag>'. "
     "Das ist eine valide Näherung — kein 'erraten'.\n\n"
-    "Wenn nach allen Strategien WIRKLICH gar nichts findbar ist: WERT: 0 mit "
-    "Begründung 'Kein historischer Referenzwert auffindbar — angenommen 0'.\n\n"
+    "Du MUSST eine echte Approximations-Zahl liefern — nimm letzten 10-K-Wert × "
+    "plausible Wachstumsrate, oder Equivalent-Konzept. NIE 0 als Default-Fallback.\n\n"
     "QUELLE muss den Modus explizit machen: "
     "'Guidance FY{YEAR}' / 'Analysten-Konsens FY{YEAR}' / "
     "'Approximation: letzter 10-Q-Wert per <Datum>'."
@@ -121,64 +121,59 @@ def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
 
 
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Recherchiere EINE konkrete Finanzkennzahl
-für ein Unternehmen via web_search und liefere IMMER eine numerische Zahl + Begründung.
+für ein Unternehmen via web_search und liefere IMMER eine ECHTE numerische Zahl —
+NIEMALS 0 als Default-Fallback.
 
-ABSOLUTE GRUNDREGEL — DU MUSST EINEN NUMERISCHEN WERT LIEFERN:
-Es gibt KEINE Antwort ohne Zahl. KEINE 'NICHT_GEFUNDEN', kein Leerwert, keine
-Texterklärung statt Zahl.
+ABSOLUTE GRUNDREGEL:
+WERT muss ein berechneter, plausibler Zahlenwert sein. NIEMALS 0 weil "ich finde
+nichts" oder "konzeptuell schwierig". 0 ist NUR ein gueltiger Wert wenn deine
+Approximation oder Recherche TATSAECHLICH 0 ergibt (z.B. Firma zahlt offensichtlich
+keine Dividende in dem Jahr → wirklich 0). Sonst: rechne, schaetze, approximiere —
+aber liefere eine echte Zahl.
 
-WICHTIG zur Approximation: Wenn du eine Approximation rechnest (z.B. 'FY2025
-~€250 Mio × 1,05 Industrie-CAGR'), dann MUSST du die tatsaechliche Zahl auch
-RECHNEN und in WERT liefern! Nicht 'WERT: 0' mit Approximation in BEGRUENDUNG —
-sondern WERT: 262500000 mit dem Schaetzweg in BEGRUENDUNG.
+WIE DU APPROXIMIERST (verbindliche Reihenfolge — gehe sie durch bis du eine echte
+Zahl hast):
 
-WERT: 0 ist NUR die ALLERLETZTE Stufe wenn:
-  - die Kennzahl konzeptuell nicht existiert (z.B. echte Net Debt bei einer
-    Versicherung wo Verbindlichkeiten = Reserven), UND
-  - du auch keine sinnvolle Approximation angeben kannst.
-Wenn du irgendeine Zahl ungefaehr abschaetzen kannst (jüngster bekannter Wert,
-FY[N-1] × Wachstumsrate, Branchen-Mittel) → RECHNE sie aus und gib sie als WERT.
+1. **Exakter Wert** aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
+   oder direkt aus IR/SEC-Filing.
 
-Reihenfolge der Strategien:
-  1. Exakter Wert aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
-  2. Management-Guidance / Investor-Day-Outlook (IR-Seite, Earnings Call Transcript)
-  3. Analysten-Konsens (Yahoo, Seeking Alpha, Bloomberg-Snippets, Reuters)
-  4. Approximation aus jüngstem bekannten Wert (letzter 10-K/10-Q + plausible
-     Wachstumsrate aus Industrie/Unternehmen, oder TTM extrapoliert)
-  5. Equivalent-Konzept (z.B. 'Operating Profit' statt FCF bei Versicherern,
-     'Personnel Expenses' statt SBC, 'Solvency-II Capital' statt Net Debt)
-  6. Branchen-Approximation (vergleichbare Firma, gleiche Größenordnung)
-  7. Letzte Stufe: 0 wenn die Kennzahl konzeptuell nicht existiert oder
-     komplett unrecherchierbar — IMMER mit ehrlicher Begründung.
-Markiere jede Strategie ehrlich in QUELLE und KONFIDENZ.
+2. **Management-Guidance / Konsens**: IR-Seite, Earnings Call Transcript,
+   Investor Day, Yahoo/Seeking Alpha Analyst Estimates.
 
-VORGEHEN
-1. Suche gezielt mit explizitem Jahr UND Site-Hint, z.B.:
-     "Airbus net_income FY2026 guidance" / "Airbus 2026 outlook EBIT"
-     "ASML free cash flow 2026 analyst consensus"
-     "Allianz net_income FY2024 stockanalysis"
-2. Bevorzuge Aggregatoren für Istwerte (Snippet-tauglich):
-     - Cash-Flow: stockanalysis.com/.../cash-flow-statement/
-     - Bilanz:    stockanalysis.com/.../balance-sheet/, wsj.com/market-data/quotes
-     - GuV:       macrotrends.net/.../net-income, stockanalysis.com/.../financials/
-3. Für Forward-Year (zukünftige FY): Guidance + Konsens zuerst, dann Approximation.
-4. Bei Approximation: Begruende den Schätzweg (z.B. "FY2025-Wert + 5% Industrie-Growth"
-   oder "Q3-2025 YTD * 4/3"). Setze KONFIDENZ: niedrig.
+3. **Approximation aus letztem bekannten Wert** (= Standard-Pfad bei Forward-Year):
+     letzter_FY_Istwert × (1 + plausible Wachstumsrate)
+   Wachstumsrate aus: historische 3-5J-CAGR, Industrie-Trend, Q-Run-Rate
+   (z.B. Q1+Q2+Q3 YTD × 4/3 fuer FY-Schaetzung).
+
+4. **Equivalent-Konzept bei Sektor-Mismatch**:
+     Versicherer FCF       → Operating Profit / Operating Cash Flow
+     Versicherer SBC       → Personnel Expenses × 0,5-1% (typische SBC-Quote)
+     Versicherer Net Debt  → Total Borrowings − Cash (ohne LT Marketable Sec.)
+     Bank FCF              → Operating Profit
+   Du MUSST die Equivalent-Zahl AUSRECHNEN und liefern — nicht nur "Konzept fehlt
+   → 0".
+
+5. **Branchen-Mittel als Letzt-Stufe**: vergleichbare Firma der gleichen
+   Sektor/Größenklasse als Bezug, dann skaliert auf das gesuchte Unternehmen.
+
+6. **0 ist gueltig NUR wenn**: Firma hat in der Periode dokumentiert nichts
+   gezahlt/zurueckgekauft/etc. (z.B. "kein Buyback-Programm aktiv" → buyback=0).
+   NICHT als Fallback bei Schwierigkeit.
 
 ANTWORT — exakt dieses Format, nichts anderes davor/danach:
-WERT: [Zahl in Base-Units, IMMER eine Zahl, im aller-letzten Fall 0]
+WERT: [echte Zahl in Base-Units — bei Approximation den BERECHNETEN Zahlenwert]
 EINHEIT: [USD/EUR/...|%|keine]
-QUELLE: [Kurzbezeichnung, z.B. "stockanalysis.com FY2024 Income Statement" oder
-         "Approximation: FY2025-Istwert + 5% Industrie-Growth" oder
-         "Konzeptuell nicht ausgewiesen — angenommen 0"]
-QUELLE_URL: [echte direkte URL — bei Approximation URL der Datenbasis, NICHT erfunden]
-ZEITRAUM: [z.B. FY2024, FY2026e, TTM, aktuell]
+QUELLE: [Kurzbezeichnung — bei Approximation z.B.
+         "Approximation: Airbus FY2025 SBC ~250M × 1,05 CAGR = 262.5M (IR FY2025-Bericht)"]
+QUELLE_URL: [echte direkte URL der Datenbasis]
+ZEITRAUM: [z.B. FY2024, FY2026e, TTM, Q3 2025]
 KONFIDENZ: [hoch|mittel|niedrig]
-BEGRUENDUNG: [2-3 Sätze: woher der Wert stammt, bei Approximation der Schätzweg,
-              bei 0-Fallback warum die Kennzahl konzeptuell nicht greift]
+BEGRUENDUNG: [2-3 Sätze zu Quelle/Schaetzweg]
 
 ZAHLENFORMAT — strikt:
 - Volle Zahl in Base-Units, OHNE Suffix.  RICHTIG: 1450000000 USD.  FALSCH: 1450 USD Mio.
+- Bei Approximation: Berechne das Endergebnis und gib NUR die Endzahl in WERT.
+  Den Rechenweg in QUELLE/BEGRUENDUNG.
 - Prozente direkt als Wert.  RICHTIG: 4.38 %.  FALSCH: 0.0438.
 - EINHEIT enthaelt NUR Währung / "%" / "keine" — NIE "Mio"/"Mrd".
 - Punkt als Dezimaltrenner.
@@ -187,27 +182,25 @@ ZAHLENFORMAT — strikt:
 
 def extract_research_value(text: str) -> Decimal | None:
     """Extract WERT: from Claude research responses.
-    Wenn Claude trotz Verbot 'NICHT_GEFUNDEN' sagt, wird Decimal(0) zurueckgegeben
-    (User-Anforderung: NIE leerer Wert)."""
+    Returns None wenn Claude sich nicht ans Format gehalten hat oder NICHT_GEFUNDEN
+    geliefert hat — KEIN 0-Fallback (User-Anforderung: 0 nur wenn Approximation
+    tatsaechlich 0 ergibt, nicht als Default)."""
     match = re.search(
         r"WERT:\s*([+-]?[\d.,]+(?:\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMTK])\.?)?(?:\s*%)?|NICHT[_\s]?GEFUNDEN)",
         text,
         re.IGNORECASE,
     )
     if not match:
-        # Claude hat sich nicht ans Format gehalten — fallback auf 0.
-        logger.warning("research: Claude antwortete ohne WERT-Pattern — fallback auf 0")
-        return Decimal("0")
+        logger.warning("research: Claude antwortete ohne WERT-Pattern — caller bekommt None")
+        return None
     raw = match.group(1).strip()
     if re.match(r"nicht.{0,2}gefunden", raw, re.IGNORECASE):
-        # Claude hat trotz strenger Anweisung NICHT_GEFUNDEN geliefert — wir
-        # erzwingen 0 statt Leerwert. User will IMMER einen Wert.
-        logger.info("research: Claude antwortete NICHT_GEFUNDEN — coerce zu 0")
-        return Decimal("0")
+        logger.warning("research: Claude antwortete NICHT_GEFUNDEN trotz Verbot — caller bekommt None")
+        return None
     value = _parse_numeric_string(raw)
     if value is None:
-        logger.warning("research: WERT '%s' parst nicht — fallback auf 0", raw)
-        return Decimal("0")
+        logger.warning("research: WERT '%s' parst nicht — caller bekommt None", raw)
+        return None
     return _apply_unit_scale(value, text, raw)
 
 
@@ -308,14 +301,17 @@ def research_value(
         forward_block = "\n\n" + FORWARD_YEAR_HINT.replace("{YEAR}", str(period_year))
         historical_constraint = ""
         not_found_clause = (
-            "PFLICHT: Liefere IMMER einen Wert. Reihenfolge:\n"
+            "PFLICHT: Liefere IMMER eine echte berechnete Zahl. Reihenfolge:\n"
             f"  1. Konkrete Management-Guidance für FY{period_year} aus IR/Earnings-Calls\n"
             f"  2. Analysten-Konsens für FY{period_year} (Yahoo, Seeking Alpha, Reuters)\n"
             f"  3. Approximation: FY{period_year - 1} Istwert × plausibler Wachstumsrate "
             "(Industrie-Growth, historische CAGR der letzten 3-5 Jahre, Q-trend "
-            f"YTD-Hochrechnung). Begruende die Wachstumsrate.\n"
-            f"  4. Fallback-Approximation: FY{period_year - 1} Istwert ohne Growth.\n"
-            f"  5. Letzte Stufe: WERT: 0 mit ehrlicher Begruendung — NIE ohne Wert."
+            f"YTD-Hochrechnung). RECHNE die Endzahl aus und liefere sie als WERT — "
+            f"nicht 0 + Beschreibung in BEGRUENDUNG.\n"
+            f"  4. Fallback-Approximation: FY{period_year - 1} Istwert ohne Growth — "
+            f"als konkrete Zahl in WERT, nicht 0.\n"
+            f"WERT: 0 ist NUR gueltig wenn deine Approximation echt 0 ergibt "
+            f"(z.B. Firma hat dokumentiert kein Buyback-Programm). NIE 0 als Fallback."
         )
     elif is_quarter:
         forward_block = ""
@@ -324,17 +320,16 @@ def research_value(
             f"(idealerweise YTD-kumulativ wenn so ausgewiesen)."
         )
         not_found_clause = (
-            "PFLICHT: Liefere IMMER einen numerischen Wert. Reihenfolge:\n"
+            "PFLICHT: Liefere IMMER eine echte berechnete Zahl. Reihenfolge:\n"
             f"  1. Exakter {period_type} {period_year}-Wert aus IR/Aggregator/10-Q.\n"
             f"  2. YTD-kumulativ wenn standalone-Q nicht findbar.\n"
-            f"  3. Bei Versicherer/Bank/Sektor-Mismatch (z.B. Cash Flow Statement "
-            f"nicht ausgewiesen): suche nach equivalentem Konzept (z.B. 'Operating "
-            f"Profit' statt FCF, 'Personnel Expenses' statt SBC, 'Solvency-II Capital' "
-            f"statt Net Debt) und kennzeichne als 'Equivalent: <konzept>' in QUELLE.\n"
+            f"  3. Bei Versicherer/Bank/Sektor-Mismatch: AUSRECHNEN das Equivalent "
+            f"(z.B. 'Personnel Expenses × 0.5%' fuer SBC bei Versicherer, "
+            f"'Total Borrowings - Cash' fuer Net Debt). RECHNE die konkrete Zahl, "
+            f"liefere sie als WERT.\n"
             f"  4. Approximation: FY{period_year}-Wert × Quartal-Anteil "
-            f"(0.25 fuer einzelnes Quartal, 0.50/0.75 fuer YTD).\n"
-            f"  5. Letzte Stufe: WERT: <berechneter Approximations-Wert> mit Begruendung — NUR wenn keine Approximation moeglich, dann 0 'Konzeptuell nicht "
-            f"vorhanden / nicht ausgewiesen' — NIE ohne Wert antworten."
+            f"(0.25 fuer einzelnes Quartal, 0.50/0.75 fuer YTD) — als Zahl in WERT.\n"
+            f"WERT: 0 nur wenn deine Approximation tatsaechlich 0 ergibt. NIE als Fallback."
         )
     else:
         forward_block = ""
@@ -342,13 +337,15 @@ def research_value(
             " Ziel ist der exakte Jahreswert aus dem 10-K/20-F. Keine TTM/LTM."
         )
         not_found_clause = (
-            "PFLICHT: Liefere IMMER einen numerischen Wert. Reihenfolge:\n"
+            "PFLICHT: Liefere IMMER eine echte berechnete Zahl. Reihenfolge:\n"
             f"  1. Exakter Wert für {period_str} aus Aggregator (stockanalysis, "
             f"macrotrends, wsj).\n"
-            f"  2. Approximation: nächstliegender bekannter Istwert (FY{period_year - 1} "
-            f"oder jüngstes 10-Q). KONFIDENZ: niedrig.\n"
-            f"  3. Letzte Stufe: WERT: 0 mit ehrlicher Begruendung 'Konzeptuell "
-            f"nicht ausgewiesen' — NIE ohne Wert antworten."
+            f"  2. Approximation: FY{period_year - 1} Istwert (oder jüngstes 10-Q) "
+            f"× plausibler Adjustment-Faktor — als konkrete Zahl in WERT. "
+            f"KONFIDENZ: niedrig.\n"
+            f"  3. Equivalent-Konzept fuer Sektor-Mismatch (siehe System-Prompt) — "
+            f"AUSRECHNEN, nicht 0.\n"
+            f"WERT: 0 nur wenn deine Approximation tatsaechlich 0 ergibt. NIE als Fallback."
         )
 
     user_prompt = (
