@@ -13,14 +13,6 @@ export type ValueDefinition = {
   is_currency: boolean;
 };
 
-export type ForecastAlternate = {
-  method: string;       // "q_factor_proxy" | "web_guidance"
-  value: string | null; // Decimal-String wie numeric_value, null wenn Methode failed
-  currency: string | null;
-  source: string | null;
-  error_reason?: string; // gesetzt wenn value=null und Methode bewusst fehlschlug
-};
-
 export type CompanyValue = {
   id: string;
   company_id: string;
@@ -35,7 +27,6 @@ export type CompanyValue = {
   source_link: string | null;
   fetched_at: string | null;
   manually_overridden: boolean;
-  forecast_alternates: ForecastAlternate[] | null;
 };
 
 export const getValueDefinitions = () =>
@@ -144,18 +135,10 @@ export const fetchHistoricalStammdaten = (companyId: string, periodYear: number)
   );
 
 export type ResearchResult = {
-  conversation_id: string;
-  message: {
-    id: string;
-    role: string;
-    content: string;
-    score_suggestion: number | string | null;
-    source: string | null;
-    created_at: string;
-  };
-  value_found: boolean;
-  source_label: string | null;
+  value: string | null;
+  source_name: string | null;
   source_url: string | null;
+  value_found: boolean;
 };
 
 export const researchValue = (

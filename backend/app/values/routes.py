@@ -185,47 +185,6 @@ def _run_and_persist_calculations(
                                    company_id, period_year + 1, e)
         fy_calc = calculate_fy(current, previous, stammdaten, next_year_market_cap=next_mcap)
 
-        # If we just calculated actual_return, log a one-shot formula
-        # breakdown into its chat thread so the user can see how the number
-        # came together (anchored MCaps + reminder that Yahoo Adj Close is
-        # already dividend-adjusted, so no separate dividend term is added).
-        ar = fy_calc.get("actual_return")
-        start_mcap = current.get("market_cap") or stammdaten.get("market_cap")
-        if ar is not None and next_mcap is not None and start_mcap is not None and start_mcap != 0:
-            try:
-                from app.llm.routes import _get_or_create_conversation
-                from app.llm.models import LlmMessage
-                conv = _get_or_create_conversation(db, company_id, "actual_return", "FY", period_year)
-                # Avoid duplicating the message on every recalc by checking if
-                # the latest computed_msg already matches this value.
-                last = (
-                    db.query(LlmMessage)
-                    .filter(LlmMessage.conversation_id == conv.id, LlmMessage.source == "computed")
-                    .order_by(LlmMessage.created_at.desc())
-                    .first()
-                )
-                ratio = next_mcap / start_mcap
-                content = (
-                    f"Actual Return FY{period_year} = (MCap Ende FY / MCap Anfang FY) − 1\n"
-                    f"  MCap Anfang FY{period_year} = {start_mcap:,.0f}\n"
-                    f"  MCap Ende FY{period_year}   = {next_mcap:,.0f}  (= MCap Anfang FY{period_year + 1})\n"
-                    f"  Verhältnis = {ratio:.4f}\n"
-                    f"  Resultat   = {ar:.2f} %\n\n"
-                    f"Hinweis: Yahoo Adj Close ist bereits dividenden-adjustiert (rückwärts korrigiert "
-                    f"als wären Dividenden reinvestiert worden). Daher ist diese Ratio bereits der Total "
-                    f"Shareholder Return — wir addieren die Dividendenrendite NICHT separat (würde sie "
-                    f"doppelt zählen)."
-                )
-                if last is None or content not in (last.content or ""):
-                    db.add(LlmMessage(
-                        conversation_id=conv.id,
-                        role="system",
-                        content=content,
-                        source="computed",
-                    ))
-                    db.flush()
-            except Exception as e:
-                logger.warning("Failed to log actual_return formula message: %s", e)
         allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
@@ -282,19 +241,11 @@ def _try_web_guidance(
     key: str,
     target_fy: int,
 ):
-    """Web-Recherche fuer FY-Guidance. Wird vor dem Q-Faktor-Proxy versucht.
-
-    Nutzt Claude mit Web-Search-Tool, fragt gezielt nach Management-Guidance
-    / Analysten-Konsens / Outlook fuer den gegebenen Wert + FY. Speichert
-    user/assistant-Messages im Chat (User sieht die Recherche-Begruendung)
-    und gibt einen ProviderResult mit is_forecast=True zurueck.
-    """
+    """Web-Recherche fuer FY-Guidance. Returns ProviderResult oder None."""
     from app.config import settings
     if not settings.anthropic_api_key:
         return None
     from app.llm.claude import research_value, validate_claude_value
-    from app.llm.models import LlmMessage
-    from app.llm.routes import _get_or_create_conversation
     from app.providers.base import ProviderResult
 
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
@@ -303,7 +254,7 @@ def _try_web_guidance(
 
     label = f"{vd.label_en} ({vd.label_de})"
     try:
-        val, source, url, user_prompt, assistant_response = research_value(
+        val, source, url, _user_prompt, _assistant_response = research_value(
             company.name, company.ticker, label, company.currency,
             period_type="FY", period_year=target_fy, value_key=key,
         )
@@ -312,25 +263,9 @@ def _try_web_guidance(
                        company.ticker, key, target_fy, e)
         return None
 
-    # Chat IMMER persistieren — auch bei val=None, damit der User im Drawer
-    # sieht WAS Claude geantwortet hat (NICHT_GEFUNDEN-Begruendung etc.).
-    persisted = False
-    if user_prompt and assistant_response:
-        try:
-            conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
-            db.add(LlmMessage(conversation_id=conv.id, role="user", content=user_prompt, source="web_guidance"))
-            db.add(LlmMessage(
-                conversation_id=conv.id, role="assistant", content=assistant_response,
-                score_suggestion=val, source="web_guidance",
-            ))
-            db.flush()
-            persisted = True
-        except Exception as e:
-            logger.warning("Web-Guidance chat persist failed: %s", e)
-
     if val is None:
-        logger.info("Web-Guidance %s/%s/FY%s: no value extracted (chat persisted=%s)",
-                    company.ticker, key, target_fy, persisted)
+        logger.info("Web-Guidance %s/%s/FY%s: no value extracted",
+                    company.ticker, key, target_fy)
         return None
     val_validated = validate_claude_value(key, val)
     if val_validated is None:
@@ -355,13 +290,9 @@ def _try_factor_estimate(
     key: str,
     target_fy: int,
 ):
-    """Q-Faktor-Estimate als Proxy für laufende FY. Wird nur als Backup
-    verwendet wenn weder PDF-Guidance noch Web-Research einen Wert liefert.
-    Source wird entsprechend mit 'Proxy' markiert."""
+    """Q-Faktor-Estimate als Proxy. Returns ProviderResult oder None."""
     from app.calculations.estimates import compute_estimate
     from app.providers.base import ProviderResult
-    from app.llm.models import LlmMessage
-    from app.llm.routes import _get_or_create_conversation
 
     try:
         est = compute_estimate(db, company_id, key, target_fy, currency=company.currency)
@@ -375,17 +306,11 @@ def _try_factor_estimate(
         source_label = f"Proxy (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
     elif est.method == "balance_snapshot":
         qs = ",".join(est.quarters_used) if est.quarters_used else "?"
-        source_label = f"Proxy (Bilanz-Snapshot {qs} {target_fy})"
+        source_label = f"Proxy (Bilanz-Snapshot {qs})"
     elif est.method == "fy_fallback":
-        source_label = f"Proxy (FY{target_fy - 1}-Wert, no-growth-Annahme)"
+        source_label = f"Proxy (FY{target_fy - 1}-Wert, no-growth)"
     else:
         source_label = f"Proxy ({est.method})"
-    try:
-        conv = _get_or_create_conversation(db, company_id, key, "FY", target_fy)
-        db.add(LlmMessage(conversation_id=conv.id, role="system", content=est.explanation, source="estimate"))
-        db.flush()
-    except Exception as e:
-        logger.warning("Failed to log estimate system message %s/%s: %s", company.ticker, key, e)
 
     return ProviderResult(
         value=est.value,
@@ -478,83 +403,34 @@ def _process_one_key(
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
-    # Laufendes FY: BEIDE Methoden parallel rechnen — Web-Guidance UND
-    # Q-Faktor-Proxy. Primary = PDF-Guidance > Web > Q-Faktor. Alle anderen
-    # gefundenen Methoden landen als Alternate-Eintraege im JSONB-Feld
-    # forecast_alternates und werden im Frontend angezeigt.
-    forecast_alternates: list[dict] | None = None
-    if is_running_fy and key in ESTIMABLE_KEYS:
-        web_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
-        proxy_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+    # PDF-Guidance trumpft alles wenn vorhanden.
+    if forecast_existing and (
+        forecast_existing.manually_overridden
+        or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None)
+    ):
+        updated.append(forecast_existing)
+        return False
 
-        # PDF-Guidance: ist primary wenn vorhanden — Web/Q-Faktor wandern in alternates.
-        pdf_is_primary = bool(
-            forecast_existing
-            and (forecast_existing.manually_overridden
-                 or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None))
-        )
-
-        # Stub-Eintrag fuer fehlgeschlagene Web-Recherche, damit das Frontend
-        # 'Web fehlte: <Grund>' anzeigen kann statt nur 'Wert nicht gefunden'.
-        web_alt: dict | None
-        if web_result is not None and isinstance(web_result.value, Decimal):
-            web_alt = {
-                "method": "web_guidance",
-                "value": str(web_result.value),
-                "currency": web_result.currency,
-                "source": web_result.source_name,
-            }
-        else:
-            web_alt = {
-                "method": "web_guidance",
-                "value": None,
-                "currency": None,
-                "source": None,
-                "error_reason": "Claude-Recherche lieferte keinen Wert (Aggregator-Suche, Konsens, Approximation versucht). Erneut versuchen ueber 'Recherchieren'-Button.",
-            }
-        proxy_alt: dict | None = None
-        if proxy_result is not None and isinstance(proxy_result.value, Decimal):
-            proxy_alt = {
-                "method": "q_factor_proxy",
-                "value": str(proxy_result.value),
-                "currency": proxy_result.currency,
-                "source": proxy_result.source_name,
-            }
-
-        if pdf_is_primary:
-            # Primary bleibt PDF-Forecast — wir schreiben nur die Alternates.
-            alternates_list: list[dict] = []
-            if web_alt is not None:
-                alternates_list.append(web_alt)
-            if proxy_alt is not None:
-                alternates_list.append(proxy_alt)
-            if alternates_list:
-                forecast_existing.forecast_alternates = alternates_list
-                db.flush()
-            updated.append(forecast_existing)
-            return True
-        elif web_result is not None:
-            result = web_result
-            if proxy_alt is not None:
-                forecast_alternates = [proxy_alt]
-        elif proxy_result is not None:
-            result = proxy_result
-            forecast_alternates = [web_alt]
-    else:
-        # Kein Estimate-Pfad — alter Block: PDF-Guidance trumpft auch hier.
-        if forecast_existing and (
-            forecast_existing.manually_overridden
-            or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None)
-        ):
-            updated.append(forecast_existing)
-            return False
-
-    if result is None and (is_stammdaten or is_us_company(company)):
+    # Universelle Fallback-Kette pro Cell:
+    #   1. Provider-Chain (EDGAR/Yahoo) — schnellste Quelle wenn US oder Stammdaten
+    #   2. Web-Recherche (Claude + web_search) — fuer alle nicht-stammdaten Keys
+    #   3. Q-Faktor-Estimate / FY-Fallback — nur fuer laufendes FY + ESTIMABLE_KEYS
+    if is_stammdaten or is_us_company(company):
         result = _try_providers(
             ticker, key, payload,
             getattr(company, "fiscal_year_end_month", None),
             getattr(company, "fiscal_year_end_day", None),
         )
+
+    if result is None and not is_stammdaten:
+        # Web-Recherche fuer FY-Werte (Forward = Guidance, Historisch = Aggregator).
+        target_fy = effective_period_year if effective_period_year is not None else 0
+        if target_fy > 0:
+            result = _try_web_guidance(db, company, company_id, key, target_fy)
+
+    if result is None and is_running_fy and key in ESTIMABLE_KEYS:
+        # Letzte Stufe fuer laufendes FY: Q-Faktor-Proxy oder FY-Fallback.
+        result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
 
     if result is None:
         return False
@@ -605,7 +481,6 @@ def _process_one_key(
         target.fetched_at = datetime.now(timezone.utc)
         target.from_ir_pdf = False
         target.is_forecast = is_forecast_flag
-        target.forecast_alternates = forecast_alternates
 
     try:
         if existing:
@@ -626,7 +501,6 @@ def _process_one_key(
             source_link=result.source_link,
             fetched_at=datetime.now(timezone.utc),
             is_forecast=is_forecast_flag,
-            forecast_alternates=forecast_alternates,
         )
         try:
             with db.begin_nested():
@@ -921,15 +795,6 @@ def refresh_company_values(
         set_phase(company_id, "calculating", "Berechnete Werte aktualisieren")
         _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
         db.commit()
-        if payload.period_type == "FY" and payload.period_year is not None:
-            set_phase(company_id, "sanity_check", "Forensik-Check über die Werte")
-            try:
-                from app.calculations.sanity import run_sanity_check
-                run_sanity_check(db, company_id, payload.period_year)
-                db.commit()
-            except Exception as e:
-                logger.warning("Sanity check failed: %s", e)
-                db.rollback()
     except Exception:
         finish_job(company_id, status="failed")
         raise
@@ -952,14 +817,6 @@ def calculate_company_values(
     _get_owned_company(db, user, company_id)
     calc_updated = _run_and_persist_calculations(db, company_id, period_type, period_year)
     db.commit()
-    if period_type == "FY" and period_year is not None:
-        try:
-            from app.calculations.sanity import run_sanity_check
-            run_sanity_check(db, company_id, period_year)
-            db.commit()
-        except Exception as e:
-            logger.warning("Auto sanity-check failed: %s", e)
-            db.rollback()
     for cv in calc_updated:
         db.refresh(cv)
     return calc_updated
@@ -975,19 +832,11 @@ def research_company_value(
     db: Session = Depends(get_db),
 ) -> dict:
     """Manueller Trigger fuer Claude-Web-Recherche zu einer einzelnen Zelle.
-
-    Speichert NUR die Chat-Konversation (User-Frage + Claude-Antwort mit
-    score_suggestion = recherchierter Wert). Persistiert NICHT als
-    CompanyValue — der User entscheidet im Drawer per "Wert übernehmen", ob
-    Claudes Vorschlag uebernommen werden soll.
-
-    Returns AnalyzeResponse-Shape: { conversation_id, message }.
+    Persistiert das Ergebnis direkt als CompanyValue (manually_overridden=True).
+    Returns: { value, source_name, source_url, value_found }.
     """
     from app.config import settings
     from app.llm.claude import research_value, validate_claude_value
-    from app.llm.models import LlmMessage
-    from app.llm.routes import _get_or_create_conversation
-    from app.llm.schemas import LlmMessageOut
 
     company = _get_owned_company(db, user, company_id)
 
@@ -1003,62 +852,86 @@ def research_company_value(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unbekannter Wert")
     if vd.source_type == SourceType.QUALITATIVE:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Qualitative Werte gehen über die Analyse, nicht Recherche")
+                            detail="Qualitative Werte werden nicht via Recherche befuellt")
 
     eff_period_type = "SNAPSHOT" if value_key in ALWAYS_CURRENT_KEYS else period_type
     eff_period_year = None if value_key in ALWAYS_CURRENT_KEYS else period_year
 
     label = f"{vd.label_en} ({vd.label_de})"
-    research_val, research_source, research_url, user_prompt, assistant_response = research_value(
+    research_val, research_source, research_url, _user_prompt, _assistant_response = research_value(
         company.name, company.ticker, label, company.currency,
         period_type=eff_period_type, period_year=eff_period_year, value_key=value_key,
     )
-    if research_val is not None:
-        research_val = validate_claude_value(value_key, research_val)
+    if research_val is None:
+        return {"value": None, "source_name": None, "source_url": None, "value_found": False}
 
-    conv = _get_or_create_conversation(db, company_id, value_key, eff_period_type, eff_period_year)
+    research_val = validate_claude_value(value_key, research_val)
+    if research_val is None:
+        return {"value": None, "source_name": None, "source_url": None, "value_found": False}
 
-    if not user_prompt or not assistant_response:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Claude-Recherche fehlgeschlagen — keine Antwort erhalten")
-
-    db.add(LlmMessage(conversation_id=conv.id, role="user", content=user_prompt, source="research"))
-    assistant_msg = LlmMessage(
-        conversation_id=conv.id,
-        role="assistant",
-        content=assistant_response,
-        score_suggestion=research_val,
-        source="research",
+    # Direkt in CompanyValue persistieren — User hat die Recherche manuell ausgeloest.
+    is_running_fy = (
+        eff_period_type == "FY"
+        and eff_period_year is not None
+        and eff_period_year >= datetime.now(timezone.utc).year
     )
-    db.add(assistant_msg)
+    inherit_currency = company.currency if value_key in CURRENCY_KEYS else None
+    source_label = f"Claude-Recherche: {research_source}" if research_source else "Claude-Recherche"
+
+    oq = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_type == eff_period_type,
+            CompanyValue.is_forecast.is_(is_running_fy),
+        )
+    )
+    if eff_period_year is not None:
+        oq = oq.filter(CompanyValue.period_year == eff_period_year)
+    else:
+        oq = oq.filter(CompanyValue.period_year.is_(None))
+    existing = oq.one_or_none()
+
+    if existing:
+        existing.numeric_value = research_val
+        existing.source_name = source_label
+        existing.source_link = research_url
+        if inherit_currency and not existing.currency:
+            existing.currency = inherit_currency
+        existing.manually_overridden = True
+        existing.from_ir_pdf = False
+        existing.is_forecast = is_running_fy
+        existing.fetched_at = datetime.now(timezone.utc)
+    else:
+        cv = CompanyValue(
+            id=uuid4(),
+            company_id=company_id,
+            value_key=value_key,
+            period_type=eff_period_type,
+            period_year=eff_period_year,
+            numeric_value=research_val,
+            source_name=source_label,
+            source_link=research_url,
+            currency=inherit_currency,
+            manually_overridden=True,
+            from_ir_pdf=False,
+            is_forecast=is_running_fy,
+            fetched_at=datetime.now(timezone.utc),
+        )
+        db.add(cv)
+
+    _recalc_after_override(
+        db, company_id, value_key, eff_period_type, eff_period_year, label,
+    )
     db.commit()
-    db.refresh(assistant_msg)
 
     return {
-        "conversation_id": str(conv.id),
-        "message": LlmMessageOut.model_validate(assistant_msg).model_dump(mode="json"),
-        "value_found": research_val is not None,
-        "source_label": research_source,
+        "value": str(research_val),
+        "source_name": source_label,
         "source_url": research_url,
+        "value_found": True,
     }
-
-
-@values_router.post("/{company_id}/values/sanity-check")
-def sanity_check_company(
-    company_id: UUID,
-    period_year: int = Query(...),
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Manual trigger for the LLM forensic-accountant check on FY[period_year].
-    Returns the parsed issues. Also writes flag messages into per-cell chats."""
-    _get_owned_company(db, user, company_id)
-    from app.calculations.sanity import run_sanity_check
-    result = run_sanity_check(db, company_id, period_year)
-    db.commit()
-    if result is None:
-        raise HTTPException(status_code=503, detail="Sanity check unavailable")
-    return result
 
 
 @values_router.post("/recalc-all-fy")
@@ -1351,79 +1224,6 @@ def _fy_year_has_data(db: Session, company_id: UUID, year: int) -> bool:
     )
 
 
-def _snapshot_calc_values(
-    db: Session,
-    company_id: UUID,
-    period_type: str,
-    period_year: int | None,
-) -> dict[str, Decimal | None]:
-    q = db.query(CompanyValue).filter(
-        CompanyValue.company_id == company_id,
-        CompanyValue.value_key.in_(CALCULATED_KEYS),
-        CompanyValue.period_type == period_type,
-    )
-    if period_year is None:
-        q = q.filter(CompanyValue.period_year.is_(None))
-    else:
-        q = q.filter(CompanyValue.period_year == period_year)
-    return {row.value_key: row.numeric_value for row in q.all()}
-
-
-def _format_period_label(period_type: str, period_year: int | None) -> str:
-    if period_type == "FY" and period_year is not None:
-        return f"FY{period_year}"
-    if period_type == "SNAPSHOT":
-        return "aktuell"
-    return period_type
-
-
-def _format_value_for_log(v: Decimal | None) -> str:
-    return "—" if v is None else str(v)
-
-
-def _log_recalc_messages(
-    db: Session,
-    company_id: UUID,
-    period_type: str,
-    period_year: int | None,
-    snapshot: dict[str, Decimal | None],
-    trigger_value_key: str,
-    trigger_label: str,
-    trigger_period_label: str,
-    trigger_period_type: str,
-    trigger_period_year: int | None,
-) -> None:
-    from app.llm.models import LlmMessage
-    from app.llm.routes import _get_or_create_conversation
-
-    new_values = _snapshot_calc_values(db, company_id, period_type, period_year)
-    for key, new_val in new_values.items():
-        old_val = snapshot.get(key)
-        if old_val == new_val:
-            continue
-        if (
-            key == trigger_value_key
-            and period_type == trigger_period_type
-            and period_year == trigger_period_year
-        ):
-            continue
-        try:
-            conv = _get_or_create_conversation(db, company_id, key, period_type, period_year)
-            content = (
-                f"Automatisch neu berechnet: {_format_value_for_log(old_val)} → "
-                f"{_format_value_for_log(new_val)} "
-                f"(Trigger: {trigger_label} {trigger_period_label})"
-            )
-            db.add(LlmMessage(
-                conversation_id=conv.id,
-                role="system",
-                content=content,
-                source="recalc",
-            ))
-        except Exception as e:
-            logger.warning("Recalc system-message failed for %s/%s: %s", company_id, key, e)
-
-
 def _recalc_after_override(
     db: Session,
     company_id: UUID,
@@ -1445,23 +1245,10 @@ def _recalc_after_override(
     ):
         affected.append(("FY", period_year + 1))
 
-    snapshots: dict[tuple[str, int | None], dict[str, Decimal | None]] = {
-        (pt, py): _snapshot_calc_values(db, company_id, pt, py) for pt, py in affected
-    }
-
     for pt, py in affected:
         _run_and_persist_calculations(db, company_id, pt, py)
 
     db.flush()
-
-    trigger_period_label = _format_period_label(period_type, period_year)
-    for pt, py in affected:
-        _log_recalc_messages(
-            db, company_id, pt, py,
-            snapshots[(pt, py)],
-            value_key, trigger_label, trigger_period_label,
-            period_type, period_year,
-        )
 
 
 @values_router.post("/{company_id}/values/{value_key}/override", response_model=CompanyValueOut)
@@ -1474,9 +1261,6 @@ def override_company_value(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> CompanyValue:
-    from app.llm.models import LlmMessage
-    from app.llm.routes import _get_or_create_conversation
-
     company = _get_owned_company(db, user, company_id)
 
     if value_key in CALCULATED_KEYS:
@@ -1547,32 +1331,5 @@ def override_company_value(
         db, company_id, value_key, effective_period_type, effective_period_year, trigger_label,
     )
     db.commit()
-    if effective_period_type == "FY" and effective_period_year is not None:
-        try:
-            from app.calculations.sanity import run_sanity_check
-            run_sanity_check(db, company_id, effective_period_year)
-            db.commit()
-        except Exception as e:
-            logger.warning("Sanity check after override failed: %s", e)
-            db.rollback()
     db.refresh(result_cv)
-
-    try:
-        conv = _get_or_create_conversation(db, company_id, value_key, effective_period_type, effective_period_year)
-        formatted_value = (
-            str(payload.numeric_value) if payload.numeric_value is not None
-            else (payload.text_value or "—")
-        )
-        source_hint = payload.source_name or "Manuell"
-        system_msg = LlmMessage(
-            conversation_id=conv.id,
-            role="system",
-            content=f"Manuell auf {formatted_value} gesetzt am {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} (Quelle: {source_hint})",
-            source="manual",
-        )
-        db.add(system_msg)
-        db.commit()
-    except Exception as e:
-        logger.warning("Failed to log manual override as system message for %s/%s: %s", company_id, value_key, e)
-
     return result_cv

@@ -24,7 +24,6 @@ import {
   type FyAvailability,
   type RefreshStatus,
 } from "@/api/values";
-import { AnalysisDrawer } from "@/components/AnalysisDrawer";
 import { CumulativeBreakdownDrawer } from "@/components/CumulativeBreakdownDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 import { getFxRates } from "@/api/fx";
@@ -183,116 +182,6 @@ const TIER_BG: Record<ColorTier, string> = {
 
 const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"]);
 
-type VariantValues = Map<string, number | null>;
-
-function _toNum(n: number | string | null | undefined): number | null {
-  if (n == null) return null;
-  return typeof n === "string" ? parseFloat(n) : n;
-}
-
-function _getFaktorValue(cv: CompanyValue): number | null {
-  // Manuelle Override / Actuals: gilt fuer beide Varianten als "die Wahrheit".
-  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
-  const isProxyPrimary = (cv.source_name || "").includes("Proxy");
-  if (isProxyPrimary) return _toNum(cv.numeric_value);
-  // Web oder PDF ist primary -> Q-Faktor steht im alternates
-  const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
-  return alt?.value != null ? parseFloat(alt.value) : null;
-}
-
-function _getWebValue(cv: CompanyValue): number | null {
-  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
-  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
-  if (isWebPrimary) return _toNum(cv.numeric_value);
-  // Primary ist Q-Faktor oder PDF -> Web steht im alternates (mit value oder error_reason)
-  const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
-  return alt?.value != null ? parseFloat(alt.value) : null;
-}
-
-function _getWebErrorReason(cv: CompanyValue): string | null {
-  if (cv.manually_overridden) return null;
-  if (!cv.is_forecast) return null;
-  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
-  if (isWebPrimary) return null;
-  const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
-  if (!alt || alt.value != null) return null;
-  return (alt as { error_reason?: string }).error_reason ?? "Web-Recherche lieferte keinen Wert.";
-}
-
-function _safeYield(v: number | null, mcap: number | null): number | null {
-  if (v == null || mcap == null || mcap === 0) return null;
-  return (v / mcap) * 100;
-}
-
-function buildVariantValues(
-  rows: CompanyValue[],
-  prevRows: CompanyValue[],
-  variant: "faktor" | "web",
-): VariantValues {
-  const pick = variant === "faktor" ? _getFaktorValue : _getWebValue;
-  const raw = new Map<string, number | null>();
-  for (const r of rows) {
-    raw.set(r.value_key, pick(r));
-  }
-  const prev = new Map<string, number | null>();
-  for (const r of prevRows) {
-    const n = r.numeric_value;
-    prev.set(r.value_key, n == null ? null : (typeof n === "string" ? parseFloat(n) : n));
-  }
-
-  const fcf = raw.get("fcf") ?? null;
-  const sbc = raw.get("sbc") ?? null;
-  const buyback = raw.get("buyback_volume") ?? null;
-  const dividends = raw.get("dividends") ?? null;
-  const netIncome = raw.get("net_income") ?? null;
-  const netDebt = raw.get("net_debt") ?? null;
-  const marketCap = raw.get("market_cap") ?? null;
-  const niPrev = prev.get("net_income") ?? null;
-  const ndPrev = prev.get("net_debt") ?? null;
-
-  const fcfYield = _safeYield(fcf, marketCap);
-  const sbcYield = _safeYield(sbc, marketCap);
-  const divYield = _safeYield(dividends, marketCap);
-  const buybackYield = _safeYield(buyback, marketCap);
-  const netBuyback = (buyback != null && sbc != null) ? buyback - sbc : null;
-  const netBuybackYield = _safeYield(netBuyback, marketCap);
-
-  let niGrowth: number | null = null;
-  if (netIncome != null && niPrev != null && niPrev !== 0) {
-    niGrowth = ((netIncome - niPrev) / Math.abs(niPrev)) * 100;
-  }
-  let ndChange: number | null = null;
-  let ndChangePct: number | null = null;
-  if (netDebt != null && ndPrev != null) {
-    ndChange = ndPrev - netDebt;
-    ndChangePct = _safeYield(ndChange, marketCap);
-  }
-
-  // Hohn-Rendite NUR wenn ALLE Komponenten vorhanden sind (kein Partial-Sum,
-  // sonst entstehen irrefuehrende "Werte" aus 1-2 Teilen).
-  const sumIfAllPresent = (parts: (number | null)[]): number | null => {
-    if (parts.some((p) => p == null)) return null;
-    return (parts as number[]).reduce((a, b) => a + b, 0);
-  };
-  const hohnSimple = sumIfAllPresent([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
-  const hohnDetailed = sumIfAllPresent([divYield, niGrowth, netBuybackYield, ndChangePct]);
-
-  return new Map<string, number | null>([
-    ["fcf", fcf], ["sbc", sbc], ["buyback_volume", buyback], ["dividends", dividends],
-    ["net_income", netIncome], ["net_debt", netDebt],
-    ["market_cap", marketCap], ["shares_outstanding", raw.get("shares_outstanding") ?? null],
-    ["stock_price", raw.get("stock_price") ?? null], ["market_cap_calc", raw.get("market_cap_calc") ?? null],
-    ["fcf_yield", fcfYield], ["sbc_yield", sbcYield], ["dividend_yield", divYield],
-    ["buyback_yield", buybackYield], ["net_buyback", netBuyback], ["net_buyback_yield", netBuybackYield],
-    ["ni_growth", niGrowth], ["net_debt_change", ndChange], ["net_debt_change_pct", ndChangePct],
-    ["hohn_return_simple", hohnSimple], ["hohn_return_detailed", hohnDetailed],
-  ]);
-}
-
-function hasAnyAlternate(rows: CompanyValue[]): boolean {
-  return rows.some((r) => r.is_forecast && r.forecast_alternates && r.forecast_alternates.length > 0);
-}
-
 function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
   if (!av || periodYear === undefined) return false;
   if (periodYear >= new Date().getFullYear()) return false;
@@ -319,20 +208,6 @@ export function CompanyDashboardPage() {
   const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [notFound, setNotFound] = useState<Set<string>>(new Set());
-  const [drawer, setDrawer] = useState<{
-    companyId: string;
-    valueKey: string;
-    companyName: string;
-    valueLabel: string;
-    currentScore: number | null;
-    currentText: string | undefined;
-    isQualitative: boolean;
-    isAlwaysCurrent: boolean;
-    isCalculated: boolean;
-    dataType: string;
-    sourceFilter?: string;
-  } | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [cumDrawer, setCumDrawer] = useState<{ companyId: string; companyName: string; valueKey: string; valueLabel: string } | null>(null);
   const [cumDrawerOpen, setCumDrawerOpen] = useState(false);
   const [prevYearValuesMap, setPrevYearValuesMap] = useState<Map<string, CompanyValue[]>>(new Map());
@@ -554,34 +429,23 @@ export function CompanyDashboardPage() {
 
   const handleResearch = async (
     companyId: string,
-    companyName: string,
+    _companyName: string,
     key: string,
     valueLabel: string,
-    dataType: string,
+    _dataType: string,
   ) => {
     const researchKey = `${companyId}:${key}`;
     if (researching) return;
     setResearching(researchKey);
     try {
       const res = await researchValue(companyId, key, period.value, period.year);
-      const score = res.message.score_suggestion;
-      const numericScore = score == null ? null : (typeof score === "string" ? parseFloat(score) : score);
-      if (!res.value_found) {
-        toast.warning("Claude konnte keinen verifizierbaren Wert finden — siehe Chat für Details");
+      if (!res.value_found || res.value == null) {
+        toast.warning(`${valueLabel}: Claude konnte keinen verifizierbaren Wert finden`);
+        setNotFound((prev) => new Set(prev).add(researchKey));
+        return;
       }
-      setDrawer({
-        companyId,
-        valueKey: key,
-        companyName,
-        valueLabel,
-        currentScore: numericScore,
-        currentText: undefined,
-        isQualitative: false,
-        isAlwaysCurrent: key === "stock_price" || key === "shares_outstanding" || key === "market_cap",
-        isCalculated: false,
-        dataType,
-      });
-      setDrawerOpen(true);
+      toast.success(`${valueLabel}: ${res.source_name ?? "Claude-Recherche"}`);
+      await loadAllValues();
     } catch (e) {
       const detail = (e as { message?: string })?.message;
       toast.error(detail || "Recherche fehlgeschlagen");
@@ -937,200 +801,6 @@ export function CompanyDashboardPage() {
             </thead>
             <tbody>
               {companies.flatMap((company) => {
-                const cRows = valuesMap.get(company.id) ?? [];
-                const cPrev = prevYearValuesMap.get(company.id) ?? [];
-                const showDual = isEstimateMode && hasAnyAlternate(cRows);
-                if (showDual) {
-                  const faktor = buildVariantValues(cRows, cPrev, "faktor");
-                  const web = buildVariantValues(cRows, cPrev, "web");
-                  const isRefreshingThis = refreshStatuses.get(company.id)?.status === "running";
-                  const renderEstimateRow = (
-                    label: "Q-Faktor (Proxy)" | "Web-Guidance",
-                    vals: VariantValues,
-                    accent: string,
-                    isFirst: boolean,
-                  ) => (
-                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t" : "border-b"} border-border/30 ${accent}`}>
-                      <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${accent}`}>
-                        <div className="flex items-center gap-2">
-                          {isFirst ? (
-                            <>
-                              <span className="font-medium text-foreground">{company.name}</span>
-                              <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
-                                {label}
-                              </span>
-                              <button
-                                onClick={() => handleRefreshCompany(company)}
-                                disabled={isRefreshingThis}
-                                title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
-                                className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                <RefreshCw className={`h-3 w-3 ${isRefreshingThis ? "animate-spin" : ""}`} />
-                                {isRefreshingThis ? "Berechnet…" : "Werte berechnen"}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-muted-foreground/50">↳</span>
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>
-                                {label}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                      {grouped.flatMap((g) => {
-                        if (g.defs.length === 0) {
-                          return [<td key={`${company.id}-${label}-${g.category}-empty`} className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">—</td>];
-                        }
-                        return g.defs.map((d) => {
-                          if (d.isPrevYear) {
-                            // Prev-year-Wert ist Actuals und gleich fuer beide Varianten.
-                            const baseKey = (d as { basedOnKey?: string }).basedOnKey as string | undefined;
-                            const prevCv = baseKey ? cPrev.find((v) => v.value_key === baseKey) : undefined;
-                            const prevRaw = prevCv?.numeric_value ?? null;
-                            const prevNum = prevRaw == null ? null : (typeof prevRaw === "string" ? parseFloat(prevRaw) : prevRaw);
-                            const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
-                            const prevDisplay = shouldConvert ? (convertCurrency(prevNum, prevCv?.currency ?? null) ?? prevNum) : prevNum;
-                            return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground">
-                                <span className="font-mono text-sm italic">
-                                  {prevNum == null ? "—" : formatValue(prevDisplay, d.unit, displayCurrency)}
-                                </span>
-                              </td>
-                            );
-                          }
-                          const av = availabilityMap.get(company.id);
-                          const hohnLockedHere = HOHN_LOCKED_KEYS.has(d.key) && period.value === "FY" && isHohnLocked(av, period.year);
-                          if (hohnLockedHere) {
-                            return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
-                                <div className="flex items-center gap-1"><Lock className="h-3 w-3" /> Locked</div>
-                              </td>
-                            );
-                          }
-                          const val = vals.get(d.key) ?? null;
-                          const isWebRow = label === "Web-Guidance";
-                          // Q-Faktor-Row: nur Formel-Erklaerung + Sanity-Check zeigen.
-                          // Web-Row: nur Original-Prompt + Claude-Antwort zeigen.
-                          const variantSource = isWebRow ? "web_guidance" : "estimate,sanity_check";
-                          const cellCv = cRows.find((r) => r.value_key === d.key) ?? null;
-                          if (val == null) {
-                            const isHohn = d.key === "hohn_return_simple" || d.key === "hohn_return_detailed";
-                            const isCalcMissing = d.source_type === "CALCULATED";
-                            let hohnMissing: string[] = [];
-                            if (isHohn) {
-                              const reqKeys = d.key === "hohn_return_simple"
-                                ? ["fcf_yield", "ni_growth", "sbc_yield", "net_debt_change_pct"]
-                                : ["dividend_yield", "ni_growth", "net_buyback_yield", "net_debt_change_pct"];
-                              hohnMissing = reqKeys.filter((k) => vals.get(k) == null);
-                            }
-                            // Konkreter Web-Fehler aus alternates (gesetzt wenn Web bewusst fehlschlug).
-                            const webErr = isWebRow && cellCv ? _getWebErrorReason(cellCv) : null;
-                            const tip = isHohn
-                              ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}. Klick auf die fehlenden Felder um zu recherchieren.`
-                              : isWebRow && webErr
-                              ? `Web-Recherche fehlte: ${webErr} Klick 'Recherchieren' fuer einen erneuten Versuch.`
-                              : isWebRow
-                              ? "Web-Recherche hat fuer diesen Wert (noch) nichts geliefert. Klick 'Recherchieren' fuer einen erneuten Versuch — Claude soll im Zweifel eine Approximation liefern."
-                              : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
-                            const labelText = isHohn ? "Komponenten fehlen" : (isWebRow && webErr ? "Web fehlte" : "Wert nicht gefunden");
-                            const canResearch = !isHohn && !isCalcMissing;
-                            const researchKey = `${company.id}:${d.key}`;
-                            const isResearching = researching === researchKey;
-                            return (
-                              <td key={`${company.id}-${label}-${d.key}`}
-                                className={`border-r border-border/40 px-3 py-2 ${isHohn || isCalcMissing ? "" : "cursor-pointer hover:bg-amber-50/50"}`}
-                                title={tip}
-                                onClick={isHohn || isCalcMissing ? undefined : () => {
-                                  setDrawer({
-                                    companyId: company.id,
-                                    valueKey: d.key,
-                                    companyName: company.name,
-                                    valueLabel: d.label_en,
-                                    currentScore: null,
-                                    currentText: cellCv?.text_value ?? undefined,
-                                    isQualitative: false,
-                                    isAlwaysCurrent: false,
-                                    isCalculated: false,
-                                    dataType: d.data_type,
-                                    sourceFilter: variantSource,
-                                  });
-                                  setDrawerOpen(true);
-                                }}
-                              >
-                                <div className="flex items-center gap-1.5">
-                                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-                                  <span className="text-xs text-amber-700">{labelText}</span>
-                                  {canResearch && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleResearch(company.id, company.name, d.key, d.label_en, d.data_type);
-                                      }}
-                                      disabled={isResearching || researching !== null}
-                                      className="ml-0.5 inline-flex items-center gap-0.5 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                                      title="Mit Claude Web-Recherche den Wert finden"
-                                    >
-                                      {isResearching ? (
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                      ) : (
-                                        <Search className="h-3 w-3" />
-                                      )}
-                                      {isResearching ? "Recherche…" : "Recherchieren"}
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                            );
-                          }
-                          let display: number | null = val;
-                          if (d.is_currency && d.data_type === "NUMERIC") {
-                            const cur = cellCv?.currency ?? null;
-                            const conv = convertCurrency(val, cur);
-                            display = conv ?? val;
-                          }
-                          const tier = colorTier(d.key, display);
-                          const tierBg = tier ? TIER_BG[tier] : "";
-                          const isCalcCell = d.source_type === "CALCULATED";
-                          // Chat: beim Klick Drawer mit korrektem source_filter oeffnen.
-                          //   Q-Faktor-Row -> 'estimate' (nur Formel + System-Erklaerung)
-                          //   Web-Row     -> 'web_guidance' (Original-Prompt + Claude-Antwort)
-                          return (
-                            <td
-                              key={`${company.id}-${label}-${d.key}`}
-                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isCalcCell ? "" : "cursor-pointer hover:bg-muted/30"}`}
-                              title={isCalcCell ? "Berechneter Wert — klick auf die Eingangswerte um zu chatten." : `Chat zu ${d.label_de} (${label})`}
-                              onClick={isCalcCell ? undefined : () => {
-                                setDrawer({
-                                  companyId: company.id,
-                                  valueKey: d.key,
-                                  companyName: company.name,
-                                  valueLabel: d.label_en,
-                                  currentScore: display ?? null,
-                                  currentText: cellCv?.text_value ?? undefined,
-                                  isQualitative: false,
-                                  isAlwaysCurrent: false,
-                                  isCalculated: false,
-                                  dataType: d.data_type,
-                                  sourceFilter: variantSource,
-                                });
-                                setDrawerOpen(true);
-                              }}
-                            >
-                              <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
-                            </td>
-                          );
-                        });
-                      })}
-                    </tr>
-                  );
-                  return [
-                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", true),
-                    renderEstimateRow("Web-Guidance", web, "bg-violet-50/30", false),
-                  ];
-                }
                 return [(
                 <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">
                   <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 font-medium text-foreground">
@@ -1279,7 +949,6 @@ export function CompanyDashboardPage() {
                         }
                       };
 
-                      const isAlwaysCurrent = d.always_current === true;
                       const fyTier = colorTier(d.key, displayVal);
                       const fyTierBg = fyTier ? TIER_BG[fyTier] : "";
                       const isStammdatenKey = d.category === "STAMMDATEN";
@@ -1306,25 +975,13 @@ export function CompanyDashboardPage() {
                       }
                       const fyIsPartial = fyPartialMissing.length > 0 && cv?.numeric_value != null;
 
+                      const sourceTooltip = cv?.source_name
+                        ? `Quelle: ${cv.source_name}${cv.source_link ? ` (${cv.source_link})` : ""}`
+                        : undefined;
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "cursor-pointer hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
-                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel) — Diskussion gehoert zu den Eingangswerten." : undefined)}
-                          onClick={isCalculated ? undefined : () => {
-                            setDrawer({
-                              companyId: company.id,
-                              valueKey: d.key,
-                              companyName: company.name,
-                              valueLabel: d.label_en,
-                              currentScore: raw,
-                              currentText: cv?.text_value ?? undefined,
-                              isQualitative,
-                              isAlwaysCurrent,
-                              isCalculated,
-                              dataType: d.data_type,
-                            });
-                            setDrawerOpen(true);
-                          }}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "cursor-cell hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
+                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel)" : sourceTooltip)}
                           onDoubleClick={isCalculated ? undefined : (e) => {
                             e.stopPropagation();
                             const currentVal = cv?.numeric_value != null ? String(cv.numeric_value) : "";
@@ -1484,35 +1141,6 @@ export function CompanyDashboardPage() {
             </tbody>
           </table>
         </div>
-
-        {drawer && (
-          <AnalysisDrawer
-            open={drawerOpen}
-            onClose={() => setDrawerOpen(false)}
-            companyId={drawer.companyId}
-            companyName={drawer.companyName}
-            valueKey={drawer.valueKey}
-            valueLabel={drawer.valueLabel}
-            currentScore={drawer.currentScore}
-            currentText={drawer.currentText}
-            dataType={drawer.dataType as "NUMERIC" | "TEXT" | "FACTOR"}
-            isCalculated={drawer.isCalculated}
-            periodType={period.value}
-            periodYear={period.year}
-            sourceFilter={drawer.sourceFilter}
-            onAcceptScore={async (score, textValue) => {
-              const effPeriodType = (drawer.isQualitative || drawer.isAlwaysCurrent) ? "SNAPSHOT" : period.value;
-              const effPeriodYear = (drawer.isQualitative || drawer.isAlwaysCurrent) ? undefined : period.year;
-              if (textValue !== undefined) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { text_value: textValue, source_name: "Manuell" }, effPeriodType, effPeriodYear);
-              } else if (score != null) {
-                await overrideValue(drawer.companyId, drawer.valueKey, { numeric_value: score, source_name: "Manuell" }, effPeriodType, effPeriodYear);
-              }
-              await loadAllValues();
-              setDrawerOpen(false);
-            }}
-          />
-        )}
 
         {cumDrawer && cumulativeMap.get(cumDrawer.companyId) && (
           <CumulativeBreakdownDrawer

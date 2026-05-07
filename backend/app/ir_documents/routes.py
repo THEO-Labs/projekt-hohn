@@ -339,14 +339,6 @@ def _trigger_estimate_refresh_for_running_fy(db, company_id, q_period_year: int)
     except Exception as e:
         logger.warning("Estimate refresh calc failed: %s", e)
         db.rollback()
-    # Sanity-check: catches definition mismatches that the new Q values
-    # might have introduced (e.g. lease basis change between Q and FY).
-    try:
-        from app.calculations.sanity import run_sanity_check
-        run_sanity_check(db, company_id, q_period_year)
-    except Exception as e:
-        logger.warning("Estimate refresh sanity-check failed: %s", e)
-        db.rollback()
 
 
 @router.post("/{company_id}/ir-documents", response_model=IRDocumentOut, status_code=201)

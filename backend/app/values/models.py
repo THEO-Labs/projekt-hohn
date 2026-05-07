@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy import Enum as SaEnum
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -79,4 +79,3 @@ class CompanyValue(Base):
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     manually_overridden: Mapped[bool] = mapped_column(Boolean, default=False)
     from_ir_pdf: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    forecast_alternates: Mapped[list | None] = mapped_column(JSONB, nullable=True)
