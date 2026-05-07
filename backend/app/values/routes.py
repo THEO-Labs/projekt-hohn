@@ -241,7 +241,7 @@ def _try_web_guidance(
     key: str,
     target_fy: int,
 ):
-    """Web-Recherche fuer FY-Guidance. Returns ProviderResult oder None."""
+    """Web-Recherche für FY-Guidance. Returns ProviderResult oder None."""
     from app.config import settings
     if not settings.anthropic_api_key:
         return None
@@ -398,7 +398,7 @@ def _process_one_key(
         updated.append(actuals_existing)
         return False
 
-    # Pre-existing fuer den Update-Pfad: bei is_running_fy nutzen wir die
+    # Pre-existing für den Update-Pfad: bei is_running_fy nutzen wir die
     # forecast-Row (falls vorhanden), sonst die actuals-Row.
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
@@ -416,7 +416,7 @@ def _process_one_key(
     #   2. Estimate-Mode (laufendes FY + ESTIMABLE): BEIDE Methoden parallel
     #      rechnen — Web-Recherche und Q-Faktor-Proxy. Primary = Web (mit Q-Faktor
     #      Fallback wenn Web leer), zweite Methode wandert in forecast_alternates.
-    #   3. Sonst: Web-Recherche als universeller Fallback fuer FY-Werte.
+    #   3. Sonst: Web-Recherche als universeller Fallback für FY-Werte.
     forecast_alternates: list[dict] | None = None
     if is_stammdaten or is_us_company(company):
         result = _try_providers(
@@ -447,12 +447,12 @@ def _process_one_key(
                 "error_reason": (
                     "Claude-Recherche lieferte keinen Wert."
                     if method == "web_guidance"
-                    else "Q-Faktor-Proxy nicht moeglich (z.B. fehlende Q-Daten)."
+                    else "Q-Faktor-Proxy nicht möglich (z.B. fehlende Q-Daten)."
                 ),
             }
 
-        # Q-Faktor-Alternate IMMER schreiben (fuer Click-Drilldown im Frontend)
-        # — auch wenn Q-Faktor primary ist, damit die Erklaerung an einem
+        # Q-Faktor-Alternate IMMER schreiben (für Click-Drilldown im Frontend)
+        # — auch wenn Q-Faktor primary ist, damit die Erklärung an einem
         # vorhersehbaren Ort steht.
         proxy_alt = _to_alt(proxy_result, "q_factor_proxy")
 
@@ -484,7 +484,7 @@ def _process_one_key(
             ]
 
     if result is None and not is_stammdaten:
-        # Universeller Fallback fuer historische FY-Werte (z.B. PDF leer, Non-US).
+        # Universeller Fallback für historische FY-Werte (z.B. PDF leer, Non-US).
         target_fy = effective_period_year if effective_period_year is not None else 0
         if target_fy > 0:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
@@ -890,7 +890,7 @@ def research_company_value(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Manueller Trigger fuer Claude-Web-Recherche zu einer einzelnen Zelle.
+    """Manueller Trigger für Claude-Web-Recherche zu einer einzelnen Zelle.
     Persistiert das Ergebnis direkt als CompanyValue (manually_overridden=True).
     Returns: { value, source_name, source_url, value_found }.
     """

@@ -2,16 +2,16 @@
 
 Logik (aligned mit dem aktuellen FY-Flow):
 
-1. **Wenn ein Quartalsbericht (Q1/Q2/Q3) fuer das laufende FY hochgeladen ist**:
+1. **Wenn ein Quartalsbericht (Q1/Q2/Q3) für das laufende FY hochgeladen ist**:
    - **FLOW keys** (NI, FCF, SBC, Buyback, Dividends): Wachstumsfaktor aus
-     dem aktuellsten verfuegbaren Quartal.
+     dem aktuellsten verfügbaren Quartal.
        factor    = cum_quarters_N / cum_quarters_N-1   (gleiche Q's beider Jahre)
        FY_N e    = FY_N-1 × factor
      YTD vs standalone wird via period_basis-Metadata sauber unterschieden.
    - **BALANCE keys** (Net Debt, Shares Outstanding): Snapshot des
-     aktuellsten verfuegbaren Quartals (Punkt-in-Zeit).
+     aktuellsten verfügbaren Quartals (Punkt-in-Zeit).
 
-2. **Wenn KEINE Quartalsberichte fuer das laufende FY**:
+2. **Wenn KEINE Quartalsberichte für das laufende FY**:
    - **FLOW + BALANCE**: estimate = FY_N-1 (no-growth-Annahme).
 
 3. **Wenn nicht mal FY_N-1 vorliegt**: None — User muss den Vorjahres-AR
@@ -45,20 +45,20 @@ BALANCE_KEYS = frozenset({
 ESTIMABLE_KEYS = frozenset(FLOW_KEYS | BALANCE_KEYS)
 
 # Q4 NICHT in der Liste — Q4-Daten sind im Annual Report enthalten,
-# kein separater Upload-Slot in der UI. Quartal-Estimates fuer das
+# kein separater Upload-Slot in der UI. Quartal-Estimates für das
 # laufende FY ziehen also nur Q1/Q2/Q3 heran.
 QUARTERS = ("Q1", "Q2", "Q3")
 
 # Schwelle: wenn der Vorjahres-Cumulative-Q kleiner als diese Fraktion
 # des Vorjahres-FY-Werts ist, blasen winzige Aenderungen den Faktor
 # unrealistisch auf → wir verzichten auf den Faktor-Pfad und fallen auf
-# den FY-Fallback zurueck.
+# den FY-Fallback zurück.
 _NEAR_ZERO_FRACTION = Decimal("0.01")
 
-# Hard-Cap fuer den Faktor — saisonale Q1-FCF-Werte (Working-Capital-Aufbau,
+# Hard-Cap für den Faktor — saisonale Q1-FCF-Werte (Working-Capital-Aufbau,
 # typisch negativ bei Industrials) produzieren mathematisch korrekte aber
 # wirtschaftlich unsinnige Faktoren wenn man sie auf einen positiven
-# FY-Cashflow skaliert. Ueber 5x in beiden Richtungen → FY-Fallback.
+# FY-Cashflow skaliert. Über 5x in beiden Richtungen → FY-Fallback.
 _MAX_FACTOR = Decimal("5")
 
 
@@ -99,7 +99,7 @@ def _period_basis(
     period_year: int,
 ) -> str | None:
     """Liest period_basis (YTD vs standalone) aus dem IRDocument-extraction_results,
-    damit wir Q1+Q2+Q3 nicht doppelt zaehlen falls Q3 selbst YTD ist."""
+    damit wir Q1+Q2+Q3 nicht doppelt zählen falls Q3 selbst YTD ist."""
     try:
         doc = (
             db.query(IRDocument)
@@ -133,8 +133,8 @@ def _matched_quarter_pair(
     target_year: int,
     prev_year: int,
 ) -> tuple[str, Decimal, Decimal, bool] | None:
-    """Findet das spaeteste gemeinsame Quartal beider Jahre und gibt
-    (quarter, target_value, prev_value, ytd_note) zurueck.
+    """Findet das späteste gemeinsame Quartal beider Jahre und gibt
+    (quarter, target_value, prev_value, ytd_note) zurück.
 
     Apples-to-apples-Regel: die period_basis (YTD vs standalone) muss
     bei target und prev passen, sonst skippen wir das Quartal und probieren
@@ -162,9 +162,9 @@ def _latest_quarter_value(
     key: str,
     period_year: int,
 ) -> tuple[Decimal | None, str | None, int | None]:
-    """Holt den letzten verfuegbaren Quartals-Wert.
+    """Holt den letzten verfügbaren Quartals-Wert.
     Reihenfolge: target_year Q3→Q2→Q1, dann prev_year Q3→Q2→Q1.
-    Fuer BALANCE-Snapshots ist auch ein Vorjahres-Q3 besser als FY[N-2].
+    Für BALANCE-Snapshots ist auch ein Vorjahres-Q3 besser als FY[N-2].
     Returns (value, quarter_label, year) oder (None, None, None)."""
     for year in (period_year, period_year - 1):
         for q in reversed(QUARTERS):
@@ -189,7 +189,7 @@ def _fy_fallback(
         value=prev_fy_val,
         method=method,
         explanation=(
-            f"Schaetzung FY{target_fy_year} = FY{prev_fy}-Wert ({key}) = {prev_fy_val:,.0f}{cur}. "
+            f"Schätzung FY{target_fy_year} = FY{prev_fy}-Wert ({key}) = {prev_fy_val:,.0f}{cur}. "
             f"{reason}"
         ),
     )
@@ -203,7 +203,7 @@ def compute_estimate(
     *,
     currency: str | None = None,
 ) -> EstimateResult | None:
-    """Estimate fuer FY[target_fy_year] berechnen.
+    """Estimate für FY[target_fy_year] berechnen.
 
     Logik:
     - BALANCE keys → letzter Q-Snapshot (target_fy_year), sonst FY[N-1]-Fallback
@@ -220,7 +220,7 @@ def compute_estimate(
     if key in BALANCE_KEYS:
         snap, snap_q, snap_year = _latest_quarter_value(db, company_id, key, target_fy_year)
         if snap is not None:
-            note = "" if snap_year == target_fy_year else f" (juengster verfuegbarer Q-Snapshot — kein FY{target_fy_year}-Q-Report hochgeladen)"
+            note = "" if snap_year == target_fy_year else f" (jüngster verfügbarer Q-Snapshot — kein FY{target_fy_year}-Q-Report hochgeladen)"
             return EstimateResult(
                 value=snap,
                 method="balance_snapshot",
@@ -234,15 +234,15 @@ def compute_estimate(
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
-                reason=f"Keine Q-Reports fuer FY{target_fy_year} oder FY{prev_fy} hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
+                reason=f"Keine Q-Reports für FY{target_fy_year} oder FY{prev_fy} hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
             )
         return None
 
-    # FLOW key — Apples-to-apples-Vergleich des spaetesten gemeinsamen Quartals.
+    # FLOW key — Apples-to-apples-Vergleich des spätesten gemeinsamen Quartals.
     pair = _matched_quarter_pair(db, company_id, key, target_fy_year, prev_fy)
 
     if pair is None:
-        # Kein gemeinsames Quartal → FY-Fallback wenn moeglich.
+        # Kein gemeinsames Quartal → FY-Fallback wenn möglich.
         if prev_fy_val is not None:
             # Diagnose: welche Q-Reports fehlen genau?
             target_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, target_fy_year) is not None]
@@ -268,7 +268,7 @@ def compute_estimate(
         return _fy_fallback(
             prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
-            reason=f"{q} {prev_fy} ist 0 — kein Wachstumsfaktor moeglich.",
+            reason=f"{q} {prev_fy} ist 0 — kein Wachstumsfaktor möglich.",
         )
 
     # Sanity-Gates: Faktor-Pfad nur wenn Signal robust.
@@ -283,7 +283,7 @@ def compute_estimate(
         )
     # Seasonality-Gate: wenn Q-Werte ein anderes Vorzeichen haben als die
     # FY-Basis (z.B. negatives Q1-FCF bei industriellen Working-Capital-
-    # Aufbau, aber positives FY-FCF), wuerde der "positive Faktor × positive
+    # Aufbau, aber positives FY-FCF), würde der "positive Faktor × positive
     # FY = inflated estimate"-Effekt zuschlagen. → FY-Fallback.
     if (target_v * prev_fy_val) < 0 or (prev_v * prev_fy_val) < 0:
         return _fy_fallback(
@@ -292,7 +292,7 @@ def compute_estimate(
             reason=(
                 f"{q}-Werte ({target_v:,.0f} / {prev_v:,.0f}) haben anderes Vorzeichen "
                 f"als FY{prev_fy} ({prev_fy_val:,.0f}) — saisonale Verzerrung, "
-                f"Faktor wuerde Estimate uebertreiben."
+                f"Faktor würde Estimate uebertreiben."
             ),
         )
     if abs(prev_v) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
@@ -314,8 +314,8 @@ def compute_estimate(
             prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
             reason=(
-                f"Faktor {q} {target_fy_year}/{q} {prev_fy} = {factor:.2f} liegt ueber "
-                f"+/-{_MAX_FACTOR} (vermutlich Saisonalitaet) — Faktor zu unzuverlaessig, "
+                f"Faktor {q} {target_fy_year}/{q} {prev_fy} = {factor:.2f} liegt über "
+                f"+/-{_MAX_FACTOR} (vermutlich Saisonalität) — Faktor zu unzuverlaessig, "
                 f"FY-Fallback statt extrapolieren."
             ),
         )
@@ -326,8 +326,8 @@ def compute_estimate(
     cur = f" {currency}" if currency else ""
 
     explanation = (
-        f"Schaetzung FY{target_fy_year} = FY{prev_fy} × Faktor (gleiches Quartal{ytd_note}).  "
-        f"Werte in Originalwaehrung{f' ({currency})' if currency else ''} — UI rechnet ggf. in Anzeige-Waehrung um.  "
+        f"Schätzung FY{target_fy_year} = FY{prev_fy} × Faktor (gleiches Quartal{ytd_note}).  "
+        f"Werte in Originalwaehrung{f' ({currency})' if currency else ''} — UI rechnet ggf. in Anzeige-Währung um.  "
         f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}{cur}.  "
         f"{q} {target_fy_year} = {target_v:,.0f}{cur}, {q} {prev_fy} = {prev_v:,.0f}{cur}, "
         f"Faktor = {factor:.4f} ({delta_pct:+.2f} % YoY).  "

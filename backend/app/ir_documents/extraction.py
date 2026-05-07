@@ -451,7 +451,7 @@ def _call_claude_extraction(client, content_blocks: list, model: str) -> str:
         except anthropic.APIError as e:
             last_exc = e
             # Bei "prompt too long" sofort raus — Retry mit gleichem Modell wuerde
-            # nichts aendern. Caller soll auf groesseres Modell eskalieren.
+            # nichts aendern. Caller soll auf größeres Modell eskalieren.
             if _is_context_too_long(e):
                 raise
             logger.warning("Claude extraction attempt %d failed: %s", attempt + 1, e)

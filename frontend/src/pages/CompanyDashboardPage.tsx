@@ -182,8 +182,8 @@ const TIER_BG: Record<ColorTier, string> = {
 
 const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"]);
 
-// Primaere Werte die im Estimate-Mode per Q-Faktor geschaetzt werden.
-// Nur fuer diese ist die Q-Faktor-Cell anklickbar (zeigt Drilldown:
+// Primäre Werte die im Estimate-Mode per Q-Faktor geschätzt werden.
+// Nur für diese ist die Q-Faktor-Cell anklickbar (zeigt Drilldown:
 // FY[N-1]-Wert + Faktor-Berechnung).
 const ESTIMATE_PRIMARY_KEYS = new Set([
   "net_income", "fcf", "sbc", "buyback_volume", "dividends",
@@ -588,7 +588,7 @@ export function CompanyDashboardPage() {
     const factorDefs = allDefs.filter((d) => FACTOR_KEYS.has(d.key));
     const inputDefs = allDefs.filter((d) => !FACTOR_KEYS.has(d.key));
     const isExpanded = !isCumMode && expandedSections.has(cat);
-    // actual_return ist FY-spezifisch (Yahoo MCap-Anker), CUM rechnet ueber mehrere FYs.
+    // actual_return ist FY-spezifisch (Yahoo MCap-Anker), CUM rechnet über mehrere FYs.
     const cumFactorDefs = factorDefs.filter((d) => d.key !== "market_cap" && d.key !== "actual_return");
     const baseVisibleDefs = isCumMode ? cumFactorDefs : (isExpanded ? allDefs : factorDefs);
     const visibleSectionDefs: (ValueDefinition & { isPrevYear?: boolean; basedOnKey?: string })[] = [];
@@ -616,6 +616,15 @@ export function CompanyDashboardPage() {
   }).filter((g) => g.defs.length > 0 || g.hiddenInputCount > 0);
 
   const visibleDefs = grouped.flatMap((g) => g.defs);
+
+  // Vertikale Kategorie-Trenner: jeder letzte Key in einer Gruppe bekommt
+  // einen dickeren rechten Rand.
+  const lastKeyInGroup = new Set<string>();
+  for (const g of grouped) {
+    if (g.defs.length > 0) lastKeyInGroup.add(g.defs[g.defs.length - 1].key);
+  }
+  const groupSep = (key: string): string =>
+    lastKeyInGroup.has(key) ? " !border-r-2 !border-foreground/25" : "";
 
   if (!user) return null;
 
@@ -889,14 +898,14 @@ export function CompanyDashboardPage() {
                   if (g.defs.length === 0) {
                     return [
                       <th key={`${g.category}-empty`}
-                        className="border-b border-r border-border/40 px-2 py-1.5 text-center text-[10px] italic text-muted-foreground">
+                        className="border-b border-r-2 border-foreground/25 px-2 py-1.5 text-center text-[10px] italic text-muted-foreground">
                         nur Hilfswerte
                       </th>
                     ];
                   }
                   return g.defs.map((d) => (
                     <th key={d.key}
-                      className={`whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground ${d.isPrevYear ? "bg-muted/20 italic" : ""}`}>
+                      className={`whitespace-nowrap border-b border-r border-border/40 px-3 py-2 text-left text-xs font-medium text-muted-foreground ${d.isPrevYear ? "bg-muted/20 italic" : ""}${groupSep(d.key)}`}>
                       <span className="truncate" title={d.label_de}>{d.label_en}</span>
                     </th>
                   ));
@@ -946,7 +955,7 @@ export function CompanyDashboardPage() {
                       ) : null}
                       {grouped.flatMap((g) => {
                         if (g.defs.length === 0) {
-                          return [<td key={`${company.id}-${label}-${g.category}-empty`} className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">—</td>];
+                          return [<td key={`${company.id}-${label}-${g.category}-empty`} className="border-r-2 border-foreground/25 px-2 py-2 text-center text-muted-foreground/30">—</td>];
                         }
                         return g.defs.map((d) => {
                           if (d.isPrevYear) {
@@ -956,7 +965,7 @@ export function CompanyDashboardPage() {
                             const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
                             const prevDisplay = shouldConvert ? (convertCurrency(prevNum, prevCv?.currency ?? null) ?? prevNum) : prevNum;
                             return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground">
+                              <td key={`${company.id}-${label}-${d.key}`} className={`whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground${groupSep(d.key)}`}>
                                 <span className="font-mono text-sm italic">{prevNum == null ? "—" : formatValue(prevDisplay, d.unit, displayCurrency)}</span>
                               </td>
                             );
@@ -964,7 +973,7 @@ export function CompanyDashboardPage() {
                           const av = availabilityMap.get(company.id);
                           if (HOHN_LOCKED_KEYS.has(d.key) && period.value === "FY" && isHohnLocked(av, period.year)) {
                             return (
-                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
+                              <td key={`${company.id}-${label}-${d.key}`} className={`border-r border-border/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800${groupSep(d.key)}`}>
                                 <div className="flex items-center gap-1"><Lock className="h-3 w-3" /> Locked</div>
                               </td>
                             );
@@ -984,12 +993,12 @@ export function CompanyDashboardPage() {
                             const tip = isHohn
                               ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}`
                               : isWebRow
-                              ? "Web-Recherche fehlte. Klick oben 'Werte berechnen' fuer einen erneuten Versuch."
-                              : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
+                              ? "Web-Recherche fehlte. Klick oben 'Werte berechnen' für einen erneuten Versuch."
+                              : "Q-Faktor nicht möglich (z.B. fehlende Q-Daten oder Saisonalitäts-Gate).";
                             const labelText = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlte" : "—");
                             return (
                               <td key={`${company.id}-${label}-${d.key}`}
-                                className="border-r border-border/40 px-3 py-2"
+                                className={`border-r border-border/40 px-3 py-2${groupSep(d.key)}`}
                                 title={tip}>
                                 <div className="flex items-center gap-1.5">
                                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600/70" />
@@ -1017,7 +1026,7 @@ export function CompanyDashboardPage() {
                                     ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cellCv?.period_year}`
                                     : `FY${cellCv?.period_year}`))
                             : null;
-                          // Click-Handler nur fuer Q-Faktor primary keys (ESTIMABLE)
+                          // Click-Handler nur für Q-Faktor primary keys (ESTIMABLE)
                           // — Drilldown zeigt FY[N-1]-Wert + Faktor + Resultat.
                           const variantKey: "faktor" | "web" = label === "Q-Faktor (Proxy)" ? "faktor" : "web";
                           const isClickableEstimate = variantKey === "faktor" && ESTIMATE_PRIMARY_KEYS.has(d.key);
@@ -1029,8 +1038,8 @@ export function CompanyDashboardPage() {
                           } : undefined;
                           return (
                             <td key={`${company.id}-${label}-${d.key}`}
-                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""}`}
-                              title={isClickableEstimate ? "Klick fuer Drilldown: FY-Vorjahres-Wert + Faktor-Berechnung" : undefined}
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""}${groupSep(d.key)}`}
+                              title={isClickableEstimate ? "Klick für Drilldown: FY-Vorjahres-Wert + Faktor-Berechnung" : undefined}
                               onClick={onCellClick}>
                               <div className="flex items-center gap-1.5">
                                 <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
@@ -1050,7 +1059,7 @@ export function CompanyDashboardPage() {
                                 )}
                                 {cellCv?.is_forecast && (
                                   <span
-                                    title={cellCv.source_name ? `Schaetzung — ${cellCv.source_name}` : "Schaetzung (kein Ist-Wert verfuegbar)"}
+                                    title={cellCv.source_name ? `Schätzung — ${cellCv.source_name}` : "Schätzung (kein Ist-Wert verfügbar)"}
                                     className="shrink-0 rounded bg-violet-100 px-1 py-0.5 text-[9px] font-bold text-violet-700">
                                     e
                                   </span>
@@ -1114,7 +1123,7 @@ export function CompanyDashboardPage() {
                     if (g.defs.length === 0) {
                       return [
                         <td key={`${company.id}-${g.category}-empty`}
-                          className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">
+                          className="border-r-2 border-foreground/25 px-2 py-2 text-center text-muted-foreground/30">
                           —
                         </td>
                       ];
@@ -1133,7 +1142,7 @@ export function CompanyDashboardPage() {
                         const displayPrev = fxUnknownPrev ? prevValid : convertedPrev;
                         return (
                           <td key={`${company.id}-${d.key}`}
-                            className="whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground"
+                            className={`whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground${groupSep(d.key)}`}
                             title={`Vorjahres-Wert ${d.label_de}`}
                           >
                             <span className="font-mono text-sm italic">
@@ -1154,7 +1163,7 @@ export function CompanyDashboardPage() {
                         const fmtPa = (n: number | null) => n == null || isNaN(n) ? "—" : `${n.toFixed(2)} % p.a.`;
                         return (
                           <td key={`${company.id}-${d.key}`}
-                            className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${tierBg}`}
+                            className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular cursor-pointer hover:bg-muted/30 ${tierBg}${groupSep(d.key)}`}
                             title={isPartial ? `Partial — fehlt: ${cell?.missing.join("; ")}` : `${d.label_de} (Kumuliert ${period.from_year}-${period.to_year})`}
                             onClick={() => {
                               if (!cumResp) return;
@@ -1184,7 +1193,7 @@ export function CompanyDashboardPage() {
                       if (hohnLockedHere) {
                         return (
                           <td key={`${company.id}-${d.key}`}
-                            className="whitespace-nowrap border-r border-border/40 bg-amber-50/70 px-3 py-2 cursor-help"
+                            className={`whitespace-nowrap border-r border-border/40 bg-amber-50/70 px-3 py-2 cursor-help${groupSep(d.key)}`}
                             title={`Hohn-Rendite gesperrt — kein Annual Report für FY${period.year} hochgeladen. Lade den Geschäftsbericht hoch, dann lassen sich Werte verifizieren und Hohn-Rendite berechnen.`}
                           >
                             <div className="flex items-center gap-1.5 text-amber-800">
@@ -1258,7 +1267,7 @@ export function CompanyDashboardPage() {
                         : undefined;
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}${groupSep(d.key)}`}
                           title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel)" : sourceTooltip)}
                           onDoubleClick={isCalculated ? undefined : (e) => {
                             e.stopPropagation();
@@ -1471,83 +1480,96 @@ export function CompanyDashboardPage() {
 
           const ConfIcon = confidence.icon;
 
+          const proxyAlt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+          const prevRows = prevYearValuesMap.get(tooltip.companyId) ?? [];
+          const prevCv = prevRows.find((r) => r.value_key === tooltip.key);
+          const prevNum = prevCv?.numeric_value != null ? (typeof prevCv.numeric_value === "string" ? parseFloat(prevCv.numeric_value) : prevCv.numeric_value) : null;
+
           return createPortal(
             <>
               <div className="fixed inset-0 z-[99]" onClick={() => setTooltip(null)} />
-              <div className="fixed z-[100] w-72 rounded-xl border border-border bg-card p-4 shadow-2xl shadow-black/10"
-                style={{ left: Math.min(tooltip.x, window.innerWidth - 300), top: Math.min(tooltip.y, window.innerHeight - 250) }}>
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-foreground">{def.label_en}</span>
-                  <button onClick={() => setTooltip(null)} className="rounded p-0.5 hover:bg-muted">
-                    <X className="h-3.5 w-3.5 text-muted-foreground" />
+              <div className="fixed z-[100] w-80 rounded-xl border border-border bg-card shadow-2xl shadow-black/10"
+                style={{ left: Math.min(tooltip.x, window.innerWidth - 340), top: Math.min(tooltip.y, window.innerHeight - 400) }}>
+                {/* Header */}
+                <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-semibold text-foreground">{def.label_en}</span>
+                    <span className="text-[10px] text-muted-foreground">{def.label_de}</span>
+                  </div>
+                  <button onClick={() => setTooltip(null)} className="rounded p-1 hover:bg-muted">
+                    <X className="h-4 w-4 text-muted-foreground" />
                   </button>
                 </div>
-                <div className={`mb-3 flex items-center gap-2 rounded-lg border px-3 py-2 ${confidence.color}`}>
-                  <ConfIcon className="h-4 w-4 shrink-0" />
-                  <span className="text-xs font-medium">{confidence.label}</span>
-                </div>
-                {FORMULAS[tooltip.key] && (
-                  <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
-                    <p className="text-[10px] font-medium text-blue-600 uppercase tracking-wide mb-0.5">Formel</p>
-                    <p className="text-xs font-mono text-blue-800">{FORMULAS[tooltip.key]}</p>
+
+                {/* Vertrauenslevel-Badge */}
+                <div className="px-4 pt-3">
+                  <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 ${confidence.color}`}>
+                    <ConfIcon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="text-[11px] font-medium">{confidence.label}</span>
                   </div>
+                </div>
+
+                {/* Section: Formel */}
+                {FORMULAS[tooltip.key] && (
+                  <section className="mt-3 px-4">
+                    <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-blue-700">Formel</h4>
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                      <p className="font-mono text-xs text-blue-900">{FORMULAS[tooltip.key]}</p>
+                    </div>
+                  </section>
                 )}
-                {tooltip.variant === "faktor" && (() => {
-                  const proxyAlt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
-                  const prevRows = prevYearValuesMap.get(tooltip.companyId) ?? [];
-                  const prevCv = prevRows.find((r) => r.value_key === tooltip.key);
-                  const prevNum = prevCv?.numeric_value != null ? (typeof prevCv.numeric_value === "string" ? parseFloat(prevCv.numeric_value) : prevCv.numeric_value) : null;
-                  const explanation = proxyAlt?.explanation;
-                  const errorReason = proxyAlt?.error_reason;
-                  return (
-                    <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                      <p className="text-[10px] font-medium text-amber-700 uppercase tracking-wide mb-1">Q-Faktor Berechnung</p>
+
+                {/* Section: Q-Faktor Berechnung */}
+                {tooltip.variant === "faktor" && (
+                  <section className="mt-3 px-4">
+                    <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-700">Q-Faktor Berechnung</h4>
+                    <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
                       {prevCv && prevNum != null && (
-                        <div className="mb-2 text-[11px] text-amber-900">
-                          <span className="font-medium">FY{prevCv.period_year}-Wert:</span>{" "}
-                          <span className="font-mono">{formatValue(prevNum, def.unit, displayCurrency)}</span>
+                        <div className="flex items-baseline justify-between gap-2 border-b border-amber-200/60 pb-1.5">
+                          <span className="text-[10px] font-medium text-amber-700 uppercase">FY{prevCv.period_year}-Basis</span>
+                          <span className="font-mono text-xs font-semibold text-amber-900">{formatValue(prevNum, def.unit, displayCurrency)}</span>
                         </div>
                       )}
-                      {explanation ? (
-                        <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-amber-900">{explanation}</p>
-                      ) : errorReason ? (
-                        <p className="text-[11px] italic text-amber-800">{errorReason}</p>
+                      {proxyAlt?.explanation ? (
+                        <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-amber-900">{proxyAlt.explanation}</p>
+                      ) : proxyAlt?.error_reason ? (
+                        <p className="text-[11px] italic text-amber-800">{proxyAlt.error_reason}</p>
                       ) : (
-                        <p className="text-[11px] italic text-amber-800">Keine Q-Faktor-Erklaerung verfuegbar — bitte Werte neu berechnen.</p>
+                        <p className="text-[11px] italic text-amber-800">Keine Q-Faktor-Erklärung verfügbar — bitte Werte neu berechnen.</p>
                       )}
                     </div>
-                  );
-                })()}
-                <dl className="space-y-2 text-xs">
-                  <div className="flex justify-between">
-                    <dt className="text-muted-foreground">{t.source}</dt>
-                    <dd className="font-medium text-foreground text-right">{cv.source_name ?? "—"}</dd>
+                  </section>
+                )}
+
+                {/* Section: Quelle */}
+                <section className="mt-3 px-4">
+                  <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Quelle</h4>
+                  <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
+                    <div className="text-foreground">{cv.source_name ?? "—"}</div>
+                    {cv.source_link && (
+                      <a href={cv.source_link} target="_blank" rel="noreferrer" className="block truncate text-[11px] text-primary hover:underline">
+                        {(() => { try { return new URL(cv.source_link).hostname; } catch { return cv.source_link; } })()}
+                      </a>
+                    )}
                   </div>
-                  {cv.source_link && (
-                    <div className="flex justify-between">
-                      <dt className="text-muted-foreground">Link</dt>
-                      <dd className="text-right">
-                        <a href={cv.source_link} target="_blank" rel="noreferrer" className="text-primary hover:underline truncate max-w-[140px] inline-block">
-                          {(() => { try { return new URL(cv.source_link).hostname; } catch { return cv.source_link; } })()}
-                        </a>
-                      </dd>
-                    </div>
-                  )}
-                  <div className="flex justify-between">
+                </section>
+
+                {/* Section: Metadaten */}
+                <section className="mt-3 mb-4 px-4">
+                  <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Metadaten</h4>
+                  <dl className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[11px]">
                     <dt className="text-muted-foreground">Wert per</dt>
-                    <dd className="font-medium text-foreground text-right">{formatAsOf()}</dd>
-                  </div>
-                  <div className="flex justify-between">
+                    <dd className="text-right font-medium text-foreground">{formatAsOf()}</dd>
                     <dt className="text-muted-foreground">{t.fetchedAt}</dt>
-                    <dd className="text-foreground">{cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}</dd>
-                  </div>
-                  {cv.currency && (
-                    <div className="flex justify-between">
-                      <dt className="text-muted-foreground">Originalwährung</dt>
-                      <dd className="font-mono text-foreground">{cv.currency}</dd>
-                    </div>
-                  )}
-                </dl>
+                    <dd className="text-right text-foreground">{cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}</dd>
+                    {cv.currency && (
+                      <>
+                        <dt className="text-muted-foreground">Originalwährung</dt>
+                        <dd className="text-right font-mono text-foreground">{cv.currency}</dd>
+                      </>
+                    )}
+                  </dl>
+                </section>
               </div>
             </>,
             document.body

@@ -19,8 +19,8 @@ def _is_forward_year(period_year: int | None) -> bool:
 
 
 FORWARD_YEAR_HINT = (
-    "DIESES JAHR LIEGT IN DER ZUKUNFT: Das Unternehmen hat dafuer NOCH KEINEN "
-    "10-K / 20-F veroeffentlicht. Liefere trotzdem den BESTEN verfuegbaren "
+    "DIESES JAHR LIEGT IN DER ZUKUNFT: Das Unternehmen hat dafür NOCH KEINEN "
+    "10-K / 20-F veröffentlicht. Liefere trotzdem den BESTEN verfügbaren "
     "Zahlenwert — kein NICHT_GEFUNDEN solange es eine brauchbare "
     "Approximation gibt.\n\n"
     "Suche in dieser Reihenfolge:\n"
@@ -29,19 +29,19 @@ FORWARD_YEAR_HINT = (
     "2. Investor Presentations / Guidance-Folien (z.B. 'FY{YEAR} Outlook').\n"
     "3. Analysten-Konsens (Yahoo Finance Analyst Estimates, Factset, "
     "Refinitiv, Seeking Alpha Consensus).\n"
-    "4. Fallback: letzter verfuegbarer Istwert aus dem juengsten Quartals-"
+    "4. Fallback: letzter verfügbarer Istwert aus dem jüngsten Quartals-"
     "oder Jahresbericht (10-Q / 10-K).\n\n"
     "Kategorisierung:\n"
     "- Gut prognostizierbar (echte Guidance): FCF, Net Income, Sales, "
-    "SBC, Dividenden-Policy, Buyback-Authorization. Fuer diese Keys "
+    "SBC, Dividenden-Policy, Buyback-Authorization. Für diese Keys "
     "muss ein Guidance-Wert oder Analysten-Konsens her.\n"
     "- Balance-Sheet-Positionen (Cash & Equivalents, Marketable Securities "
-    "ST/LT, Long-term Debt, Lease Liabilities, Net Debt): Fuer diese gibt "
-    "es keine Forward-Guidance. LIEFERE TROTZDEM EINEN WERT — naemlich "
-    "den letzten im juengsten 10-K oder 10-Q veroeffentlichten Istwert "
+    "ST/LT, Long-term Debt, Lease Liabilities, Net Debt): Für diese gibt "
+    "es keine Forward-Guidance. LIEFERE TROTZDEM EINEN WERT — nämlich "
+    "den letzten im jüngsten 10-K oder 10-Q veröffentlichten Istwert "
     "als Approximation. Kennzeichne QUELLE explizit als "
     "'Approximation: letzter 10-Q/10-K-Wert per <Stichtag>'. "
-    "Das ist eine valide Naeherung — kein 'erraten'.\n\n"
+    "Das ist eine valide Näherung — kein 'erraten'.\n\n"
     "WERT: NICHT_GEFUNDEN nur wenn wirklich gar kein historischer "
     "Referenzwert auffindbar ist.\n\n"
     "QUELLE muss den Modus explizit machen: "
@@ -121,18 +121,18 @@ def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
 
 
 RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Recherchiere EINE konkrete Finanzkennzahl
-fuer ein Unternehmen via web_search und liefere IMMER eine Zahl + kurze Begruendung.
+für ein Unternehmen via web_search und liefere IMMER eine Zahl + kurze Begründung.
 
 GRUNDREGEL — NIE LEER ANTWORTEN:
 Du MUSST in jedem Fall einen numerischen WERT liefern. NICHT_GEFUNDEN ist
-verboten ausser bei voellig unbekannten Tickern (kein Treffer in Google).
+verboten ausser bei völlig unbekannten Tickern (kein Treffer in Google).
 Reihenfolge der Strategien:
   1. Exakter Wert aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
   2. Management-Guidance / Investor-Day-Outlook (IR-Seite, Earnings Call Transcript)
   3. Analysten-Konsens (Yahoo, Seeking Alpha, Bloomberg-Snippets, Reuters)
-  4. Approximation aus juengstem bekannten Wert (letzter 10-K/10-Q + plausible
+  4. Approximation aus jüngstem bekannten Wert (letzter 10-K/10-Q + plausible
      Wachstumsrate aus Industrie/Unternehmen, oder TTM extrapoliert)
-  5. Branchen-Approximation (vergleichbare Firma, gleiche Groessenordnung)
+  5. Branchen-Approximation (vergleichbare Firma, gleiche Größenordnung)
 Markiere jede Strategie ehrlich in QUELLE und KONFIDENZ.
 
 VORGEHEN
@@ -140,12 +140,12 @@ VORGEHEN
      "Airbus net_income FY2026 guidance" / "Airbus 2026 outlook EBIT"
      "ASML free cash flow 2026 analyst consensus"
      "Allianz net_income FY2024 stockanalysis"
-2. Bevorzuge Aggregatoren fuer Istwerte (Snippet-tauglich):
+2. Bevorzuge Aggregatoren für Istwerte (Snippet-tauglich):
      - Cash-Flow: stockanalysis.com/.../cash-flow-statement/
      - Bilanz:    stockanalysis.com/.../balance-sheet/, wsj.com/market-data/quotes
      - GuV:       macrotrends.net/.../net-income, stockanalysis.com/.../financials/
-3. Fuer Forward-Year (zukuenftige FY): Guidance + Konsens zuerst, dann Approximation.
-4. Bei Approximation: Begruende den Schaetzweg (z.B. "FY2025-Wert + 5% Industrie-Growth"
+3. Für Forward-Year (zukünftige FY): Guidance + Konsens zuerst, dann Approximation.
+4. Bei Approximation: Begruende den Schätzweg (z.B. "FY2025-Wert + 5% Industrie-Growth"
    oder "Q3-2025 YTD * 4/3"). Setze KONFIDENZ: niedrig.
 
 ANTWORT — exakt dieses Format, nichts anderes davor/danach:
@@ -156,16 +156,16 @@ QUELLE: [Kurzbezeichnung, z.B. "stockanalysis.com FY2024 Income Statement" oder
 QUELLE_URL: [echte direkte URL — bei Approximation URL der Datenbasis, NICHT erfunden]
 ZEITRAUM: [z.B. FY2024, FY2026e, TTM, aktuell]
 KONFIDENZ: [hoch|mittel|niedrig]
-BEGRUENDUNG: [2-3 Saetze: woher der Wert stammt, bei Approximation der Schaetzweg
-              + warum kein exakter Wert verfuegbar war]
+BEGRUENDUNG: [2-3 Sätze: woher der Wert stammt, bei Approximation der Schätzweg
+              + warum kein exakter Wert verfügbar war]
 
 WERT: NICHT_GEFUNDEN ist NUR erlaubt wenn der Ticker komplett unbekannt ist
-oder das Unternehmen nicht existiert. In ALLEN anderen Faellen einen Schaetzwert.
+oder das Unternehmen nicht existiert. In ALLEN anderen Fällen einen Schätzwert.
 
 ZAHLENFORMAT — strikt:
 - Volle Zahl in Base-Units, OHNE Suffix.  RICHTIG: 1450000000 USD.  FALSCH: 1450 USD Mio.
 - Prozente direkt als Wert.  RICHTIG: 4.38 %.  FALSCH: 0.0438.
-- EINHEIT enthaelt NUR Waehrung / "%" / "keine" — NIE "Mio"/"Mrd".
+- EINHEIT enthaelt NUR Währung / "%" / "keine" — NIE "Mio"/"Mrd".
 - Punkt als Dezimaltrenner.
 - Keine erfundenen URLs."""
 
@@ -202,7 +202,7 @@ _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
 
 KEY_RESEARCH_HINTS: dict[str, str] = {
     "net_income": (
-        "Net Income (Nettogewinn, GAAP) zum Ende des exakten Geschaeftsjahrs. "
+        "Net Income (Nettogewinn, GAAP) zum Ende des exakten Geschäftsjahrs. "
         "Income Statement → letzte Zeile 'Net Income'. Keine TTM, keine non-GAAP-Adjustments."
     ),
     "fcf": (
@@ -215,12 +215,12 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
         "'Stock-based compensation' (Add-back im operativen CF). Immer POSITIV."
     ),
     "buyback_volume": (
-        "Aktienrueckkaeufe in Cash, jaehrliches Volumen. Cash Flow Statement → "
+        "Aktienrückkaeufe in Cash, jaehrliches Volumen. Cash Flow Statement → "
         "'Repurchase of common stock' / 'Treasury stock purchases'. Immer POSITIV "
         "(Output-Sicht; Aggregatoren zeigen es teils negativ — Vorzeichen ignorieren)."
     ),
     "dividends": (
-        "Dividenden-Cashout im Geschaeftsjahr. Cash Flow Statement → "
+        "Dividenden-Cashout im Geschäftsjahr. Cash Flow Statement → "
         "'Dividends paid' / 'Cash dividends'. Immer POSITIV als Auszahlungsbetrag."
     ),
     "net_debt": (
@@ -228,7 +228,7 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
         "Vorzeichen erhalten — POSITIV = mehr Debt als Cash, NEGATIV = Net Cash. "
         "Suchorte: Highlights, Management Report (Liquidity/Capital Structure), "
         "Notes zu Borrowings (Net-Debt-Reconciliation). Bei Versicherern KEINE "
-        "Long-term Marketable Securities als Cash zaehlen — die decken Reserven."
+        "Long-term Marketable Securities als Cash zählen — die decken Reserven."
     ),
     "shares_outstanding": (
         "Diluted Weighted Average Shares Outstanding aus der Income Statement, "
@@ -238,7 +238,7 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
 
 
 def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
-    """Range-Check fuer Claude-Werte. None wenn ausserhalb plausibler Range."""
+    """Range-Check für Claude-Werte. None wenn ausserhalb plausibler Range."""
     limits = _CLAUDE_SANITY_CHECKS.get(key)
     if limits is None:
         return value
@@ -266,12 +266,12 @@ def research_value(
     period_year: int | None = None,
     value_key: str | None = None,
 ) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
-    """Web-Recherche fuer eine einzelne Kennzahl.
+    """Web-Recherche für eine einzelne Kennzahl.
     Returns (value, source_name, source_url, user_prompt, assistant_response)."""
     is_forward = _is_forward_year(period_year)
     if period_type == "FY" and period_year:
         marker = "e" if is_forward else ""
-        period_str = f"Geschaeftsjahr {period_year}{marker} (FY{period_year}{marker})"
+        period_str = f"Geschäftsjahr {period_year}{marker} (FY{period_year}{marker})"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
 
@@ -283,8 +283,8 @@ def research_value(
         historical_constraint = ""
         not_found_clause = (
             "PFLICHT: Liefere IMMER einen Wert. Reihenfolge:\n"
-            f"  1. Konkrete Management-Guidance fuer FY{period_year} aus IR/Earnings-Calls\n"
-            f"  2. Analysten-Konsens fuer FY{period_year} (Yahoo, Seeking Alpha, Reuters)\n"
+            f"  1. Konkrete Management-Guidance für FY{period_year} aus IR/Earnings-Calls\n"
+            f"  2. Analysten-Konsens für FY{period_year} (Yahoo, Seeking Alpha, Reuters)\n"
             f"  3. Approximation: FY{period_year - 1} Istwert × plausibler Wachstumsrate "
             "(Industrie-Growth, historische CAGR der letzten 3-5 Jahre, Q-trend "
             f"YTD-Hochrechnung). Begruende die Wachstumsrate.\n"
@@ -297,9 +297,9 @@ def research_value(
             " Ziel ist der exakte Jahreswert aus dem 10-K/20-F. Keine TTM/LTM."
         )
         not_found_clause = (
-            "FALLBACK-REGEL: Wenn die Web-Suche keinen exakten Wert fuer "
-            f"{period_str} in Aggregatoren findet, liefere den naechstliegenden "
-            f"bekannten Istwert (z.B. FY{period_year - 1} oder juengstes 10-Q) als "
+            "FALLBACK-REGEL: Wenn die Web-Suche keinen exakten Wert für "
+            f"{period_str} in Aggregatoren findet, liefere den nächstliegenden "
+            f"bekannten Istwert (z.B. FY{period_year - 1} oder jüngstes 10-Q) als "
             f"Approximation. QUELLE muss das klar kennzeichnen. KONFIDENZ: niedrig. "
             "WERT: NICHT_GEFUNDEN nur wenn du nicht einmal einen alten Istwert findest."
         )
@@ -308,11 +308,11 @@ def research_value(
         f"Unternehmen: {company_name} ({ticker}, {currency})\n"
         f"Gesuchte Kennzahl: {value_label}\n"
         f"Zeitraum: {period_str}\n\n"
-        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert fuer {period_str}.{historical_constraint} "
+        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert für {period_str}.{historical_constraint} "
         f"{not_found_clause}\n\n"
         f"Nutze das Web-Search-Tool um die IR-Seite des Unternehmens, "
         f"Annual-Report-PDFs und SEC-Filings aktiv zu durchsuchen. "
-        f"Verlasse dich NICHT nur auf dein Gedaechtnis."
+        f"Verlasse dich NICHT nur auf dein Gedächtnis."
         f"{forward_block}"
         f"{hint_block}"
     )
