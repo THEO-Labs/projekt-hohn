@@ -898,38 +898,36 @@ export function CompanyDashboardPage() {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor");
                   const web = buildVariantValues(cRows, cPrev, "web");
                   const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
+                  const totalCols = visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1;
+                  const headerRow = (
+                    <tr key={`${company.id}-header`} className="border-t-4 border-border bg-muted/40">
+                      <td colSpan={totalCols} className="px-4 py-2">
+                        <div className="flex items-center justify-center gap-3">
+                          <span className="font-semibold text-foreground">{company.name}</span>
+                          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-primary">{company.ticker}</span>
+                          <button
+                            onClick={() => handleRefreshCompany(company)}
+                            disabled={isRunningThis}
+                            title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
+                            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
+                            {isRunningThis ? "Berechnet…" : "Werte berechnen"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
                   const renderEstimateRow = (
                     label: "Q-Faktor (Proxy)" | "Web-Recherche",
                     vals: VariantValues,
                     rowAccent: string,
                     stickyAccent: string,
-                    isFirst: boolean,
+                    isLast: boolean,
                   ) => (
-                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t" : "border-b"} border-border/30 ${rowAccent}`}>
+                    <tr key={`${company.id}-${label}`} className={`border-b border-border/30 ${isLast ? "" : ""} ${rowAccent}`}>
                       <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${stickyAccent}`}>
-                        <div className="flex items-center gap-2">
-                          {isFirst ? (
-                            <>
-                              <span className="font-medium text-foreground">{company.name}</span>
-                              <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>{label}</span>
-                              <button
-                                onClick={() => handleRefreshCompany(company)}
-                                disabled={isRunningThis}
-                                title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
-                                className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-                              >
-                                <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
-                                {isRunningThis ? "Berechnet…" : "Werte berechnen"}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-muted-foreground/50">↳</span>
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>{label}</span>
-                            </>
-                          )}
-                        </div>
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>{label}</span>
                       </td>
                       {grouped.flatMap((g) => {
                         if (g.defs.length === 0) {
@@ -1050,8 +1048,9 @@ export function CompanyDashboardPage() {
                     </tr>
                   );
                   return [
-                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", "bg-amber-50", true),
-                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", "bg-violet-50", false),
+                    headerRow,
+                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", "bg-amber-50", false),
+                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", "bg-violet-50", true),
                   ];
                 }
                 return [(
