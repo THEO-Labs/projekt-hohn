@@ -18,7 +18,9 @@ export type ForecastAlternate = {
   value: string | null;
   currency: string | null;
   source: string | null;
+  explanation?: string;
   error_reason?: string;
+  fallback_from?: string;
 };
 
 export type CompanyValue = {

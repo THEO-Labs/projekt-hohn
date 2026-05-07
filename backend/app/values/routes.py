@@ -431,11 +431,13 @@ def _process_one_key(
 
         def _to_alt(r, method: str) -> dict:
             if r is not None and isinstance(r.value, Decimal):
+                extras = r.extras or {}
                 return {
                     "method": method,
                     "value": str(r.value),
                     "currency": r.currency,
                     "source": r.source_name,
+                    "explanation": extras.get("estimate"),
                 }
             return {
                 "method": method,
@@ -449,25 +451,32 @@ def _process_one_key(
                 ),
             }
 
+        # Q-Faktor-Alternate IMMER schreiben (fuer Click-Drilldown im Frontend)
+        # — auch wenn Q-Faktor primary ist, damit die Erklaerung an einem
+        # vorhersehbaren Ort steht.
+        proxy_alt = _to_alt(proxy_result, "q_factor_proxy")
+
         if web_result is not None and proxy_result is not None:
-            # Beide gefunden — Web ist primary, Proxy als alternate.
             result = web_result
-            forecast_alternates = [_to_alt(proxy_result, "q_factor_proxy")]
+            forecast_alternates = [proxy_alt]
         elif web_result is not None:
             result = web_result
-            forecast_alternates = [_to_alt(None, "q_factor_proxy")]
+            forecast_alternates = [proxy_alt]
         elif proxy_result is not None:
-            # Web fehlte: primary bleibt Proxy, aber der Web-Slot bekommt ebenfalls
-            # den Proxy-Wert als Fallback, damit die Web-Row im UI nicht leer ist.
-            # Source-Label zeigt klar 'Web-Fallback'.
+            # Web fehlte: primary bleibt Proxy, der Web-Slot bekommt den
+            # Proxy-Wert als Fallback (so ist die Web-Row nie leer wenn
+            # Q-Faktor was hat). Source-Label zeigt 'Web-Fallback'.
             result = proxy_result
-            forecast_alternates = [{
-                "method": "web_guidance",
-                "value": str(proxy_result.value),
-                "currency": proxy_result.currency,
-                "source": f"Web-Fallback (Recherche fehlte): {proxy_result.source_name}",
-                "fallback_from": "q_factor_proxy",
-            }]
+            forecast_alternates = [
+                proxy_alt,
+                {
+                    "method": "web_guidance",
+                    "value": str(proxy_result.value),
+                    "currency": proxy_result.currency,
+                    "source": f"Web-Fallback (Recherche fehlte): {proxy_result.source_name}",
+                    "fallback_from": "q_factor_proxy",
+                },
+            ]
         else:
             forecast_alternates = [
                 _to_alt(None, "web_guidance"),

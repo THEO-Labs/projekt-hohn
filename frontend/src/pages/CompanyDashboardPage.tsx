@@ -182,6 +182,14 @@ const TIER_BG: Record<ColorTier, string> = {
 
 const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"]);
 
+// Primaere Werte die im Estimate-Mode per Q-Faktor geschaetzt werden.
+// Nur fuer diese ist die Q-Faktor-Cell anklickbar (zeigt Drilldown:
+// FY[N-1]-Wert + Faktor-Berechnung).
+const ESTIMATE_PRIMARY_KEYS = new Set([
+  "net_income", "fcf", "sbc", "buyback_volume", "dividends",
+  "net_debt", "shares_outstanding",
+]);
+
 type VariantValues = Map<string, number | null>;
 
 function _toNum(n: number | string | null | undefined): number | null {
@@ -279,7 +287,13 @@ function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undef
   return !av.annual_report_years.includes(periodYear);
 }
 
-type TooltipState = { key: string; companyId: string; x: number; y: number } | null;
+type TooltipState = {
+  key: string;
+  companyId: string;
+  x: number;
+  y: number;
+  variant?: "faktor" | "web";
+} | null;
 
 export function CompanyDashboardPage() {
   const { pid } = useParams<{ pid: string }>();
@@ -898,37 +912,38 @@ export function CompanyDashboardPage() {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor");
                   const web = buildVariantValues(cRows, cPrev, "web");
                   const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
-                  const totalCols = visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1;
-                  const headerRow = (
-                    <tr key={`${company.id}-header`} className="border-t-4 border-border bg-muted/40">
-                      <td colSpan={totalCols} className="px-4 py-2">
-                        <div className="flex items-center justify-center gap-3">
-                          <span className="font-semibold text-foreground">{company.name}</span>
-                          <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-primary">{company.ticker}</span>
-                          <button
-                            onClick={() => handleRefreshCompany(company)}
-                            disabled={isRunningThis}
-                            title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
-                            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
-                            {isRunningThis ? "Berechnet…" : "Werte berechnen"}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
                   const renderEstimateRow = (
                     label: "Q-Faktor (Proxy)" | "Web-Recherche",
                     vals: VariantValues,
                     rowAccent: string,
-                    stickyAccent: string,
-                    isLast: boolean,
+                    isFirst: boolean,
                   ) => (
-                    <tr key={`${company.id}-${label}`} className={`border-b border-border/30 ${isLast ? "" : ""} ${rowAccent}`}>
-                      <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${stickyAccent}`}>
-                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>{label}</span>
-                      </td>
+                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t-4 border-border" : "border-b border-border/30"} ${rowAccent}`}>
+                      {isFirst ? (
+                        <td rowSpan={2} className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 align-middle">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex flex-col items-start gap-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-semibold text-foreground">{company.name}</span>
+                                <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                              </div>
+                              <button
+                                onClick={() => handleRefreshCompany(company)}
+                                disabled={isRunningThis}
+                                title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
+                                className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
+                                {isRunningThis ? "Berechnet…" : "Werte berechnen"}
+                              </button>
+                            </div>
+                            <div className="flex flex-col items-end gap-1.5">
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800">Q-Faktor</span>
+                              <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-violet-800">Web</span>
+                            </div>
+                          </div>
+                        </td>
+                      ) : null}
                       {grouped.flatMap((g) => {
                         if (g.defs.length === 0) {
                           return [<td key={`${company.id}-${label}-${g.category}-empty`} className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">—</td>];
@@ -1002,9 +1017,21 @@ export function CompanyDashboardPage() {
                                     ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cellCv?.period_year}`
                                     : `FY${cellCv?.period_year}`))
                             : null;
+                          // Click-Handler nur fuer Q-Faktor primary keys (ESTIMABLE)
+                          // — Drilldown zeigt FY[N-1]-Wert + Faktor + Resultat.
+                          const variantKey: "faktor" | "web" = label === "Q-Faktor (Proxy)" ? "faktor" : "web";
+                          const isClickableEstimate = variantKey === "faktor" && ESTIMATE_PRIMARY_KEYS.has(d.key);
+                          const onCellClick = isClickableEstimate ? (e: React.MouseEvent<HTMLElement>) => {
+                            e.stopPropagation();
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                            const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id && tooltip?.variant === "faktor";
+                            setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6, variant: "faktor" });
+                          } : undefined;
                           return (
                             <td key={`${company.id}-${label}-${d.key}`}
-                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg}`}>
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""}`}
+                              title={isClickableEstimate ? "Klick fuer Drilldown: FY-Vorjahres-Wert + Faktor-Berechnung" : undefined}
+                              onClick={onCellClick}>
                               <div className="flex items-center gap-1.5">
                                 <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
                                 {fxUnknownDual && (
@@ -1048,9 +1075,8 @@ export function CompanyDashboardPage() {
                     </tr>
                   );
                   return [
-                    headerRow,
-                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", "bg-amber-50", false),
-                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", "bg-violet-50", true),
+                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", true),
+                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", false),
                   ];
                 }
                 return [(
@@ -1466,6 +1492,32 @@ export function CompanyDashboardPage() {
                     <p className="text-xs font-mono text-blue-800">{FORMULAS[tooltip.key]}</p>
                   </div>
                 )}
+                {tooltip.variant === "faktor" && (() => {
+                  const proxyAlt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+                  const prevRows = prevYearValuesMap.get(tooltip.companyId) ?? [];
+                  const prevCv = prevRows.find((r) => r.value_key === tooltip.key);
+                  const prevNum = prevCv?.numeric_value != null ? (typeof prevCv.numeric_value === "string" ? parseFloat(prevCv.numeric_value) : prevCv.numeric_value) : null;
+                  const explanation = proxyAlt?.explanation;
+                  const errorReason = proxyAlt?.error_reason;
+                  return (
+                    <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                      <p className="text-[10px] font-medium text-amber-700 uppercase tracking-wide mb-1">Q-Faktor Berechnung</p>
+                      {prevCv && prevNum != null && (
+                        <div className="mb-2 text-[11px] text-amber-900">
+                          <span className="font-medium">FY{prevCv.period_year}-Wert:</span>{" "}
+                          <span className="font-mono">{formatValue(prevNum, def.unit, displayCurrency)}</span>
+                        </div>
+                      )}
+                      {explanation ? (
+                        <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-amber-900">{explanation}</p>
+                      ) : errorReason ? (
+                        <p className="text-[11px] italic text-amber-800">{errorReason}</p>
+                      ) : (
+                        <p className="text-[11px] italic text-amber-800">Keine Q-Faktor-Erklaerung verfuegbar — bitte Werte neu berechnen.</p>
+                      )}
+                    </div>
+                  );
+                })()}
                 <dl className="space-y-2 text-xs">
                   <div className="flex justify-between">
                     <dt className="text-muted-foreground">{t.source}</dt>
