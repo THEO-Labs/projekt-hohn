@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle, Loader2, Lock, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Info, X, Plus, ShieldCheck, Calculator, MessageSquare, Pencil, Sparkles, AlertTriangle, Loader2, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { createPortal } from "react-dom";
 import { AppHeader } from "@/components/AppHeader";
@@ -16,7 +16,6 @@ import {
   getRefreshStatus,
   refreshValues,
   overrideValue,
-  researchValue,
   explainValue,
   fetchHistoricalStammdaten,
   type ValueDefinition,
@@ -330,6 +329,17 @@ function renderMarkdown(text: string): string {
     .replace(/\n/g, "<br />");
 }
 
+function isFyHistoricalLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
+  // Abgeschlossenes FY (period_year < currentYear) + Non-US + kein Annual Report
+  // hochgeladen → ganze Firma-Zeile gelockt (analog zu Estimate-Lock).
+  // US-Filer: nie gelockt (Yahoo/EDGAR liefert Daten).
+  // Laufendes FY (>= currentYear): wird durch Estimate-Lock-Logik abgedeckt.
+  if (!av || periodYear === undefined) return false;
+  if (periodYear >= new Date().getFullYear()) return false;
+  if (av.is_us) return false;
+  return !av.annual_report_years.includes(periodYear);
+}
+
 function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
   if (!av || periodYear === undefined) return false;
   if (periodYear >= new Date().getFullYear()) return false;
@@ -373,7 +383,6 @@ export function CompanyDashboardPage() {
   const [availabilityMap, setAvailabilityMap] = useState<Map<string, FyAvailability>>(new Map());
   const [refreshStatuses, setRefreshStatuses] = useState<Map<string, RefreshStatus>>(new Map());
   const [fxRates, setFxRates] = useState<Record<string, number>>(FALLBACK_FX_RATES);
-  const [researching, setResearching] = useState<string | null>(null);
 
   const period: PeriodOption = periodMode === "FY"
     ? { label: FY_OPTIONS[fyIdx].label, value: "FY", year: FY_OPTIONS[fyIdx].year }
@@ -582,33 +591,6 @@ export function CompanyDashboardPage() {
     } finally {
       await pollStatuses(companies);
       await loadAllValues();
-    }
-  };
-
-  const handleResearch = async (
-    companyId: string,
-    _companyName: string,
-    key: string,
-    valueLabel: string,
-    _dataType: string,
-  ) => {
-    const researchKey = `${companyId}:${key}`;
-    if (researching) return;
-    setResearching(researchKey);
-    try {
-      const res = await researchValue(companyId, key, period.value, period.year);
-      if (!res.value_found || res.value == null) {
-        toast.warning(`${valueLabel}: Claude konnte keinen verifizierbaren Wert finden`);
-        setNotFound((prev) => new Set(prev).add(researchKey));
-        return;
-      }
-      toast.success(`${valueLabel}: ${res.source_name ?? "Claude-Recherche"}`);
-      await loadAllValues();
-    } catch (e) {
-      const detail = (e as { message?: string })?.message;
-      toast.error(detail || "Recherche fehlgeschlagen");
-    } finally {
-      setResearching(null);
     }
   };
 
@@ -972,10 +954,50 @@ export function CompanyDashboardPage() {
                 const cPrev = prevYearValuesMap.get(company.id) ?? [];
                 const av = availabilityMap.get(company.id);
                 const estLocked = isEstimateMode && isEstimateLocked(av, period.year);
+                const fyHistLocked = period.value === "FY" && !isEstimateMode && isFyHistoricalLocked(av, period.year);
                 const totalCols = visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1;
 
+                // FY-historical + kein Annual Report -> ganze Zeile locked
+                // (analog Estimate-Lock — User soll AR hochladen, nicht per
+                // Cell manuell recherchieren).
+                if (fyHistLocked) {
+                  const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
+                  return [(
+                    <tr key={`${company.id}-fy-locked`} className="border-t-4 border-border bg-amber-50/70">
+                      <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
+                        <div className="flex flex-col items-start gap-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-foreground">{company.name}</span>
+                            <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                          </div>
+                          <button
+                            onClick={() => handleRefreshCompany(company)}
+                            disabled={isRunningThis}
+                            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
+                            {isRunningThis ? "Berechnet…" : "Werte berechnen"}
+                          </button>
+                        </div>
+                      </td>
+                      <td colSpan={totalCols - 1} className="px-4 py-3">
+                        <div className="flex items-center gap-2 text-amber-800">
+                          <Lock className="h-4 w-4 shrink-0" />
+                          <span className="text-sm font-medium">
+                            Annual Report fuer FY{period.year} fehlt — bitte hochladen
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-amber-700/80">
+                          Fuer abgeschlossene FY-Jahre kommen die Werte aus dem hochgeladenen Annual Report.
+                          Fehlt ein Wert im PDF, faellt das System automatisch auf Web-Recherche (Claude) zurueck.
+                        </p>
+                      </td>
+                    </tr>
+                  )];
+                }
+
                 // Estimate-Mode + keine Vorjahres-Q-Reports -> Lock-Row
-                // (analog Hohn-Lock fuer abgeschlossene FY ohne Annual Report).
+                // (analog FY-Historical-Lock fuer abgeschlossene FY ohne Annual Report).
                 if (estLocked) {
                   const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
                   return [(
@@ -1433,43 +1455,22 @@ export function CompanyDashboardPage() {
                               const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
                               const pdfReason = reasonMatch?.[1]?.trim();
                               const isCalc = d.source_type === "CALCULATED";
-                              const canResearch = !isCalc && !isQualitative && !hohnPartialBlock;
                               const tooltipText = hohnPartialBlock
                                 ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${fyPartialMissing.join(", ")}. Klick auf die fehlenden Felder um sie zu fuellen.`
                                 : pdfNullSource
-                                ? `Annual Report analysiert, kein Wert für diese Kennzahl gefunden${pdfReason ? `: ${pdfReason}` : ""}.`
+                                ? `Annual Report analysiert, kein Wert für diese Kennzahl gefunden${pdfReason ? `: ${pdfReason}` : ""}. Auto-Web-Fallback hat ebenfalls nichts gefunden.`
                                 : isCalc
                                 ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
-                                : `Wert fehlt - weder im PDF noch von Yahoo/EDGAR.`;
+                                : `Wert fehlt - weder im PDF, von Yahoo/EDGAR noch via Web-Recherche gefunden. 'Werte berechnen' nochmal triggern.`;
                               const labelText = hohnPartialBlock
                                 ? "Komponenten fehlen"
                                 : pdfNullSource
                                 ? "Im Bericht nicht gefunden"
                                 : isCalc ? "Inputs fehlen" : "Wert nicht gefunden";
-                              const researchKey = `${company.id}:${d.key}`;
-                              const isResearching = researching === researchKey;
                               return (
                                 <div className="group/nf flex items-center gap-1.5" title={tooltipText}>
                                   <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
                                   <span className="text-xs text-amber-700">{labelText}</span>
-                                  {canResearch && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleResearch(company.id, company.name, d.key, d.label_en, d.data_type);
-                                      }}
-                                      disabled={isResearching || researching !== null}
-                                      className="ml-0.5 inline-flex items-center gap-0.5 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                                      title="Mit Claude Web-Recherche den Wert finden"
-                                    >
-                                      {isResearching ? (
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                      ) : (
-                                        <Search className="h-3 w-3" />
-                                      )}
-                                      {isResearching ? "Recherche…" : "Recherchieren"}
-                                    </button>
-                                  )}
                                 </div>
                               );
                             })() ?? (
