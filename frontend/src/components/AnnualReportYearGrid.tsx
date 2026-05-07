@@ -156,7 +156,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
               ? "border-red-300 bg-red-50 text-red-800"
               : "border-emerald-300 bg-emerald-50 text-emerald-800";
             const tooltipParts = [doc.display_name];
-            if (isDone) tooltipParts.push(`${numExtracted}/{TOTAL_EXTRACTION_KEYS} Werte extrahiert`);
+            if (isDone) tooltipParts.push(`${numExtracted}/${TOTAL_EXTRACTION_KEYS} Werte extrahiert`);
             if (isRunning) tooltipParts.push("Claude analysiert PDF...");
             if (isPending && doc.queue_position) tooltipParts.push(`Warteschlange: Position ${doc.queue_position}`);
             if (isFailed) tooltipParts.push(`Fehler: ${doc.extraction_error ?? "unbekannt"}`);
@@ -170,8 +170,8 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
                 {isFailed && <AlertTriangle className="h-3.5 w-3.5" />}
                 {isDone && <Check className="h-3.5 w-3.5" />}
                 <span className="text-[10px] font-semibold">{year}</span>
-                {isDone && numExtracted > 0 && (
-                  <span className="text-[8px] tabular leading-none">{numExtracted}/{TOTAL_EXTRACTION_KEYS}</span>
+                {isDone && (
+                  <span className="rounded bg-white/70 px-1 text-[10px] font-bold tabular leading-none">{numExtracted}/{TOTAL_EXTRACTION_KEYS}</span>
                 )}
                 <div className="absolute inset-0 flex items-center justify-center gap-1 rounded bg-white/95 opacity-0 transition-opacity group-hover:opacity-100">
                   {(isFailed || isDone) && (
@@ -375,7 +375,7 @@ function QuarterlyReportGrid({
                     ? "border-red-300 bg-red-50 text-red-800"
                     : "border-emerald-300 bg-emerald-50 text-emerald-800";
                   const tooltipParts = [doc.display_name];
-                  if (isDone) tooltipParts.push(`${numExtracted}/{TOTAL_EXTRACTION_KEYS} Werte`);
+                  if (isDone) tooltipParts.push(`${numExtracted}/${TOTAL_EXTRACTION_KEYS} Werte extrahiert`);
                   if (isRunning) tooltipParts.push("Claude analysiert...");
                   if (isPending && doc.queue_position) tooltipParts.push(`Warteschlange #${doc.queue_position}`);
                   if (isFailed) tooltipParts.push(`Fehler: ${doc.extraction_error ?? "?"}`);
@@ -389,8 +389,8 @@ function QuarterlyReportGrid({
                       {isFailed && <AlertTriangle className="h-3 w-3" />}
                       {isDone && <Check className="h-3 w-3" />}
                       <span className="text-[9px] font-semibold">{q}</span>
-                      {isDone && numExtracted > 0 && (
-                        <span className="text-[7px] leading-none">{numExtracted}/{TOTAL_EXTRACTION_KEYS}</span>
+                      {isDone && (
+                        <span className="rounded bg-white/70 px-1 text-[10px] font-bold tabular leading-none">{numExtracted}/{TOTAL_EXTRACTION_KEYS}</span>
                       )}
                       <div className="absolute inset-0 flex items-center justify-center gap-1 rounded bg-white/95 opacity-0 transition-opacity group-hover:opacity-100">
                         {(isFailed || isDone) && (
