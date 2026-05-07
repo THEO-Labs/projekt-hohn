@@ -430,6 +430,36 @@ def _process_one_key(
             getattr(company, "fiscal_year_end_month", None),
             getattr(company, "fiscal_year_end_day", None),
         )
+        # Wenn Provider erfolgreich war + wir sind im Estimate-Mode + ESTIMABLE
+        # Key, rechne trotzdem Q-Faktor + Web fuer den Drilldown-Vergleich
+        # (sonst sehen US-Filer keine alternativen Methoden im Tooltip).
+        if (
+            result is not None
+            and is_running_fy
+            and key in ESTIMABLE_KEYS
+            and not is_stammdaten
+        ):
+            web_alt_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
+            proxy_alt_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+            alts: list[dict] = []
+            if proxy_alt_result is not None and isinstance(proxy_alt_result.value, Decimal):
+                extras = proxy_alt_result.extras or {}
+                alts.append({
+                    "method": "q_factor_proxy",
+                    "value": str(proxy_alt_result.value),
+                    "currency": proxy_alt_result.currency,
+                    "source": proxy_alt_result.source_name,
+                    "explanation": extras.get("estimate"),
+                })
+            if web_alt_result is not None and isinstance(web_alt_result.value, Decimal):
+                alts.append({
+                    "method": "web_guidance",
+                    "value": str(web_alt_result.value),
+                    "currency": web_alt_result.currency,
+                    "source": web_alt_result.source_name,
+                })
+            if alts:
+                forecast_alternates = alts
 
     if result is None and is_running_fy and key in ESTIMABLE_KEYS:
         web_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
@@ -497,8 +527,11 @@ def _process_one_key(
 
     if result is None and not is_stammdaten:
         # Universeller Fallback für historische FY-Werte (z.B. PDF leer, Non-US).
+        # Skip wenn Estimate-Branch oben schon Web-Recherche versucht hat —
+        # sonst doppelter Anthropic-Call ohne neuen Erkenntnis.
+        already_tried_web = is_running_fy and key in ESTIMABLE_KEYS
         target_fy = effective_period_year if effective_period_year is not None else 0
-        if target_fy > 0:
+        if target_fy > 0 and not already_tried_web:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
 
     # Forecast-Lock: primary numeric_value bleibt wie er war (Manual/PDF),

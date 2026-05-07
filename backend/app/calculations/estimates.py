@@ -152,10 +152,14 @@ def _matched_quarter_pair(
             return (q, tv, pv, False)
         target_basis = _period_basis(db, company_id, key, q, target_year)
         prev_basis = _period_basis(db, company_id, key, q, prev_year)
-        # Wenn period_basis fehlt (alte Extraktion ohne YTD-Tag), NICHT
-        # blind 'standalone' annehmen — das matched faelschlich z.B.
-        # Q3-YTD vs Q3-standalone. Lieber skip + frueheres Q probieren.
+        # Wenn beide period_basis fehlen (z.B. alte Extraktionen ohne YTD-Tag),
+        # nehmen wir YTD an — das ist bei Q2/Q3-Reports der dominante Standard
+        # (>95% der IFRS+GAAP Q-Reports sind YTD-basiert). Sonst Basis-Match
+        # erforderlich.
+        if target_basis is None and prev_basis is None:
+            return (q, tv, pv, True)  # assume YTD
         if target_basis is None or prev_basis is None:
+            # nur einer hat None — ambivalent, lieber frueheres Q probieren
             continue
         if _is_ytd(target_basis) == _is_ytd(prev_basis):
             return (q, tv, pv, _is_ytd(target_basis))
@@ -275,8 +279,25 @@ def compute_estimate(
             )
         return None
 
-    if prev_fy_val is None or prev_fy_val == 0:
+    if prev_fy_val is None:
+        # Kein FY-Basis vorhanden → kein Estimate moeglich. Caller (UI) sieht None
+        # und zeigt 'Wert nicht gefunden' mit Hint dass Vorjahres-AR fehlt.
         return None
+    if prev_fy_val == 0:
+        # FY[N-1] ist 0 — Faktor-Multiplikation wuerde immer 0 ergeben.
+        # Geben wir 0 zurueck mit klarer Erklaerung statt None (User-Anforderung:
+        # immer einen Wert + immer eine Begruendung).
+        cur = f" {currency}" if currency else ""
+        return EstimateResult(
+            value=Decimal("0"),
+            method="fy_fallback",
+            explanation=(
+                f"Schaetzung FY{target_fy_year} = 0{cur}. "
+                f"FY{prev_fy} ({key}) war 0 — Faktor-Hochrechnung nicht moeglich. "
+                f"Bei Buyback/Dividend kann das legitim sein (kein Programm aktiv); "
+                f"sonst Vorjahres-AR pruefen ob der Wert wirklich 0 war."
+            ),
+        )
 
     q, target_v, prev_v, is_ytd_pair = pair
 

@@ -104,7 +104,11 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "Aktienrückkäufe (Cash-Outflow für Treasury Share Purchases) für die Periode. "
      "Suchorte: (1) Cash Flow Statement → 'Repurchase of common stock' / 'Treasury stock purchases' / 'Acquisition of treasury shares' im Financing-Abschnitt. "
      "(2) Statement of Changes in Equity → 'Purchase of treasury shares' / 'Aktienrückkauf'. "
-     "(3) Notes/Press Release zu Buyback Programs: kumuliertes Volumen. "
+     "(3) Notes/Press Release zu Buyback Programs — VORSICHT: nur das in der "
+     "GEMELDETEN PERIODE tatsaechlich AUSGEGEBENE Cash. NICHT eine Multi-Year-"
+     "Authorisation (z.B. '$50B Buyback Program approved' = ueber mehrere Jahre, "
+     "nicht jaehrlich!). Im Zweifel den CF-Statement-Wert nehmen, der ist "
+     "periodenecht. "
      "WERT: POSITIV als Cash-Outflow-Betrag (Vorzeichen ignorieren). Wenn KEIN Rückkaufprogramm aktiv war, value=0 und reason='Kein Rückkauf in der Periode'."),
     ("dividends",
      "Dividenden-Cashout / Dividends Paid für die Periode (zur Vermeidung: Bezahlte Dividenden ≠ je Aktie ≠ vorgeschlagene Dividende). "

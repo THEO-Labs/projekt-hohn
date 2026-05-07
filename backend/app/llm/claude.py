@@ -154,7 +154,13 @@ WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
      Versicherer FCF       → Operating Profit / Operating Cash Flow
      Versicherer SBC       → Personnel Expenses × 0,5-1% (typische SBC-Quote)
      Versicherer Net Debt  → Total Borrowings − Cash (ohne LT Marketable Sec.)
-     Bank FCF              → Operating Profit
+     Bank FCF              → Net Interest Income + Fees - OpEx (proxy)
+     Bank Net Debt         → Long-term Debt − Cash & Equivalents (Debt-Funding)
+     Bank SBC              → Personnel × 1-2% (Banken haben hoehere SBC-Quoten)
+     REIT FCF              → AFFO (Adjusted Funds From Operations)
+     REIT Net Debt         → Total Debt − Cash (Leverage zentral fuer REITs)
+     Holdings (Berkshire)  → FCF = OCF + Insurance Float Gain; SBC oft minimal
+     Royalty/Mining-Trust  → FCF ≈ Distributable Cash, kein klassisches CapEx
    Du MUSST die Equivalent-Zahl AUSRECHNEN und liefern — nicht nur "Konzept fehlt
    → 0".
 
@@ -391,11 +397,21 @@ def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
             key, value,
         )
         return None
-    if fval == 0 and key in ("sbc", "buyback_volume", "dividends", "net_income", "fcf"):
-        logger.info(
-            "Claude value: %s=0 — kann legitim sein (Firma zahlt z.B. keine Dividende) "
-            "oder ein Default-Fallback. Source-Name prüfen.", key,
-        )
+    if fval == 0:
+        if key == "sbc":
+            # SBC=0 ist bei boersennotierten Firmen praktisch nie korrekt
+            # (selbst Versicherer/Banken haben Personnel-share-based payments).
+            # Reject damit der Retry-Mechanismus eine echte Schaetzung erzwingt.
+            logger.warning(
+                "Claude value: sbc=0 — bei boersennotierten Firmen praktisch nie korrekt. "
+                "Reject damit Retry eine echte Approximation erzwingt."
+            )
+            return None
+        if key in ("buyback_volume", "dividends", "net_income", "fcf"):
+            logger.info(
+                "Claude value: %s=0 — kann legitim sein (Firma zahlt z.B. keine Dividende) "
+                "oder ein Default-Fallback. Source-Name pruefen.", key,
+            )
     return value
 
 

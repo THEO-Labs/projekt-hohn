@@ -75,7 +75,15 @@ def _post_extraction_web_fallback(
     filled = 0
     attempted = 0
 
-    for key, info in results.items():
+    # Priority: wichtige Keys zuerst (im Cap-Limit). net_income > fcf > net_debt
+    # > sbc > buyback_volume > dividends > shares_outstanding. Alle nicht-
+    # priorisierten Keys danach in Default-Reihenfolge.
+    KEY_PRIORITY = ["net_income", "fcf", "net_debt", "sbc", "buyback_volume", "dividends", "shares_outstanding"]
+    sorted_items = sorted(
+        results.items(),
+        key=lambda kv: (KEY_PRIORITY.index(kv[0]) if kv[0] in KEY_PRIORITY else len(KEY_PRIORITY))
+    )
+    for key, info in sorted_items:
         if attempted >= MAX_WEB_FALLBACKS_PER_PDF:
             logger.info("Web-fallback cap (%d) reached for doc %s, skipping further keys",
                         MAX_WEB_FALLBACKS_PER_PDF, doc.id)
@@ -84,6 +92,27 @@ def _post_extraction_web_fallback(
             continue  # PDF hat einen Wert — nichts nachfüllen
         vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
         if vd is None or vd.source_type != SourceType.API:
+            continue
+        # Idempotenz: wenn vorher schon ein Web-Wert geschrieben wurde
+        # (source_name beginnt mit 'PDF leer'), nicht erneut Claude triggern
+        # bei Re-Extraktion. Spart Cost bei iterativen User-Tests.
+        existing_web = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company.id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == period_type,
+                CompanyValue.period_year == period_year,
+                CompanyValue.is_forecast.is_(False),
+                CompanyValue.from_ir_pdf.is_(False),
+                CompanyValue.numeric_value.isnot(None),
+                CompanyValue.source_name.like("PDF leer%"),
+            )
+            .one_or_none()
+        )
+        if existing_web is not None:
+            logger.info("Web-fallback %s/%s/%s/%s: skip — schon ein Web-Fallback-Wert vorhanden (%s)",
+                        company.ticker, key, period_type, period_year, existing_web.numeric_value)
             continue
 
         label = f"{vd.label_en} ({vd.label_de})"
