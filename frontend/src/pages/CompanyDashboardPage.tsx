@@ -198,7 +198,14 @@ function _toNum(n: number | string | null | undefined): number | null {
 }
 
 function _getFaktorValue(cv: CompanyValue): number | null {
-  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
+  if (!cv.is_forecast) return _toNum(cv.numeric_value);
+  // Manual-Override: zeige trotzdem den separaten Q-Faktor-Alt-Wert wenn vorhanden,
+  // damit der User sieht was die Methode liefern wuerde (Drilldown bleibt konsistent).
+  if (cv.manually_overridden) {
+    const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+    if (alt?.value != null) return parseFloat(alt.value);
+    return _toNum(cv.numeric_value);
+  }
   const isProxyPrimary = (cv.source_name || "").includes("Proxy");
   if (isProxyPrimary) return _toNum(cv.numeric_value);
   const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
@@ -206,7 +213,14 @@ function _getFaktorValue(cv: CompanyValue): number | null {
 }
 
 function _getWebValue(cv: CompanyValue): number | null {
-  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
+  if (!cv.is_forecast) return _toNum(cv.numeric_value);
+  // Manual-Override: zeige trotzdem den separaten Web-Alt-Wert wenn vorhanden,
+  // damit Vergleich primary/Web sichtbar bleibt.
+  if (cv.manually_overridden) {
+    const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
+    if (alt?.value != null) return parseFloat(alt.value);
+    return _toNum(cv.numeric_value);
+  }
   const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
   if (isWebPrimary) return _toNum(cv.numeric_value);
   const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
@@ -341,7 +355,7 @@ export function CompanyDashboardPage() {
         try {
           availMap.set(c.id, await getFyAvailability(c.id));
         } catch {
-          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [], quarter_years: [] });
+          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [], quarter_years: [], quarter_years_in_progress: [] });
         }
       })
     );
@@ -476,7 +490,7 @@ export function CompanyDashboardPage() {
         try {
           map.set(c.id, await getFyAvailability(c.id));
         } catch {
-          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [], quarter_years: [] });
+          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [], quarter_years: [], quarter_years_in_progress: [] });
         }
       })
     );
@@ -960,6 +974,18 @@ export function CompanyDashboardPage() {
                           Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich.
                           Ohne diese ist keine belastbare Schätzung möglich.
                         </p>
+                        {(() => {
+                          const prevYear = (period.year ?? new Date().getFullYear()) - 1;
+                          const inProgress = av?.quarter_years_in_progress ?? [];
+                          if (inProgress.includes(prevYear)) {
+                            return (
+                              <p className="mt-1 text-xs font-medium text-amber-900">
+                                ⓘ Es gibt bereits Q-Reports für FY{prevYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich pruefen.
+                              </p>
+                            );
+                          }
+                          return null;
+                        })()}
                       </td>
                     </tr>
                   )];

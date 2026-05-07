@@ -25,6 +25,7 @@ from app.calculations.lock import (
     is_hohn_locked,
     is_us_company,
     quarter_years,
+    quarter_years_in_progress,
 )
 from app.companies.models import Company
 from app.db import get_db
@@ -551,7 +552,11 @@ def _process_one_key(
         target.fetched_at = datetime.now(timezone.utc)
         target.from_ir_pdf = False
         target.is_forecast = is_forecast_flag
-        target.forecast_alternates = forecast_alternates
+        # forecast_alternates nur ueberschreiben wenn dieser Run sie explizit
+        # berechnet hat (Estimate-Pfad). Sonst bleiben vorhandene Alternates
+        # erhalten — Provider-Pfad darf den Drilldown-Tooltip nicht clobbern.
+        if forecast_alternates is not None:
+            target.forecast_alternates = forecast_alternates
 
     try:
         if existing:
@@ -1190,6 +1195,7 @@ def get_fy_availability(
         "is_us": is_us_company(company),
         "annual_report_years": annual_report_years(db, company_id),
         "quarter_years": quarter_years(db, company_id),
+        "quarter_years_in_progress": quarter_years_in_progress(db, company_id),
     }
 
 

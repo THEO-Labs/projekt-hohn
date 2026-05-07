@@ -53,6 +53,25 @@ def quarter_years(db: Session, company_id: UUID) -> list[int]:
     return sorted({r[0] for r in rows})
 
 
+def quarter_years_in_progress(db: Session, company_id: UUID) -> list[int]:
+    """Jahre fuer die ein Q-Report PENDING/EXTRACTING/FAILED ist (noch nicht
+    DONE). Wird im Lock-Banner verwendet damit User sieht 'hochgeladen aber
+    noch nicht durch'."""
+    rows = (
+        db.query(IRDocument.period_year)
+        .filter(
+            IRDocument.company_id == company_id,
+            IRDocument.period_coverage.in_((PeriodCoverage.Q1, PeriodCoverage.Q2, PeriodCoverage.Q3)),
+            IRDocument.extraction_status.in_(
+                (ExtractionStatus.PENDING, ExtractionStatus.EXTRACTING, ExtractionStatus.FAILED)
+            ),
+        )
+        .distinct()
+        .all()
+    )
+    return sorted({r[0] for r in rows})
+
+
 def has_done_annual_report(db: Session, company_id: UUID, period_year: int) -> bool:
     return (
         db.query(IRDocument.id)

@@ -67,11 +67,19 @@ def _post_extraction_web_fallback(
     from app.values.currency_keys import CURRENCY_KEYS
     from app.values.models import SourceType, ValueDefinition
 
+    # Cap pro PDF: maximal 5 Web-Recherchen, damit ein Dokument mit vielen
+    # leeren Keys nicht 7 × Anthropic-Calls (~$0.50) und 1-2min Latenz frisst.
+    MAX_WEB_FALLBACKS_PER_PDF = 5
     period_type = doc.period_coverage.value
     period_year = doc.period_year
     filled = 0
+    attempted = 0
 
     for key, info in results.items():
+        if attempted >= MAX_WEB_FALLBACKS_PER_PDF:
+            logger.info("Web-fallback cap (%d) reached for doc %s, skipping further keys",
+                        MAX_WEB_FALLBACKS_PER_PDF, doc.id)
+            break
         if info.get("value") is not None:
             continue  # PDF hat einen Wert — nichts nachfüllen
         vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
@@ -79,6 +87,7 @@ def _post_extraction_web_fallback(
             continue
 
         label = f"{vd.label_en} ({vd.label_de})"
+        attempted += 1
         try:
             web_val, source, url, _user_prompt, assistant = research_value(
                 company.name, company.ticker, label, company.currency,
@@ -99,6 +108,11 @@ def _post_extraction_web_fallback(
             logger.info("Web-fallback %s/%s/%s/%s: value rejected by sanity-range",
                         company.ticker, key, period_type, period_year)
             continue
+        # Sign-norm fuer ALWAYS_POSITIVE_KEYS (sbc/buyback/dividends/shares):
+        # Claude liefert manchmal negative Cash-Outflow-Werte (Cashflow-Konvention).
+        from app.ir_documents.extraction import ALWAYS_POSITIVE_KEYS
+        if key in ALWAYS_POSITIVE_KEYS and web_val < 0:
+            web_val = abs(web_val)
 
         existing = (
             db.query(CompanyValue)

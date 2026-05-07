@@ -204,6 +204,31 @@ def extract_research_value(text: str) -> Decimal | None:
     return _apply_unit_scale(value, text, raw)
 
 
+# Currency-Keys aus values/currency_keys importieren wuerde Zirkular machen —
+# duplizieren als Set fuer die unit-heuristik unten.
+_LIKELY_CURRENCY_KEYS = frozenset({
+    "net_income", "fcf", "sbc", "buyback_volume", "dividends",
+    "net_debt", "market_cap",
+})
+
+
+def detect_unit_error(key: str, value: Decimal) -> bool:
+    """True wenn ein Currency-Key suspicious klein ist (z.B. WERT: 1.45 USD
+    statt 1450000000 USD — Claude hat vergessen die Approximation in
+    Base-Units zu liefern). Threshold: 1 Million als Untergrenze fuer
+    sinnvolle Konzern-Kennzahlen. shares_outstanding ausgenommen weil
+    legitim klein bei Bruchwerten."""
+    if key not in _LIKELY_CURRENCY_KEYS:
+        return False
+    try:
+        v = abs(float(value))
+    except (ValueError, OverflowError):
+        return True
+    if v == 0:
+        return False  # echte 0 ist OK
+    return v < 1_000_000
+
+
 _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "market_cap": (0, 15_000_000_000_000),
     "shares_outstanding": (0, 1_000_000_000_000),
@@ -254,7 +279,9 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
 
 
 def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
-    """Range-Check für Claude-Werte. None wenn ausserhalb plausibler Range."""
+    """Range-Check für Claude-Werte. None wenn ausserhalb plausibler Range
+    oder wenn die unit-heuristik anschlaegt (Currency-Wert verdaechtig klein
+    -> Claude hat vermutlich Mio/Mrd vergessen)."""
     limits = _CLAUDE_SANITY_CHECKS.get(key)
     if limits is None:
         return value
@@ -270,6 +297,17 @@ def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
             key, value, lo, hi,
         )
         return None
+    if detect_unit_error(key, value):
+        logger.warning(
+            "Claude value sanity: %s=%s suspicious klein (Unit-Verwechslung Mio/Mrd?) — dropping",
+            key, value,
+        )
+        return None
+    if fval == 0 and key in ("sbc", "buyback_volume", "dividends", "net_income", "fcf"):
+        logger.info(
+            "Claude value: %s=0 — kann legitim sein (Firma zahlt z.B. keine Dividende) "
+            "oder ein Default-Fallback. Source-Name pruefen.", key,
+        )
     return value
 
 
@@ -378,7 +416,9 @@ def research_value(
         source = source_match.group(1).strip() if source_match else "Claude-Recherche"
         url_match = re.search(r"QUELLE_URL:\s*(https?://\S+)", content)
         source_url = url_match.group(1).strip() if url_match else None
-        return value, f"Claude-Recherche: {source}", source_url, user_prompt, content
+        # source ohne Praefix zurueckgeben — Caller (Web-Guidance / Research-
+        # Endpoint / Auto-Fallback) entscheidet das passende Praefix.
+        return value, source, source_url, user_prompt, content
     except Exception as e:
         logger.warning("Claude research failed for %s/%s: %s", ticker, value_label, e)
         return None, None, None, user_prompt, None

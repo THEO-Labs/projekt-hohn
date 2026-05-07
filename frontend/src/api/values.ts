@@ -103,6 +103,7 @@ export type FyAvailability = {
   is_us: boolean;
   annual_report_years: number[];
   quarter_years: number[];
+  quarter_years_in_progress?: number[];
 };
 
 export const getFyAvailability = (companyId: string) =>

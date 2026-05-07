@@ -53,7 +53,9 @@ QUARTERS = ("Q1", "Q2", "Q3")
 # des Vorjahres-FY-Werts ist, blasen winzige Aenderungen den Faktor
 # unrealistisch auf → wir verzichten auf den Faktor-Pfad und fallen auf
 # den FY-Fallback zurück.
-_NEAR_ZERO_FRACTION = Decimal("0.01")
+# 5% statt 1% — bei FCF-Saisonalitaet entstehen sonst trotzdem extreme Faktoren
+# (z.B. Q3-YTD = 5% von FY[N-1] aber target_v hoch -> 20x explosion).
+_NEAR_ZERO_FRACTION = Decimal("0.05")
 
 # Hard-Cap für den Faktor — saisonale Q1-FCF-Werte (Working-Capital-Aufbau,
 # typisch negativ bei Industrials) produzieren mathematisch korrekte aber
@@ -150,6 +152,11 @@ def _matched_quarter_pair(
             return (q, tv, pv, False)
         target_basis = _period_basis(db, company_id, key, q, target_year)
         prev_basis = _period_basis(db, company_id, key, q, prev_year)
+        # Wenn period_basis fehlt (alte Extraktion ohne YTD-Tag), NICHT
+        # blind 'standalone' annehmen — das matched faelschlich z.B.
+        # Q3-YTD vs Q3-standalone. Lieber skip + frueheres Q probieren.
+        if target_basis is None or prev_basis is None:
+            continue
         if _is_ytd(target_basis) == _is_ytd(prev_basis):
             return (q, tv, pv, _is_ytd(target_basis))
         # Basis-Mismatch (z.B. target standalone, prev YTD) → frueher probieren
@@ -221,12 +228,21 @@ def compute_estimate(
         snap, snap_q, snap_year = _latest_quarter_value(db, company_id, key, target_fy_year)
         if snap is not None:
             note = "" if snap_year == target_fy_year else f" (jüngster verfügbarer Q-Snapshot — kein FY{target_fy_year}-Q-Report hochgeladen)"
+            # Caveat fuer shares_outstanding: Quartals-GuV liefert oft Diluted
+            # Weighted Average Shares (Periode), nicht den year-end Punkt-in-Zeit-
+            # Bestand. Frontend kann das via source_name lesen und beim Drilldown
+            # transparent machen.
+            extra = ""
+            if key == "shares_outstanding":
+                extra = (" Hinweis: Q-GuV-Wert ist meist 'Diluted Weighted Average' "
+                         "der Periode, nicht der year-end Bestand — fuer Market-Cap-"
+                         "Berechnung kann das leicht abweichen.")
             return EstimateResult(
                 value=snap,
                 method="balance_snapshot",
                 explanation=(
                     f"Bilanz-Snapshot {snap_q} {snap_year} = {snap:,.0f}{note} "
-                    f"(Punkt-in-Zeit; bei Bilanzposten keine Faktor-Hochrechnung)."
+                    f"(Punkt-in-Zeit; bei Bilanzposten keine Faktor-Hochrechnung).{extra}"
                 ),
                 quarters_used=[f"{snap_q} {snap_year}"] if snap_q else [],
             )
