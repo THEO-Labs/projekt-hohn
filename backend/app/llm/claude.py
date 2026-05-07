@@ -177,15 +177,28 @@ WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
    gezahlt/zurueckgekauft/etc. (z.B. "kein Buyback-Programm aktiv" → buyback=0).
    NICHT als Fallback bei Schwierigkeit.
 
-ANTWORT — exakt dieses Format, nichts anderes davor/danach:
-WERT: [echte Zahl in Base-Units — bei Approximation den BERECHNETEN Zahlenwert]
-EINHEIT: [USD/EUR/...|%|keine]
-QUELLE: [Kurzbezeichnung — bei Approximation z.B.
-         "Approximation: Airbus FY2025 SBC ~250M × 1,05 CAGR = 262.5M (IR FY2025-Bericht)"]
-QUELLE_URL: [echte direkte URL der Datenbasis]
-ZEITRAUM: [z.B. FY2024, FY2026e, TTM, Q3 2025]
-KONFIDENZ: [hoch|mittel|niedrig]
-BEGRUENDUNG: [2-3 Sätze zu Quelle/Schaetzweg]
+ANTWORT-FORMAT — ABSOLUT VERBINDLICH:
+Deine Antwort MUSS mit der Zeile 'WERT:' BEGINNEN. NICHTS davor — kein
+Markdown, kein Header, keine Einleitung wie "Hier die Berechnung:". Die
+ersten 5 Zeichen deiner Antwort MUESSEN exakt 'WERT:' sein.
+
+Wenn du gerechnet hast (z.B. €2.519 Mio × 1.17 = $2.960 Mio), kommt das
+Ergebnis IN DIE WERT-ZEILE als BASE-UNITS-Zahl, nicht als Markdown.
+Den Rechenweg darfst du erst danach in BEGRUENDUNG erklaeren.
+
+KORREKTES FORMAT (genau so):
+WERT: 2960000000
+EINHEIT: USD
+QUELLE: Approximation: Airbus IR FY2025 Dividende €3,20/Aktie × 787,2 Mio Aktien × 1,1752 EUR/USD
+QUELLE_URL: https://www.airbus.com/en/investors
+ZEITRAUM: FY2026e
+KONFIDENZ: niedrig
+BEGRUENDUNG: FY2025-Dividende beschlossen am 14.04.2026, Auszahlung 23.04.2026 → faellt in FY2026 Cashflow. Umrechnung mit EUR/USD-Kurs vom Stichtag.
+
+FALSCHES FORMAT (NIE so antworten):
+"Hier die Berechnung: **Gesamtdividende: €2,519 Mio**" — fehlt WERT:-Zeile am Anfang.
+"**WERT: $2.960 Mio**" — Markdown-Sterne UND nicht in Base-Units.
+"Ich konnte keine Daten finden" — kein Wert, verboten (siehe oben).
 
 ZAHLENFORMAT — strikt:
 - Volle Zahl in Base-Units, OHNE Suffix.  RICHTIG: 1450000000 USD.  FALSCH: 1450 USD Mio.
@@ -207,23 +220,76 @@ def extract_research_value(text: str) -> Decimal | None:
         text,
         re.IGNORECASE,
     )
-    if not match:
-        # Diagnose: was hat Claude eigentlich geantwortet? Erste 500 chars logged
-        # damit wir sehen ob es ein Format-Issue ist (kein WERT-Praefix), web_search
-        # tool-block ohne text, oder ein Refusal.
-        preview = (text or "")[:500].replace("\n", " | ")
-        logger.warning("research: Claude antwortete ohne WERT-Pattern — caller bekommt None. Antwort-Preview: %s",
-                       preview)
+    if match:
+        raw = match.group(1).strip()
+        if re.match(r"nicht.{0,2}gefunden", raw, re.IGNORECASE):
+            logger.warning("research: Claude antwortete NICHT_GEFUNDEN trotz Verbot — caller bekommt None")
+            return None
+        value = _parse_numeric_string(raw)
+        if value is None:
+            logger.warning("research: WERT '%s' parst nicht — caller bekommt None", raw)
+            return None
+        return _apply_unit_scale(value, text, raw)
+
+    # Fallback-Parser: Claude hat das WERT-Format ignoriert aber vielleicht eine
+    # Zahl im Markdown stehen. Suche nach Resultat/Ergebnis/= Pattern oder dem
+    # letzten Bold-Currency-Wert (typisch '**$2.960 Mio.**').
+    fallback = _fallback_extract_value(text)
+    if fallback is not None:
+        logger.info("research: WERT-Pattern fehlte, Fallback-Parser fand %s", fallback)
+        return fallback
+
+    preview = (text or "")[:500].replace("\n", " | ")
+    logger.warning("research: Claude antwortete ohne WERT-Pattern — caller bekommt None. Antwort-Preview: %s",
+                   preview)
+    return None
+
+
+def _fallback_extract_value(text: str) -> Decimal | None:
+    """Wenn Claude das WERT:-Format vergisst (z.B. schreibt '**$2.960 Mio.**'),
+    versuche aus Markdown/Prose die wahrscheinlichste Zahl zu extrahieren.
+    Reihenfolge:
+      1. 'Resultat:' / 'Ergebnis:' / 'Total:' Zeile
+      2. Letzter '= **$X Mrd/Mio**' Pattern (Berechnungs-Ergebnis)
+      3. Letzter Bold-Currency-Wert
+    """
+    if not text:
         return None
-    raw = match.group(1).strip()
-    if re.match(r"nicht.{0,2}gefunden", raw, re.IGNORECASE):
-        logger.warning("research: Claude antwortete NICHT_GEFUNDEN trotz Verbot — caller bekommt None")
-        return None
-    value = _parse_numeric_string(raw)
-    if value is None:
-        logger.warning("research: WERT '%s' parst nicht — caller bekommt None", raw)
-        return None
-    return _apply_unit_scale(value, text, raw)
+    # 1. Resultat/Ergebnis-Zeile
+    for label in (r"Resultat", r"Ergebnis", r"Endergebnis", r"Total", r"Schätzung", r"Schaetzung", r"Wert"):
+        m = re.search(
+            rf"{label}\s*[:=]\s*\*?\*?[\$€£]?\s*([+-]?[\d.,]+\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            raw = m.group(1).strip()
+            v = _parse_numeric_string(raw)
+            if v is not None:
+                return _apply_unit_scale(v, raw, raw)
+    # 2. Letzter '= **value Mrd/Mio**' Pattern
+    matches = list(re.finditer(
+        r"=\s*\*?\*?[\$€£]?\s*([+-]?[\d.,]+\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?)\*?\*?",
+        text,
+        re.IGNORECASE,
+    ))
+    if matches:
+        raw = matches[-1].group(1).strip()
+        v = _parse_numeric_string(raw)
+        if v is not None:
+            return _apply_unit_scale(v, raw, raw)
+    # 3. Letzter Bold-Currency-Wert (**$X Mio.** / **€Y Mrd.**)
+    matches = list(re.finditer(
+        r"\*\*\s*[\$€£]?\s*([+-]?[\d.,]+\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?)\s*\*\*",
+        text,
+        re.IGNORECASE,
+    ))
+    if matches:
+        raw = matches[-1].group(1).strip()
+        v = _parse_numeric_string(raw)
+        if v is not None:
+            return _apply_unit_scale(v, raw, raw)
+    return None
 
 
 # Currency-Keys aus values/currency_keys importieren wuerde Zirkular machen —

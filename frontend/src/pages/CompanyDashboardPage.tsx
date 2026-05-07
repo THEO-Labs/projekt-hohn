@@ -1635,7 +1635,7 @@ export function CompanyDashboardPage() {
                 )}
 
                 {/* Section: Q-Faktor Berechnung */}
-                {tooltip.variant === "faktor" && (
+                {tooltip.variant === "faktor" && ESTIMATE_PRIMARY_KEYS.has(tooltip.key) && (
                   <section className="mt-3 px-4">
                     <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-700">Q-Faktor Berechnung</h4>
                     <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
