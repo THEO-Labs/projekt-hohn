@@ -292,7 +292,7 @@ function buildVariantValues(
 
 
 function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
-  // Estimate-Mode benoetigt Q-Reports vom Vorjahr (fuer den apples-to-apples
+  // Estimate-Mode benoetigt Q-Reports vom Vorjahr (für den apples-to-apples
   // Q-Faktor-Vergleich) — ausser bei US-Filern wo EDGAR/Yahoo Q-Daten liefert.
   if (!av || periodYear === undefined) return false;
   if (av.is_us) return false;
@@ -961,7 +961,6 @@ export function CompanyDashboardPage() {
                 // (analog Estimate-Lock — User soll AR hochladen, nicht per
                 // Cell manuell recherchieren).
                 if (fyHistLocked) {
-                  const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
                   return [(
                     <tr key={`${company.id}-fy-locked`} className="border-t-4 border-border bg-amber-50/70">
                       <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
@@ -970,26 +969,19 @@ export function CompanyDashboardPage() {
                             <span className="font-semibold text-foreground">{company.name}</span>
                             <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
                           </div>
-                          <button
-                            onClick={() => handleRefreshCompany(company)}
-                            disabled={isRunningThis}
-                            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
-                            {isRunningThis ? "Berechnet…" : "Werte berechnen"}
-                          </button>
+                          <span className="text-[10px] text-amber-700">Aktion: Annual Report hochladen</span>
                         </div>
                       </td>
                       <td colSpan={totalCols - 1} className="px-4 py-3">
                         <div className="flex items-center gap-2 text-amber-800">
                           <Lock className="h-4 w-4 shrink-0" />
                           <span className="text-sm font-medium">
-                            Annual Report fuer FY{period.year} fehlt — bitte hochladen
+                            Annual Report für FY{period.year} fehlt — bitte hochladen
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-amber-700/80">
-                          Fuer abgeschlossene FY-Jahre kommen die Werte aus dem hochgeladenen Annual Report.
-                          Fehlt ein Wert im PDF, faellt das System automatisch auf Web-Recherche (Claude) zurueck.
+                          Für abgeschlossene FY-Jahre kommen die Werte aus dem hochgeladenen Annual Report.
+                          Fehlt ein Wert im PDF, fällt das System automatisch auf Web-Recherche (Claude) zurück.
                         </p>
                       </td>
                     </tr>
@@ -997,9 +989,8 @@ export function CompanyDashboardPage() {
                 }
 
                 // Estimate-Mode + keine Vorjahres-Q-Reports -> Lock-Row
-                // (analog FY-Historical-Lock fuer abgeschlossene FY ohne Annual Report).
+                // (analog FY-Historical-Lock für abgeschlossene FY ohne Annual Report).
                 if (estLocked) {
-                  const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
                   return [(
                     <tr key={`${company.id}-est-locked`} className="border-t-4 border-border bg-amber-50/70">
                       <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
@@ -1008,15 +999,7 @@ export function CompanyDashboardPage() {
                             <span className="font-semibold text-foreground">{company.name}</span>
                             <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
                           </div>
-                          <button
-                            onClick={() => handleRefreshCompany(company)}
-                            disabled={isRunningThis}
-                            title="Werte fuer diese Firma neu berechnen"
-                            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
-                            {isRunningThis ? "Berechnet…" : "Werte berechnen"}
-                          </button>
+                          <span className="text-[10px] text-amber-700">Aktion: Quartalsberichte hochladen</span>
                         </div>
                       </td>
                       <td colSpan={totalCols - 1} className="px-4 py-3">
@@ -1036,7 +1019,7 @@ export function CompanyDashboardPage() {
                           if (inProgress.includes(prevYear)) {
                             return (
                               <p className="mt-1 text-xs font-medium text-amber-900">
-                                ⓘ Es gibt bereits Q-Reports für FY{prevYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich pruefen.
+                                ⓘ Es gibt bereits Q-Reports für FY{prevYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich prüfen.
                               </p>
                             );
                           }
@@ -1742,7 +1725,7 @@ export function CompanyDashboardPage() {
                   </dl>
                 </section>
 
-                {/* Section: Aktionen — nur fuer Raw-Data in abgeschlossenen FY */}
+                {/* Section: Aktionen — nur für Raw-Data in abgeschlossenen FY */}
                 {(() => {
                   const isRawDataFy = (
                     cv.is_forecast === false
@@ -1801,7 +1784,7 @@ export function CompanyDashboardPage() {
                         "FY", cv.period_year ?? undefined,
                       );
                       await loadAllValues();
-                      toast.success("Wert ueberschrieben (wird beim naechsten 'Werte berechnen' wieder ersetzt)");
+                      toast.success("Wert überschrieben (wird beim nächsten 'Werte berechnen' wieder ersetzt)");
                       setTooltipEdit(null);
                       setTooltip(null);
                     } catch (e) {

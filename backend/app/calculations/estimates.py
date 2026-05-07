@@ -50,10 +50,10 @@ ESTIMABLE_KEYS = frozenset(FLOW_KEYS | BALANCE_KEYS)
 QUARTERS = ("Q1", "Q2", "Q3")
 
 # Schwelle: wenn der Vorjahres-Cumulative-Q kleiner als diese Fraktion
-# des Vorjahres-FY-Werts ist, blasen winzige Aenderungen den Faktor
+# des Vorjahres-FY-Werts ist, blasen winzige Änderungen den Faktor
 # unrealistisch auf → wir verzichten auf den Faktor-Pfad und fallen auf
 # den FY-Fallback zurück.
-# 5% statt 1% — bei FCF-Saisonalitaet entstehen sonst trotzdem extreme Faktoren
+# 5% statt 1% — bei FCF-Saisonalität entstehen sonst trotzdem extreme Faktoren
 # (z.B. Q3-YTD = 5% von FY[N-1] aber target_v hoch -> 20x explosion).
 _NEAR_ZERO_FRACTION = Decimal("0.05")
 
@@ -228,14 +228,14 @@ def compute_estimate(
         snap, snap_q, snap_year = _latest_quarter_value(db, company_id, key, target_fy_year)
         if snap is not None:
             note = "" if snap_year == target_fy_year else f" (jüngster verfügbarer Q-Snapshot — kein FY{target_fy_year}-Q-Report hochgeladen)"
-            # Caveat fuer shares_outstanding: Quartals-GuV liefert oft Diluted
+            # Caveat für shares_outstanding: Quartals-GuV liefert oft Diluted
             # Weighted Average Shares (Periode), nicht den year-end Punkt-in-Zeit-
             # Bestand. Frontend kann das via source_name lesen und beim Drilldown
             # transparent machen.
             extra = ""
             if key == "shares_outstanding":
                 extra = (" Hinweis: Q-GuV-Wert ist meist 'Diluted Weighted Average' "
-                         "der Periode, nicht der year-end Bestand — fuer Market-Cap-"
+                         "der Periode, nicht der year-end Bestand — für Market-Cap-"
                          "Berechnung kann das leicht abweichen.")
             return EstimateResult(
                 value=snap,
@@ -250,7 +250,7 @@ def compute_estimate(
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
-                reason=f"Keine Q-Reports für FY{target_fy_year} oder FY{prev_fy} hochgeladen — Annahme: keine Veraenderung ggue. Vorjahr.",
+                reason=f"Keine Q-Reports für FY{target_fy_year} oder FY{prev_fy} hochgeladen — Annahme: keine Veränderung ggue. Vorjahr.",
             )
         return None
 
@@ -271,7 +271,7 @@ def compute_estimate(
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
                 method="fy_fallback",
-                reason=f"{missing} Annahme: keine Veraenderung ggue. Vorjahr.",
+                reason=f"{missing} Annahme: keine Veränderung ggue. Vorjahr.",
             )
         return None
 
@@ -289,14 +289,14 @@ def compute_estimate(
 
     # Target = 0: Faktor wuerde 0 ergeben → estimate = 0. Das ist meist falsch
     # (Buyback/Dividend/Capex sind unregelmaessig pro Quartal — ein Q ohne
-    # Aktivitaet heisst nicht dass FY auch 0 ist). Lieber FY-Fallback.
+    # Aktivität heisst nicht dass FY auch 0 ist). Lieber FY-Fallback.
     if target_v == 0:
         return _fy_fallback(
             prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
             method="fy_fallback",
             reason=(
                 f"{q} {target_fy_year} ist 0 (z.B. Buyback/Dividend nicht in dem Quartal). "
-                f"Faktor-Berechnung wuerde Estimate auf 0 setzen — unrealistisch fuer "
+                f"Faktor-Berechnung wuerde Estimate auf 0 setzen — unrealistisch für "
                 f"unregelmaessige Cash-Outflows."
             ),
         )
@@ -322,7 +322,7 @@ def compute_estimate(
             reason=(
                 f"{q}-Werte ({target_v:,.0f} / {prev_v:,.0f}) haben anderes Vorzeichen "
                 f"als FY{prev_fy} ({prev_fy_val:,.0f}) — saisonale Verzerrung, "
-                f"Faktor würde Estimate uebertreiben."
+                f"Faktor würde Estimate übertreiben."
             ),
         )
     if abs(prev_v) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
@@ -357,19 +357,19 @@ def compute_estimate(
 
     # Caveat wenn nur Q1-Datapoint verwendet — bei stark saisonalen Industrials
     # (z.B. Aircraft-Hersteller mit Q4-lastigen Deliveries) ist Q1-Faktor wenig
-    # repraesentativ fuer das ganze Jahr. User-Hinweis im Drilldown.
+    # repräsentativ für das ganze Jahr. User-Hinweis im Drilldown.
     confidence_note = ""
     if q == "Q1" and not is_ytd_pair:
         confidence_note = (
             "  HINWEIS: Estimate basiert auf einem einzelnen Q1-Datapoint — bei "
-            "saisonalen Geschaeftsmodellen (z.B. Industrials mit Q4-lastigen "
+            "saisonalen Geschäftsmodellen (z.B. Industrials mit Q4-lastigen "
             "Deliveries oder Retail mit Q4-Weihnachtsgeschaeft) limited aussagekraeftig. "
             "Mit Q2/Q3-Daten wird der Estimate robuster."
         )
 
     explanation = (
         f"Schätzung FY{target_fy_year} = FY{prev_fy} × Faktor (gleiches Quartal{ytd_note}).  "
-        f"Werte in Originalwaehrung{f' ({currency})' if currency else ''} — UI rechnet ggf. in Anzeige-Währung um.  "
+        f"Werte in Originalwährung{f' ({currency})' if currency else ''} — UI rechnet ggf. in Anzeige-Währung um.  "
         f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}{cur}.  "
         f"{q} {target_fy_year} = {target_v:,.0f}{cur}, {q} {prev_fy} = {prev_v:,.0f}{cur}, "
         f"Faktor = {factor:.4f} ({delta_pct:+.2f} % YoY).  "

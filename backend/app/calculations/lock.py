@@ -39,7 +39,7 @@ def annual_report_years(db: Session, company_id: UUID) -> list[int]:
 
 
 def quarter_years(db: Session, company_id: UUID) -> list[int]:
-    """Jahre fuer die mindestens ein Q1/Q2/Q3-Bericht extrahiert wurde."""
+    """Jahre für die mindestens ein Q1/Q2/Q3-Bericht extrahiert wurde."""
     rows = (
         db.query(IRDocument.period_year)
         .filter(
@@ -54,7 +54,7 @@ def quarter_years(db: Session, company_id: UUID) -> list[int]:
 
 
 def quarter_years_in_progress(db: Session, company_id: UUID) -> list[int]:
-    """Jahre fuer die ein Q-Report PENDING/EXTRACTING/FAILED ist (noch nicht
+    """Jahre für die ein Q-Report PENDING/EXTRACTING/FAILED ist (noch nicht
     DONE). Wird im Lock-Banner verwendet damit User sieht 'hochgeladen aber
     noch nicht durch'."""
     rows = (

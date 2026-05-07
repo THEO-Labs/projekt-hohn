@@ -407,9 +407,9 @@ function QuarterlyReportGrid({
                           <Download className="h-3 w-3" />
                         </a>
                         <button onClick={async () => {
-                          if (!confirm(`${q} ${yr} loeschen?`)) return;
-                          try { await deleteIRDocument(companyId, doc.id); toast.success("Geloescht"); await onChanged(); }
-                          catch { toast.error("Loeschen fehlgeschlagen"); }
+                          if (!confirm(`${q} ${yr} löschen?`)) return;
+                          try { await deleteIRDocument(companyId, doc.id); toast.success("Gelöscht"); await onChanged(); }
+                          catch { toast.error("Löschen fehlgeschlagen"); }
                         }}
                           className="rounded p-0.5 text-red-700 hover:text-red-900" title="Löschen">
                           <Trash2 className="h-3 w-3" />
@@ -501,9 +501,9 @@ function ExtraReportsList({
   };
 
   const onDel = async (doc: IRDocument) => {
-    if (!confirm(`${doc.display_name} loeschen?`)) return;
-    try { await deleteIRDocument(companyId, doc.id); toast.success("Geloescht"); await onChanged(); }
-    catch { toast.error("Loeschen fehlgeschlagen"); }
+    if (!confirm(`${doc.display_name} löschen?`)) return;
+    try { await deleteIRDocument(companyId, doc.id); toast.success("Gelöscht"); await onChanged(); }
+    catch { toast.error("Löschen fehlgeschlagen"); }
   };
 
   return (
@@ -580,7 +580,7 @@ function ExtraReportsList({
                     className="rounded p-0.5 text-muted-foreground hover:text-foreground" title="Download">
                     <Download className="h-3 w-3" />
                   </a>
-                  <button onClick={() => onDel(d)} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title="Loeschen">
+                  <button onClick={() => onDel(d)} className="rounded p-0.5 text-muted-foreground hover:text-destructive" title="Löschen">
                     <Trash2 className="h-3 w-3" />
                   </button>
                 </div>

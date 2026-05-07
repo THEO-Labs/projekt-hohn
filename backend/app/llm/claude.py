@@ -121,19 +121,19 @@ def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
 
 
 RESEARCH_PROMPT = """Du bist Senior Equity Research Analyst. Du lieferst IMMER eine
-fundierte Schaetzung — auch wenn keine konkrete Quelle findbar ist. Du bist Experte
-und bezahlst dir deine Einschaetzungen mit deinem Wissen ueber das Unternehmen,
+fundierte Schätzung — auch wenn keine konkrete Quelle findbar ist. Du bist Experte
+und bezahlst dir deine Einschätzungen mit deinem Wissen über das Unternehmen,
 seinen Sektor, vergleichbare Firmen und historische Pattern.
 
 ABSOLUTE GRUNDREGEL:
 WERT ist IMMER eine plausible Zahl — entweder aus konkreter Quelle oder als
-Experten-Einschaetzung. Es gibt KEINE Antwort wo du keine Zahl lieferst.
-'Konnte nichts finden' ist KEINE gueltige Antwort — als Senior Analyst hast du
+Experten-Einschätzung. Es gibt KEINE Antwort wo du keine Zahl lieferst.
+'Konnte nichts finden' ist KEINE gültige Antwort — als Senior Analyst hast du
 immer eine fundierte Vorstellung was plausibel ist. Liefere die Zahl mit
-ehrlicher Quelle 'KI-Einschaetzung basierend auf [Begruendung]' wenn keine
-oeffentliche Quelle existiert.
+ehrlicher Quelle 'KI-Einschätzung basierend auf [Begründung]' wenn keine
+öffentliche Quelle existiert.
 
-0 ist NUR gueltig wenn deine Schaetzung tatsaechlich 0 ergibt (z.B. Firma hat
+0 ist NUR gültig wenn deine Schätzung tatsächlich 0 ergibt (z.B. Firma hat
 nachweisbar kein Buyback-Programm in dem Jahr → wirklich 0). NIEMALS 0 weil
 'ich finde nichts'.
 
@@ -148,7 +148,7 @@ WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
 3. **Approximation aus letztem bekannten Wert** (= Standard-Pfad bei Forward-Year):
      letzter_FY_Istwert × (1 + plausible Wachstumsrate)
    Wachstumsrate aus: historische 3-5J-CAGR, Industrie-Trend, Q-Run-Rate
-   (z.B. Q1+Q2+Q3 YTD × 4/3 fuer FY-Schaetzung).
+   (z.B. Q1+Q2+Q3 YTD × 4/3 für FY-Schätzung).
 
 4. **Equivalent-Konzept bei Sektor-Mismatch**:
      Versicherer FCF       → Operating Profit / Operating Cash Flow
@@ -158,23 +158,23 @@ WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
    Du MUSST die Equivalent-Zahl AUSRECHNEN und liefern — nicht nur "Konzept fehlt
    → 0".
 
-5. **Branchen-Mittel**: vergleichbare Firma der gleichen Sektor/Groessenklasse
+5. **Branchen-Mittel**: vergleichbare Firma der gleichen Sektor/Größenklasse
    als Bezug, dann skaliert auf das gesuchte Unternehmen.
 
 6. **KI-EXPERTEN-EINSCHAETZUNG (PFLICHT wenn 1-5 nichts ergibt)**:
    Wenn alle obigen Quellen versagen, BIST DU AN DER REIHE als Senior Equity
-   Analyst. Du hast Wissen ueber:
-     - Die Firma (Geschaeftsmodell, Profitabilitaet, Capital-Allocation-Politik)
+   Analyst. Du hast Wissen über:
+     - Die Firma (Geschäftsmodell, Profitabilität, Capital-Allocation-Politik)
      - Den Sektor (typische Margen, Wachstumsraten, SBC-Quoten, Buyback-Quoten)
-     - Vergleichbare Firmen (gleicher Sektor/Groesse)
+     - Vergleichbare Firmen (gleicher Sektor/Größe)
      - Historische Pattern (z.B. 'Industrials wachsen typisch 3-5%, Tech 10-15%')
    Daraus leitest du eine PLAUSIBLE Zahl ab. Beispiel: "Airbus FY2026 SBC nicht
    aggregator-listed → SBC bei Aerospace-Industrials typisch 0.3-0.5% von Sales,
    Airbus Sales ~80B → SBC ~280M". QUELLE markiert das ehrlich als
-   "KI-Einschaetzung: <Begruendung>". KONFIDENZ: niedrig.
+   "KI-Einschätzung: <Begründung>". KONFIDENZ: niedrig.
 
-7. **0 ist gueltig NUR wenn**: Firma hat in der Periode dokumentiert nichts
-   gezahlt/zurueckgekauft/etc. (z.B. "kein Buyback-Programm aktiv" → buyback=0).
+7. **0 ist gültig NUR wenn**: Firma hat in der Periode dokumentiert nichts
+   gezahlt/zurückgekauft/etc. (z.B. "kein Buyback-Programm aktiv" → buyback=0).
    NICHT als Fallback bei Schwierigkeit.
 
 ANTWORT-FORMAT — ABSOLUT VERBINDLICH:
@@ -184,7 +184,7 @@ ersten 5 Zeichen deiner Antwort MUESSEN exakt 'WERT:' sein.
 
 Wenn du gerechnet hast (z.B. €2.519 Mio × 1.17 = $2.960 Mio), kommt das
 Ergebnis IN DIE WERT-ZEILE als BASE-UNITS-Zahl, nicht als Markdown.
-Den Rechenweg darfst du erst danach in BEGRUENDUNG erklaeren.
+Den Rechenweg darfst du erst danach in BEGRUENDUNG erklären.
 
 KORREKTES FORMAT (genau so):
 WERT: 2960000000
@@ -214,7 +214,7 @@ def extract_research_value(text: str) -> Decimal | None:
     """Extract WERT: from Claude research responses.
     Returns None wenn Claude sich nicht ans Format gehalten hat oder NICHT_GEFUNDEN
     geliefert hat — KEIN 0-Fallback (User-Anforderung: 0 nur wenn Approximation
-    tatsaechlich 0 ergibt, nicht als Default)."""
+    tatsächlich 0 ergibt, nicht als Default)."""
     match = re.search(
         r"WERT:\s*([+-]?[\d.,]+(?:\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMTK])\.?)?(?:\s*%)?|NICHT[_\s]?GEFUNDEN)",
         text,
@@ -256,7 +256,7 @@ def _fallback_extract_value(text: str) -> Decimal | None:
     if not text:
         return None
     # 1. Resultat/Ergebnis-Zeile
-    for label in (r"Resultat", r"Ergebnis", r"Endergebnis", r"Total", r"Schätzung", r"Schaetzung", r"Wert"):
+    for label in (r"Resultat", r"Ergebnis", r"Endergebnis", r"Total", r"Schätzung", r"Schätzung", r"Wert"):
         m = re.search(
             rf"{label}\s*[:=]\s*\*?\*?[\$€£]?\s*([+-]?[\d.,]+\s*(?:Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?)",
             text,
@@ -293,7 +293,7 @@ def _fallback_extract_value(text: str) -> Decimal | None:
 
 
 # Currency-Keys aus values/currency_keys importieren wuerde Zirkular machen —
-# duplizieren als Set fuer die unit-heuristik unten.
+# duplizieren als Set für die unit-heuristik unten.
 _LIKELY_CURRENCY_KEYS = frozenset({
     "net_income", "fcf", "sbc", "buyback_volume", "dividends",
     "net_debt", "market_cap",
@@ -303,7 +303,7 @@ _LIKELY_CURRENCY_KEYS = frozenset({
 def detect_unit_error(key: str, value: Decimal) -> bool:
     """True wenn ein Currency-Key suspicious klein ist (z.B. WERT: 1.45 USD
     statt 1450000000 USD — Claude hat vergessen die Approximation in
-    Base-Units zu liefern). Threshold: 1 Million als Untergrenze fuer
+    Base-Units zu liefern). Threshold: 1 Million als Untergrenze für
     sinnvolle Konzern-Kennzahlen. shares_outstanding ausgenommen weil
     legitim klein bei Bruchwerten."""
     if key not in _LIKELY_CURRENCY_KEYS:
@@ -344,7 +344,7 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
         "'Stock-based compensation' (Add-back im operativen CF). Immer POSITIV."
     ),
     "buyback_volume": (
-        "Aktienrückkaeufe in Cash, jaehrliches Volumen. Cash Flow Statement → "
+        "Aktienrückkaeufe in Cash, jährliches Volumen. Cash Flow Statement → "
         "'Repurchase of common stock' / 'Treasury stock purchases'. Immer POSITIV "
         "(Output-Sicht; Aggregatoren zeigen es teils negativ — Vorzeichen ignorieren)."
     ),
@@ -394,7 +394,7 @@ def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
     if fval == 0 and key in ("sbc", "buyback_volume", "dividends", "net_income", "fcf"):
         logger.info(
             "Claude value: %s=0 — kann legitim sein (Firma zahlt z.B. keine Dividende) "
-            "oder ein Default-Fallback. Source-Name pruefen.", key,
+            "oder ein Default-Fallback. Source-Name prüfen.", key,
         )
     return value
 
@@ -416,7 +416,7 @@ def research_value(
         marker = "e" if is_forward else ""
         period_str = f"Geschäftsjahr {period_year}{marker} (FY{period_year}{marker})"
     elif is_quarter and period_year:
-        period_str = f"{period_type} {period_year} (Quartal — kumulativ year-to-date wenn moeglich, sonst standalone)"
+        period_str = f"{period_type} {period_year} (Quartal — kumulativ year-to-date wenn möglich, sonst standalone)"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
 
@@ -436,7 +436,7 @@ def research_value(
             f"nicht 0 + Beschreibung in BEGRUENDUNG.\n"
             f"  4. Fallback-Approximation: FY{period_year - 1} Istwert ohne Growth — "
             f"als konkrete Zahl in WERT, nicht 0.\n"
-            f"WERT: 0 ist NUR gueltig wenn deine Approximation echt 0 ergibt "
+            f"WERT: 0 ist NUR gültig wenn deine Approximation echt 0 ergibt "
             f"(z.B. Firma hat dokumentiert kein Buyback-Programm). NIE 0 als Fallback."
         )
     elif is_quarter:
@@ -450,12 +450,12 @@ def research_value(
             f"  1. Exakter {period_type} {period_year}-Wert aus IR/Aggregator/10-Q.\n"
             f"  2. YTD-kumulativ wenn standalone-Q nicht findbar.\n"
             f"  3. Bei Versicherer/Bank/Sektor-Mismatch: AUSRECHNEN das Equivalent "
-            f"(z.B. 'Personnel Expenses × 0.5%' fuer SBC bei Versicherer, "
-            f"'Total Borrowings - Cash' fuer Net Debt). RECHNE die konkrete Zahl, "
+            f"(z.B. 'Personnel Expenses × 0.5%' für SBC bei Versicherer, "
+            f"'Total Borrowings - Cash' für Net Debt). RECHNE die konkrete Zahl, "
             f"liefere sie als WERT.\n"
             f"  4. Approximation: FY{period_year}-Wert × Quartal-Anteil "
-            f"(0.25 fuer einzelnes Quartal, 0.50/0.75 fuer YTD) — als Zahl in WERT.\n"
-            f"WERT: 0 nur wenn deine Approximation tatsaechlich 0 ergibt. NIE als Fallback."
+            f"(0.25 für einzelnes Quartal, 0.50/0.75 für YTD) — als Zahl in WERT.\n"
+            f"WERT: 0 nur wenn deine Approximation tatsächlich 0 ergibt. NIE als Fallback."
         )
     else:
         forward_block = ""
@@ -469,9 +469,9 @@ def research_value(
             f"  2. Approximation: FY{period_year - 1} Istwert (oder jüngstes 10-Q) "
             f"× plausibler Adjustment-Faktor — als konkrete Zahl in WERT. "
             f"KONFIDENZ: niedrig.\n"
-            f"  3. Equivalent-Konzept fuer Sektor-Mismatch (siehe System-Prompt) — "
+            f"  3. Equivalent-Konzept für Sektor-Mismatch (siehe System-Prompt) — "
             f"AUSRECHNEN, nicht 0.\n"
-            f"WERT: 0 nur wenn deine Approximation tatsaechlich 0 ergibt. NIE als Fallback."
+            f"WERT: 0 nur wenn deine Approximation tatsächlich 0 ergibt. NIE als Fallback."
         )
 
     user_prompt = (
@@ -479,8 +479,8 @@ def research_value(
         f"Gesuchte Kennzahl: {value_label}\n"
         f"Zeitraum: {period_str}\n\n"
         f"WAEHRUNG-PFLICHT: Liefere den Wert in {currency} (Original-Reporting-"
-        f"Waehrung der Firma). KEINE Umrechnung in USD/EUR/anderes Currency. "
-        f"Wenn die Quelle in einer anderen Waehrung berichtet, rechne KORREKT um "
+        f"Währung der Firma). KEINE Umrechnung in USD/EUR/anderes Currency. "
+        f"Wenn die Quelle in einer anderen Währung berichtet, rechne KORREKT um "
         f"in {currency} und nenne den verwendeten Kurs in BEGRUENDUNG.\n\n"
         f"Wichtig: Liefere AUSSCHLIESSLICH den Wert für {period_str}.{historical_constraint} "
         f"{not_found_clause}\n\n"
@@ -522,10 +522,10 @@ def research_value(
 
         # Retry-Stufe: Wenn Claude beim ersten Versuch keine Zahl liefert
         # (oder die Zahl Sanity-Check nicht besteht), zwingen wir ihn als
-        # Equity-Analyst zur Experten-Einschaetzung. Eine einzige Wiederholung.
+        # Equity-Analyst zur Experten-Einschätzung. Eine einzige Wiederholung.
         if value is None:
             logger.info("Web-Recherche %s/%s: erster Versuch lieferte keine valide Zahl — "
-                        "retry mit Experten-Einschaetzungs-Aufforderung (%s)",
+                        "retry mit Experten-Einschätzungs-Aufforderung (%s)",
                         ticker, value_key or "?", sanity_failed_reason or "extract=None")
             sanity_hint = ""
             if sanity_failed_reason:
@@ -538,18 +538,18 @@ def research_value(
             retry_prompt = (
                 f"Du hast eben keine valide numerische Antwort geliefert. Das ist "
                 f"nicht akzeptabel — du bist Senior Equity Analyst, du hast IMMER "
-                f"eine fundierte Einschaetzung.\n\n"
-                f"Gib JETZT eine plausible Schaetzung fuer {value_label} bei "
+                f"eine fundierte Einschätzung.\n\n"
+                f"Gib JETZT eine plausible Schätzung für {value_label} bei "
                 f"{company_name} ({ticker}) im Zeitraum {period_str} basierend auf "
-                f"deinem Wissen ueber:\n"
+                f"deinem Wissen über:\n"
                 f"  - Sektor-typische Werte (Margen, Wachstumsraten, "
                 f"Capital-Allocation-Quoten)\n"
-                f"  - Vergleichbare Firmen aehnlicher Groesse\n"
+                f"  - Vergleichbare Firmen ähnlicher Größe\n"
                 f"  - Historische Werte des Unternehmens\n"
                 f"  - Aktueller Markt-Konsens / News\n\n"
                 f"Liefere die Zahl in {currency} in vollen BASE-UNITS (z.B. "
-                f"1450000000 fuer 1,45 Mrd, NICHT 1.45 oder 1450). "
-                f"QUELLE = 'KI-Einschaetzung: <dein Schaetzweg in 1 Satz>'. "
+                f"1450000000 für 1,45 Mrd, NICHT 1.45 oder 1450). "
+                f"QUELLE = 'KI-Einschätzung: <dein Schätzweg in 1 Satz>'. "
                 f"KONFIDENZ: niedrig.\n"
                 f"NIEMALS 'NICHT_GEFUNDEN' — du bist Experte, gib eine Zahl."
                 f"{sanity_hint}"
@@ -568,7 +568,7 @@ def research_value(
                                    ticker, value_key, value)
                     value = None
             if value is not None:
-                content = content_retry  # nutze die Retry-Antwort fuer source/url
+                content = content_retry  # nutze die Retry-Antwort für source/url
                 logger.info("Web-Recherche %s/%s: retry erfolgreich, Wert=%s",
                             ticker, value_key or "?", value)
 
@@ -578,7 +578,7 @@ def research_value(
         source = source_match.group(1).strip() if source_match else "Claude-Recherche"
         url_match = re.search(r"QUELLE_URL:\s*(https?://\S+)", content)
         source_url = url_match.group(1).strip() if url_match else None
-        # source ohne Praefix zurueckgeben — Caller (Web-Guidance / Research-
+        # source ohne Praefix zurückgeben — Caller (Web-Guidance / Research-
         # Endpoint / Auto-Fallback) entscheidet das passende Praefix.
         return value, source, source_url, user_prompt, content
     except Exception as e:

@@ -392,10 +392,10 @@ def _process_one_key(
     actuals_existing = _query_for(False)
     forecast_existing = _query_for(True) if is_running_fy else None
 
-    # PDF-Werte sind authoritative — werden nie ueberschrieben.
+    # PDF-Werte sind authoritative — werden nie überschrieben.
     # Manual-Overrides bei FY actuals werden bei Refresh AUSDRUECKLICH
-    # ueberschrieben (User-Wahl: 'Werte berechnen' = neu berechnen, Manual war
-    # nur temporaer). Frontend zeigt "Manuell ueberschreiben"-Button am Cell-
+    # überschrieben (User-Wahl: 'Werte berechnen' = neu berechnen, Manual war
+    # nur temporaer). Frontend zeigt "Manuell überschreiben"-Button am Cell-
     # Tooltip damit User weiss dass Override fluechtig ist.
     if actuals_existing and actuals_existing.from_ir_pdf and actuals_existing.numeric_value is not None:
         updated.append(actuals_existing)
@@ -406,9 +406,9 @@ def _process_one_key(
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
-    # PDF-Guidance / Manual-Override fuer Forecast: primary numeric_value
+    # PDF-Guidance / Manual-Override für Forecast: primary numeric_value
     # bleibt unangetastet (User-Wahl/PDF respektieren). ABER: wir berechnen
-    # trotzdem Web+Q-Faktor parallel weiter, damit forecast_alternates fuer
+    # trotzdem Web+Q-Faktor parallel weiter, damit forecast_alternates für
     # das Drilldown-Tooltip aktuell bleibt. Erst NACH dem ESTIMATE-Block
     # wird entschieden ob primary geupdated wird.
     forecast_locked = bool(
@@ -484,7 +484,7 @@ def _process_one_key(
                     "error_reason": (
                         "Web-Recherche hat trotz Retry keine Zahl geliefert. "
                         "Claude konnte weder eine konkrete Quelle finden noch eine "
-                        "fundierte KI-Einschaetzung abgeben. Primaer wird der "
+                        "fundierte KI-Einschätzung abgeben. Primaer wird der "
                         "Q-Faktor-Proxy verwendet."
                     ),
                 },
@@ -559,7 +559,7 @@ def _process_one_key(
         target.fetched_at = datetime.now(timezone.utc)
         target.from_ir_pdf = False
         target.is_forecast = is_forecast_flag
-        # forecast_alternates nur ueberschreiben wenn dieser Run sie explizit
+        # forecast_alternates nur überschreiben wenn dieser Run sie explizit
         # berechnet hat (Estimate-Pfad). Sonst bleiben vorhandene Alternates
         # erhalten — Provider-Pfad darf den Drilldown-Tooltip nicht clobbern.
         if forecast_alternates is not None:
@@ -1028,9 +1028,9 @@ def explain_company_value(
     db: Session = Depends(get_db),
 ) -> dict:
     """Claude-Einordnung zu einem konkreten Finanzwert: ist der Wert normal/
-    auffaellig? Falls auffaellig, welche Gruende? Was bedeutet er fuer die
+    auffaellig? Falls auffaellig, welche Gruende? Was bedeutet er für die
     Capital-Allocation-Story?
-    Wird NICHT persistiert — nur on-demand fuer User-Drilldown."""
+    Wird NICHT persistiert — nur on-demand für User-Drilldown."""
     from app.config import settings
     from app.llm.claude import get_client, claude_limiter, _collect_text, WEB_SEARCH_TOOL
 
@@ -1040,7 +1040,7 @@ def explain_company_value(
     if value_key in CALCULATED_KEYS:
         raise HTTPException(400, "Berechnete Werte (Formeln) brauchen keine Claude-Einordnung")
     if period_type != "FY" or period_year is None:
-        raise HTTPException(400, "Einordnung nur fuer FY-Werte mit Jahresangabe")
+        raise HTTPException(400, "Einordnung nur für FY-Werte mit Jahresangabe")
 
     cv = (db.query(CompanyValue).filter(
         CompanyValue.company_id == company_id,
@@ -1068,11 +1068,11 @@ def explain_company_value(
     history_lines = "\n".join(
         f"  FY{r.period_year}: {float(r.numeric_value):,.0f} {r.currency or ''}"
         for r in reversed(historical)
-    ) or "  (keine historischen Werte verfuegbar)"
+    ) or "  (keine historischen Werte verfügbar)"
 
     cur = cv.currency or company.currency or ""
     prompt = (
-        f"Du bist Senior Equity Analyst. Schreibe eine kurze Einordnung (3-5 Saetze) "
+        f"Du bist Senior Equity Analyst. Schreibe eine kurze Einordnung (3-5 Sätze) "
         f"zu folgendem Finanzwert:\n\n"
         f"Unternehmen: {company.name} ({company.ticker})\n"
         f"Kennzahl: {vd.label_de} / {vd.label_en} ({value_key})\n"
@@ -1082,11 +1082,11 @@ def explain_company_value(
         f"Beantworte konkret:\n"
         f"1. Ist der FY{period_year}-Wert normal/erwartbar im historischen Trend?\n"
         f"2. Falls auffaellig (z.B. starker Anstieg/Rueckgang): welche Gruende? "
-        f"(Akquisition, One-Time-Charge, Marktveraenderung, Sonderausschuettung, "
+        f"(Akquisition, One-Time-Charge, Marktveränderung, Sonderausschüttung, "
         f"Restructuring, neuer Bilanzposten etc.)\n"
-        f"3. Was bedeutet der Wert fuer die langfristige Capital-Allocation-Story "
+        f"3. Was bedeutet der Wert für die langfristige Capital-Allocation-Story "
         f"des Unternehmens?\n\n"
-        f"Nutze web_search wenn noetig fuer aktuelle Begruendungen / News-Kontext. "
+        f"Nutze web_search wenn noetig für aktuelle Begründungen / News-Kontext. "
         f"Praezise und kurz, keine Floskeln. Auf Deutsch."
     )
     try:

@@ -121,7 +121,7 @@ def calculate_fy(
     net_buyback_yield = results.get("net_buyback_yield")
 
     # Einfache Hohn-Rendite = FCF Yield + NI Growth − SBC/MCap + ΔND/MCap
-    # Partial: summiere verfuegbare Komponenten, mind. eine muss da sein.
+    # Partial: summiere verfügbare Komponenten, mind. eine muss da sein.
     simple_parts = [
         ("+", fcf_yield),
         ("+", ni_growth),

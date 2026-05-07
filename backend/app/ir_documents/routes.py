@@ -108,7 +108,7 @@ def _post_extraction_web_fallback(
             logger.info("Web-fallback %s/%s/%s/%s: value rejected by sanity-range",
                         company.ticker, key, period_type, period_year)
             continue
-        # Sign-norm fuer ALWAYS_POSITIVE_KEYS (sbc/buyback/dividends/shares):
+        # Sign-norm für ALWAYS_POSITIVE_KEYS (sbc/buyback/dividends/shares):
         # Claude liefert manchmal negative Cash-Outflow-Werte (Cashflow-Konvention).
         from app.ir_documents.extraction import ALWAYS_POSITIVE_KEYS
         if key in ALWAYS_POSITIVE_KEYS and web_val < 0:
@@ -272,7 +272,7 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                     ))
 
         # Guidance-Werte als FY-Forecast-Rows mappen.
-        #  - Q-Berichte: Guidance gilt fuer FY der gleichen period_year (Q1 2026 → FY2026)
+        #  - Q-Berichte: Guidance gilt für FY der gleichen period_year (Q1 2026 → FY2026)
         #  - Annual Report: 'Outlook for next year' → FY = period_year + 1 (AR2025 → FY2026)
         guidance_target_fy: int | None = None
         if period_type in ("Q1", "Q2", "Q3", "Q4", "H1", "H2"):
@@ -354,8 +354,8 @@ def _persist_guidance_as_fy_forecast(
     """Schreibt Guidance-Werte aus einem Q-PDF als FY-Forecast-Rows.
 
     is_forecast=True, from_ir_pdf=True, source_name='Guidance from Q1 2026 (S.X)'.
-    Spaeterer Q-Upload ueberschreibt (gleiche Row), spaeterer AR-Upload
-    ueberschreibt mit Actuals (is_forecast=False).
+    Späterer Q-Upload überschreibt (gleiche Row), späterer AR-Upload
+    überschreibt mit Actuals (is_forecast=False).
     Manuelle Overrides werden nicht angefasst.
     """
     now = datetime.now(timezone.utc)
@@ -381,7 +381,7 @@ def _persist_guidance_as_fy_forecast(
         if existing and existing.manually_overridden:
             continue
         # Wenn ein NICHT-forecast Wert (Actuals aus AR) schon existiert, NICHT
-        # mit Guidance ueberschreiben — Actuals trumpfen Guidance.
+        # mit Guidance überschreiben — Actuals trumpfen Guidance.
         actuals_exists = (
             db.query(CompanyValue.id)
             .filter(

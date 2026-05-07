@@ -38,7 +38,7 @@ _HIGH_VALUE_PAGE_PATTERNS = re.compile(
     r"consolidated balance sheet|consolidated income statement|"
     r"consolidated statement of (financial position|cash flows?|comprehensive income|changes in equity|profit or loss)|"
     r"konzernbilanz|konzern-?gewinn- und verlustrechnung|konzern-?kapitalflussrechnung|"
-    r"konzern-?eigenkapitalveraenderungsrechnung|kapitalflussrechnung|gewinn- und verlustrechnung|"
+    r"konzern-?eigenkapitalveränderungsrechnung|kapitalflussrechnung|gewinn- und verlustrechnung|"
     r"cash flows from (operating|investing|financing) activities|"
     r"net cash (provided by|used in) (operating|investing|financing) activities|"
     r"share-based payment|stock-based compensation|equity-settled|"
@@ -47,7 +47,7 @@ _HIGH_VALUE_PAGE_PATTERNS = re.compile(
     r"marketable securities|short-?term investments|"
     r"shares outstanding|share capital|grundkapital|"
     r"net income( attributable| for the period)?|nettogewinn|"
-    r"dividends paid|dividenden(zahlung|ausschuettung)?|"
+    r"dividends paid|dividenden(zahlung|ausschüttung)?|"
     r"repurchase of (common|treasury) (stock|shares)|aktienrueckkauf|"
     r"^\s*note\s+\d+|^\s*nr\.\s+\d+\s+—"
     r")",
@@ -99,7 +99,7 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "(3) Notes-Abschnitt 'Share-based payments' / 'Anteilsbasierte Vergütung' / 'Note X: Share-based compensation' — dort steht meist 'Total share-based payment expense for the period: X'. "
      "(4) Personnel-Cost-Note → Aufschlüsselung enthält oft eine SBC-Zeile. "
      "WERT: immer POSITIV als Aufwandsbetrag (Vorzeichen ignorieren). "
-     "value=0 NUR wenn alle 4 Quellen leer sind — und dann reason muss sagen welche du geprueft hast (NIE value=null)."),
+     "value=0 NUR wenn alle 4 Quellen leer sind — und dann reason muss sagen welche du geprüft hast (NIE value=null)."),
     ("buyback_volume",
      "Aktienrückkäufe (Cash-Outflow für Treasury Share Purchases) für die Periode. "
      "Suchorte: (1) Cash Flow Statement → 'Repurchase of common stock' / 'Treasury stock purchases' / 'Acquisition of treasury shares' im Financing-Abschnitt. "
@@ -148,7 +148,7 @@ KERN-DISZIPLIN — bevor du value=null lieferst, MUSST du:
   Abschnitt suchen — IFRS gliedert anders als US-GAAP
 - Im 'reason'-Feld dokumentieren WO du gesucht hast und WARUM nichts da war
   (z.B. "geprüft: CF-Statement S.91, Equity Statement S.97, Notes 27 —
-  ueberall keine separate SBC-Zeile").
+  überall keine separate SBC-Zeile").
 - value=null ist OK wenn die Kennzahl wirklich nicht im PDF steht — der
   auto-web-fallback im Backend approximiert dann via Web-Recherche statt
   dass du Zahlen aus der Luft erfindest.
@@ -169,7 +169,7 @@ WICHTIGE REGELN:
 4. Pro gefundenem Wert: Seitenzahl + exaktes Quote-Snippet aus dem PDF.
 5. Bei Quartalsberichten: 'period_basis' angeben (Q1_YTD vs Q1_standalone vs H1).
 6. KEINE Schätzungen, keine Hochrechnungen. Nur was wirklich im PDF steht.
-7. Wenn Wert null: 'reason' MUSS konkret die geprueften Stellen nennen
+7. Wenn Wert null: 'reason' MUSS konkret die geprüften Stellen nennen
    (Auto-Web-Fallback approximiert dann via Web-Recherche).
 8. Vorzeichen-Regel: Net Income mit echtem Vorzeichen (Verluste negativ),
    Bilanz-Posten und Cash-Outflows (SBC, Buyback, Dividends) immer POSITIV
@@ -195,7 +195,7 @@ def _build_user_prompt(period_coverage: str, period_year: int, doc_type: str, co
     guidance_section = (
         f"""
 
-ZUSAETZLICH: Suche nach Management Guidance / Outlook fuer das gesamte
+ZUSAETZLICH: Suche nach Management Guidance / Outlook für das gesamte
 FY{guidance_target}. Typische Stellen:
 - 'Outlook'-/'Guidance'-/'Forecast'-Sektion (oft am Ende des Management Reports)
 - Earnings Release / Press Release zum Quartal
@@ -223,7 +223,7 @@ Pro Guidance-Key:
   "currency": ...,
   "page": ...,
   "quote": "<Originalzitat inkl. Range falls gegeben>",
-  "reason": null oder "Keine Guidance fuer diesen Wert im Bericht"
+  "reason": null oder "Keine Guidance für diesen Wert im Bericht"
 }}
 
 Wenn der Bericht KEINE Guidance enthaelt: setze "guidance_fy": {{}} (leeres Objekt).
@@ -249,7 +249,7 @@ Pro Key folgendes Schema:
   "page": <Seitennummer im PDF>,
   "quote": "<exaktes Zitat aus dem PDF>",
   "period_basis": "FY" | "Q1_YTD" | "Q1_standalone" | "H1" | ... ,
-  "reason": null wenn Wert gefunden, sonst Erklärung welche Stellen geprueft
+  "reason": null wenn Wert gefunden, sonst Erklärung welche Stellen geprüft
             wurden und warum nichts da war (Auto-Web-Fallback approximiert dann)
 }}{guidance_section}
 
@@ -257,7 +257,7 @@ PDF-DISZIPLIN: value=null ist ehrlich, wenn die Kennzahl wirklich nicht im
 hochgeladenen Dokument steht (z.B. Versicherer-Financial-Supplement ohne
 Cash Flow Statement). LIEFERE keine erfundenen Zahlen aus diesem PDF — der
 auto-web-fallback im Backend approximiert dann mit echter Web-Recherche.
-'reason' MUSS konkret sein (welche Seiten/Notes du geprueft hast).
+'reason' MUSS konkret sein (welche Seiten/Notes du geprüft hast).
 
 Beispiel für net_income wenn gefunden:
 "net_income": {{
@@ -276,7 +276,7 @@ Beispiel für sbc wenn nicht im Bericht ausgewiesen:
   "page": null,
   "quote": null,
   "period_basis": null,
-  "reason": "Geprueft: CF-Statement S.91, Equity Statement S.97, Notes 27 — keine separate SBC-Zeile gefunden"
+  "reason": "Geprüft: CF-Statement S.91, Equity Statement S.97, Notes 27 — keine separate SBC-Zeile gefunden"
 }}
 """
 
@@ -351,7 +351,7 @@ def _extract_pdf_text(pdf_path: Path, max_chars: int) -> str:
     kept_pages = [(i, t) for i, t, _ in pages if i in keep]
     chars_used = sum(len(t) + 12 for _, t in kept_pages)
 
-    # 4. Wenn high-value pages selbst schon ueber Budget — dann Score-prio
+    # 4. Wenn high-value pages selbst schon über Budget — dann Score-prio
     #    droppen (kleinste Scores zuerst) bis Budget passt.
     if chars_used > max_chars:
         scored = sorted(
@@ -424,7 +424,7 @@ def _build_pdf_content_blocks(
             "type": "text",
             "text": (
                 f"Text-Extraktion aus PDF ({len(pdf_bytes) // 1024 // 1024} MB, {page_count} Seiten — "
-                f"zu gross fuer Image-Modus). Seitenangaben aus '[Page N]'-Markern uebernehmen.\n\n"
+                f"zu gross für Image-Modus). Seitenangaben aus '[Page N]'-Markern übernehmen.\n\n"
                 f"{text}\n\n---\n\n{user_prompt}"
             ),
         },
@@ -531,20 +531,20 @@ def _build_retry_prompt(missing_keys: list[str], period_coverage: str, period_ye
         f'  "{k}": {{ ... }}    // {desc}'
         for k, desc in EXTRACTION_KEYS if k in set(missing_keys)
     )
-    return f"""Beim ersten Versuch wurden die folgenden Werte fuer
-{company_name} / {period_coverage} {period_year} mit value=null zurueckgegeben.
+    return f"""Beim ersten Versuch wurden die folgenden Werte für
+{company_name} / {period_coverage} {period_year} mit value=null zurückgegeben.
 
 Bitte gehe nochmal SYSTEMATISCH durch das gesamte PDF — nicht nur durch die
-gleiche Sektion wie eben. Fuer JEDEN dieser Keys gilt:
-- Cash Flow Statement geprueft? Falls nichts → weiter.
-- Statement of Changes in Equity (Eigenkapital-Veraenderungen) geprueft?
+gleiche Sektion wie eben. Für JEDEN dieser Keys gilt:
+- Cash Flow Statement geprüft? Falls nichts → weiter.
+- Statement of Changes in Equity (Eigenkapital-Veränderungen) geprüft?
 - ALLE Notes durchgehen (Inhaltsverzeichnis am Anfang nutzen).
 - Highlights / Five-Year-Summary / Management Report?
 - Vorgehen IFRS-spezifisch: typische DE/EU-Konzern-Berichte verstecken
   Items oft in Notes 'Personnel', 'Other liabilities', 'Equity'.
 
 Liefere wieder das gleiche JSON-Format. Nur Werte die du JETZT findest.
-Wenn weiterhin nichts da ist, im 'reason' KONKRET die geprueften Stellen
+Wenn weiterhin nichts da ist, im 'reason' KONKRET die geprüften Stellen
 nennen (z.B. "Note 27 S.193, Equity Statement S.197, CF Statement S.91 —
 keine separate SBC-Zeile, alles in 'Personnel costs' aggregiert").
 
@@ -561,7 +561,7 @@ Pro Key:
   "page": <Seitennummer>,
   "quote": "<exaktes Zitat>",
   "period_basis": "FY" | "Q1_YTD" | ... ,
-  "reason": null oder kurze Erklaerung wenn value=null
+  "reason": null oder kurze Erklärung wenn value=null
 }}
 """
 
