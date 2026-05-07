@@ -991,13 +991,58 @@ export function CompanyDashboardPage() {
                             const conv = convertCurrency(val, cur);
                             display = conv ?? val;
                           }
+                          const fxUnknownDual = d.is_currency && d.data_type === "NUMERIC"
+                            && cellCv?.currency != null && convertCurrency(val, cellCv.currency) === null;
                           const tier = colorTier(d.key, display);
                           const tierBg = tier ? TIER_BG[tier] : "";
+                          const isStammdaten = d.category === "STAMMDATEN";
+                          const showFyAsOf = isStammdaten && cellCv?.period_type === "FY" && cellCv?.period_year != null;
+                          const sourceDateMatch = cellCv?.source_name?.match(/(\d{2}\.\d{2}\.\d{4})/);
+                          const fyAsOfBadgeDual = showFyAsOf
+                            ? (sourceDateMatch?.[1]
+                                ?? (company.fiscal_year_end_day && company.fiscal_year_end_month
+                                    ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cellCv?.period_year}`
+                                    : `FY${cellCv?.period_year}`))
+                            : null;
                           return (
                             <td key={`${company.id}-${label}-${d.key}`}
-                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg}`}
-                              title={cellCv?.source_name ?? undefined}>
-                              <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg}`}>
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
+                                {fxUnknownDual && (
+                                  <span
+                                    title={`Wechselkurs ${cellCv?.currency} → ${displayCurrency} unbekannt, Wert bleibt in ${cellCv?.currency}`}
+                                    className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-800">
+                                    {cellCv?.currency}
+                                  </span>
+                                )}
+                                {fyAsOfBadgeDual && (
+                                  <span
+                                    title={`Stand FY${cellCv?.period_year} (${fyAsOfBadgeDual})`}
+                                    className="shrink-0 rounded bg-blue-50 px-1 py-0.5 text-[9px] font-medium text-blue-700">
+                                    {fyAsOfBadgeDual}
+                                  </span>
+                                )}
+                                {cellCv?.is_forecast && (
+                                  <span
+                                    title={cellCv.source_name ? `Schaetzung — ${cellCv.source_name}` : "Schaetzung (kein Ist-Wert verfuegbar)"}
+                                    className="shrink-0 rounded bg-violet-100 px-1 py-0.5 text-[9px] font-bold text-violet-700">
+                                    e
+                                  </span>
+                                )}
+                                {cellCv && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const rect = (e.target as HTMLElement).getBoundingClientRect();
+                                      const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id;
+                                      setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6 });
+                                    }}
+                                    className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground">
+                                    <Info className="h-3 w-3" />
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           );
                         });
