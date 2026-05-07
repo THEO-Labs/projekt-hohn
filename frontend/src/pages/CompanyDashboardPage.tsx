@@ -901,11 +901,12 @@ export function CompanyDashboardPage() {
                   const renderEstimateRow = (
                     label: "Q-Faktor (Proxy)" | "Web-Recherche",
                     vals: VariantValues,
-                    accent: string,
+                    rowAccent: string,
+                    stickyAccent: string,
                     isFirst: boolean,
                   ) => (
-                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t" : "border-b"} border-border/30 ${accent}`}>
-                      <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${accent}`}>
+                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t" : "border-b"} border-border/30 ${rowAccent}`}>
+                      <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${stickyAccent}`}>
                         <div className="flex items-center gap-2">
                           {isFirst ? (
                             <>
@@ -959,7 +960,6 @@ export function CompanyDashboardPage() {
                           const cellCv = cRows.find((r) => r.value_key === d.key) ?? null;
                           if (val == null) {
                             const isHohn = d.key === "hohn_return_simple" || d.key === "hohn_return_detailed";
-                            const isCalcMissing = d.source_type === "CALCULATED";
                             const isWebRow = label === "Web-Recherche";
                             let hohnMissing: string[] = [];
                             if (isHohn) {
@@ -971,33 +971,16 @@ export function CompanyDashboardPage() {
                             const tip = isHohn
                               ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}`
                               : isWebRow
-                              ? "Web-Recherche fehlte. Klick 'Werte berechnen' fuer einen erneuten Versuch."
+                              ? "Web-Recherche fehlte. Klick oben 'Werte berechnen' fuer einen erneuten Versuch."
                               : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
-                            const labelText = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlte" : "Wert nicht gefunden");
-                            const canResearch = !isHohn && !isCalcMissing && isWebRow;
-                            const researchKey = `${company.id}:${d.key}`;
-                            const isResearching = researching === researchKey;
+                            const labelText = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlte" : "—");
                             return (
                               <td key={`${company.id}-${label}-${d.key}`}
                                 className="border-r border-border/40 px-3 py-2"
                                 title={tip}>
                                 <div className="flex items-center gap-1.5">
-                                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
-                                  <span className="text-xs text-amber-700">{labelText}</span>
-                                  {canResearch && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleResearch(company.id, company.name, d.key, d.label_en, d.data_type);
-                                      }}
-                                      disabled={isResearching || researching !== null}
-                                      className="ml-0.5 inline-flex items-center gap-0.5 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                                      title="Web-Recherche fuer diesen Wert nochmal versuchen"
-                                    >
-                                      {isResearching ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
-                                      {isResearching ? "…" : "Recherchieren"}
-                                    </button>
-                                  )}
+                                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600/70" />
+                                  <span className="text-xs italic text-muted-foreground">{labelText}</span>
                                 </div>
                               </td>
                             );
@@ -1022,8 +1005,8 @@ export function CompanyDashboardPage() {
                     </tr>
                   );
                   return [
-                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", true),
-                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", false),
+                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", "bg-amber-50", true),
+                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", "bg-violet-50", false),
                   ];
                 }
                 return [(
