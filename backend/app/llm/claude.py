@@ -546,10 +546,10 @@ def research_value(
             sanity_hint = ""
             if sanity_failed_reason:
                 sanity_hint = (
-                    f"\n\nVorsicht: dein letzter Wert wurde verworfen weil er "
-                    f"verdaechtig klein war — wahrscheinlich hast du Mio/Mrd "
-                    f"vergessen. Gib die Zahl in BASE-UNITS: 1.45 Mrd USD = "
-                    f"1450000000, NICHT 1.45 oder 1450."
+                    "\n\nVorsicht: dein letzter Wert wurde verworfen weil er "
+                    "verdaechtig klein war — wahrscheinlich hast du Mio/Mrd "
+                    "vergessen. Gib die Zahl in BASE-UNITS: 1.45 Mrd USD = "
+                    "1450000000, NICHT 1.45 oder 1450."
                 )
             retry_prompt = (
                 f"Du hast eben keine valide numerische Antwort geliefert. Das ist "

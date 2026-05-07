@@ -157,7 +157,7 @@ def _post_extraction_web_fallback(
         if existing and existing.manually_overridden:
             continue
         original_reason = (info.get("reason") or "")[:80]
-        new_source = f"PDF leer ({original_reason}) → Claude-Recherche: {source}" if source else f"PDF leer → Claude-Recherche"
+        new_source = f"PDF leer ({original_reason}) → Claude-Recherche: {source}" if source else "PDF leer → Claude-Recherche"
         currency = company.currency if key in CURRENCY_KEYS else None
         now = datetime.now(timezone.utc)
         if existing:

@@ -10,7 +10,5 @@ export type Portfolio = {
 export const listPortfolios = () => api<Portfolio[]>("/api/portfolios");
 export const createPortfolio = (name: string) =>
   api<Portfolio>("/api/portfolios", { method: "POST", body: JSON.stringify({ name }) });
-export const updatePortfolio = (id: string, name: string) =>
-  api<Portfolio>(`/api/portfolios/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
 export const deletePortfolio = (id: string) =>
   api<void>(`/api/portfolios/${id}`, { method: "DELETE" });

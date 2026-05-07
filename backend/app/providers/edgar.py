@@ -128,7 +128,7 @@ class EdgarProvider:
         end-date is within ±5 days of that fiscal-year-end (handles Sept-FY
         like Apple where startswith(year) alone could pick interim periods).
         Returns (value, currency, accession-number)."""
-        from datetime import date, timedelta
+        from datetime import date
         us_gaap = facts.get("facts", {}).get("us-gaap", {})
         target_end: date | None = None
         if fy_end_month and fy_end_day:

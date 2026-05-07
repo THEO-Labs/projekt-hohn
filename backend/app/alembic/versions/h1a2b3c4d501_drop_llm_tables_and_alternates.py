@@ -9,7 +9,6 @@ Revises: g0a1b2c3d401
 Create Date: 2026-05-07 12:00:00.000000
 """
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = 'h1a2b3c4d501'

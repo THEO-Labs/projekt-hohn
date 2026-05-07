@@ -85,17 +85,6 @@ export type RefreshStatus = {
 export const getRefreshStatus = (companyId: string) =>
   api<RefreshStatus>(`/api/companies/${companyId}/refresh-status`);
 
-export const calculateValues = (
-  companyId: string,
-  periodType?: string,
-  periodYear?: number,
-) => {
-  const params = new URLSearchParams();
-  if (periodType) params.set("period_type", periodType);
-  if (periodYear != null) params.set("period_year", String(periodYear));
-  return api<CompanyValue[]>(`/api/companies/${companyId}/values/calculate?${params}`, { method: "POST" });
-};
-
 export type FyAvailability = {
   fy_years_with_data: number[];
   keys_per_year: Record<string, string[]>;
@@ -147,26 +136,6 @@ export const fetchHistoricalStammdaten = (companyId: string, periodYear: number)
     { method: "POST" }
   );
 
-export type ResearchResult = {
-  value: string | null;
-  source_name: string | null;
-  source_url: string | null;
-  value_found: boolean;
-};
-
-export const researchValue = (
-  companyId: string,
-  valueKey: string,
-  periodType: string = "FY",
-  periodYear?: number,
-) => {
-  const params = new URLSearchParams();
-  params.set("period_type", periodType);
-  if (periodYear) params.set("period_year", String(periodYear));
-  return api<ResearchResult>(`/api/companies/${companyId}/values/${valueKey}/research?${params}`, {
-    method: "POST",
-  });
-};
 
 export const explainValue = (
   companyId: string,
