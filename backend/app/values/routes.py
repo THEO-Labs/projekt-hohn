@@ -411,10 +411,13 @@ def _process_one_key(
         updated.append(forecast_existing)
         return False
 
-    # Universelle Fallback-Kette pro Cell:
-    #   1. Provider-Chain (EDGAR/Yahoo) — schnellste Quelle wenn US oder Stammdaten
-    #   2. Web-Recherche (Claude + web_search) — fuer alle nicht-stammdaten Keys
-    #   3. Q-Faktor-Estimate / FY-Fallback — nur fuer laufendes FY + ESTIMABLE_KEYS
+    # Fallback-Kette pro Cell:
+    #   1. Provider-Chain (EDGAR/Yahoo) — schnell wenn US oder Stammdaten
+    #   2. Estimate-Mode (laufendes FY + ESTIMABLE): BEIDE Methoden parallel
+    #      rechnen — Web-Recherche und Q-Faktor-Proxy. Primary = Web (mit Q-Faktor
+    #      Fallback wenn Web leer), zweite Methode wandert in forecast_alternates.
+    #   3. Sonst: Web-Recherche als universeller Fallback fuer FY-Werte.
+    forecast_alternates: list[dict] | None = None
     if is_stammdaten or is_us_company(company):
         result = _try_providers(
             ticker, key, payload,
@@ -422,15 +425,47 @@ def _process_one_key(
             getattr(company, "fiscal_year_end_day", None),
         )
 
+    if result is None and is_running_fy and key in ESTIMABLE_KEYS:
+        web_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
+        proxy_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
+
+        def _to_alt(r, method: str) -> dict:
+            if r is not None and isinstance(r.value, Decimal):
+                return {
+                    "method": method,
+                    "value": str(r.value),
+                    "currency": r.currency,
+                    "source": r.source_name,
+                }
+            return {
+                "method": method,
+                "value": None,
+                "currency": None,
+                "source": None,
+                "error_reason": (
+                    "Claude-Recherche lieferte keinen Wert."
+                    if method == "web_guidance"
+                    else "Q-Faktor-Proxy nicht moeglich (z.B. fehlende Q-Daten)."
+                ),
+            }
+
+        if web_result is not None:
+            result = web_result
+            forecast_alternates = [_to_alt(proxy_result, "q_factor_proxy")]
+        elif proxy_result is not None:
+            result = proxy_result
+            forecast_alternates = [_to_alt(web_result, "web_guidance")]
+        else:
+            forecast_alternates = [
+                _to_alt(web_result, "web_guidance"),
+                _to_alt(proxy_result, "q_factor_proxy"),
+            ]
+
     if result is None and not is_stammdaten:
-        # Web-Recherche fuer FY-Werte (Forward = Guidance, Historisch = Aggregator).
+        # Universeller Fallback fuer historische FY-Werte (z.B. PDF leer, Non-US).
         target_fy = effective_period_year if effective_period_year is not None else 0
         if target_fy > 0:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
-
-    if result is None and is_running_fy and key in ESTIMABLE_KEYS:
-        # Letzte Stufe fuer laufendes FY: Q-Faktor-Proxy oder FY-Fallback.
-        result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
 
     if result is None:
         return False
@@ -481,6 +516,7 @@ def _process_one_key(
         target.fetched_at = datetime.now(timezone.utc)
         target.from_ir_pdf = False
         target.is_forecast = is_forecast_flag
+        target.forecast_alternates = forecast_alternates
 
     try:
         if existing:
@@ -501,6 +537,7 @@ def _process_one_key(
             source_link=result.source_link,
             fetched_at=datetime.now(timezone.utc),
             is_forecast=is_forecast_flag,
+            forecast_alternates=forecast_alternates,
         )
         try:
             with db.begin_nested():

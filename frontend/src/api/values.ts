@@ -13,6 +13,14 @@ export type ValueDefinition = {
   is_currency: boolean;
 };
 
+export type ForecastAlternate = {
+  method: "web_guidance" | "q_factor_proxy" | string;
+  value: string | null;
+  currency: string | null;
+  source: string | null;
+  error_reason?: string;
+};
+
 export type CompanyValue = {
   id: string;
   company_id: string;
@@ -27,6 +35,7 @@ export type CompanyValue = {
   source_link: string | null;
   fetched_at: string | null;
   manually_overridden: boolean;
+  forecast_alternates: ForecastAlternate[] | null;
 };
 
 export const getValueDefinitions = () =>

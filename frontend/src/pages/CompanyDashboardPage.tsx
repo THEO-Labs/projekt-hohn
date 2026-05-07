@@ -182,6 +182,96 @@ const TIER_BG: Record<ColorTier, string> = {
 
 const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"]);
 
+type VariantValues = Map<string, number | null>;
+
+function _toNum(n: number | string | null | undefined): number | null {
+  if (n == null) return null;
+  return typeof n === "string" ? parseFloat(n) : n;
+}
+
+function _getFaktorValue(cv: CompanyValue): number | null {
+  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
+  const isProxyPrimary = (cv.source_name || "").includes("Proxy");
+  if (isProxyPrimary) return _toNum(cv.numeric_value);
+  const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+  return alt?.value != null ? parseFloat(alt.value) : null;
+}
+
+function _getWebValue(cv: CompanyValue): number | null {
+  if (cv.manually_overridden || !cv.is_forecast) return _toNum(cv.numeric_value);
+  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
+  if (isWebPrimary) return _toNum(cv.numeric_value);
+  const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
+  return alt?.value != null ? parseFloat(alt.value) : null;
+}
+
+function _safeYield(v: number | null, mcap: number | null): number | null {
+  if (v == null || mcap == null || mcap === 0) return null;
+  return (v / mcap) * 100;
+}
+
+function buildVariantValues(
+  rows: CompanyValue[],
+  prevRows: CompanyValue[],
+  variant: "faktor" | "web",
+): VariantValues {
+  const pick = variant === "faktor" ? _getFaktorValue : _getWebValue;
+  const raw = new Map<string, number | null>();
+  for (const r of rows) raw.set(r.value_key, pick(r));
+  const prev = new Map<string, number | null>();
+  for (const r of prevRows) prev.set(r.value_key, _toNum(r.numeric_value));
+
+  const fcf = raw.get("fcf") ?? null;
+  const sbc = raw.get("sbc") ?? null;
+  const buyback = raw.get("buyback_volume") ?? null;
+  const dividends = raw.get("dividends") ?? null;
+  const netIncome = raw.get("net_income") ?? null;
+  const netDebt = raw.get("net_debt") ?? null;
+  const marketCap = raw.get("market_cap") ?? null;
+  const niPrev = prev.get("net_income") ?? null;
+  const ndPrev = prev.get("net_debt") ?? null;
+
+  const fcfYield = _safeYield(fcf, marketCap);
+  const sbcYield = _safeYield(sbc, marketCap);
+  const divYield = _safeYield(dividends, marketCap);
+  const buybackYield = _safeYield(buyback, marketCap);
+  const netBuyback = (buyback != null && sbc != null) ? buyback - sbc : null;
+  const netBuybackYield = _safeYield(netBuyback, marketCap);
+
+  let niGrowth: number | null = null;
+  if (netIncome != null && niPrev != null && niPrev !== 0) {
+    niGrowth = ((netIncome - niPrev) / Math.abs(niPrev)) * 100;
+  }
+  let ndChange: number | null = null;
+  let ndChangePct: number | null = null;
+  if (netDebt != null && ndPrev != null) {
+    ndChange = ndPrev - netDebt;
+    ndChangePct = _safeYield(ndChange, marketCap);
+  }
+
+  const sumIfAllPresent = (parts: (number | null)[]): number | null => {
+    if (parts.some((p) => p == null)) return null;
+    return (parts as number[]).reduce((a, b) => a + b, 0);
+  };
+  const hohnSimple = sumIfAllPresent([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
+  const hohnDetailed = sumIfAllPresent([divYield, niGrowth, netBuybackYield, ndChangePct]);
+
+  return new Map<string, number | null>([
+    ["fcf", fcf], ["sbc", sbc], ["buyback_volume", buyback], ["dividends", dividends],
+    ["net_income", netIncome], ["net_debt", netDebt],
+    ["market_cap", marketCap], ["shares_outstanding", raw.get("shares_outstanding") ?? null],
+    ["stock_price", raw.get("stock_price") ?? null], ["market_cap_calc", raw.get("market_cap_calc") ?? null],
+    ["fcf_yield", fcfYield], ["sbc_yield", sbcYield], ["dividend_yield", divYield],
+    ["buyback_yield", buybackYield], ["net_buyback", netBuyback], ["net_buyback_yield", netBuybackYield],
+    ["ni_growth", niGrowth], ["net_debt_change", ndChange], ["net_debt_change_pct", ndChangePct],
+    ["hohn_return_simple", hohnSimple], ["hohn_return_detailed", hohnDetailed],
+  ]);
+}
+
+function hasAnyAlternate(rows: CompanyValue[]): boolean {
+  return rows.some((r) => r.is_forecast && r.forecast_alternates && r.forecast_alternates.length > 0);
+}
+
 function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
   if (!av || periodYear === undefined) return false;
   if (periodYear >= new Date().getFullYear()) return false;
@@ -801,6 +891,141 @@ export function CompanyDashboardPage() {
             </thead>
             <tbody>
               {companies.flatMap((company) => {
+                const cRows = valuesMap.get(company.id) ?? [];
+                const cPrev = prevYearValuesMap.get(company.id) ?? [];
+                const showDual = isEstimateMode && hasAnyAlternate(cRows);
+                if (showDual) {
+                  const faktor = buildVariantValues(cRows, cPrev, "faktor");
+                  const web = buildVariantValues(cRows, cPrev, "web");
+                  const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
+                  const renderEstimateRow = (
+                    label: "Q-Faktor (Proxy)" | "Web-Recherche",
+                    vals: VariantValues,
+                    accent: string,
+                    isFirst: boolean,
+                  ) => (
+                    <tr key={`${company.id}-${label}`} className={`${isFirst ? "border-t" : "border-b"} border-border/30 ${accent}`}>
+                      <td className={`sticky left-0 z-10 whitespace-nowrap border-r px-3 py-2 ${accent}`}>
+                        <div className="flex items-center gap-2">
+                          {isFirst ? (
+                            <>
+                              <span className="font-medium text-foreground">{company.name}</span>
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>{label}</span>
+                              <button
+                                onClick={() => handleRefreshCompany(company)}
+                                disabled={isRunningThis}
+                                title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
+                                className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
+                                {isRunningThis ? "Berechnet…" : "Werte berechnen"}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-muted-foreground/50">↳</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${label === "Q-Faktor (Proxy)" ? "bg-amber-100 text-amber-800" : "bg-violet-100 text-violet-800"}`}>{label}</span>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                      {grouped.flatMap((g) => {
+                        if (g.defs.length === 0) {
+                          return [<td key={`${company.id}-${label}-${g.category}-empty`} className="border-r border-border/40 px-2 py-2 text-center text-muted-foreground/30">—</td>];
+                        }
+                        return g.defs.map((d) => {
+                          if (d.isPrevYear) {
+                            const baseKey = (d as { basedOnKey?: string }).basedOnKey;
+                            const prevCv = baseKey ? cPrev.find((v) => v.value_key === baseKey) : undefined;
+                            const prevNum = _toNum(prevCv?.numeric_value ?? null);
+                            const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
+                            const prevDisplay = shouldConvert ? (convertCurrency(prevNum, prevCv?.currency ?? null) ?? prevNum) : prevNum;
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`} className="whitespace-nowrap border-r border-border/40 bg-muted/20 px-3 py-2 tabular text-muted-foreground">
+                                <span className="font-mono text-sm italic">{prevNum == null ? "—" : formatValue(prevDisplay, d.unit, displayCurrency)}</span>
+                              </td>
+                            );
+                          }
+                          const av = availabilityMap.get(company.id);
+                          if (HOHN_LOCKED_KEYS.has(d.key) && period.value === "FY" && isHohnLocked(av, period.year)) {
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`} className="border-r border-border/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
+                                <div className="flex items-center gap-1"><Lock className="h-3 w-3" /> Locked</div>
+                              </td>
+                            );
+                          }
+                          const val = vals.get(d.key) ?? null;
+                          const cellCv = cRows.find((r) => r.value_key === d.key) ?? null;
+                          if (val == null) {
+                            const isHohn = d.key === "hohn_return_simple" || d.key === "hohn_return_detailed";
+                            const isCalcMissing = d.source_type === "CALCULATED";
+                            const isWebRow = label === "Web-Recherche";
+                            let hohnMissing: string[] = [];
+                            if (isHohn) {
+                              const reqKeys = d.key === "hohn_return_simple"
+                                ? ["fcf_yield", "ni_growth", "sbc_yield", "net_debt_change_pct"]
+                                : ["dividend_yield", "ni_growth", "net_buyback_yield", "net_debt_change_pct"];
+                              hohnMissing = reqKeys.filter((k) => vals.get(k) == null);
+                            }
+                            const tip = isHohn
+                              ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${hohnMissing.join(", ")}`
+                              : isWebRow
+                              ? "Web-Recherche fehlte. Klick 'Werte berechnen' fuer einen erneuten Versuch."
+                              : "Q-Faktor nicht moeglich (z.B. fehlende Q-Daten oder Saisonalitaets-Gate).";
+                            const labelText = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlte" : "Wert nicht gefunden");
+                            const canResearch = !isHohn && !isCalcMissing && isWebRow;
+                            const researchKey = `${company.id}:${d.key}`;
+                            const isResearching = researching === researchKey;
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`}
+                                className="border-r border-border/40 px-3 py-2"
+                                title={tip}>
+                                <div className="flex items-center gap-1.5">
+                                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                                  <span className="text-xs text-amber-700">{labelText}</span>
+                                  {canResearch && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleResearch(company.id, company.name, d.key, d.label_en, d.data_type);
+                                      }}
+                                      disabled={isResearching || researching !== null}
+                                      className="ml-0.5 inline-flex items-center gap-0.5 rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      title="Web-Recherche fuer diesen Wert nochmal versuchen"
+                                    >
+                                      {isResearching ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+                                      {isResearching ? "…" : "Recherchieren"}
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          }
+                          let display: number | null = val;
+                          if (d.is_currency && d.data_type === "NUMERIC") {
+                            const cur = cellCv?.currency ?? null;
+                            const conv = convertCurrency(val, cur);
+                            display = conv ?? val;
+                          }
+                          const tier = colorTier(d.key, display);
+                          const tierBg = tier ? TIER_BG[tier] : "";
+                          return (
+                            <td key={`${company.id}-${label}-${d.key}`}
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg}`}
+                              title={cellCv?.source_name ?? undefined}>
+                              <span className="font-mono text-sm">{formatValue(display, d.unit, displayCurrency)}</span>
+                            </td>
+                          );
+                        });
+                      })}
+                    </tr>
+                  );
+                  return [
+                    renderEstimateRow("Q-Faktor (Proxy)", faktor, "bg-amber-50/30", true),
+                    renderEstimateRow("Web-Recherche", web, "bg-violet-50/30", false),
+                  ];
+                }
                 return [(
                 <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">
                   <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-card px-3 py-2 font-medium text-foreground">
@@ -980,7 +1205,7 @@ export function CompanyDashboardPage() {
                         : undefined;
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "cursor-cell hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}`}
                           title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel)" : sourceTooltip)}
                           onDoubleClick={isCalculated ? undefined : (e) => {
                             e.stopPropagation();
