@@ -1858,6 +1858,9 @@ export function CompanyDashboardPage() {
                     </section>
                   );
                 })()}
+                {/* Bottom-padding fuer scroll-area damit letzte Section
+                    nicht direkt am Border klebt */}
+                <div className="h-4 shrink-0" />
                 </div>
               </div>
             </>,

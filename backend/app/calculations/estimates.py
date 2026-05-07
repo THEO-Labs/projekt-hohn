@@ -264,13 +264,18 @@ def compute_estimate(
     if pair is None:
         # Kein gemeinsames Quartal → FY-Fallback wenn möglich.
         if prev_fy_val is not None:
-            # Diagnose: welche Q-Reports fehlen genau?
+            # Diagnose: welche Quartale haben den Wert (key-spezifisch).
+            # Wichtig: Q-Report kann hochgeladen sein aber den Key nicht
+            # ausweisen (z.B. Adidas berichtet FCF nur jaehrlich, nicht in
+            # Q1/Q2/Q3). Daher wir reden von "Quartale mit <key>", nicht
+            # generisch "Q-Reports".
             target_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, target_fy_year) is not None]
             prev_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, prev_fy) is not None]
             missing = (
-                f"FY{target_fy_year} hat {target_qs or 'keine'} Q-Reports, "
-                f"FY{prev_fy} hat {prev_qs or 'keine'}. "
-                "Faktor-Methode braucht das gleiche Quartal in BEIDEN Jahren."
+                f"FY{target_fy_year} hat {key} in {target_qs or 'keinem Quartal'}, "
+                f"FY{prev_fy} hat {key} in {prev_qs or 'keinem Quartal'}. "
+                f"Manche Firmen berichten {key} nur jaehrlich, nicht pro Quartal. "
+                f"Faktor-Methode braucht den Wert im gleichen Quartal beider Jahre."
             )
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
