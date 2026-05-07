@@ -392,11 +392,12 @@ def _process_one_key(
     actuals_existing = _query_for(False)
     forecast_existing = _query_for(True) if is_running_fy else None
 
-    # Actuals trumpfen alles wenn manual oder PDF.
-    if actuals_existing and (
-        actuals_existing.manually_overridden
-        or (actuals_existing.from_ir_pdf and actuals_existing.numeric_value is not None)
-    ):
+    # PDF-Werte sind authoritative — werden nie ueberschrieben.
+    # Manual-Overrides bei FY actuals werden bei Refresh AUSDRUECKLICH
+    # ueberschrieben (User-Wahl: 'Werte berechnen' = neu berechnen, Manual war
+    # nur temporaer). Frontend zeigt "Manuell ueberschreiben"-Button am Cell-
+    # Tooltip damit User weiss dass Override fluechtig ist.
+    if actuals_existing and actuals_existing.from_ir_pdf and actuals_existing.numeric_value is not None:
         updated.append(actuals_existing)
         return False
 
@@ -1015,6 +1016,92 @@ def research_company_value(
         "source_url": research_url,
         "value_found": True,
     }
+
+
+@values_router.post("/{company_id}/values/{value_key}/explain")
+def explain_company_value(
+    company_id: UUID,
+    value_key: str,
+    period_type: str = Query(default="FY"),
+    period_year: int | None = Query(default=None),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Claude-Einordnung zu einem konkreten Finanzwert: ist der Wert normal/
+    auffaellig? Falls auffaellig, welche Gruende? Was bedeutet er fuer die
+    Capital-Allocation-Story?
+    Wird NICHT persistiert — nur on-demand fuer User-Drilldown."""
+    from app.config import settings
+    from app.llm.claude import get_client, claude_limiter, _collect_text, WEB_SEARCH_TOOL
+
+    company = _get_owned_company(db, user, company_id)
+    if not settings.anthropic_api_key:
+        raise HTTPException(503, "Claude-API nicht konfiguriert")
+    if value_key in CALCULATED_KEYS:
+        raise HTTPException(400, "Berechnete Werte (Formeln) brauchen keine Claude-Einordnung")
+    if period_type != "FY" or period_year is None:
+        raise HTTPException(400, "Einordnung nur fuer FY-Werte mit Jahresangabe")
+
+    cv = (db.query(CompanyValue).filter(
+        CompanyValue.company_id == company_id,
+        CompanyValue.value_key == value_key,
+        CompanyValue.period_type == "FY",
+        CompanyValue.period_year == period_year,
+        CompanyValue.is_forecast.is_(False),
+    ).one_or_none())
+    if cv is None or cv.numeric_value is None:
+        raise HTTPException(404, "Wert nicht vorhanden")
+    vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
+    if vd is None:
+        raise HTTPException(404, "Unbekannter Wert")
+
+    # Historische Werte (5 Jahre) als Kontext
+    historical = (db.query(CompanyValue).filter(
+        CompanyValue.company_id == company_id,
+        CompanyValue.value_key == value_key,
+        CompanyValue.period_type == "FY",
+        CompanyValue.period_year < period_year,
+        CompanyValue.is_forecast.is_(False),
+        CompanyValue.numeric_value.isnot(None),
+    ).order_by(CompanyValue.period_year.desc()).limit(5).all())
+
+    history_lines = "\n".join(
+        f"  FY{r.period_year}: {float(r.numeric_value):,.0f} {r.currency or ''}"
+        for r in reversed(historical)
+    ) or "  (keine historischen Werte verfuegbar)"
+
+    cur = cv.currency or company.currency or ""
+    prompt = (
+        f"Du bist Senior Equity Analyst. Schreibe eine kurze Einordnung (3-5 Saetze) "
+        f"zu folgendem Finanzwert:\n\n"
+        f"Unternehmen: {company.name} ({company.ticker})\n"
+        f"Kennzahl: {vd.label_de} / {vd.label_en} ({value_key})\n"
+        f"Zeitraum: FY{period_year}\n"
+        f"Wert: {float(cv.numeric_value):,.0f} {cur}\n\n"
+        f"Historische Werte (Vergleich):\n{history_lines}\n\n"
+        f"Beantworte konkret:\n"
+        f"1. Ist der FY{period_year}-Wert normal/erwartbar im historischen Trend?\n"
+        f"2. Falls auffaellig (z.B. starker Anstieg/Rueckgang): welche Gruende? "
+        f"(Akquisition, One-Time-Charge, Marktveraenderung, Sonderausschuettung, "
+        f"Restructuring, neuer Bilanzposten etc.)\n"
+        f"3. Was bedeutet der Wert fuer die langfristige Capital-Allocation-Story "
+        f"des Unternehmens?\n\n"
+        f"Nutze web_search wenn noetig fuer aktuelle Begruendungen / News-Kontext. "
+        f"Praezise und kurz, keine Floskeln. Auf Deutsch."
+    )
+    try:
+        client = get_client()
+        response = claude_limiter.call(lambda: client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            tools=[WEB_SEARCH_TOOL],
+            messages=[{"role": "user", "content": prompt}],
+        ))
+        text = _collect_text(response)
+        return {"explanation": text or "(Keine Antwort von Claude erhalten)"}
+    except Exception as e:
+        logger.warning("Explain-call failed for %s/%s/%s: %s", company.ticker, value_key, period_year, e)
+        raise HTTPException(503, f"Claude-Einordnung fehlgeschlagen: {str(e)[:200]}")
 
 
 @values_router.post("/recalc-all-fy")

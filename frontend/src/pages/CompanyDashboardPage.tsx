@@ -17,6 +17,7 @@ import {
   refreshValues,
   overrideValue,
   researchValue,
+  explainValue,
   fetchHistoricalStammdaten,
   type ValueDefinition,
   type CompanyValue,
@@ -329,6 +330,10 @@ export function CompanyDashboardPage() {
   const [isLoadingPeriod, setIsLoadingPeriod] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
+  const [explainResult, setExplainResult] = useState<{ key: string; companyId: string; text: string } | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [tooltipEdit, setTooltipEdit] = useState<{ key: string; companyId: string; value: string } | null>(null);
+  const [tooltipEditSaving, setTooltipEditSaving] = useState(false);
   const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [notFound, setNotFound] = useState<Set<string>>(new Set());
@@ -1678,7 +1683,7 @@ export function CompanyDashboardPage() {
                 </section>
 
                 {/* Section: Metadaten */}
-                <section className="mt-3 mb-4 px-4">
+                <section className="mt-3 px-4">
                   <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Metadaten</h4>
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[11px]">
                     <dt className="text-muted-foreground">Wert per</dt>
@@ -1693,6 +1698,129 @@ export function CompanyDashboardPage() {
                     )}
                   </dl>
                 </section>
+
+                {/* Section: Aktionen — nur fuer Raw-Data in abgeschlossenen FY */}
+                {(() => {
+                  const isRawDataFy = (
+                    cv.is_forecast === false
+                    && cv.period_type === "FY"
+                    && cv.period_year != null
+                    && def.source_type !== "CALCULATED"
+                    && def.source_type !== "QUALITATIVE"
+                    && cv.numeric_value != null
+                  );
+                  if (!isRawDataFy) return null;
+                  const isExplainHere = explainResult?.key === tooltip.key && explainResult?.companyId === tooltip.companyId;
+                  const isEditHere = tooltipEdit?.key === tooltip.key && tooltipEdit?.companyId === tooltip.companyId;
+
+                  const handleExplain = async () => {
+                    if (explainLoading) return;
+                    setExplainLoading(true);
+                    setExplainResult(null);
+                    try {
+                      const res = await explainValue(tooltip.companyId, tooltip.key, "FY", cv.period_year ?? undefined);
+                      setExplainResult({ key: tooltip.key, companyId: tooltip.companyId, text: res.explanation });
+                    } catch (e) {
+                      const detail = (e as { message?: string })?.message;
+                      toast.error(detail || "Einordnung fehlgeschlagen");
+                    } finally {
+                      setExplainLoading(false);
+                    }
+                  };
+
+                  const handleStartEdit = () => {
+                    const cur = cv.numeric_value != null ? String(cv.numeric_value) : "";
+                    setTooltipEdit({ key: tooltip.key, companyId: tooltip.companyId, value: cur });
+                  };
+
+                  const handleSaveEdit = async () => {
+                    if (!tooltipEdit || tooltipEditSaving) return;
+                    const num = parseNumericInput(tooltipEdit.value);
+                    if (isNaN(num)) {
+                      toast.error("Ungueltiger Zahlenwert");
+                      return;
+                    }
+                    setTooltipEditSaving(true);
+                    try {
+                      await overrideValue(
+                        tooltipEdit.companyId, tooltipEdit.key,
+                        { numeric_value: num, source_name: "Manuell" },
+                        "FY", cv.period_year ?? undefined,
+                      );
+                      await loadAllValues();
+                      toast.success("Wert ueberschrieben (wird beim naechsten 'Werte berechnen' wieder ersetzt)");
+                      setTooltipEdit(null);
+                      setTooltip(null);
+                    } catch (e) {
+                      const detail = (e as { message?: string })?.message;
+                      toast.error(detail || "Speichern fehlgeschlagen");
+                    } finally {
+                      setTooltipEditSaving(false);
+                    }
+                  };
+
+                  return (
+                    <section className="mt-3 mb-4 px-4">
+                      <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Aktionen</h4>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleExplain}
+                          disabled={explainLoading}
+                          className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40">
+                          {explainLoading
+                            ? <><Loader2 className="h-3 w-3 animate-spin" /> Einordnung…</>
+                            : <><Sparkles className="h-3 w-3" /> Erklärung</>}
+                        </button>
+                        <button
+                          onClick={handleStartEdit}
+                          disabled={isEditHere}
+                          className="flex-1 inline-flex items-center justify-center gap-1 rounded-md border border-amber-400/50 bg-amber-50 px-2 py-1.5 text-[11px] font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40">
+                          <Pencil className="h-3 w-3" /> Manuell überschreiben
+                        </button>
+                      </div>
+                      {isEditHere && tooltipEdit && (
+                        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                          <p className="mb-1 text-[10px] text-amber-700">
+                            Achtung: manueller Wert wird beim nächsten "Werte berechnen" wieder überschrieben.
+                          </p>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={tooltipEdit.value}
+                            onChange={(e) => setTooltipEdit({ ...tooltipEdit, value: e.target.value })}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleSaveEdit();
+                              if (e.key === "Escape") setTooltipEdit(null);
+                            }}
+                            className="w-full rounded border border-amber-300 bg-white px-2 py-1 font-mono text-sm text-foreground outline-none focus:ring-1 focus:ring-amber-400"
+                            placeholder={`Neuer Wert in ${cv.currency || "Base-Units"}`}
+                          />
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              onClick={handleSaveEdit}
+                              disabled={tooltipEditSaving}
+                              className="flex-1 rounded-md bg-amber-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-700 disabled:opacity-40">
+                              {tooltipEditSaving ? "Speichert…" : "Speichern"}
+                            </button>
+                            <button
+                              onClick={() => setTooltipEdit(null)}
+                              disabled={tooltipEditSaving}
+                              className="rounded-md border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-50">
+                              Abbrechen
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      {isExplainHere && (
+                        <div className="mt-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                          <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-foreground">
+                            {explainResult.text}
+                          </p>
+                        </div>
+                      )}
+                    </section>
+                  );
+                })()}
               </div>
             </>,
             document.body

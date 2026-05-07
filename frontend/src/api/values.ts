@@ -168,6 +168,20 @@ export const researchValue = (
   });
 };
 
+export const explainValue = (
+  companyId: string,
+  valueKey: string,
+  periodType: string = "FY",
+  periodYear?: number,
+) => {
+  const params = new URLSearchParams();
+  params.set("period_type", periodType);
+  if (periodYear) params.set("period_year", String(periodYear));
+  return api<{ explanation: string }>(`/api/companies/${companyId}/values/${valueKey}/explain?${params}`, {
+    method: "POST",
+  });
+};
+
 export const overrideValue = (
   companyId: string,
   valueKey: string,
