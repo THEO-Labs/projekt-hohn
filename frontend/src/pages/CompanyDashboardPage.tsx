@@ -1608,8 +1608,21 @@ export function CompanyDashboardPage() {
           return createPortal(
             <>
               <div className="fixed inset-0 z-[99]" onClick={() => setTooltip(null)} />
-              <div className="fixed z-[100] w-80 rounded-xl border border-border bg-card shadow-2xl shadow-black/10"
-                style={{ left: Math.min(tooltip.x, window.innerWidth - 340), top: Math.min(tooltip.y, window.innerHeight - 400) }}>
+              <div className="fixed z-[100] flex w-80 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/10"
+                style={{
+                  left: Math.min(tooltip.x, window.innerWidth - 340),
+                  // Smart positioning: wenn unten kein Platz, Tooltip nach oben versetzen.
+                  top: (() => {
+                    const desiredHeight = 600;
+                    const margin = 16;
+                    if (tooltip.y + desiredHeight + margin <= window.innerHeight) {
+                      return tooltip.y;
+                    }
+                    return Math.max(margin, window.innerHeight - desiredHeight - margin);
+                  })(),
+                  maxHeight: `${Math.min(600, window.innerHeight - 32)}px`,
+                }}>
+                <div className="flex flex-col overflow-y-auto">
                 {/* Header */}
                 <div className="flex items-center justify-between border-b border-border px-4 py-3">
                   <div className="flex flex-col">
@@ -1821,6 +1834,7 @@ export function CompanyDashboardPage() {
                     </section>
                   );
                 })()}
+                </div>
               </div>
             </>,
             document.body
