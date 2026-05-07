@@ -1121,8 +1121,9 @@ export function CompanyDashboardPage() {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       const rect = (e.target as HTMLElement).getBoundingClientRect();
-                                      const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id;
-                                      setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6 });
+                                      const variantHere: "faktor" | "web" = label === "Q-Faktor (Proxy)" ? "faktor" : "web";
+                                      const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id && tooltip?.variant === variantHere;
+                                      setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6, variant: variantHere });
                                     }}
                                     className="shrink-0 rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-muted-foreground">
                                     <Info className="h-3 w-3" />
@@ -1517,9 +1518,36 @@ export function CompanyDashboardPage() {
             return "aktuell (Snapshot)";
           };
 
-          const isClaudeResearch = cv.source_name?.includes("Claude-Recherche");
+          const proxyAlt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
+          const webAlt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
+          const prevRows = prevYearValuesMap.get(tooltip.companyId) ?? [];
+          const prevCv = prevRows.find((r) => r.value_key === tooltip.key);
+          const prevNum = prevCv?.numeric_value != null ? (typeof prevCv.numeric_value === "string" ? parseFloat(prevCv.numeric_value) : prevCv.numeric_value) : null;
+
+          // Variant-spezifische Source/Value: bei Q-Faktor-Klick zeigen wir
+          // die Q-Faktor-Source aus den alternates, nicht den Primary-Source.
+          const isProxyPrimary = (cv.source_name || "").includes("Proxy");
+          const isWebPrimary = (cv.source_name || "").includes("Web-Guidance") || (cv.source_name || "").includes("Web-Fallback");
+          // displaySource: was im Tooltip "Quelle" gezeigt wird
+          let displaySource: string | null = cv.source_name ?? null;
+          let displayLink: string | null = cv.source_link ?? null;
+          let displayValue: number | null = cv.numeric_value != null ? (typeof cv.numeric_value === "string" ? parseFloat(cv.numeric_value) : cv.numeric_value) : null;
+          if (tooltip.variant === "faktor" && !isProxyPrimary && proxyAlt) {
+            displaySource = proxyAlt.source ?? null;
+            displayLink = null;
+            if (proxyAlt.value != null) displayValue = parseFloat(proxyAlt.value);
+          } else if (tooltip.variant === "web" && !isWebPrimary && webAlt) {
+            displaySource = webAlt.source ?? null;
+            displayLink = null;
+            if (webAlt.value != null) displayValue = parseFloat(webAlt.value);
+          }
+
+          const isClaudeResearch = (displaySource || "").includes("Claude-Recherche") || (displaySource || "").includes("Web-Guidance");
+          const isProxySource = (displaySource || "").includes("Proxy");
           const confidence = cv.manually_overridden
             ? { label: "Manuell überschrieben", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Pencil }
+            : isProxySource
+            ? { label: "Q-Faktor-Proxy (Schätzung)", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Calculator }
             : isClaudeResearch
             ? { label: "KI-Recherche", color: "bg-orange-100 text-orange-800 border-orange-300", icon: Sparkles }
             : def.source_type === "API"
@@ -1531,11 +1559,6 @@ export function CompanyDashboardPage() {
             : { label: "Nutzereingabe", color: "bg-slate-100 text-slate-700 border-slate-300", icon: Pencil };
 
           const ConfIcon = confidence.icon;
-
-          const proxyAlt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
-          const prevRows = prevYearValuesMap.get(tooltip.companyId) ?? [];
-          const prevCv = prevRows.find((r) => r.value_key === tooltip.key);
-          const prevNum = prevCv?.numeric_value != null ? (typeof prevCv.numeric_value === "string" ? parseFloat(prevCv.numeric_value) : prevCv.numeric_value) : null;
 
           return createPortal(
             <>
@@ -1593,14 +1616,22 @@ export function CompanyDashboardPage() {
                   </section>
                 )}
 
-                {/* Section: Quelle */}
+                {/* Section: Quelle (variant-spezifisch) */}
                 <section className="mt-3 px-4">
-                  <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Quelle</h4>
+                  <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Quelle{tooltip.variant === "faktor" ? " (Q-Faktor)" : tooltip.variant === "web" ? " (Web-Recherche)" : ""}
+                  </h4>
                   <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
-                    <div className="text-foreground">{cv.source_name ?? "—"}</div>
-                    {cv.source_link && (
-                      <a href={cv.source_link} target="_blank" rel="noreferrer" className="block truncate text-[11px] text-primary hover:underline">
-                        {(() => { try { return new URL(cv.source_link).hostname; } catch { return cv.source_link; } })()}
+                    {displayValue != null && tooltip.variant && (
+                      <div className="flex items-baseline justify-between gap-2 border-b border-border/30 pb-1.5 mb-1">
+                        <span className="text-[10px] font-medium uppercase text-muted-foreground">Variant-Wert</span>
+                        <span className="font-mono text-xs font-semibold text-foreground">{formatValue(displayValue, def.unit, displayCurrency)}</span>
+                      </div>
+                    )}
+                    <div className="text-foreground">{displaySource ?? "—"}</div>
+                    {displayLink && (
+                      <a href={displayLink} target="_blank" rel="noreferrer" className="block truncate text-[11px] text-primary hover:underline">
+                        {(() => { try { return new URL(displayLink).hostname; } catch { return displayLink; } })()}
                       </a>
                     )}
                   </div>

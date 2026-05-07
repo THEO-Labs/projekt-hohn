@@ -93,13 +93,13 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "Wenn FCF direkt ausgewiesen ist, diesen Wert nehmen. Sonst Komponenten subtrahieren. POSITIV bei normaler Cash-Generierung."),
     ("sbc",
      "Stock Based Compensation Expense / anteilsbasierte Vergütung (jährlicher Aufwand, nicht kumulativ). "
-     "Suchorte (PRÜFE ALLE 4 BEVOR du value=null setzt): "
+     "Suchorte (PRUEFE ALLE 4 BEVOR du value=0 setzt): "
      "(1) Cash Flow Statement → Add-back-Zeile 'Stock-based compensation expense' / 'Share-based payment expense' (typisch US-GAAP). "
      "(2) Statement of Changes in Equity → Spalte 'Equity-settled share-based payment' / 'Share-based payments' (typisch IFRS — Adidas, BMW, Siemens, ASML — Summe pro Periode). "
      "(3) Notes-Abschnitt 'Share-based payments' / 'Anteilsbasierte Vergütung' / 'Note X: Share-based compensation' — dort steht meist 'Total share-based payment expense for the period: X'. "
      "(4) Personnel-Cost-Note → Aufschlüsselung enthält oft eine SBC-Zeile. "
      "WERT: immer POSITIV als Aufwandsbetrag (Vorzeichen ignorieren). "
-     "value=null NUR wenn alle 4 Quellen leer sind — und dann reason muss sagen welche du geprüft hast."),
+     "value=0 NUR wenn alle 4 Quellen leer sind — und dann reason muss sagen welche du geprueft hast (NIE value=null)."),
     ("buyback_volume",
      "Aktienrückkäufe (Cash-Outflow für Treasury Share Purchases) für die Periode. "
      "Suchorte: (1) Cash Flow Statement → 'Repurchase of common stock' / 'Treasury stock purchases' / 'Acquisition of treasury shares' im Financing-Abschnitt. "
@@ -139,17 +139,20 @@ Konzernabschlüssen sowie Quartalsberichten.
 DEINE AUFGABE: Extrahiere präzise Finanzkennzahlen aus dem hochgeladenen
 PDF für genau den angegebenen Berichts-Zeitraum.
 
-KERN-DISZIPLIN — bevor du value=null lieferst, MUSST du:
+KERN-DISZIPLIN — value DARF NIE null sein. Wenn die Kennzahl im PDF nicht
+direkt ausgewiesen ist, setze value=0 mit ehrlicher Begründung:
 - ALLE im Per-Key-Hinweis genannten Suchorte explizit prüfen
 - Sowohl Cash Flow Statement ALS AUCH Statement of Changes in Equity
   ALS AUCH die Notes durchgehen (typische Suchreihenfolge unten)
 - Bei IFRS-Filern (20-F, deutsche/EU-Konzernabschlüsse, Adidas/BMW/Siemens/
   ASML/SAP/etc.) zusätzlich gezielt im Equity Statement und im Notes-
   Abschnitt suchen — IFRS gliedert anders als US-GAAP
-- Im 'reason'-Feld dokumentieren WO du gesucht hast und WARUM nichts
-  vorhanden ist (z.B. "geprüft: CF-Statement S.91, Equity Statement S.97,
-  Notes 27 — überall keine separate SBC-Zeile, in Note 28
-  'Personnel costs' nur Total ohne Aufgliederung").
+- Im 'reason'-Feld dokumentieren WO du gesucht hast und WARUM 0 angenommen
+  wurde (z.B. "geprüft: CF-Statement S.91, Equity Statement S.97, Notes 27 —
+  überall keine separate SBC-Zeile, in Note 28 'Personnel costs' nur Total
+  ohne Aufgliederung — 0 angenommen, da konzeptuell nicht ausgewiesen").
+- value=0 ist die einzig erlaubte Antwort wenn der Wert nicht im PDF steht
+  — NIE value=null.
 
 TYPISCHE ABSCHNITTE in einem Annual Report (in dieser Reihenfolge prüfen):
 1. Highlights / Five-Year Overview (oft alle Kernzahlen kompakt)
@@ -167,7 +170,9 @@ WICHTIGE REGELN:
 4. Pro gefundenem Wert: Seitenzahl + exaktes Quote-Snippet aus dem PDF.
 5. Bei Quartalsberichten: 'period_basis' angeben (Q1_YTD vs Q1_standalone vs H1).
 6. KEINE Schätzungen, keine Hochrechnungen. Nur was wirklich im PDF steht.
-7. Wenn Wert null: 'reason' MUSS konkret die geprüften Stellen nennen.
+7. value DARF NIE null sein. Wenn nicht direkt im PDF ausgewiesen: value=0
+   mit konkreter 'reason' was geprueft wurde und warum 0 (z.B. konzeptuelle
+   Abwesenheit bei Versicherer/Bank).
 8. Vorzeichen-Regel: Net Income mit echtem Vorzeichen (Verluste negativ),
    Bilanz-Posten und Cash-Outflows (SBC, Buyback, Dividends) immer POSITIV
    als Betrag (Vorzeichen ignorieren).
@@ -241,13 +246,19 @@ Antworte ausschließlich in diesem JSON-Format:
 
 Pro Key folgendes Schema:
 {{
-  "value": <Zahl in Base-Units oder null>,
+  "value": <Zahl in Base-Units — IMMER eine Zahl, im aller-letzten Fall 0>,
   "currency": "USD" | "EUR" | "GBP" | "CHF" | ... | null,
-  "page": <Seitennummer im PDF>,
-  "quote": "<exaktes Zitat aus dem PDF>",
+  "page": <Seitennummer im PDF oder null wenn 0-Fallback>,
+  "quote": "<exaktes Zitat aus dem PDF oder null wenn 0-Fallback>",
   "period_basis": "FY" | "Q1_YTD" | "Q1_standalone" | "H1" | ... ,
-  "reason": null oder kurze Erklärung wenn value=null
+  "reason": null wenn Wert direkt gefunden, sonst Erklärung warum 0 (z.B.
+            "Konzeptuell nicht im Bericht ausgewiesen — angenommen 0")
 }}{guidance_section}
+
+ABSOLUTE GRUNDREGEL: value DARF NIE null sein. Wenn die Kennzahl im Bericht
+nicht direkt steht (z.B. weil Versicherer kein klassisches Cash Flow Statement
+ausweisen, oder kein separater SBC-Posten), nimm 0 mit ehrlicher Begründung in
+'reason'. NIE value: null — IMMER eine Zahl.
 
 Beispiel für net_income wenn gefunden:
 "net_income": {{
@@ -259,14 +270,14 @@ Beispiel für net_income wenn gefunden:
   "reason": null
 }}
 
-Beispiel für sbc wenn nicht gefunden:
+Beispiel für sbc wenn nicht im Bericht ausgewiesen (Versicherer):
 "sbc": {{
-  "value": null,
+  "value": 0,
   "currency": null,
   "page": null,
   "quote": null,
   "period_basis": null,
-  "reason": "Im Cash Flow Statement nicht als separater Posten ausgewiesen"
+  "reason": "Im Cash Flow Statement nicht als separater Posten ausgewiesen — angenommen 0 (Versicherer-typisch)"
 }}
 """
 
@@ -481,25 +492,34 @@ def _call_extraction_with_escalation(
 
 
 def _parse_one_entry(key: str, entry: dict | None) -> dict:
-    """Normalize a single key's entry from Claude's JSON output."""
+    """Normalize a single key's entry from Claude's JSON output.
+    User-Anforderung: NIE value=None — Claude soll 0 liefern wenn nicht
+    findbar. Falls Claude trotzdem null/missing schickt, coercen wir zu 0
+    mit eindeutiger Begruendung."""
     if not isinstance(entry, dict):
-        return {"value": None, "reason": "Key missing in response"}
+        logger.info("extraction: key %s missing in response — coerce zu 0", key)
+        return {"value": Decimal("0"), "reason": "Key missing in response — angenommen 0"}
     raw_val = entry.get("value")
     if raw_val is None:
+        reason = entry.get("reason") or "Konzeptuell nicht im Bericht ausgewiesen"
+        logger.info("extraction: key %s value=null — coerce zu 0 (%s)", key, reason[:80])
         return {
-            "value": None,
+            "value": Decimal("0"),
             "currency": entry.get("currency"),
             "page": entry.get("page"),
-            "reason": entry.get("reason") or "Not extracted",
+            "quote": entry.get("quote"),
+            "period_basis": entry.get("period_basis"),
+            "reason": f"{reason} — angenommen 0",
         }
     try:
         decimal_val = Decimal(str(raw_val))
     except (InvalidOperation, ValueError):
+        logger.warning("extraction: key %s unparseable value %r — coerce zu 0", key, raw_val)
         return {
-            "value": None,
+            "value": Decimal("0"),
             "currency": entry.get("currency"),
             "page": entry.get("page"),
-            "reason": f"Could not parse value: {raw_val!r}",
+            "reason": f"Could not parse value {raw_val!r} — angenommen 0",
         }
     if key in ALWAYS_POSITIVE_KEYS and decimal_val < 0:
         decimal_val = abs(decimal_val)
