@@ -330,9 +330,9 @@ export function CompanyDashboardPage() {
   const [isLoadingPeriod, setIsLoadingPeriod] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
-  const [explainResult, setExplainResult] = useState<{ key: string; companyId: string; text: string } | null>(null);
+  const [explainResult, setExplainResult] = useState<{ key: string; companyId: string; periodYear: number | null; text: string } | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
-  const [tooltipEdit, setTooltipEdit] = useState<{ key: string; companyId: string; value: string } | null>(null);
+  const [tooltipEdit, setTooltipEdit] = useState<{ key: string; companyId: string; periodYear: number | null; value: string } | null>(null);
   const [tooltipEditSaving, setTooltipEditSaving] = useState(false);
   const [editCell, setEditCell] = useState<{ companyId: string; key: string; value: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1723,8 +1723,13 @@ export function CompanyDashboardPage() {
                     && cv.numeric_value != null
                   );
                   if (!isRawDataFy) return null;
-                  const isExplainHere = explainResult?.key === tooltip.key && explainResult?.companyId === tooltip.companyId;
-                  const isEditHere = tooltipEdit?.key === tooltip.key && tooltipEdit?.companyId === tooltip.companyId;
+                  const tooltipYear = cv.period_year ?? null;
+                  const isExplainHere = explainResult?.key === tooltip.key
+                    && explainResult?.companyId === tooltip.companyId
+                    && explainResult?.periodYear === tooltipYear;
+                  const isEditHere = tooltipEdit?.key === tooltip.key
+                    && tooltipEdit?.companyId === tooltip.companyId
+                    && tooltipEdit?.periodYear === tooltipYear;
 
                   const handleExplain = async () => {
                     if (explainLoading) return;
@@ -1732,7 +1737,12 @@ export function CompanyDashboardPage() {
                     setExplainResult(null);
                     try {
                       const res = await explainValue(tooltip.companyId, tooltip.key, "FY", cv.period_year ?? undefined);
-                      setExplainResult({ key: tooltip.key, companyId: tooltip.companyId, text: res.explanation });
+                      setExplainResult({
+                        key: tooltip.key,
+                        companyId: tooltip.companyId,
+                        periodYear: tooltipYear,
+                        text: res.explanation,
+                      });
                     } catch (e) {
                       const detail = (e as { message?: string })?.message;
                       toast.error(detail || "Einordnung fehlgeschlagen");
@@ -1743,7 +1753,7 @@ export function CompanyDashboardPage() {
 
                   const handleStartEdit = () => {
                     const cur = cv.numeric_value != null ? String(cv.numeric_value) : "";
-                    setTooltipEdit({ key: tooltip.key, companyId: tooltip.companyId, value: cur });
+                    setTooltipEdit({ key: tooltip.key, companyId: tooltip.companyId, periodYear: tooltipYear, value: cur });
                   };
 
                   const handleSaveEdit = async () => {
