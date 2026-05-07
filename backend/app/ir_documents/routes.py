@@ -80,7 +80,7 @@ def _post_extraction_web_fallback(
 
         label = f"{vd.label_en} ({vd.label_de})"
         try:
-            web_val, source, url, _user_prompt, _assistant = research_value(
+            web_val, source, url, _user_prompt, assistant = research_value(
                 company.name, company.ticker, label, company.currency,
                 period_type=period_type, period_year=period_year, value_key=key,
             )
@@ -90,9 +90,14 @@ def _post_extraction_web_fallback(
             continue
 
         if web_val is None:
+            preview = (assistant or "")[:300].replace("\n", " ")
+            logger.info("Web-fallback %s/%s/%s/%s: NO VALUE — Claude said: %s",
+                        company.ticker, key, period_type, period_year, preview)
             continue
         web_val = validate_claude_value(key, web_val)
         if web_val is None:
+            logger.info("Web-fallback %s/%s/%s/%s: value rejected by sanity-range",
+                        company.ticker, key, period_type, period_year)
             continue
 
         existing = (

@@ -294,6 +294,26 @@ def research_value(
             f"  4. Fallback-Approximation: FY{period_year - 1} Istwert ohne Growth.\n"
             "WERT: NICHT_GEFUNDEN ist verboten ausser bei unbekanntem Ticker."
         )
+    elif is_quarter:
+        forward_block = ""
+        historical_constraint = (
+            f" Ziel ist der {period_type}-Wert aus dem Quartalsbericht "
+            f"(idealerweise YTD-kumulativ wenn so ausgewiesen)."
+        )
+        not_found_clause = (
+            "PFLICHT: Liefere IMMER einen Wert. Reihenfolge:\n"
+            f"  1. Exakter {period_type} {period_year}-Wert aus IR/Aggregator/10-Q.\n"
+            f"  2. YTD-kumulativ wenn standalone-Q nicht findbar.\n"
+            f"  3. Bei Versicherer/Bank/Sektor-Mismatch (z.B. Cash Flow Statement "
+            f"nicht ausgewiesen): suche nach equivalentem Konzept (z.B. 'Operating "
+            f"Profit' statt FCF, 'Personnel Expenses' statt SBC, 'Solvency-II Capital' "
+            f"statt Net Debt) und kennzeichne als 'Equivalent: <konzept>' in QUELLE.\n"
+            f"  4. Approximation: FY{period_year}-Wert × Quartal-Anteil "
+            f"(0.25 fuer einzelnes Quartal, 0.50/0.75 fuer YTD).\n"
+            f"  5. Nur wenn die Kennzahl konzeptuell nicht existiert (z.B. echte "
+            f"'Net Debt' bei Versicherer), antworte WERT: NICHT_GEFUNDEN mit "
+            f"klarem 'KONZEPTUELL_NICHT_VORHANDEN' in BEGRÜNDUNG."
+        )
     else:
         forward_block = ""
         historical_constraint = (
