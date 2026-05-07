@@ -24,6 +24,7 @@ from app.calculations.lock import (
     annual_report_years,
     is_hohn_locked,
     is_us_company,
+    quarter_years,
 )
 from app.companies.models import Company
 from app.db import get_db
@@ -1176,6 +1177,7 @@ def get_fy_availability(
         "has_snapshot_market_cap": snap_market_cap,
         "is_us": is_us_company(company),
         "annual_report_years": annual_report_years(db, company_id),
+        "quarter_years": quarter_years(db, company_id),
     }
 
 

@@ -38,6 +38,21 @@ def annual_report_years(db: Session, company_id: UUID) -> list[int]:
     return sorted({r[0] for r in rows})
 
 
+def quarter_years(db: Session, company_id: UUID) -> list[int]:
+    """Jahre fuer die mindestens ein Q1/Q2/Q3-Bericht extrahiert wurde."""
+    rows = (
+        db.query(IRDocument.period_year)
+        .filter(
+            IRDocument.company_id == company_id,
+            IRDocument.period_coverage.in_((PeriodCoverage.Q1, PeriodCoverage.Q2, PeriodCoverage.Q3)),
+            IRDocument.extraction_status == ExtractionStatus.DONE,
+        )
+        .distinct()
+        .all()
+    )
+    return sorted({r[0] for r in rows})
+
+
 def has_done_annual_report(db: Session, company_id: UUID, period_year: int) -> bool:
     return (
         db.query(IRDocument.id)

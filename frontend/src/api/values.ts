@@ -102,6 +102,7 @@ export type FyAvailability = {
   has_snapshot_market_cap: boolean;
   is_us: boolean;
   annual_report_years: number[];
+  quarter_years: number[];
 };
 
 export const getFyAvailability = (companyId: string) =>

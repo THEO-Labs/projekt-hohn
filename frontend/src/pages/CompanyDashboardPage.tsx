@@ -276,8 +276,14 @@ function buildVariantValues(
   ]);
 }
 
-function hasAnyAlternate(rows: CompanyValue[]): boolean {
-  return rows.some((r) => r.is_forecast && r.forecast_alternates && r.forecast_alternates.length > 0);
+
+function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
+  // Estimate-Mode benoetigt Q-Reports vom Vorjahr (fuer den apples-to-apples
+  // Q-Faktor-Vergleich) — ausser bei US-Filern wo EDGAR/Yahoo Q-Daten liefert.
+  if (!av || periodYear === undefined) return false;
+  if (av.is_us) return false;
+  const prevYear = periodYear - 1;
+  return !av.quarter_years.includes(prevYear);
 }
 
 function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
@@ -335,7 +341,7 @@ export function CompanyDashboardPage() {
         try {
           availMap.set(c.id, await getFyAvailability(c.id));
         } catch {
-          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [] });
+          availMap.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [], quarter_years: [] });
         }
       })
     );
@@ -470,7 +476,7 @@ export function CompanyDashboardPage() {
         try {
           map.set(c.id, await getFyAvailability(c.id));
         } catch {
-          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [] });
+          map.set(c.id, { fy_years_with_data: [], keys_per_year: {}, has_snapshot_market_cap: false, is_us: false, annual_report_years: [], quarter_years: [] });
         }
       })
     );
@@ -916,7 +922,53 @@ export function CompanyDashboardPage() {
               {companies.flatMap((company) => {
                 const cRows = valuesMap.get(company.id) ?? [];
                 const cPrev = prevYearValuesMap.get(company.id) ?? [];
-                const showDual = isEstimateMode && hasAnyAlternate(cRows);
+                const av = availabilityMap.get(company.id);
+                const estLocked = isEstimateMode && isEstimateLocked(av, period.year);
+                const totalCols = visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1;
+
+                // Estimate-Mode + keine Vorjahres-Q-Reports -> Lock-Row
+                // (analog Hohn-Lock fuer abgeschlossene FY ohne Annual Report).
+                if (estLocked) {
+                  const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
+                  return [(
+                    <tr key={`${company.id}-est-locked`} className="border-t-4 border-border bg-amber-50/70">
+                      <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
+                        <div className="flex flex-col items-start gap-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-foreground">{company.name}</span>
+                            <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
+                          </div>
+                          <button
+                            onClick={() => handleRefreshCompany(company)}
+                            disabled={isRunningThis}
+                            title="Werte fuer diese Firma neu berechnen"
+                            className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
+                            {isRunningThis ? "Berechnet…" : "Werte berechnen"}
+                          </button>
+                        </div>
+                      </td>
+                      <td colSpan={totalCols - 1} className="px-4 py-3">
+                        <div className="flex items-center gap-2 text-amber-800">
+                          <Lock className="h-4 w-4 shrink-0" />
+                          <span className="text-sm font-medium">
+                            Estimate gesperrt — bitte Quartalsberichte (Q1/Q2/Q3) für FY{(period.year ?? new Date().getFullYear()) - 1} hochladen
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-amber-700/80">
+                          Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich.
+                          Ohne diese ist keine belastbare Schätzung möglich.
+                        </p>
+                      </td>
+                    </tr>
+                  )];
+                }
+
+                // Estimate-Mode: immer dual-row Layout sobald nicht gelockt
+                // (auch wenn noch keine Werte da sind — User soll 'Werte berechnen'
+                // sehen, kein Recherchieren-Button pro Zelle).
+                const showDual = isEstimateMode;
                 if (showDual) {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor");
                   const web = buildVariantValues(cRows, cPrev, "web");
