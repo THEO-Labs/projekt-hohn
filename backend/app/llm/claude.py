@@ -120,19 +120,24 @@ def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
     return value
 
 
-RESEARCH_PROMPT = """Du bist ein Finanzanalyst. Recherchiere EINE konkrete Finanzkennzahl
-für ein Unternehmen via web_search und liefere IMMER eine ECHTE numerische Zahl —
-NIEMALS 0 als Default-Fallback.
+RESEARCH_PROMPT = """Du bist Senior Equity Research Analyst. Du lieferst IMMER eine
+fundierte Schaetzung — auch wenn keine konkrete Quelle findbar ist. Du bist Experte
+und bezahlst dir deine Einschaetzungen mit deinem Wissen ueber das Unternehmen,
+seinen Sektor, vergleichbare Firmen und historische Pattern.
 
 ABSOLUTE GRUNDREGEL:
-WERT muss ein berechneter, plausibler Zahlenwert sein. NIEMALS 0 weil "ich finde
-nichts" oder "konzeptuell schwierig". 0 ist NUR ein gueltiger Wert wenn deine
-Approximation oder Recherche TATSAECHLICH 0 ergibt (z.B. Firma zahlt offensichtlich
-keine Dividende in dem Jahr → wirklich 0). Sonst: rechne, schaetze, approximiere —
-aber liefere eine echte Zahl.
+WERT ist IMMER eine plausible Zahl — entweder aus konkreter Quelle oder als
+Experten-Einschaetzung. Es gibt KEINE Antwort wo du keine Zahl lieferst.
+'Konnte nichts finden' ist KEINE gueltige Antwort — als Senior Analyst hast du
+immer eine fundierte Vorstellung was plausibel ist. Liefere die Zahl mit
+ehrlicher Quelle 'KI-Einschaetzung basierend auf [Begruendung]' wenn keine
+oeffentliche Quelle existiert.
 
-WIE DU APPROXIMIERST (verbindliche Reihenfolge — gehe sie durch bis du eine echte
-Zahl hast):
+0 ist NUR gueltig wenn deine Schaetzung tatsaechlich 0 ergibt (z.B. Firma hat
+nachweisbar kein Buyback-Programm in dem Jahr → wirklich 0). NIEMALS 0 weil
+'ich finde nichts'.
+
+WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
 
 1. **Exakter Wert** aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
    oder direkt aus IR/SEC-Filing.
@@ -153,10 +158,22 @@ Zahl hast):
    Du MUSST die Equivalent-Zahl AUSRECHNEN und liefern — nicht nur "Konzept fehlt
    → 0".
 
-5. **Branchen-Mittel als Letzt-Stufe**: vergleichbare Firma der gleichen
-   Sektor/Größenklasse als Bezug, dann skaliert auf das gesuchte Unternehmen.
+5. **Branchen-Mittel**: vergleichbare Firma der gleichen Sektor/Groessenklasse
+   als Bezug, dann skaliert auf das gesuchte Unternehmen.
 
-6. **0 ist gueltig NUR wenn**: Firma hat in der Periode dokumentiert nichts
+6. **KI-EXPERTEN-EINSCHAETZUNG (PFLICHT wenn 1-5 nichts ergibt)**:
+   Wenn alle obigen Quellen versagen, BIST DU AN DER REIHE als Senior Equity
+   Analyst. Du hast Wissen ueber:
+     - Die Firma (Geschaeftsmodell, Profitabilitaet, Capital-Allocation-Politik)
+     - Den Sektor (typische Margen, Wachstumsraten, SBC-Quoten, Buyback-Quoten)
+     - Vergleichbare Firmen (gleicher Sektor/Groesse)
+     - Historische Pattern (z.B. 'Industrials wachsen typisch 3-5%, Tech 10-15%')
+   Daraus leitest du eine PLAUSIBLE Zahl ab. Beispiel: "Airbus FY2026 SBC nicht
+   aggregator-listed → SBC bei Aerospace-Industrials typisch 0.3-0.5% von Sales,
+   Airbus Sales ~80B → SBC ~280M". QUELLE markiert das ehrlich als
+   "KI-Einschaetzung: <Begruendung>". KONFIDENZ: niedrig.
+
+7. **0 ist gueltig NUR wenn**: Firma hat in der Periode dokumentiert nichts
    gezahlt/zurueckgekauft/etc. (z.B. "kein Buyback-Programm aktiv" → buyback=0).
    NICHT als Fallback bei Schwierigkeit.
 
@@ -403,17 +420,53 @@ def research_value(
         f"{hint_block}"
     )
 
-    try:
-        client = get_client()
+    def _do_call(messages: list[dict]) -> str:
         response = claude_limiter.call(lambda: client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2048,
             system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
             tools=[WEB_SEARCH_TOOL],
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=messages,
         ))
-        content = _collect_text(response)
+        return _collect_text(response)
+
+    try:
+        client = get_client()
+        content = _do_call([{"role": "user", "content": user_prompt}])
         value = extract_research_value(content)
+
+        # Retry-Stufe: Wenn Claude beim ersten Versuch keine Zahl liefert,
+        # zwingen wir ihn als Equity-Analyst zur Experten-Einschaetzung.
+        # Eine einzige Wiederholung — kein endloses Hin-und-her.
+        if value is None:
+            logger.info("Web-Recherche %s: erster Versuch lieferte keine Zahl — retry mit "
+                        "Experten-Einschaetzungs-Aufforderung", ticker)
+            retry_prompt = (
+                f"Du hast eben keine numerische Antwort geliefert. Das ist nicht "
+                f"akzeptabel — du bist Senior Equity Analyst, du hast IMMER eine "
+                f"fundierte Einschaetzung.\n\n"
+                f"Gib JETZT eine plausible Schaetzung fuer {value_label} bei "
+                f"{company_name} ({ticker}) im Zeitraum {period_str} basierend auf "
+                f"deinem Wissen ueber:\n"
+                f"  - Sektor-typische Werte (Margen, Wachstumsraten, "
+                f"Capital-Allocation-Quoten)\n"
+                f"  - Vergleichbare Firmen aehnlicher Groesse\n"
+                f"  - Historische Werte des Unternehmens\n"
+                f"  - Aktueller Markt-Konsens / News\n\n"
+                f"Liefere die Zahl in {currency}. QUELLE = 'KI-Einschaetzung: "
+                f"<dein Schaetzweg in 1 Satz>'. KONFIDENZ: niedrig.\n"
+                f"NIEMALS 'NICHT_GEFUNDEN' — du bist Experte, gib eine Zahl."
+            )
+            content_retry = _do_call([
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": retry_prompt},
+            ])
+            value = extract_research_value(content_retry)
+            if value is not None:
+                content = content_retry  # nutze die Retry-Antwort fuer source/url
+                logger.info("Web-Recherche %s: retry erfolgreich, Wert=%s", ticker, value)
+
         if value is None:
             return None, None, None, user_prompt, content
         source_match = re.search(r"QUELLE:\s*(.+)", content)

@@ -468,18 +468,24 @@ def _process_one_key(
             result = web_result
             forecast_alternates = [proxy_alt]
         elif proxy_result is not None:
-            # Web fehlte: primary bleibt Proxy, der Web-Slot bekommt den
-            # Proxy-Wert als Fallback (so ist die Web-Row nie leer wenn
-            # Q-Faktor was hat). Source-Label zeigt 'Web-Fallback'.
+            # Web hat NACH RETRY keine Zahl geliefert — sehr selten. Primary
+            # bleibt Proxy. Web-Slot wird ehrlich als 'fehlgeschlagen' markiert
+            # statt redundant den Proxy-Wert nochmal zu zeigen — User sieht
+            # sofort 'Web-Recherche konnte trotz Retry nichts liefern'.
             result = proxy_result
             forecast_alternates = [
                 proxy_alt,
                 {
                     "method": "web_guidance",
-                    "value": str(proxy_result.value),
-                    "currency": proxy_result.currency,
-                    "source": f"Web-Recherche hat keine Zahlen gefunden, Fallback auf Proxy-Berechnung auf Basis von Quartalszahl vom Vorjahr ({proxy_result.source_name})",
-                    "fallback_from": "q_factor_proxy",
+                    "value": None,
+                    "currency": None,
+                    "source": None,
+                    "error_reason": (
+                        "Web-Recherche hat trotz Retry keine Zahl geliefert. "
+                        "Claude konnte weder eine konkrete Quelle finden noch eine "
+                        "fundierte KI-Einschaetzung abgeben. Primaer wird der "
+                        "Q-Faktor-Proxy verwendet."
+                    ),
                 },
             ]
         else:
