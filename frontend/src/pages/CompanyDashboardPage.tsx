@@ -301,6 +301,35 @@ function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | u
   return !av.quarter_years.includes(prevYear);
 }
 
+function _escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function renderMarkdown(text: string): string {
+  // Light Markdown: **bold**, *italic*, headings ##, bullets - / *, line breaks,
+  // code `inline`. Robust gegen XSS via _escapeHtml.
+  const escaped = _escapeHtml(text);
+  return escaped
+    // Headings
+    .replace(/^###\s+(.+)$/gm, '<h4 class="mt-2 mb-1 text-[12px] font-bold text-foreground">$1</h4>')
+    .replace(/^##\s+(.+)$/gm, '<h3 class="mt-2 mb-1 text-[13px] font-bold text-foreground">$1</h3>')
+    // Bold + Italic
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-foreground">$1</strong>')
+    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em class="italic">$1</em>')
+    // Inline code
+    .replace(/`([^`\n]+)`/g, '<code class="rounded bg-muted px-1 font-mono text-[10px]">$1</code>')
+    // Links [label](url)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer" class="text-primary underline hover:opacity-80">$1</a>')
+    // Bullets (- foo  oder  * foo)
+    .replace(/^[ \t]*[-*]\s+(.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
+    // Wrap consecutive <li> in <ul>
+    .replace(/(<li[^>]*>.*<\/li>\n?)+/g, (m) => `<ul class="my-1 space-y-0.5">${m.replace(/\n/g, "")}</ul>`)
+    // Numbered lists "1. foo"
+    .replace(/^[ \t]*(\d+)\.\s+(.+)$/gm, '<div class="ml-4"><span class="font-medium text-muted-foreground">$1.</span> $2</div>')
+    // Line breaks (alle die uebrig sind)
+    .replace(/\n/g, "<br />");
+}
+
 function isHohnLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
   if (!av || periodYear === undefined) return false;
   if (periodYear >= new Date().getFullYear()) return false;
@@ -1836,9 +1865,10 @@ export function CompanyDashboardPage() {
                       )}
                       {isExplainHere && (
                         <div className="mt-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
-                          <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-foreground">
-                            {explainResult.text}
-                          </p>
+                          <div
+                            className="text-[11px] leading-relaxed text-foreground"
+                            dangerouslySetInnerHTML={{ __html: renderMarkdown(explainResult.text) }}
+                          />
                         </div>
                       )}
                     </section>
