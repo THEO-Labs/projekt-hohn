@@ -434,17 +434,40 @@ def research_value(
         client = get_client()
         content = _do_call([{"role": "user", "content": user_prompt}])
         value = extract_research_value(content)
+        sanity_failed_reason: str | None = None
 
-        # Retry-Stufe: Wenn Claude beim ersten Versuch keine Zahl liefert,
-        # zwingen wir ihn als Equity-Analyst zur Experten-Einschaetzung.
-        # Eine einzige Wiederholung — kein endloses Hin-und-her.
+        # Sanity-Check: wenn Wert extrahiert wurde aber sanity-range/unit-error
+        # ihn rejected, soll der Retry auch dann greifen. Sonst landet ein
+        # 'Web fehlte' im UI obwohl Claude geantwortet hat — nur halt mit
+        # offensichtlichem Unit-Fehler (z.B. WERT: 5 statt 5_000_000_000).
+        if value is not None and value_key:
+            validated = validate_claude_value(value_key, value)
+            if validated is None:
+                sanity_failed_reason = (
+                    f"Vorheriger Wert {value} wurde wegen Sanity-Range oder "
+                    f"Unit-Verdacht (Mio/Mrd-Verwechslung?) verworfen"
+                )
+                value = None
+
+        # Retry-Stufe: Wenn Claude beim ersten Versuch keine Zahl liefert
+        # (oder die Zahl Sanity-Check nicht besteht), zwingen wir ihn als
+        # Equity-Analyst zur Experten-Einschaetzung. Eine einzige Wiederholung.
         if value is None:
-            logger.info("Web-Recherche %s: erster Versuch lieferte keine Zahl — retry mit "
-                        "Experten-Einschaetzungs-Aufforderung", ticker)
+            logger.info("Web-Recherche %s/%s: erster Versuch lieferte keine valide Zahl — "
+                        "retry mit Experten-Einschaetzungs-Aufforderung (%s)",
+                        ticker, value_key or "?", sanity_failed_reason or "extract=None")
+            sanity_hint = ""
+            if sanity_failed_reason:
+                sanity_hint = (
+                    f"\n\nVorsicht: dein letzter Wert wurde verworfen weil er "
+                    f"verdaechtig klein war — wahrscheinlich hast du Mio/Mrd "
+                    f"vergessen. Gib die Zahl in BASE-UNITS: 1.45 Mrd USD = "
+                    f"1450000000, NICHT 1.45 oder 1450."
+                )
             retry_prompt = (
-                f"Du hast eben keine numerische Antwort geliefert. Das ist nicht "
-                f"akzeptabel — du bist Senior Equity Analyst, du hast IMMER eine "
-                f"fundierte Einschaetzung.\n\n"
+                f"Du hast eben keine valide numerische Antwort geliefert. Das ist "
+                f"nicht akzeptabel — du bist Senior Equity Analyst, du hast IMMER "
+                f"eine fundierte Einschaetzung.\n\n"
                 f"Gib JETZT eine plausible Schaetzung fuer {value_label} bei "
                 f"{company_name} ({ticker}) im Zeitraum {period_str} basierend auf "
                 f"deinem Wissen ueber:\n"
@@ -453,9 +476,12 @@ def research_value(
                 f"  - Vergleichbare Firmen aehnlicher Groesse\n"
                 f"  - Historische Werte des Unternehmens\n"
                 f"  - Aktueller Markt-Konsens / News\n\n"
-                f"Liefere die Zahl in {currency}. QUELLE = 'KI-Einschaetzung: "
-                f"<dein Schaetzweg in 1 Satz>'. KONFIDENZ: niedrig.\n"
+                f"Liefere die Zahl in {currency} in vollen BASE-UNITS (z.B. "
+                f"1450000000 fuer 1,45 Mrd, NICHT 1.45 oder 1450). "
+                f"QUELLE = 'KI-Einschaetzung: <dein Schaetzweg in 1 Satz>'. "
+                f"KONFIDENZ: niedrig.\n"
                 f"NIEMALS 'NICHT_GEFUNDEN' — du bist Experte, gib eine Zahl."
+                f"{sanity_hint}"
             )
             content_retry = _do_call([
                 {"role": "user", "content": user_prompt},
@@ -463,9 +489,17 @@ def research_value(
                 {"role": "user", "content": retry_prompt},
             ])
             value = extract_research_value(content_retry)
+            # Auch hier Sanity-Check anwenden
+            if value is not None and value_key:
+                validated = validate_claude_value(value_key, value)
+                if validated is None:
+                    logger.warning("Web-Recherche %s/%s: retry-Wert %s ebenfalls Sanity-Fail",
+                                   ticker, value_key, value)
+                    value = None
             if value is not None:
                 content = content_retry  # nutze die Retry-Antwort fuer source/url
-                logger.info("Web-Recherche %s: retry erfolgreich, Wert=%s", ticker, value)
+                logger.info("Web-Recherche %s/%s: retry erfolgreich, Wert=%s",
+                            ticker, value_key or "?", value)
 
         if value is None:
             return None, None, None, user_prompt, content
