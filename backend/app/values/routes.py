@@ -487,43 +487,51 @@ def _process_one_key(
                 ),
             }
 
-        # Q-Faktor-Alternate IMMER schreiben (für Click-Drilldown im Frontend)
-        # — auch wenn Q-Faktor primary ist, damit die Erklärung an einem
-        # vorhersehbaren Ort steht.
+        # Beide Alternates IMMER schreiben damit der UI-Vergleich (dual-row) und
+        # Drilldown an einem vorhersehbaren Ort stehen — egal welche Methode
+        # letztendlich primary wird (Web, Proxy, oder PDF/Manual via forecast_locked).
         proxy_alt = _to_alt(proxy_result, "q_factor_proxy")
-
-        if web_result is not None and proxy_result is not None:
-            result = web_result
-            forecast_alternates = [proxy_alt]
-        elif web_result is not None:
-            result = web_result
-            forecast_alternates = [proxy_alt]
-        elif proxy_result is not None:
-            # Web hat NACH RETRY keine Zahl geliefert — sehr selten. Primary
-            # bleibt Proxy. Web-Slot wird ehrlich als 'fehlgeschlagen' markiert
-            # statt redundant den Proxy-Wert nochmal zu zeigen — User sieht
-            # sofort 'Web-Recherche konnte trotz Retry nichts liefern'.
-            result = proxy_result
-            forecast_alternates = [
-                proxy_alt,
-                {
-                    "method": "web_guidance",
-                    "value": None,
-                    "currency": None,
-                    "source": None,
-                    "error_reason": (
-                        "Web-Recherche hat trotz Retry keine Zahl geliefert. "
-                        "Claude konnte weder eine konkrete Quelle finden noch eine "
-                        "fundierte KI-Einschätzung abgeben. Primaer wird der "
-                        "Q-Faktor-Proxy verwendet."
-                    ),
-                },
-            ]
+        web_alt_obj: dict
+        if web_result is not None and isinstance(web_result.value, Decimal):
+            web_alt_obj = {
+                "method": "web_guidance",
+                "value": str(web_result.value),
+                "currency": web_result.currency,
+                "source": web_result.source_name,
+            }
+        elif proxy_result is not None and isinstance(proxy_result.value, Decimal):
+            # Web hat trotz Retry nichts geliefert — Notfall-Fallback: Web-Slot
+            # bekommt den Proxy-Wert damit die Web-Row im UI nie leer ist.
+            # Source-Label markiert klar dass Web fehlschlug.
+            web_alt_obj = {
+                "method": "web_guidance",
+                "value": str(proxy_result.value),
+                "currency": proxy_result.currency,
+                "source": (
+                    f"Notfall-Fallback (Web-Recherche fehlte trotz Retry): "
+                    f"{proxy_result.source_name}"
+                ),
+                "fallback_from": "q_factor_proxy",
+            }
         else:
-            forecast_alternates = [
-                _to_alt(None, "web_guidance"),
-                _to_alt(None, "q_factor_proxy"),
-            ]
+            # Auch Proxy fehlt — wirklich kein Wert moeglich. Sehr selten.
+            web_alt_obj = {
+                "method": "web_guidance",
+                "value": None,
+                "currency": None,
+                "source": None,
+                "error_reason": (
+                    "Web-Recherche und Q-Faktor-Proxy haben beide nichts geliefert. "
+                    "Vorjahres-AR pruefen ob FY[N-1]-Wert vorhanden ist."
+                ),
+            }
+        forecast_alternates = [proxy_alt, web_alt_obj]
+
+        if web_result is not None:
+            result = web_result
+        elif proxy_result is not None:
+            result = proxy_result
+        # else: result bleibt None — primary bleibt unangetastet (forecast_locked-Pfad)
 
     if result is None and not is_stammdaten:
         # Universeller Fallback für historische FY-Werte (z.B. PDF leer, Non-US).
