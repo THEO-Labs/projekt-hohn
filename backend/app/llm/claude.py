@@ -269,9 +269,12 @@ def research_value(
     """Web-Recherche für eine einzelne Kennzahl.
     Returns (value, source_name, source_url, user_prompt, assistant_response)."""
     is_forward = _is_forward_year(period_year)
+    is_quarter = period_type in ("Q1", "Q2", "Q3", "Q4")
     if period_type == "FY" and period_year:
         marker = "e" if is_forward else ""
         period_str = f"Geschäftsjahr {period_year}{marker} (FY{period_year}{marker})"
+    elif is_quarter and period_year:
+        period_str = f"{period_type} {period_year} (Quartal — kumulativ year-to-date wenn moeglich, sonst standalone)"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
 

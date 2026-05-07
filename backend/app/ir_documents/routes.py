@@ -46,6 +46,99 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     return company
 
 
+def _post_extraction_web_fallback(
+    db: Session,
+    doc: IRDocument,
+    results: dict[str, dict],
+    company: Company,
+    source_link: str,
+) -> int:
+    """Für jeden Key in results mit value=None: Claude-Web-Recherche versuchen
+    und bei Erfolg die CompanyValue-Row mit dem Web-Wert auffüllen.
+
+    Source-Name wird zu 'PDF leer → Claude-Recherche: <quelle>' damit der
+    User im Drilldown sieht dass der Wert nicht aus dem PDF kam.
+    Returns Anzahl erfolgreich ausgefüllter Werte.
+    """
+    from app.config import settings
+    if not settings.anthropic_api_key:
+        return 0
+    from app.llm.claude import research_value, validate_claude_value
+    from app.values.currency_keys import CURRENCY_KEYS
+    from app.values.models import SourceType, ValueDefinition
+
+    period_type = doc.period_coverage.value
+    period_year = doc.period_year
+    filled = 0
+
+    for key, info in results.items():
+        if info.get("value") is not None:
+            continue  # PDF hat einen Wert — nichts nachfüllen
+        vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+        if vd is None or vd.source_type != SourceType.API:
+            continue
+
+        label = f"{vd.label_en} ({vd.label_de})"
+        try:
+            web_val, source, url, _user_prompt, _assistant = research_value(
+                company.name, company.ticker, label, company.currency,
+                period_type=period_type, period_year=period_year, value_key=key,
+            )
+        except Exception as e:
+            logger.warning("Post-extraction web fallback %s/%s/%s/%s failed: %s",
+                           company.ticker, key, period_type, period_year, e)
+            continue
+
+        if web_val is None:
+            continue
+        web_val = validate_claude_value(key, web_val)
+        if web_val is None:
+            continue
+
+        existing = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company.id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == period_type,
+                CompanyValue.period_year == period_year,
+                CompanyValue.is_forecast.is_(False),
+            )
+            .one_or_none()
+        )
+        if existing and existing.manually_overridden:
+            continue
+        original_reason = (info.get("reason") or "")[:80]
+        new_source = f"PDF leer ({original_reason}) → Claude-Recherche: {source}" if source else f"PDF leer → Claude-Recherche"
+        currency = company.currency if key in CURRENCY_KEYS else None
+        now = datetime.now(timezone.utc)
+        if existing:
+            existing.numeric_value = web_val
+            existing.source_name = new_source[:512]
+            existing.source_link = url or existing.source_link
+            existing.currency = currency or existing.currency
+            existing.fetched_at = now
+            existing.from_ir_pdf = False
+        else:
+            db.add(CompanyValue(
+                id=uuid4(),
+                company_id=company.id,
+                value_key=key,
+                period_type=period_type,
+                period_year=period_year,
+                numeric_value=web_val,
+                source_name=new_source[:512],
+                source_link=url or source_link,
+                currency=currency,
+                fetched_at=now,
+                from_ir_pdf=False,
+            ))
+        filled += 1
+        logger.info("Web-fallback filled %s/%s/%s/%s = %s (src=%s)",
+                    company.ticker, key, period_type, period_year, web_val, source)
+    return filled
+
+
 def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
     """Background job: pull doc + company from DB, run Claude PDF extraction,
     persist values + status. Uses its own DB session."""
@@ -183,6 +276,21 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                     for k, v in guidance_fy.items()
                 },
             }
+
+        # Auto-Web-Fallback: für jeden None-Key in den Results probiert Claude
+        # Web-Recherche und füllt die Row falls erfolgreich. Source wird zu
+        # 'PDF leer (<reason>) → Claude-Recherche: <quelle>'.
+        try:
+            filled = _post_extraction_web_fallback(
+                db, doc=doc, results=results, company=company, source_link=source_link,
+            )
+            if filled:
+                logger.info("Post-extraction web-fallback filled %d values for doc %s",
+                            filled, doc_id)
+                db.commit()
+        except Exception as e:
+            logger.exception("Post-extraction web-fallback failed for doc %s: %s", doc_id, e)
+            db.rollback()
 
         doc.extraction_status = ExtractionStatus.DONE
         doc.extracted_at = datetime.now(timezone.utc)
