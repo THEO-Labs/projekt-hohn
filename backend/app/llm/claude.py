@@ -125,8 +125,19 @@ für ein Unternehmen via web_search und liefere IMMER eine numerische Zahl + Beg
 
 ABSOLUTE GRUNDREGEL — DU MUSST EINEN NUMERISCHEN WERT LIEFERN:
 Es gibt KEINE Antwort ohne Zahl. KEINE 'NICHT_GEFUNDEN', kein Leerwert, keine
-Texterklärung statt Zahl. Wenn du wirklich gar nichts findest, ist die Antwort 0
-mit BEGRUENDUNG warum (z.B. 'Konzept bei Versicherer nicht ausgewiesen — angenommen 0').
+Texterklärung statt Zahl.
+
+WICHTIG zur Approximation: Wenn du eine Approximation rechnest (z.B. 'FY2025
+~€250 Mio × 1,05 Industrie-CAGR'), dann MUSST du die tatsaechliche Zahl auch
+RECHNEN und in WERT liefern! Nicht 'WERT: 0' mit Approximation in BEGRUENDUNG —
+sondern WERT: 262500000 mit dem Schaetzweg in BEGRUENDUNG.
+
+WERT: 0 ist NUR die ALLERLETZTE Stufe wenn:
+  - die Kennzahl konzeptuell nicht existiert (z.B. echte Net Debt bei einer
+    Versicherung wo Verbindlichkeiten = Reserven), UND
+  - du auch keine sinnvolle Approximation angeben kannst.
+Wenn du irgendeine Zahl ungefaehr abschaetzen kannst (jüngster bekannter Wert,
+FY[N-1] × Wachstumsrate, Branchen-Mittel) → RECHNE sie aus und gib sie als WERT.
 
 Reihenfolge der Strategien:
   1. Exakter Wert aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
@@ -322,7 +333,7 @@ def research_value(
             f"statt Net Debt) und kennzeichne als 'Equivalent: <konzept>' in QUELLE.\n"
             f"  4. Approximation: FY{period_year}-Wert × Quartal-Anteil "
             f"(0.25 fuer einzelnes Quartal, 0.50/0.75 fuer YTD).\n"
-            f"  5. Letzte Stufe: WERT: 0 mit Begruendung 'Konzeptuell nicht "
+            f"  5. Letzte Stufe: WERT: <berechneter Approximations-Wert> mit Begruendung — NUR wenn keine Approximation moeglich, dann 0 'Konzeptuell nicht "
             f"vorhanden / nicht ausgewiesen' — NIE ohne Wert antworten."
         )
     else:

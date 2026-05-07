@@ -404,13 +404,16 @@ def _process_one_key(
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
-    # PDF-Guidance trumpft alles wenn vorhanden.
-    if forecast_existing and (
-        forecast_existing.manually_overridden
-        or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None)
-    ):
-        updated.append(forecast_existing)
-        return False
+    # PDF-Guidance / Manual-Override fuer Forecast: primary numeric_value
+    # bleibt unangetastet (User-Wahl/PDF respektieren). ABER: wir berechnen
+    # trotzdem Web+Q-Faktor parallel weiter, damit forecast_alternates fuer
+    # das Drilldown-Tooltip aktuell bleibt. Erst NACH dem ESTIMATE-Block
+    # wird entschieden ob primary geupdated wird.
+    forecast_locked = bool(
+        forecast_existing
+        and (forecast_existing.manually_overridden
+             or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None))
+    )
 
     # Fallback-Kette pro Cell:
     #   1. Provider-Chain (EDGAR/Yahoo) — schnell wenn US oder Stammdaten
@@ -489,6 +492,15 @@ def _process_one_key(
         target_fy = effective_period_year if effective_period_year is not None else 0
         if target_fy > 0:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
+
+    # Forecast-Lock: primary numeric_value bleibt wie er war (Manual/PDF),
+    # aber alternates werden upgedatet damit das Tooltip-Drilldown frisch ist.
+    if forecast_locked and forecast_existing is not None:
+        if forecast_alternates:
+            forecast_existing.forecast_alternates = forecast_alternates
+            db.flush()
+        updated.append(forecast_existing)
+        return True
 
     if result is None:
         return False
