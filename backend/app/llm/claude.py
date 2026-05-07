@@ -208,7 +208,12 @@ def extract_research_value(text: str) -> Decimal | None:
         re.IGNORECASE,
     )
     if not match:
-        logger.warning("research: Claude antwortete ohne WERT-Pattern — caller bekommt None")
+        # Diagnose: was hat Claude eigentlich geantwortet? Erste 500 chars logged
+        # damit wir sehen ob es ein Format-Issue ist (kein WERT-Praefix), web_search
+        # tool-block ohne text, oder ein Refusal.
+        preview = (text or "")[:500].replace("\n", " | ")
+        logger.warning("research: Claude antwortete ohne WERT-Pattern — caller bekommt None. Antwort-Preview: %s",
+                       preview)
         return None
     raw = match.group(1).strip()
     if re.match(r"nicht.{0,2}gefunden", raw, re.IGNORECASE):
