@@ -255,10 +255,24 @@ def _try_web_guidance(
         return None
 
     label = f"{vd.label_en} ({vd.label_de})"
+    # FY[N-1]-Anker fuer Konsens-Sanity (YoY-Cap) und Currency-Cross-Check.
+    prev_fy = target_fy - 1
+    prev_row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == prev_fy,
+        )
+        .one_or_none()
+    )
+    prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
     try:
         val, source, url, _user_prompt, _assistant_response = research_value(
             company.name, company.ticker, label, company.currency,
             period_type="FY", period_year=target_fy, value_key=key,
+            prev_fy_val=prev_fy_val,
         )
     except Exception as e:
         logger.warning("Web-Guidance Claude call failed for %s/%s/FY%s: %s",
@@ -269,9 +283,9 @@ def _try_web_guidance(
         logger.info("Web-Guidance %s/%s/FY%s: no value extracted",
                     company.ticker, key, target_fy)
         return None
-    val_validated = validate_claude_value(key, val)
+    val_validated = validate_claude_value(key, val, prev_fy_val=prev_fy_val, is_forward_year=True)
     if val_validated is None:
-        logger.info("Web-Guidance %s/%s/FY%s: value %s failed sanity-range",
+        logger.info("Web-Guidance %s/%s/FY%s: value %s failed sanity-range/yoy-cap",
                     company.ticker, key, target_fy, val)
         return None
     val = val_validated

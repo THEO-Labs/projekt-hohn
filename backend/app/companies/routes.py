@@ -1,7 +1,10 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.auth.deps import current_user
 from app.auth.models import User
@@ -46,6 +49,34 @@ def list_companies(
     )
 
 
+_TICKER_SUFFIX_CURRENCY: dict[str, str] = {
+    # Yahoo-Ticker-Suffix → Reporting-Currency. Schuetzt vor versehentlichem
+    # USD-Default fuer EU/UK/JP-Listings (z.B. AIR.PA = Airbus reportet in EUR,
+    # nicht USD trotz USD-Listing-Doppelnotierung).
+    ".DE": "EUR", ".F": "EUR", ".PA": "EUR", ".AS": "EUR", ".MI": "EUR",
+    ".MC": "EUR", ".LS": "EUR", ".VI": "EUR", ".HE": "EUR", ".BR": "EUR",
+    ".IR": "EUR",
+    ".L": "GBP", ".LON": "GBP",
+    ".SW": "CHF",
+    ".CO": "DKK", ".OL": "NOK", ".ST": "SEK",
+    ".T": "JPY", ".TYO": "JPY",
+    ".HK": "HKD",
+    ".SS": "CNY", ".SZ": "CNY",
+    ".KS": "KRW", ".KQ": "KRW",
+    ".AX": "AUD",
+    ".TO": "CAD", ".V": "CAD",
+}
+
+
+def _suggest_currency_from_ticker(ticker: str) -> str | None:
+    """Heuristik: aus Yahoo-Ticker-Suffix (z.B. '.DE', '.PA', '.L') die
+    Reporting-Currency ableiten. Returns None wenn US-Listing oder unbekannt."""
+    if not ticker or "." not in ticker:
+        return None
+    suffix = "." + ticker.split(".")[-1].upper()
+    return _TICKER_SUFFIX_CURRENCY.get(suffix)
+
+
 @portfolio_scoped.post("", response_model=CompanyOut, status_code=status.HTTP_201_CREATED)
 def create_company(
     portfolio_id: UUID,
@@ -54,7 +85,19 @@ def create_company(
     db: Session = Depends(get_db),
 ) -> Company:
     _get_owned_portfolio(db, user, portfolio_id)
-    company = Company(portfolio_id=portfolio_id, **payload.model_dump())
+    data = payload.model_dump()
+    # Currency-Sanity: wenn User USD eingibt aber Ticker-Suffix klare EU/UK/JP-
+    # Heimatboerse signalisiert, ueberschreiben — schuetzt vor Currency-Mismatch
+    # in Cross-Year-Aggregaten (z.B. Airbus.PA mit USD => Web liefert EUR-Werte
+    # die als USD persistiert werden).
+    suggested = _suggest_currency_from_ticker(data.get("ticker", ""))
+    if suggested and data.get("currency") != suggested:
+        logger.info(
+            "Currency-Auto-Detect: %s ticker -> %s (User-Eingabe %s ueberschrieben)",
+            data.get("ticker"), suggested, data.get("currency"),
+        )
+        data["currency"] = suggested
+    company = Company(portfolio_id=portfolio_id, **data)
     db.add(company)
     db.commit()
     db.refresh(company)

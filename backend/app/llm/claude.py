@@ -137,10 +137,37 @@ ehrlicher Quelle 'KI-Einschätzung basierend auf [Begründung]' wenn keine
 nachweisbar kein Buyback-Programm in dem Jahr → wirklich 0). NIEMALS 0 weil
 'ich finde nichts'.
 
+QUALITAETS-PRINZIPIEN (NEU, ABSOLUT VERBINDLICH):
+
+A. **Sektor-Pflicht zuerst checken**: Bevor du irgendeine Zahl ableitest,
+   identifiziere die SEKTOR-Klasse: Industrials/Tech/Retail vs Versicherer/Bank/
+   REIT/Holding. Bei Versicherern + Banken sind Aggregator-FCFs (Macrotrends,
+   FinanceCharts, StockAnalysis Op-CF − CapEx) STRUKTURELL FALSCH weil sie
+   Premium-/Deposit-Inflows als 'Free' Cash zählen die in Anlage-Assets oder
+   Reserve-Accounts gebunden sind. NUTZE die Equivalent-Definitionen unten.
+
+B. **Konsens-Sanity**: Forward-Year-Schätzungen für Net Income, FCF, SBC, Buyback,
+   Dividends sollten **nicht mehr als +50% YoY** über FY[N-1]-Istwert liegen
+   (außer es gibt eine konkrete Management-Guidance die eine starke Erhöhung
+   ankündigt — dann musst du das in BEGRUENDUNG explizit zitieren). Wenn deine
+   Schätzung über 1,5× FY[N-1] liegt: STOP, prüfe Quelle nochmal.
+
+C. **Konsistenz Output ↔ Begründung**: Wenn du in BEGRUENDUNG rechnest "EPS €X ×
+   Aktien Y = Z" oder "FY[N-1] × Wachstumsrate = Z", dann MUSS dein WERT das
+   Z sein (±2% Rundung erlaubt). Inkonsistenz = ungültige Antwort.
+
+D. **Quellen-URL-Pflicht für Datumsangaben**: Wenn du in QUELLE ein konkretes
+   Datum referenzierst (z.B. 'IR-Press-Release vom 04.03.2026' oder 'Ad-hoc-
+   Mitteilung vom 29.01.2026'), MUSS QUELLE_URL die spezifische URL dieser
+   Press-Release sein — NICHT nur die generelle IR-Seite. Wenn du keine
+   spezifische URL nennen kannst, lass das konkrete Datum weg und schreib
+   'lt. IR/Annual Report' allgemein. Halluzinierte Daten ohne URL = Disqualifikation.
+
 WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
 
 1. **Exakter Wert** aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
-   oder direkt aus IR/SEC-Filing.
+   oder direkt aus IR/SEC-Filing — ABER nicht für FCF/Net Debt von Versicherern
+   und Banken (siehe Equivalent-Konzepte unten).
 
 2. **Management-Guidance / Konsens**: IR-Seite, Earnings Call Transcript,
    Investor Day, Yahoo/Seeking Alpha Analyst Estimates.
@@ -148,21 +175,30 @@ WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
 3. **Approximation aus letztem bekannten Wert** (= Standard-Pfad bei Forward-Year):
      letzter_FY_Istwert × (1 + plausible Wachstumsrate)
    Wachstumsrate aus: historische 3-5J-CAGR, Industrie-Trend, Q-Run-Rate
-   (z.B. Q1+Q2+Q3 YTD × 4/3 für FY-Schätzung).
+   (z.B. Q1+Q2+Q3 YTD × 4/3 für FY-Schätzung). HARD-CAP: max +50% YoY.
 
-4. **Equivalent-Konzept bei Sektor-Mismatch**:
-     Versicherer FCF       → Operating Profit / Operating Cash Flow
+4. **Equivalent-Konzept bei Sektor-Mismatch (PFLICHT für Banken/Versicherer)**:
+     Versicherer FCF       → Cash-Generation-to-Holding (typisch 60-80% von
+                              IFRS Net Income — z.B. Allianz ~€8-10 Mrd, NICHT
+                              €30-40 Mrd Macrotrends-Style). NUTZE NIE
+                              Aggregator-FCF (Op-CF − CapEx) für Versicherer.
      Versicherer SBC       → Personnel Expenses × 0,5-1% (typische SBC-Quote)
-     Versicherer Net Debt  → Total Borrowings − Cash (ohne LT Marketable Sec.)
-     Bank FCF              → Net Interest Income + Fees - OpEx (proxy)
-     Bank Net Debt         → Long-term Debt − Cash & Equivalents (Debt-Funding)
+     Versicherer Net Debt  → Total Borrowings (Subordinated/Senior) − operative
+                              Cash (KEINE Marketable Securities/Investment-Assets
+                              als 'Cash' zählen — die decken Reserven).
+     Bank FCF              → Net Profit ± Capital-Generation-Adjustments
+                              (NICHT Op-CF − CapEx; Banken haben strukturell
+                              irrelevanten 'FCF' im Industrial-Sinn)
+     Bank Net Debt         → Long-term Senior Debt − Cash (NUR Funding-Debt,
+                              NICHT Customer-Deposits als Liabilities zählen)
      Bank SBC              → Personnel × 1-2% (Banken haben hoehere SBC-Quoten)
      REIT FCF              → AFFO (Adjusted Funds From Operations)
      REIT Net Debt         → Total Debt − Cash (Leverage zentral fuer REITs)
      Holdings (Berkshire)  → FCF = OCF + Insurance Float Gain; SBC oft minimal
      Royalty/Mining-Trust  → FCF ≈ Distributable Cash, kein klassisches CapEx
    Du MUSST die Equivalent-Zahl AUSRECHNEN und liefern — nicht nur "Konzept fehlt
-   → 0".
+   → 0". Die Aggregator-Zahl bei Versicherern/Banken zu liefern ist FEHLERHAFT
+   und wird verworfen.
 
 5. **Branchen-Mittel**: vergleichbare Firma der gleichen Sektor/Größenklasse
    als Bezug, dann skaliert auf das gesuchte Unternehmen.
@@ -306,6 +342,60 @@ _LIKELY_CURRENCY_KEYS = frozenset({
 })
 
 
+def detect_calculation_inconsistency(value: Decimal, content: str) -> str | None:
+    """Sucht in Claude-Output nach 'X × Y = Z' / 'X * Y = Z' / 'Resultat: Z'-Pattern
+    und prueft ob Z mit dem ausgegebenen WERT konsistent ist.
+
+    Returns: error-message wenn Inkonsistenz >5% gefunden wurde (Caller koennte
+    retry triggern), sonst None (alles plausibel).
+    """
+    if not content or value == 0:
+        return None
+    try:
+        wert = float(value)
+    except (ValueError, OverflowError):
+        return None
+    # Kandidaten-Resultate aus Multiplikations-/Divisions-/Resultat-Patterns
+    # extrahieren. Wir suchen nach Zahlen mit Einheits-Suffix (Mio/Mrd/Mio EUR/etc).
+    candidates: list[float] = []
+    for pat in (
+        r"=\s*\*?\*?[\$€£]?\s*([\d.,]+)\s*(Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?",
+        r"(?:Resultat|Ergebnis|Endergebnis|Total)\s*[:=]\s*\*?\*?[\$€£]?\s*([\d.,]+)\s*(Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?",
+    ):
+        for m in re.finditer(pat, content, re.IGNORECASE):
+            raw_num = m.group(1).replace(".", "").replace(",", ".") if m.group(1).count(",") == 1 else m.group(1).replace(",", "")
+            try:
+                num = float(raw_num)
+            except ValueError:
+                continue
+            unit = (m.group(2) or "").lower()
+            if unit in ("mrd", "milliarden", "billion", "b"):
+                num *= 1_000_000_000
+            elif unit in ("mio", "millionen", "million", "m"):
+                num *= 1_000_000
+            elif unit == "k":
+                num *= 1_000
+            if num > 1_000_000:  # nur konzern-skalige Zahlen
+                candidates.append(num)
+    if not candidates:
+        return None
+    # Best-Match: die nachvollziehbarste Berechnung ist die mit kleinster Diff
+    # zu WERT — wenn aber selbst die best-match >5% abweicht, ist die
+    # Begruendung inkonsistent.
+    diffs = [abs(c - abs(wert)) / max(abs(wert), 1.0) for c in candidates]
+    best_diff = min(diffs)
+    if best_diff > 0.05:
+        # Mindestens ein Result-Kandidat existiert aber alle weichen >5% ab.
+        # Das deutet auf inkonsistente Begruendung hin.
+        best_candidate = candidates[diffs.index(best_diff)]
+        return (
+            f"Begruendung enthaelt Berechnung mit Resultat ~{best_candidate:,.0f} aber "
+            f"WERT={wert:,.0f} — Abweichung {best_diff*100:.1f}%. Begruendung muss "
+            f"rechnerisch zum Output passen."
+        )
+    return None
+
+
 def detect_unit_error(key: str, value: Decimal) -> bool:
     """True wenn ein Currency-Key suspicious klein ist (z.B. WERT: 1.45 USD
     statt 1450000000 USD — Claude hat vergessen die Approximation in
@@ -372,20 +462,33 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
 }
 
 
+_YOY_CAP_KEYS: dict[str, tuple[float, float]] = {
+    # (max_growth_factor, max_shrink_factor) für FORWARD-Year-Schätzungen.
+    # Stabile Posten: max +50% YoY, max -40%. Buyback/Dividends/Net Debt
+    # schwanken stärker — laxere Caps.
+    "net_income": (1.5, 0.5),
+    "fcf": (1.6, 0.4),
+    "sbc": (1.4, 0.6),
+    "buyback_volume": (3.0, 0.2),     # Programme starten/stoppen
+    "dividends": (2.0, 0.3),          # Dividenden-Sprünge nach Krisenjahren
+}
+
+
 def validate_claude_value(
     key: str,
     value: Decimal,
     *,
     prev_fy_val: Decimal | None = None,
+    is_forward_year: bool = False,
 ) -> Decimal | None:
     """Range-Check für Claude-Werte. None wenn ausserhalb plausibler Range
     oder wenn die unit-heuristik anschlaegt (Currency-Wert verdaechtig klein
     -> Claude hat vermutlich Mio/Mrd vergessen).
 
-    prev_fy_val (optional): wenn vorhanden, machen wir einen Currency-Cross-
-    Check via Größenordnungs-Ratio. Wenn |value| > 100x oder < 0.01x prev_fy_val
-    sehen wir das als Currency-/Unit-Mismatch (z.B. Claude liefert INR-Werte
-    fuer EUR-Firma) und droppen.
+    prev_fy_val (optional): wenn vorhanden, machen wir mehrere Cross-Checks:
+      - Currency-Mismatch via Größenordnungs-Ratio (>100x oder <0.01x → reject).
+      - YoY-Cap fuer Forward-Year: pro Key max plausibles Wachstum/Schrumpfen.
+        Hard-Reject wenn ueberschritten (Konsens-Sanity).
     """
     limits = _CLAUDE_SANITY_CHECKS.get(key)
     if limits is None:
@@ -425,6 +528,31 @@ def validate_claude_value(
                         key, value, prev_fy_val, ratio,
                     )
                     return None
+            # YoY-Cap fuer Forward-Year: Konsens-Sanity. Per-Key plausible
+            # Range fuer YoY-Aenderung. Net Debt ausgenommen (Sign-Swings sind
+            # legitim z.B. Net Cash → Net Debt nach grosser Akquisition).
+            if is_forward_year and key in _YOY_CAP_KEYS and prev_abs > 1_000_000:
+                max_growth, max_shrink = _YOY_CAP_KEYS[key]
+                # Vorzeichen-Aware: bei gleichem Vorzeichen pruefen wir die
+                # absolute Skalierung. Bei verschiedenen Vorzeichen
+                # (z.B. NI von Verlust → Profit) gilt der Cap nicht.
+                if (fval * float(prev_fy_val)) > 0:
+                    growth_factor = curr_abs / prev_abs
+                    if growth_factor > max_growth:
+                        logger.warning(
+                            "Claude YoY-Cap %s: forward=%s vs prev_fy=%s growth=%.2fx "
+                            "(max %.2fx) — vermutlich zu optimistisch / Konsens-Drift, "
+                            "dropping fuer Retry",
+                            key, value, prev_fy_val, growth_factor, max_growth,
+                        )
+                        return None
+                    if growth_factor < max_shrink:
+                        logger.warning(
+                            "Claude YoY-Cap %s: forward=%s vs prev_fy=%s shrink=%.2fx "
+                            "(min %.2fx) — vermutlich zu pessimistisch, dropping",
+                            key, value, prev_fy_val, growth_factor, max_shrink,
+                        )
+                        return None
         except (ValueError, OverflowError):
             pass
     if fval == 0:
@@ -445,6 +573,29 @@ def validate_claude_value(
     return value
 
 
+_DATE_PATTERN = re.compile(r"\b(\d{1,2}\.\d{1,2}\.\d{4})\b|\b(?:\d{4}-\d{2}-\d{2})\b")
+
+
+def _has_specific_url(url: str | None) -> bool:
+    """Heuristik: True wenn URL eine spezifische Sub-Page referenziert (mehr als
+    nur Hostname/IR-Landingpage). Wird für Halluzinations-Detection genutzt:
+    Datums-Referenzen ohne spezifische URL = unverifizierbar."""
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        path = (p.path or "").rstrip("/")
+        # Nur Hostname oder triviale Pfade wie /investors, /ir → unspezifisch
+        if not path or len(path.split("/")) <= 2:
+            return False
+        if path.lower() in ("/investors", "/ir", "/de/investors", "/en/investors", "/investor-relations"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def research_value(
     company_name: str,
     ticker: str,
@@ -453,9 +604,15 @@ def research_value(
     period_type: str = "FY",
     period_year: int | None = None,
     value_key: str | None = None,
+    prev_fy_val: Decimal | None = None,
 ) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
     """Web-Recherche für eine einzelne Kennzahl.
-    Returns (value, source_name, source_url, user_prompt, assistant_response)."""
+    Returns (value, source_name, source_url, user_prompt, assistant_response).
+
+    prev_fy_val (optional): wird fuer YoY-Cap-Sanity-Check und Konsens-Sanity-Hint
+    im Prompt genutzt. Reduziert deutlich Konsens-Optimismus und Halluzinations-
+    Drift bei Forward-Forecasts.
+    """
     is_forward = _is_forward_year(period_year)
     is_quarter = period_type in ("Q1", "Q2", "Q3", "Q4")
     if period_type == "FY" and period_year:
@@ -520,6 +677,27 @@ def research_value(
             f"WERT: 0 nur wenn deine Approximation tatsächlich 0 ergibt. NIE als Fallback."
         )
 
+    # Konsens-Sanity-Hint: prev_fy_val als Anker im Prompt benennen damit Claude
+    # weiss welcher YoY-Cap gilt. Reduziert Konsens-Drift bei Forward-Forecasts.
+    anchor_block = ""
+    if is_forward and prev_fy_val is not None and value_key in _YOY_CAP_KEYS:
+        max_growth, max_shrink = _YOY_CAP_KEYS[value_key]
+        try:
+            prev_f = float(prev_fy_val)
+            anchor_block = (
+                f"\n\nFY{period_year - 1}-ANKER: Der zuletzt bekannte FY-Wert fuer "
+                f"{value_label} ist {prev_f:,.0f} {currency}. Deine FY{period_year}e-"
+                f"Schaetzung MUSS in einem plausiblen YoY-Korridor liegen: "
+                f"{prev_f * max_shrink:,.0f} bis {prev_f * max_growth:,.0f} {currency} "
+                f"(= {(max_shrink-1)*100:+.0f}% bis {(max_growth-1)*100:+.0f}% YoY). "
+                f"Werte ausserhalb werden serverseitig REJECTED — pruefe Konsens und "
+                f"Quelle nochmal. Wenn deine Quelle einen Sprung >+50% andeutet, "
+                f"zitiere die Management-Guidance/Earnings-Call wortwoertlich in "
+                f"BEGRUENDUNG."
+            )
+        except (ValueError, TypeError):
+            pass
+
     user_prompt = (
         f"Unternehmen: {company_name} ({ticker}, {currency})\n"
         f"Gesuchte Kennzahl: {value_label}\n"
@@ -535,6 +713,7 @@ def research_value(
         f"Verlasse dich NICHT nur auf dein Gedächtnis."
         f"{forward_block}"
         f"{hint_block}"
+        f"{anchor_block}"
     )
 
     def _do_call(messages: list[dict]) -> str:
@@ -570,18 +749,38 @@ def research_value(
         value = extract_research_value(content)
         sanity_failed_reason: str | None = None
 
-        # Sanity-Check: wenn Wert extrahiert wurde aber sanity-range/unit-error
-        # ihn rejected, soll der Retry auch dann greifen. Sonst landet ein
-        # 'Web fehlte' im UI obwohl Claude geantwortet hat — nur halt mit
-        # offensichtlichem Unit-Fehler (z.B. WERT: 5 statt 5_000_000_000).
+        # Sanity-Check: Range/Unit + neu YoY-Cap (Konsens-Sanity) + Self-
+        # Consistency (BEGRUENDUNG vs WERT). Reject zwingt Retry.
         if value is not None and value_key:
-            validated = validate_claude_value(value_key, value)
+            validated = validate_claude_value(
+                value_key, value, prev_fy_val=prev_fy_val, is_forward_year=is_forward,
+            )
             if validated is None:
-                sanity_failed_reason = (
-                    f"Vorheriger Wert {value} wurde wegen Sanity-Range oder "
-                    f"Unit-Verdacht (Mio/Mrd-Verwechslung?) verworfen"
-                )
+                if prev_fy_val is not None and value_key in _YOY_CAP_KEYS:
+                    sanity_failed_reason = (
+                        f"Vorheriger Wert {value} wurde verworfen — entweder Sanity-"
+                        f"Range, Unit-Verdacht (Mio/Mrd-Verwechslung) oder YoY-Cap "
+                        f"(zu starke Abweichung von FY{period_year - 1 if period_year else '?'}-Anker {prev_fy_val})"
+                    )
+                else:
+                    sanity_failed_reason = (
+                        f"Vorheriger Wert {value} wurde wegen Sanity-Range oder "
+                        f"Unit-Verdacht (Mio/Mrd-Verwechslung?) verworfen"
+                    )
                 value = None
+            else:
+                # Self-Consistency: BEGRUENDUNG-Berechnung muss zum WERT passen.
+                inc = detect_calculation_inconsistency(value, content)
+                if inc is not None:
+                    logger.warning("research %s/%s: %s — retry mit Korrektur-Hinweis",
+                                   ticker, value_key or "?", inc)
+                    sanity_failed_reason = inc
+                    value = None
+                # URL-Halluzinations-Check: Datums-Referenz in QUELLE ohne
+                # spezifische QUELLE_URL → wahrscheinlich halluziniert. Wir
+                # markieren das im Source-Name aber rejecten nicht hard
+                # (User entscheidet beim Reviewen).
+                # (Source/URL erst später extrahiert — Marker wird unten gesetzt.)
 
         # Retry-Stufe: Wenn Claude beim ersten Versuch keine Zahl liefert
         # (oder die Zahl Sanity-Check nicht besteht), zwingen wir ihn als
@@ -593,10 +792,11 @@ def research_value(
             sanity_hint = ""
             if sanity_failed_reason:
                 sanity_hint = (
-                    "\n\nVorsicht: dein letzter Wert wurde verworfen weil er "
-                    "verdaechtig klein war — wahrscheinlich hast du Mio/Mrd "
-                    "vergessen. Gib die Zahl in BASE-UNITS: 1.45 Mrd USD = "
-                    "1450000000, NICHT 1.45 oder 1450."
+                    f"\n\nVorsicht: dein letzter Wert wurde verworfen. Grund: "
+                    f"{sanity_failed_reason}. Korrigiere das beim Retry — pruefe "
+                    f"Unit (Base-Units, nicht Mio/Mrd), Konsistenz zwischen "
+                    f"BEGRUENDUNG-Rechnung und WERT, und ob deine YoY-Aenderung "
+                    f"plausibel ist (siehe Anker im Original-Prompt)."
                 )
             retry_prompt = (
                 f"Du hast eben keine valide numerische Antwort geliefert. Das ist "
@@ -623,13 +823,22 @@ def research_value(
                 {"role": "user", "content": retry_prompt},
             ])
             value = extract_research_value(content_retry)
-            # Auch hier Sanity-Check anwenden
+            # Auch hier voller Sanity-Check (Range/Unit + YoY-Cap + Self-Consistency).
             if value is not None and value_key:
-                validated = validate_claude_value(value_key, value)
+                validated = validate_claude_value(
+                    value_key, value, prev_fy_val=prev_fy_val, is_forward_year=is_forward,
+                )
                 if validated is None:
                     logger.warning("Web-Recherche %s/%s: retry-Wert %s ebenfalls Sanity-Fail",
                                    ticker, value_key, value)
                     value = None
+                else:
+                    inc = detect_calculation_inconsistency(value, content_retry)
+                    if inc is not None:
+                        logger.warning("Web-Recherche %s/%s: retry-Wert %s self-consistency-fail (%s) — accept aber markiere",
+                                       ticker, value_key, value, inc)
+                        # Beim Retry akzeptieren wir die Inkonsistenz statt endlos
+                        # zu loopen, aber loggen + Caller koennte das im Source vermerken.
             if value is not None:
                 content = content_retry  # nutze die Retry-Antwort für source/url
                 logger.info("Web-Recherche %s/%s: retry erfolgreich, Wert=%s",
@@ -641,6 +850,14 @@ def research_value(
         source = source_match.group(1).strip() if source_match else "Claude-Recherche"
         url_match = re.search(r"QUELLE_URL:\s*(https?://\S+)", content)
         source_url = url_match.group(1).strip() if url_match else None
+        # URL-Halluzinations-Marker: Wenn QUELLE konkretes Datum referenziert
+        # aber QUELLE_URL fehlt oder unspezifisch ist (nur Hostname/IR-Landingpage),
+        # markiere das im Source-Name. Halluzinierte Datumsangaben sind die
+        # haeufigste Failure-Mode bei Claude-Web-Recherche.
+        if _DATE_PATTERN.search(source) and not _has_specific_url(source_url):
+            source = f"⚠ unverifizierte Datumsangabe ohne spezifische URL — {source}"
+            logger.info("Web-Recherche %s/%s: Datums-Referenz ohne spezifische URL markiert",
+                        ticker, value_key or "?")
         # source ohne Praefix zurückgeben — Caller (Web-Guidance / Research-
         # Endpoint / Auto-Fallback) entscheidet das passende Praefix.
         return value, source, source_url, user_prompt, content
