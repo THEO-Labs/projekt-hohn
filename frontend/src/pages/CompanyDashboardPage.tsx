@@ -572,6 +572,22 @@ export function CompanyDashboardPage() {
 
   const handleRefreshCompany = async (c: Company) => {
     const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
+    // Pre-Refresh-Warnung: zeig dem User welche Manual-Werte zerstoert werden.
+    const cRows = valuesMap.get(c.id) ?? [];
+    const manualKeys = cRows
+      .filter((r) => r.manually_overridden && apiKeys.includes(r.value_key))
+      .map((r) => {
+        const def = definitions.find((d) => d.key === r.value_key);
+        return def?.label_de ?? r.value_key;
+      });
+    if (manualKeys.length > 0) {
+      const ok = confirm(
+        `${c.name}: ${manualKeys.length} manuell ueberschriebene Werte werden beim Refresh wieder ueberschrieben:\n\n` +
+        manualKeys.map((k) => `  • ${k}`).join("\n") +
+        `\n\nFortfahren?`
+      );
+      if (!ok) return;
+    }
     setRefreshStatuses((prev) => new Map(prev).set(c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }));
     try {
       const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
@@ -1611,14 +1627,22 @@ export function CompanyDashboardPage() {
             if (webAlt.value != null) displayValue = parseFloat(webAlt.value);
           }
 
-          const isClaudeResearch = (displaySource || "").includes("Claude-Recherche") || (displaySource || "").includes("Web-Guidance");
-          const isProxySource = (displaySource || "").includes("Proxy");
-          const confidence = cv.manually_overridden
+          // Confidence-Logic nutzt jetzt cv.primary_method (explizit) mit
+          // Source-Name-Heuristik als Legacy-Fallback fuer alte Rows.
+          const pm = cv.primary_method;
+          const isClaudeResearch = pm === "web_guidance"
+            || (pm == null && ((displaySource || "").includes("Claude-Recherche")
+                || (displaySource || "").includes("Web-Guidance")));
+          const isProxySource = pm === "q_factor_proxy"
+            || (pm == null && (displaySource || "").includes("Proxy"));
+          const confidence = cv.manually_overridden || pm === "manual"
             ? { label: "Manuell überschrieben", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Pencil }
             : isProxySource
             ? { label: "Q-Faktor-Proxy (Schätzung)", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Calculator }
             : isClaudeResearch
             ? { label: "KI-Recherche", color: "bg-orange-100 text-orange-800 border-orange-300", icon: Sparkles }
+            : pm === "pdf" || (pm == null && def.source_type === "API" && (displaySource || "").startsWith("PDF:"))
+            ? { label: "Annual Report (PDF)", color: "bg-emerald-100 text-emerald-800 border-emerald-300", icon: ShieldCheck }
             : def.source_type === "API"
             ? { label: "Verifizierte Datenquelle", color: "bg-green-100 text-green-800 border-green-300", icon: ShieldCheck }
             : def.source_type === "CALCULATED"
@@ -1628,6 +1652,16 @@ export function CompanyDashboardPage() {
             : { label: "Nutzereingabe", color: "bg-slate-100 text-slate-700 border-slate-300", icon: Pencil };
 
           const ConfIcon = confidence.icon;
+
+          // Stale-Indikator: wenn last_refresh_attempt deutlich neuer als
+          // fetched_at, hat der letzte Refresh nichts neues geliefert
+          // (Provider/Web fehl, Wert ist veraltet).
+          const isStale = (() => {
+            if (!cv.last_refresh_attempt || !cv.fetched_at) return false;
+            const refresh = new Date(cv.last_refresh_attempt).getTime();
+            const fetched = new Date(cv.fetched_at).getTime();
+            return refresh - fetched > 60_000; // mehr als 1min Diff
+          })();
 
           return createPortal(
             <>
@@ -1658,12 +1692,20 @@ export function CompanyDashboardPage() {
                   </button>
                 </div>
 
-                {/* Vertrauenslevel-Badge */}
-                <div className="px-4 pt-3">
+                {/* Vertrauenslevel-Badge + optional Stale-Warnung */}
+                <div className="px-4 pt-3 space-y-1.5">
                   <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 ${confidence.color}`}>
                     <ConfIcon className="h-3.5 w-3.5 shrink-0" />
                     <span className="text-[11px] font-medium">{confidence.label}</span>
                   </div>
+                  {isStale && (
+                    <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-700" />
+                      <span className="text-[11px] font-medium text-amber-800">
+                        Stale: letzter Refresh {cv.last_refresh_attempt ? new Date(cv.last_refresh_attempt).toLocaleString("de-DE") : "—"} lieferte nichts neues. Wert von {cv.fetched_at ? new Date(cv.fetched_at).toLocaleString("de-DE") : "—"}.
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Section: Formel */}

@@ -340,6 +340,19 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
             logger.exception("Post-extraction web-fallback failed for doc %s: %s", doc_id, e)
             db.rollback()
 
+        # Silent-DONE-Schutz: wenn beide Pässe kein JSON parsen konnten, bleibt
+        # results={} und wir hätten 0 Werte mit status=DONE — irrefuehrend.
+        # Stattdessen FAILED setzen damit User sieht dass die Extraktion broken war.
+        if not results:
+            doc.extraction_status = ExtractionStatus.FAILED
+            doc.extracted_at = datetime.now(timezone.utc)
+            doc.extraction_error = (
+                "JSON parse failed in both extraction passes — Claude lieferte keine "
+                "valide JSON-Antwort. PDF eventuell beschaedigt, zu komplex oder "
+                "Claude-API-Quirk. Re-Extract nochmal versuchen."
+            )
+            db.commit()
+            return
         doc.extraction_status = ExtractionStatus.DONE
         doc.extracted_at = datetime.now(timezone.utc)
         doc.extraction_results = json_safe_results

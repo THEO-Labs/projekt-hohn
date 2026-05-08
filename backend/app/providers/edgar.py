@@ -78,41 +78,72 @@ class EdgarProvider:
     def __init__(self) -> None:
         self._ticker_to_cik: dict[str, str] | None = None
         self._facts_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
+        # HTTPTransport mit retries=3 fuer transiente 429/503/Network-Errors —
+        # SEC ist gelegentlich rate-limited, transient.
         self._client = httpx.Client(
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             timeout=15.0,
             follow_redirects=True,
+            transport=httpx.HTTPTransport(retries=3),
         )
+
+    def _retried_get(self, url: str, *, max_attempts: int = 3) -> httpx.Response | None:
+        """GET mit explizitem Backoff bei 429/503. Transport-retries decken nur
+        Connection-Errors, nicht HTTP-Status-Errors."""
+        import time
+        for attempt in range(max_attempts):
+            try:
+                r = self._client.get(url)
+                if r.status_code in (429, 503) and attempt < max_attempts - 1:
+                    wait = 2 ** attempt
+                    logger.warning("EDGAR %s -> %s, retry in %ds", url, r.status_code, wait)
+                    time.sleep(wait)
+                    continue
+                return r
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    logger.warning("EDGAR GET %s failed after %d retries: %s", url, max_attempts, e)
+                    return None
+                wait = 2 ** attempt
+                time.sleep(wait)
+        return None
 
     def _get_cik(self, ticker: str) -> str | None:
         if self._ticker_to_cik is None:
+            r = self._retried_get("https://www.sec.gov/files/company_tickers.json")
+            if r is None or r.status_code >= 400:
+                logger.warning("EDGAR ticker-list fetch failed (status=%s)",
+                               r.status_code if r else "no-response")
+                return None
             try:
-                r = self._client.get("https://www.sec.gov/files/company_tickers.json")
-                r.raise_for_status()
                 data = r.json()
                 self._ticker_to_cik = {
                     item["ticker"].upper(): str(item["cik_str"]).zfill(10)
                     for item in data.values()
                 }
             except Exception as e:
-                logger.warning("EDGAR ticker-list fetch failed: %s", e)
+                logger.warning("EDGAR ticker-list parse failed: %s", e)
                 return None
         return self._ticker_to_cik.get(ticker.upper())
 
     def _get_facts(self, cik: str) -> dict | None:
         if cik in self._facts_cache:
             return self._facts_cache[cik]
+        url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+        r = self._retried_get(url)
+        if r is None:
+            return None
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            logger.warning("EDGAR companyfacts CIK %s -> %s after retries", cik, r.status_code)
+            return None
         try:
-            url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-            r = self._client.get(url)
-            if r.status_code == 404:
-                return None
-            r.raise_for_status()
             data = r.json()
             self._facts_cache[cik] = data
             return data
         except Exception as e:
-            logger.warning("EDGAR companyfacts fetch failed for CIK %s: %s", cik, e)
+            logger.warning("EDGAR companyfacts parse failed for CIK %s: %s", cik, e)
             return None
 
     def _find_value(

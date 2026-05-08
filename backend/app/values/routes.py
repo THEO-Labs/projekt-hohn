@@ -591,10 +591,19 @@ def _process_one_key(
         and existing.currency != result.currency
         and key in CURRENCY_KEYS
     ):
+        # Currency-Mismatch HARTER REJECT statt silent overwrite. Sonst mischen
+        # sich USD/EUR/GBP-Werte in FY-Cross-Year-Aggregaten und produzieren
+        # falsche Yields/Hohn-Renditen. Lieber alten Wert behalten + last_refresh
+        # markieren damit User nachvollziehen kann dass Refresh nicht durchging.
         logger.warning(
-            "Currency mismatch for %s/%s/%s: existing=%s new=%s (source=%s) — overwriting, downstream calcs may mix currencies",
+            "Currency mismatch BLOCKED %s/%s/%s: existing=%s new=%s (source=%s) — "
+            "alter Wert bleibt erhalten, Refresh-Versuch markiert",
             ticker, key, effective_period_year, existing.currency, result.currency, result.source_name,
         )
+        existing.last_refresh_attempt = datetime.now(timezone.utc)
+        db.flush()
+        updated.append(existing)
+        return False
 
     is_forecast_flag = bool((result.extras or {}).get("is_forecast", False)) if result.extras else False
 
