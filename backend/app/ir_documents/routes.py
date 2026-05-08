@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.deps import current_user
@@ -160,27 +161,65 @@ def _post_extraction_web_fallback(
         new_source = f"PDF leer ({original_reason}) → Claude-Recherche: {source}" if source else "PDF leer → Claude-Recherche"
         currency = company.currency if key in CURRENCY_KEYS else None
         now = datetime.now(timezone.utc)
-        if existing:
-            existing.numeric_value = web_val
-            existing.source_name = new_source[:512]
-            existing.source_link = url or existing.source_link
-            existing.currency = currency or existing.currency
-            existing.fetched_at = now
-            existing.from_ir_pdf = False
-        else:
-            db.add(CompanyValue(
-                id=uuid4(),
-                company_id=company.id,
-                value_key=key,
-                period_type=period_type,
-                period_year=period_year,
-                numeric_value=web_val,
-                source_name=new_source[:512],
-                source_link=url or source_link,
-                currency=currency,
-                fetched_at=now,
-                from_ir_pdf=False,
-            ))
+        # SAVEPOINT pro Iteration: bei UniqueViolation (z.B. Race-Condition mit
+        # einer parallel eingefuegten Row die der existing-SELECT nicht gesehen
+        # hat) rollback NUR diesen Eintrag und versuche den Update-Pfad.
+        # Sonst killt ein Conflict bei einem Key alle vorherigen Web-Fallbacks
+        # in derselben Transaction.
+        try:
+            with db.begin_nested():
+                if existing:
+                    existing.numeric_value = web_val
+                    existing.source_name = new_source[:512]
+                    existing.source_link = url or existing.source_link
+                    existing.currency = currency or existing.currency
+                    existing.fetched_at = now
+                    existing.from_ir_pdf = False
+                else:
+                    db.add(CompanyValue(
+                        id=uuid4(),
+                        company_id=company.id,
+                        value_key=key,
+                        period_type=period_type,
+                        period_year=period_year,
+                        numeric_value=web_val,
+                        source_name=new_source[:512],
+                        source_link=url or source_link,
+                        currency=currency,
+                        fetched_at=now,
+                        from_ir_pdf=False,
+                    ))
+                    db.flush()  # zwingt IntegrityError im SAVEPOINT
+        except IntegrityError as ie:
+            logger.warning("Web-fallback %s/%s/%s/%s: SELECT verfehlte existing Row, retry "
+                           "via Reload + Update (Race-Condition?): %s",
+                           company.ticker, key, period_type, period_year, str(ie)[:120])
+            # SAVEPOINT wurde gerollbackt. Reload existing direkt und update.
+            db.expire_all()
+            retry_existing = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company.id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type == period_type,
+                    CompanyValue.period_year == period_year,
+                    CompanyValue.is_forecast.is_(False),
+                )
+                .one_or_none()
+            )
+            if retry_existing is None:
+                logger.error("Web-fallback %s/%s/%s/%s: konnte conflicting Row auch "
+                             "nach Reload nicht finden — skip.",
+                             company.ticker, key, period_type, period_year)
+                continue
+            if retry_existing.manually_overridden:
+                continue
+            retry_existing.numeric_value = web_val
+            retry_existing.source_name = new_source[:512]
+            retry_existing.source_link = url or retry_existing.source_link
+            retry_existing.currency = currency or retry_existing.currency
+            retry_existing.fetched_at = now
+            retry_existing.from_ir_pdf = False
         filled += 1
         logger.info("Web-fallback filled %s/%s/%s/%s = %s (src=%s)",
                     company.ticker, key, period_type, period_year, web_val, source)
