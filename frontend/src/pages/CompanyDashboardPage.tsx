@@ -313,7 +313,14 @@ function getEstimateLockReason(
 }
 
 function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
-  return getEstimateLockReason(av, periodYear) !== null;
+  // Komplett-Lock (ganze Zeile) nur bei missing_prev_fy_data oder missing_q_reports.
+  // missing_target_q_reports → nur Q-Faktor-Cell sperren, Web-Recherche laeuft weiter.
+  const reason = getEstimateLockReason(av, periodYear);
+  return reason === "missing_prev_fy_data" || reason === "missing_q_reports";
+}
+
+function isQFactorCellLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
+  return getEstimateLockReason(av, periodYear) === "missing_target_q_reports";
 }
 
 function _escapeHtml(s: string): string {
@@ -1026,7 +1033,6 @@ export function CompanyDashboardPage() {
                   const targetYear = period.year ?? new Date().getFullYear();
                   const prevYear = targetYear - 1;
                   const isMissingFy = lockReason === "missing_prev_fy_data";
-                  const isMissingTargetQ = lockReason === "missing_target_q_reports";
                   let action: string;
                   let headline: string;
                   let subline: string;
@@ -1034,13 +1040,9 @@ export function CompanyDashboardPage() {
                     action = "Annual Report fuer FY[N-1] hochladen";
                     headline = `Estimate gesperrt — bitte Annual Report für FY${prevYear} hochladen`;
                     subline = `Ohne FY${prevYear}-Basisdaten haben weder Q-Faktor noch Web-Recherche einen Anker für die Schätzung von FY${targetYear}.`;
-                  } else if (isMissingTargetQ) {
-                    action = `Q1/Q2/Q3-Report für FY${targetYear} hochladen`;
-                    headline = `Estimate gesperrt — bitte Quartalsbericht für FY${targetYear} hochladen`;
-                    subline = `Die Q-Faktor-Methode vergleicht den gleichen Quartal in FY${targetYear} mit FY${prevYear} (apples-to-apples). Solange für FY${targetYear} kein Q-Report vorliegt, gibt es keinen Vergleichsanker und der Estimate würde stumpf den Vorjahreswert kopieren. Lade den ersten verfügbaren Q-Report für FY${targetYear} hoch oder nutze ausschließlich die Web-Recherche.`;
                   } else {
                     action = "Quartalsberichte hochladen";
-                    headline = `Estimate gesperrt — bitte Quartalsberichte (Q1/Q2/Q3) für FY${prevYear} hochladen`;
+                    headline = `Estimate gesperrt — bitte mindestens einen Quartalsbericht (Q1/Q2/Q3) für FY${prevYear} hochladen`;
                     subline = "Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich. Ohne diese ist keine belastbare Schätzung möglich.";
                   }
                   return [(
@@ -1062,11 +1064,10 @@ export function CompanyDashboardPage() {
                         <p className="mt-1 text-xs text-amber-700/80">{subline}</p>
                         {!isMissingFy && (() => {
                           const inProgress = av?.quarter_years_in_progress ?? [];
-                          const checkYear = isMissingTargetQ ? targetYear : prevYear;
-                          if (inProgress.includes(checkYear)) {
+                          if (inProgress.includes(prevYear)) {
                             return (
                               <p className="mt-1 text-xs font-medium text-amber-900">
-                                ⓘ Es gibt bereits Q-Reports für FY{checkYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich prüfen.
+                                ⓘ Es gibt bereits Q-Reports für FY{prevYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich prüfen.
                               </p>
                             );
                           }
@@ -1085,6 +1086,7 @@ export function CompanyDashboardPage() {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor");
                   const web = buildVariantValues(cRows, cPrev, "web");
                   const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
+                  const qFactorCellLock = isQFactorCellLocked(av, period.year);
                   const renderEstimateRow = (
                     label: "Q-Faktor (Proxy)" | "Web-Recherche",
                     vals: VariantValues,
@@ -1103,15 +1105,22 @@ export function CompanyDashboardPage() {
                               <button
                                 onClick={() => handleRefreshCompany(company)}
                                 disabled={isRunningThis}
-                                title="Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."
+                                title={qFactorCellLock
+                                  ? `Q-Faktor gesperrt (kein Q-Report fuer FY${period.year}). Berechnet nur Web-Recherche.`
+                                  : "Triggert beide Methoden parallel: Q-Faktor-Proxy + Web-Recherche."}
                                 className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
                               >
                                 <RefreshCw className={`h-3 w-3 ${isRunningThis ? "animate-spin" : ""}`} />
-                                {isRunningThis ? "Berechnet…" : "Werte berechnen"}
+                                {isRunningThis ? "Berechnet…" : (qFactorCellLock ? "Werte berechnen (nur Web)" : "Werte berechnen")}
                               </button>
+                              {qFactorCellLock && (
+                                <span className="mt-1 inline-flex items-center gap-1 rounded bg-amber-100/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-800" title={`Lade einen Q-Report fuer FY${period.year} hoch um Q-Faktor zu aktivieren.`}>
+                                  <Lock className="h-2.5 w-2.5" /> Q-Faktor: Q-Report fuer FY{period.year} fehlt
+                                </span>
+                              )}
                             </div>
                             <div className="flex flex-col items-end gap-1.5">
-                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800">Q-Faktor</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${qFactorCellLock ? "bg-muted text-muted-foreground line-through" : "bg-amber-100 text-amber-800"}`}>Q-Faktor</span>
                               <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-violet-800">Web</span>
                             </div>
                           </div>
@@ -1139,6 +1148,20 @@ export function CompanyDashboardPage() {
                             return (
                               <td key={`${company.id}-${label}-${d.key}`} className={`border-r border-border/40 bg-amber-50/70 px-3 py-2 text-xs text-amber-800${groupSep(d.key)}`}>
                                 <div className="flex items-center gap-1"><Lock className="h-3 w-3" /> Locked</div>
+                              </td>
+                            );
+                          }
+                          // Q-Faktor-Cell-Lock wenn FY[target] keine Q-Reports hat.
+                          // Web-Cell laeuft normal (Web braucht keine Q-Reports).
+                          if (label === "Q-Faktor (Proxy)" && isQFactorCellLocked(av, period.year)) {
+                            return (
+                              <td key={`${company.id}-${label}-${d.key}`}
+                                className={`border-r border-border/40 bg-amber-50/40 px-3 py-2 text-xs text-amber-800${groupSep(d.key)}`}
+                                title={`Q-Faktor-Methode benoetigt mindestens einen Q-Report fuer FY${period.year}. Aktuell sind keine FY${period.year}-Quartalsberichte hochgeladen.`}>
+                                <div className="flex items-center gap-1.5">
+                                  <Lock className="h-3 w-3 shrink-0" />
+                                  <span className="italic">Q-Report fehlt</span>
+                                </div>
                               </td>
                             );
                           }
