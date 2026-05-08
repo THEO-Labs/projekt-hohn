@@ -1900,7 +1900,9 @@ export function CompanyDashboardPage() {
                         "FY", cv.period_year ?? undefined,
                       );
                       await loadAllValues();
-                      toast.success("Wert überschrieben (wird beim nächsten 'Werte berechnen' wieder ersetzt)");
+                      toast.success(isForecastValue
+                        ? "Forecast-Wert manuell überschrieben (wird beim nächsten 'Werte berechnen' wieder ersetzt)"
+                        : "Wert überschrieben (wird beim nächsten 'Werte berechnen' wieder ersetzt)");
                       setTooltipEdit(null);
                       setTooltip(null);
                     } catch (e) {
