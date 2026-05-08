@@ -552,6 +552,13 @@ def _process_one_key(
         return True
 
     if result is None:
+        # Refresh hat nichts geliefert. Aber: wir markieren die last_refresh_attempt
+        # damit das Frontend einen Stale-Indikator zeigen kann (Daten in DB sind
+        # alt, letzter Refresh produzierte nichts neues).
+        if pre_existing is not None:
+            pre_existing.last_refresh_attempt = datetime.now(timezone.utc)
+            db.flush()
+            updated.append(pre_existing)
         return False
 
     # `pre_existing` from the up-front guard is a fresh query result; reuse it
@@ -591,15 +598,31 @@ def _process_one_key(
 
     is_forecast_flag = bool((result.extras or {}).get("is_forecast", False)) if result.extras else False
 
+    # Primary-Method-Marker setzen: explizites Field statt fragile
+    # Source-Name-Heuristik im Frontend.
+    extras = result.extras or {}
+    if extras.get("guidance_method") == "web_research":
+        primary_method = "web_guidance"
+    elif extras.get("estimate_method") in ("flow_factor", "balance_snapshot", "fy_fallback"):
+        primary_method = "q_factor_proxy"
+    else:
+        primary_method = "provider"
+
     def _apply_update(target: CompanyValue) -> None:
         target.numeric_value = numeric_value
         target.text_value = text_value
         target.currency = result.currency
         target.source_name = result.source_name
         target.source_link = result.source_link
-        target.fetched_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        target.fetched_at = now
+        target.last_refresh_attempt = now
         target.from_ir_pdf = False
         target.is_forecast = is_forecast_flag
+        target.primary_method = primary_method
+        # Manual-Override-Flag zuruecksetzen wenn Refresh erfolgreich war
+        # (User-Override war temporaer).
+        target.manually_overridden = False
         # forecast_alternates nur überschreiben wenn dieser Run sie explizit
         # berechnet hat (Estimate-Pfad). Sonst bleiben vorhandene Alternates
         # erhalten — Provider-Pfad darf den Drilldown-Tooltip nicht clobbern.
@@ -612,6 +635,7 @@ def _process_one_key(
             updated.append(existing)
             db.flush()
             return True
+        now = datetime.now(timezone.utc)
         cv = CompanyValue(
             id=uuid4(),
             company_id=company_id,
@@ -623,9 +647,11 @@ def _process_one_key(
             currency=result.currency,
             source_name=result.source_name,
             source_link=result.source_link,
-            fetched_at=datetime.now(timezone.utc),
+            fetched_at=now,
+            last_refresh_attempt=now,
             is_forecast=is_forecast_flag,
             forecast_alternates=forecast_alternates,
+            primary_method=primary_method,
         )
         try:
             with db.begin_nested():

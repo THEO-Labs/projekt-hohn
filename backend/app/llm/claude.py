@@ -372,10 +372,21 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
 }
 
 
-def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
+def validate_claude_value(
+    key: str,
+    value: Decimal,
+    *,
+    prev_fy_val: Decimal | None = None,
+) -> Decimal | None:
     """Range-Check für Claude-Werte. None wenn ausserhalb plausibler Range
     oder wenn die unit-heuristik anschlaegt (Currency-Wert verdaechtig klein
-    -> Claude hat vermutlich Mio/Mrd vergessen)."""
+    -> Claude hat vermutlich Mio/Mrd vergessen).
+
+    prev_fy_val (optional): wenn vorhanden, machen wir einen Currency-Cross-
+    Check via Größenordnungs-Ratio. Wenn |value| > 100x oder < 0.01x prev_fy_val
+    sehen wir das als Currency-/Unit-Mismatch (z.B. Claude liefert INR-Werte
+    fuer EUR-Firma) und droppen.
+    """
     limits = _CLAUDE_SANITY_CHECKS.get(key)
     if limits is None:
         return value
@@ -397,6 +408,25 @@ def validate_claude_value(key: str, value: Decimal) -> Decimal | None:
             key, value,
         )
         return None
+    # Currency/Unit-Cross-Check via FY[N-1]: Wert sollte in Groessenordnung
+    # liegen. 100x Diff = wahrscheinlich Currency-Mismatch (INR vs EUR ~80x,
+    # JPY vs USD ~150x), 0.01x Diff = umgekehrt. Mind. 1M-Schwelle damit
+    # 0-Vergleiche oder Mikro-Werte das nicht triggern.
+    if prev_fy_val is not None and key in _LIKELY_CURRENCY_KEYS:
+        try:
+            prev_abs = abs(float(prev_fy_val))
+            curr_abs = abs(fval)
+            if prev_abs > 1_000_000 and curr_abs > 1_000_000:
+                ratio = max(curr_abs / prev_abs, prev_abs / curr_abs)
+                if ratio > 100:
+                    logger.warning(
+                        "Claude value sanity: %s=%s vs prev_fy=%s ratio %.1fx — "
+                        "Currency-Mismatch verdaechtig (z.B. INR statt EUR), dropping",
+                        key, value, prev_fy_val, ratio,
+                    )
+                    return None
+        except (ValueError, OverflowError):
+            pass
     if fval == 0:
         if key == "sbc":
             # SBC=0 ist bei boersennotierten Firmen praktisch nie korrekt
@@ -508,14 +538,31 @@ def research_value(
     )
 
     def _do_call(messages: list[dict]) -> str:
-        response = claude_limiter.call(lambda: client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2048,
-            system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            tools=[WEB_SEARCH_TOOL],
-            messages=messages,
-        ))
-        return _collect_text(response)
+        # Explizites Retry-Backoff bei 429/529/Overloaded — Anthropic-API hat
+        # bei Lastspitzen oft 1-2 transiente Rate-Limit-Antworten, die wir mit
+        # exponential-backoff (1s, 4s, 16s) abfangen statt silent zu failen.
+        import time
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                response = claude_limiter.call(lambda: client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=2048,
+                    system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
+                    tools=[WEB_SEARCH_TOOL],
+                    messages=messages,
+                ))
+                return _collect_text(response)
+            except Exception as e:
+                msg = str(e).lower()
+                is_retriable = any(s in msg for s in ("429", "529", "overloaded", "rate", "timeout"))
+                if not is_retriable or attempt == max_attempts - 1:
+                    raise
+                wait = 4 ** attempt  # 1s, 4s, 16s
+                logger.warning("research API attempt %d failed (%s) — retry in %ds",
+                               attempt + 1, str(e)[:80], wait)
+                time.sleep(wait)
+        return ""
 
     try:
         client = get_client()

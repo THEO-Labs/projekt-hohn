@@ -38,6 +38,8 @@ export type CompanyValue = {
   fetched_at: string | null;
   manually_overridden: boolean;
   forecast_alternates: ForecastAlternate[] | null;
+  primary_method?: "web_guidance" | "q_factor_proxy" | "pdf" | "manual" | "provider" | "calculated" | null;
+  last_refresh_attempt?: string | null;
 };
 
 export const getValueDefinitions = () =>

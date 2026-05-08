@@ -199,32 +199,26 @@ function _toNum(n: number | string | null | undefined): number | null {
 
 function _getFaktorValue(cv: CompanyValue): number | null {
   if (!cv.is_forecast) return _toNum(cv.numeric_value);
-  // Manual-Override: zeige trotzdem den separaten Q-Faktor-Alt-Wert wenn vorhanden,
-  // damit der User sieht was die Methode liefern wuerde (Drilldown bleibt konsistent).
-  if (cv.manually_overridden) {
-    const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
-    if (alt?.value != null) return parseFloat(alt.value);
-    return _toNum(cv.numeric_value);
-  }
-  const isProxyPrimary = (cv.source_name || "").includes("Proxy");
-  if (isProxyPrimary) return _toNum(cv.numeric_value);
+  // primary_method ist explizit (neu) — Source-Name nur als Legacy-Fallback
+  // fuer alte Rows ohne primary_method.
+  const isProxyPrimary = cv.primary_method === "q_factor_proxy"
+    || (cv.primary_method == null && (cv.source_name || "").includes("Proxy"));
+  if (isProxyPrimary && !cv.manually_overridden) return _toNum(cv.numeric_value);
   const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
-  return alt?.value != null ? parseFloat(alt.value) : null;
+  if (alt?.value != null) return parseFloat(alt.value);
+  if (cv.manually_overridden) return _toNum(cv.numeric_value);
+  return null;
 }
 
 function _getWebValue(cv: CompanyValue): number | null {
   if (!cv.is_forecast) return _toNum(cv.numeric_value);
-  // Manual-Override: zeige trotzdem den separaten Web-Alt-Wert wenn vorhanden,
-  // damit Vergleich primary/Web sichtbar bleibt.
-  if (cv.manually_overridden) {
-    const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
-    if (alt?.value != null) return parseFloat(alt.value);
-    return _toNum(cv.numeric_value);
-  }
-  const isWebPrimary = (cv.source_name || "").includes("Web-Guidance");
-  if (isWebPrimary) return _toNum(cv.numeric_value);
+  const isWebPrimary = cv.primary_method === "web_guidance"
+    || (cv.primary_method == null && (cv.source_name || "").includes("Web-Guidance"));
+  if (isWebPrimary && !cv.manually_overridden) return _toNum(cv.numeric_value);
   const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
-  return alt?.value != null ? parseFloat(alt.value) : null;
+  if (alt?.value != null) return parseFloat(alt.value);
+  if (cv.manually_overridden) return _toNum(cv.numeric_value);
+  return null;
 }
 
 function _safeYield(v: number | null, mcap: number | null): number | null {
@@ -291,13 +285,25 @@ function buildVariantValues(
 }
 
 
-function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
-  // Estimate-Mode benoetigt Q-Reports vom Vorjahr (für den apples-to-apples
-  // Q-Faktor-Vergleich) — ausser bei US-Filern wo EDGAR/Yahoo Q-Daten liefert.
-  if (!av || periodYear === undefined) return false;
-  if (av.is_us) return false;
+type EstimateLockReason = "missing_q_reports" | "missing_prev_fy_data" | null;
+
+function getEstimateLockReason(
+  av: FyAvailability | undefined,
+  periodYear: number | undefined,
+): EstimateLockReason {
+  // Estimate-Mode benoetigt FY[N-1]-Daten (Anker fuer Faktor + Notfall-
+  // Fallback) UND Q-Reports (apples-to-apples Vergleich). US-Filer:
+  // EDGAR/Yahoo liefern Q-Daten ohne PDF-Upload.
+  if (!av || periodYear === undefined) return null;
+  if (av.is_us) return null;
   const prevYear = periodYear - 1;
-  return !av.quarter_years.includes(prevYear);
+  if (!av.fy_years_with_data.includes(prevYear)) return "missing_prev_fy_data";
+  if (!av.quarter_years.includes(prevYear)) return "missing_q_reports";
+  return null;
+}
+
+function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
+  return getEstimateLockReason(av, periodYear) !== null;
 }
 
 function _escapeHtml(s: string): string {
@@ -988,9 +994,20 @@ export function CompanyDashboardPage() {
                   )];
                 }
 
-                // Estimate-Mode + keine Vorjahres-Q-Reports -> Lock-Row
-                // (analog FY-Historical-Lock für abgeschlossene FY ohne Annual Report).
+                // Estimate-Mode locked -> Lock-Row mit reason-spezifischer Message
                 if (estLocked) {
+                  const lockReason = getEstimateLockReason(av, period.year);
+                  const prevYear = (period.year ?? new Date().getFullYear()) - 1;
+                  const isMissingFy = lockReason === "missing_prev_fy_data";
+                  const action = isMissingFy
+                    ? "Annual Report fuer FY[N-1] hochladen"
+                    : "Quartalsberichte hochladen";
+                  const headline = isMissingFy
+                    ? `Estimate gesperrt — bitte Annual Report für FY${prevYear} hochladen`
+                    : `Estimate gesperrt — bitte Quartalsberichte (Q1/Q2/Q3) für FY${prevYear} hochladen`;
+                  const subline = isMissingFy
+                    ? `Ohne FY${prevYear}-Basisdaten haben weder Q-Faktor noch Web-Recherche einen Anker für die Schätzung von FY${prevYear + 1}.`
+                    : "Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich. Ohne diese ist keine belastbare Schätzung möglich.";
                   return [(
                     <tr key={`${company.id}-est-locked`} className="border-t-4 border-border bg-amber-50/70">
                       <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
@@ -999,22 +1016,16 @@ export function CompanyDashboardPage() {
                             <span className="font-semibold text-foreground">{company.name}</span>
                             <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] font-medium text-primary">{company.ticker}</span>
                           </div>
-                          <span className="text-[10px] text-amber-700">Aktion: Quartalsberichte hochladen</span>
+                          <span className="text-[10px] text-amber-700">Aktion: {action}</span>
                         </div>
                       </td>
                       <td colSpan={totalCols - 1} className="px-4 py-3">
                         <div className="flex items-center gap-2 text-amber-800">
                           <Lock className="h-4 w-4 shrink-0" />
-                          <span className="text-sm font-medium">
-                            Estimate gesperrt — bitte Quartalsberichte (Q1/Q2/Q3) für FY{(period.year ?? new Date().getFullYear()) - 1} hochladen
-                          </span>
+                          <span className="text-sm font-medium">{headline}</span>
                         </div>
-                        <p className="mt-1 text-xs text-amber-700/80">
-                          Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich.
-                          Ohne diese ist keine belastbare Schätzung möglich.
-                        </p>
-                        {(() => {
-                          const prevYear = (period.year ?? new Date().getFullYear()) - 1;
+                        <p className="mt-1 text-xs text-amber-700/80">{subline}</p>
+                        {!isMissingFy && (() => {
                           const inProgress = av?.quarter_years_in_progress ?? [];
                           if (inProgress.includes(prevYear)) {
                             return (
