@@ -1666,29 +1666,29 @@ export function CompanyDashboardPage() {
           return createPortal(
             <>
               <div className="fixed inset-0 z-[99]" onClick={() => setTooltip(null)} />
-              <div className="fixed z-[100] flex w-80 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/10"
+              <div className="fixed z-[100] flex w-[480px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl shadow-black/10"
                 style={{
-                  left: Math.min(tooltip.x, window.innerWidth - 340),
+                  left: Math.min(tooltip.x, window.innerWidth - 500),
                   // Smart positioning: wenn unten kein Platz, Tooltip nach oben versetzen.
                   top: (() => {
-                    const desiredHeight = 600;
+                    const desiredHeight = 720;
                     const margin = 16;
                     if (tooltip.y + desiredHeight + margin <= window.innerHeight) {
                       return tooltip.y;
                     }
                     return Math.max(margin, window.innerHeight - desiredHeight - margin);
                   })(),
-                  maxHeight: `${Math.min(600, window.innerHeight - 32)}px`,
+                  maxHeight: `${Math.min(720, window.innerHeight - 32)}px`,
                 }}>
                 <div className="flex flex-col overflow-y-auto">
                 {/* Header */}
-                <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                <div className="flex items-center justify-between border-b border-border px-5 py-4">
                   <div className="flex flex-col">
-                    <span className="text-sm font-semibold text-foreground">{def.label_en}</span>
-                    <span className="text-[10px] text-muted-foreground">{def.label_de}</span>
+                    <span className="text-base font-semibold text-foreground">{def.label_en}</span>
+                    <span className="text-xs text-muted-foreground">{def.label_de}</span>
                   </div>
                   <button onClick={() => setTooltip(null)} className="rounded p-1 hover:bg-muted">
-                    <X className="h-4 w-4 text-muted-foreground" />
+                    <X className="h-5 w-5 text-muted-foreground" />
                   </button>
                 </div>
 
@@ -1720,41 +1720,61 @@ export function CompanyDashboardPage() {
 
                 {/* Section: Q-Faktor Berechnung */}
                 {tooltip.variant === "faktor" && ESTIMATE_PRIMARY_KEYS.has(tooltip.key) && (
-                  <section className="mt-3 px-4">
-                    <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-amber-700">Q-Faktor Berechnung</h4>
-                    <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                  <section className="mt-4 px-4">
+                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-amber-700">Q-Faktor Berechnung</h4>
+                    <div className="space-y-3 rounded-lg border-2 border-amber-300 bg-amber-50 px-4 py-3">
                       {prevCv && prevNum != null && (
-                        <div className="flex items-baseline justify-between gap-2 border-b border-amber-200/60 pb-1.5">
-                          <span className="text-[10px] font-medium text-amber-700 uppercase">FY{prevCv.period_year}-Basis</span>
-                          <span className="font-mono text-xs font-semibold text-amber-900">{formatValue(prevNum, def.unit, displayCurrency)}</span>
+                        <div className="flex items-baseline justify-between gap-2 border-b border-amber-300 pb-2">
+                          <span className="text-xs font-semibold text-amber-700 uppercase tracking-wide">FY{prevCv.period_year}-Basis</span>
+                          <span className="font-mono text-sm font-bold text-amber-900">{formatValue(prevNum, def.unit, displayCurrency)}</span>
                         </div>
                       )}
                       {proxyAlt?.explanation ? (
-                        <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-amber-900">{proxyAlt.explanation}</p>
+                        <p className="whitespace-pre-wrap text-sm leading-relaxed text-amber-900">{proxyAlt.explanation}</p>
                       ) : proxyAlt?.error_reason ? (
-                        <p className="text-[11px] italic text-amber-800">{proxyAlt.error_reason}</p>
+                        <p className="text-sm italic text-amber-800">{proxyAlt.error_reason}</p>
                       ) : (
-                        <p className="text-[11px] italic text-amber-800">Keine Q-Faktor-Erklärung verfügbar — bitte Werte neu berechnen.</p>
+                        <p className="text-sm italic text-amber-800">Keine Q-Faktor-Erklärung verfügbar — bitte Werte neu berechnen.</p>
                       )}
                     </div>
                   </section>
                 )}
 
                 {/* Section: Quelle (variant-spezifisch) */}
-                <section className="mt-3 px-4">
-                  <h4 className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                <section className="mt-4 px-4">
+                  <h4 className={`mb-2 text-xs font-bold uppercase tracking-wider ${
+                    tooltip.variant === "web" ? "text-sky-700" : tooltip.variant === "faktor" ? "text-amber-700" : "text-muted-foreground"
+                  }`}>
                     Quelle{tooltip.variant === "faktor" ? " (Q-Faktor)" : tooltip.variant === "web" ? " (Web-Recherche)" : ""}
                   </h4>
-                  <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
+                  <div className={`space-y-2 rounded-lg px-4 py-3 ${
+                    tooltip.variant === "web"
+                      ? "border-2 border-sky-300 bg-sky-50"
+                      : tooltip.variant === "faktor"
+                        ? "border-2 border-amber-300 bg-amber-50"
+                        : "border border-border bg-muted/30"
+                  }`}>
                     {displayValue != null && tooltip.variant && (
-                      <div className="flex items-baseline justify-between gap-2 border-b border-border/30 pb-1.5 mb-1">
-                        <span className="text-[10px] font-medium uppercase text-muted-foreground">Variant-Wert</span>
-                        <span className="font-mono text-xs font-semibold text-foreground">{formatValue(displayValue, def.unit, displayCurrency)}</span>
+                      <div className={`flex items-baseline justify-between gap-2 border-b pb-2 ${
+                        tooltip.variant === "web" ? "border-sky-300" : "border-amber-300"
+                      }`}>
+                        <span className={`text-xs font-semibold uppercase tracking-wide ${
+                          tooltip.variant === "web" ? "text-sky-700" : "text-amber-700"
+                        }`}>
+                          {tooltip.variant === "web" ? "Web-Wert" : "Q-Faktor-Wert"}
+                        </span>
+                        <span className={`font-mono text-sm font-bold ${
+                          tooltip.variant === "web" ? "text-sky-900" : "text-amber-900"
+                        }`}>{formatValue(displayValue, def.unit, displayCurrency)}</span>
                       </div>
                     )}
-                    <div className="text-foreground">{displaySource ?? "—"}</div>
+                    <div className={`text-sm font-medium ${
+                      tooltip.variant === "web" ? "text-sky-900" : tooltip.variant === "faktor" ? "text-amber-900" : "text-foreground"
+                    }`}>{displaySource ?? "—"}</div>
                     {displayLink && (
-                      <a href={displayLink} target="_blank" rel="noreferrer" className="block truncate text-[11px] text-primary hover:underline">
+                      <a href={displayLink} target="_blank" rel="noreferrer" className={`block truncate text-xs hover:underline ${
+                        tooltip.variant === "web" ? "text-sky-700 font-medium" : "text-primary"
+                      }`}>
                         {(() => { try { return new URL(displayLink).hostname; } catch { return displayLink; } })()}
                       </a>
                     )}
