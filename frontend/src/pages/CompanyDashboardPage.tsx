@@ -1841,17 +1841,17 @@ export function CompanyDashboardPage() {
                   </dl>
                 </section>
 
-                {/* Section: Aktionen — nur für Raw-Data in abgeschlossenen FY */}
+                {/* Section: Aktionen — fuer FY-Werte (Actuals UND Forecasts) */}
                 {(() => {
-                  const isRawDataFy = (
-                    cv.is_forecast === false
-                    && cv.period_type === "FY"
+                  const isEditableValue = (
+                    cv.period_type === "FY"
                     && cv.period_year != null
                     && def.source_type !== "CALCULATED"
                     && def.source_type !== "QUALITATIVE"
                     && cv.numeric_value != null
                   );
-                  if (!isRawDataFy) return null;
+                  if (!isEditableValue) return null;
+                  const isForecastValue = cv.is_forecast === true;
                   const tooltipYear = cv.period_year ?? null;
                   const isExplainHere = explainResult?.key === tooltip.key
                     && explainResult?.companyId === tooltip.companyId

@@ -1132,20 +1132,24 @@ def explain_company_value(
     if period_type != "FY" or period_year is None:
         raise HTTPException(400, "Einordnung nur für FY-Werte mit Jahresangabe")
 
+    # Lookup ohne is_forecast-Filter — sowohl actuals (abgeschlossenes FY)
+    # als auch Forecasts (Estimate-Mode FY[N]e) werden eingeordnet.
     cv = (db.query(CompanyValue).filter(
         CompanyValue.company_id == company_id,
         CompanyValue.value_key == value_key,
         CompanyValue.period_type == "FY",
         CompanyValue.period_year == period_year,
-        CompanyValue.is_forecast.is_(False),
-    ).one_or_none())
+    ).order_by(CompanyValue.is_forecast.asc()).first())  # Actuals bevorzugt wenn beide existieren
     if cv is None or cv.numeric_value is None:
         raise HTTPException(404, "Wert nicht vorhanden")
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
     if vd is None:
         raise HTTPException(404, "Unbekannter Wert")
 
-    # Historische Werte (5 Jahre) als Kontext
+    is_forecast_value = bool(cv.is_forecast)
+
+    # Historische Werte: für Forecast-Einordnung wollen wir auch FY[N-1] sehen
+    # (das ist der Anker), bei Actuals nur frühere abgeschlossene Jahre.
     historical = (db.query(CompanyValue).filter(
         CompanyValue.company_id == company_id,
         CompanyValue.value_key == value_key,
@@ -1161,24 +1165,47 @@ def explain_company_value(
     ) or "  (keine historischen Werte verfügbar)"
 
     cur = cv.currency or company.currency or ""
-    prompt = (
-        f"Du bist Senior Equity Analyst. Schreibe eine kurze Einordnung (3-5 Sätze) "
-        f"zu folgendem Finanzwert:\n\n"
-        f"Unternehmen: {company.name} ({company.ticker})\n"
-        f"Kennzahl: {vd.label_de} / {vd.label_en} ({value_key})\n"
-        f"Zeitraum: FY{period_year}\n"
-        f"Wert: {float(cv.numeric_value):,.0f} {cur}\n\n"
-        f"Historische Werte (Vergleich):\n{history_lines}\n\n"
-        f"Beantworte konkret:\n"
-        f"1. Ist der FY{period_year}-Wert normal/erwartbar im historischen Trend?\n"
-        f"2. Falls auffaellig (z.B. starker Anstieg/Rueckgang): welche Gruende? "
-        f"(Akquisition, One-Time-Charge, Marktveränderung, Sonderausschüttung, "
-        f"Restructuring, neuer Bilanzposten etc.)\n"
-        f"3. Was bedeutet der Wert für die langfristige Capital-Allocation-Story "
-        f"des Unternehmens?\n\n"
-        f"Nutze web_search wenn noetig für aktuelle Begründungen / News-Kontext. "
-        f"Praezise und kurz, keine Floskeln. Auf Deutsch."
-    )
+    if is_forecast_value:
+        # Forecast-Einordnung: Plausibilitaet vs Konsens, Risiken/Treiber.
+        source_block = f"\nDatenquelle Forecast: {cv.source_name or '(unbekannt)'}"
+        prompt = (
+            f"Du bist Senior Equity Analyst. Schreibe eine kurze Einordnung (3-5 Sätze) "
+            f"zu folgender Forecast-Schaetzung:\n\n"
+            f"Unternehmen: {company.name} ({company.ticker})\n"
+            f"Kennzahl: {vd.label_de} / {vd.label_en} ({value_key})\n"
+            f"Zeitraum: FY{period_year}e (Forecast)\n"
+            f"Geschaetzter Wert: {float(cv.numeric_value):,.0f} {cur}{source_block}\n\n"
+            f"Historische Ist-Werte (Vergleich):\n{history_lines}\n\n"
+            f"Beantworte konkret:\n"
+            f"1. Ist die FY{period_year}e-Schaetzung plausibel im Vergleich zum "
+            f"historischen Trend und zum Sell-Side-Konsens (sofern bekannt)?\n"
+            f"2. Welche TREIBER stuetzen den Wert (Management-Guidance, Markt-Konsens, "
+            f"sektorspezifische Trends, M&A, Programme)?\n"
+            f"3. Welche RISIKEN koennten den Wert nach unten drehen (Konjunktur, "
+            f"Margen-Druck, FX, Regulatorik, Capital-Allocation-Aenderungen)?\n\n"
+            f"Nutze web_search aktiv um aktuelle Konsens-Schaetzungen, IR-Guidance, "
+            f"Earnings-Call-Transcripts und News abzugleichen. "
+            f"Praezise und kurz, keine Floskeln. Auf Deutsch."
+        )
+    else:
+        prompt = (
+            f"Du bist Senior Equity Analyst. Schreibe eine kurze Einordnung (3-5 Sätze) "
+            f"zu folgendem Finanzwert:\n\n"
+            f"Unternehmen: {company.name} ({company.ticker})\n"
+            f"Kennzahl: {vd.label_de} / {vd.label_en} ({value_key})\n"
+            f"Zeitraum: FY{period_year}\n"
+            f"Wert: {float(cv.numeric_value):,.0f} {cur}\n\n"
+            f"Historische Werte (Vergleich):\n{history_lines}\n\n"
+            f"Beantworte konkret:\n"
+            f"1. Ist der FY{period_year}-Wert normal/erwartbar im historischen Trend?\n"
+            f"2. Falls auffaellig (z.B. starker Anstieg/Rueckgang): welche Gruende? "
+            f"(Akquisition, One-Time-Charge, Marktveränderung, Sonderausschüttung, "
+            f"Restructuring, neuer Bilanzposten etc.)\n"
+            f"3. Was bedeutet der Wert für die langfristige Capital-Allocation-Story "
+            f"des Unternehmens?\n\n"
+            f"Nutze web_search wenn noetig für aktuelle Begründungen / News-Kontext. "
+            f"Praezise und kurz, keine Floskeln. Auf Deutsch."
+        )
     try:
         client = get_client()
         response = claude_limiter.call(lambda: client.messages.create(
@@ -1549,7 +1576,10 @@ def override_company_value(
         oq = oq.filter(CompanyValue.period_year == effective_period_year)
     else:
         oq = oq.filter(CompanyValue.period_year.is_(None))
-    existing = oq.one_or_none()
+    # Wenn fuer ein Jahr sowohl Forecast als auch Actual existieren, bevorzugt
+    # der Override den Actual-Eintrag (is_forecast=False sortiert vorne).
+    # Fuer Forecast-only Jahre wird nur der Forecast gefunden.
+    existing = oq.order_by(CompanyValue.is_forecast.asc()).first()
 
     inherit_currency = company.currency if value_key in CURRENCY_KEYS else None
 
@@ -1564,6 +1594,7 @@ def override_company_value(
             existing.currency = inherit_currency
         existing.manually_overridden = True
         existing.from_ir_pdf = False
+        existing.primary_method = "manual"
         existing.fetched_at = datetime.now(timezone.utc)
         result_cv = existing
     else:
@@ -1579,6 +1610,7 @@ def override_company_value(
             currency=inherit_currency,
             manually_overridden=True,
             from_ir_pdf=False,
+            primary_method="manual",
             fetched_at=datetime.now(timezone.utc),
         )
         db.add(cv)
