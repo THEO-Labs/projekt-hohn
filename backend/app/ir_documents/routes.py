@@ -53,13 +53,18 @@ def _post_extraction_web_fallback(
     results: dict[str, dict],
     company: Company,
     source_link: str,
-) -> int:
+) -> tuple[int, dict[str, dict]]:
     """Für jeden Key in results mit value=None: Claude-Web-Recherche versuchen
     und bei Erfolg die CompanyValue-Row mit dem Web-Wert auffüllen.
 
     Source-Name wird zu 'PDF leer → Claude-Recherche: <quelle>' damit der
     User im Drilldown sieht dass der Wert nicht aus dem PDF kam.
-    Returns Anzahl erfolgreich ausgefüllter Werte.
+
+    Returns:
+        (count, fallback_results) — count ist Anzahl ausgefuellter Werte,
+        fallback_results ist {key: {value, source, fallback_via_web=True}}
+        damit der Caller das extraction_results-JSON enrichen kann fuer
+        die Frontend-Counter (sonst zeigt das UI '6/7' obwohl DB '7/7' hat).
     """
     from app.config import settings
     if not settings.anthropic_api_key:
@@ -75,6 +80,7 @@ def _post_extraction_web_fallback(
     period_year = doc.period_year
     filled = 0
     attempted = 0
+    fallback_results: dict[str, dict] = {}
 
     # Priority: wichtige Keys zuerst (im Cap-Limit). net_income > fcf > net_debt
     # > sbc > buyback_volume > dividends > shares_outstanding. Alle nicht-
@@ -112,8 +118,18 @@ def _post_extraction_web_fallback(
             .one_or_none()
         )
         if existing_web is not None:
-            logger.info("Web-fallback %s/%s/%s/%s: skip — schon ein Web-Fallback-Wert vorhanden (%s)",
+            logger.info("Web-fallback %s/%s/%s/%s: skip Claude-Call — schon ein Web-Fallback-Wert vorhanden (%s), aber merge in extraction_results",
                         company.ticker, key, period_type, period_year, existing_web.numeric_value)
+            # WICHTIG: Auch wenn der Claude-Call geskipped wird, muessen wir den
+            # existierenden Web-Fallback-Wert in fallback_results eintragen,
+            # damit json_safe_results den Wert behaelt (sonst zeigt UI 6/7
+            # nach Re-Extract obwohl DB 7/7 hat).
+            fallback_results[key] = {
+                "value": str(existing_web.numeric_value),
+                "currency": existing_web.currency,
+                "source": (existing_web.source_name or "")[:512],
+                "fallback_via_web": True,
+            }
             continue
 
         label = f"{vd.label_en} ({vd.label_de})"
@@ -221,9 +237,17 @@ def _post_extraction_web_fallback(
             retry_existing.fetched_at = now
             retry_existing.from_ir_pdf = False
         filled += 1
+        # Resultat ans extraction_results-Mapping zurueckgeben damit der
+        # Caller das JSON enrichen kann (UI-Counter zeigt sonst PDF-only).
+        fallback_results[key] = {
+            "value": str(web_val),
+            "currency": currency,
+            "source": new_source[:512],
+            "fallback_via_web": True,
+        }
         logger.info("Web-fallback filled %s/%s/%s/%s = %s (src=%s)",
                     company.ticker, key, period_type, period_year, web_val, source)
-    return filled
+    return filled, fallback_results
 
 
 def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
@@ -367,13 +391,21 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
         # Auto-Web-Fallback: für jeden None-Key in den Results probiert Claude
         # Web-Recherche und füllt die Row falls erfolgreich. Source wird zu
         # 'PDF leer (<reason>) → Claude-Recherche: <quelle>'.
+        # Web-Fallback-Werte werden danach ins json_safe_results gemerged,
+        # damit der UI-Counter (zeigt ueber extraction_results) auch die
+        # Web-Fallback-Erfolge mitzaehlt — sonst sieht User '6/7' obwohl
+        # die DB tatsaechlich '7/7' hat.
         try:
-            filled = _post_extraction_web_fallback(
+            filled, fallback_results = _post_extraction_web_fallback(
                 db, doc=doc, results=results, company=company, source_link=source_link,
             )
             if filled:
                 logger.info("Post-extraction web-fallback filled %d values for doc %s",
                             filled, doc_id)
+                # Merge Web-Fallback-Werte in das JSON, damit das Frontend
+                # die Web-Werte als 'extracted' zaehlt und im UI sichtbar werden.
+                for fb_key, fb_info in fallback_results.items():
+                    json_safe_results[fb_key] = fb_info
                 db.commit()
         except Exception as e:
             logger.exception("Post-extraction web-fallback failed for doc %s: %s", doc_id, e)
