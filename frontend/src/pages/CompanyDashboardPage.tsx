@@ -285,20 +285,30 @@ function buildVariantValues(
 }
 
 
-type EstimateLockReason = "missing_q_reports" | "missing_prev_fy_data" | null;
+type EstimateLockReason = "missing_target_q_reports" | "missing_q_reports" | "missing_prev_fy_data" | null;
 
 function getEstimateLockReason(
   av: FyAvailability | undefined,
   periodYear: number | undefined,
 ): EstimateLockReason {
-  // Estimate-Mode benoetigt FY[N-1]-Daten (Anker fuer Faktor + Notfall-
-  // Fallback) UND Q-Reports (apples-to-apples Vergleich). US-Filer:
-  // EDGAR/Yahoo liefern Q-Daten ohne PDF-Upload.
+  // Estimate-Mode benoetigt:
+  //  1. FY[N-1]-Daten (Anker fuer Faktor)
+  //  2. Q-Reports im FY[N-1] (fuer apples-to-apples Vergleich)
+  //  3. Q-Reports im FY[N] (target) — sonst ist Same-Period-Match strukturell
+  //     unmoeglich und der Q-Faktor-Wert waere nur ein verkleideter "no-growth"-
+  //     Fallback. Lock zwingt User Q1/Q2/Q3-Report hochzuladen oder Web-Wert
+  //     zu nutzen.
+  // US-Filer: EDGAR/Yahoo liefern Q-Daten ohne PDF-Upload (quarter_years wird
+  // dort vom Backend automatisch gefuellt).
   if (!av || periodYear === undefined) return null;
   if (av.is_us) return null;
   const prevYear = periodYear - 1;
   if (!av.fy_years_with_data.includes(prevYear)) return "missing_prev_fy_data";
   if (!av.quarter_years.includes(prevYear)) return "missing_q_reports";
+  const inProgress = av.quarter_years_in_progress ?? [];
+  if (!av.quarter_years.includes(periodYear) && !inProgress.includes(periodYear)) {
+    return "missing_target_q_reports";
+  }
   return null;
 }
 
@@ -1013,17 +1023,26 @@ export function CompanyDashboardPage() {
                 // Estimate-Mode locked -> Lock-Row mit reason-spezifischer Message
                 if (estLocked) {
                   const lockReason = getEstimateLockReason(av, period.year);
-                  const prevYear = (period.year ?? new Date().getFullYear()) - 1;
+                  const targetYear = period.year ?? new Date().getFullYear();
+                  const prevYear = targetYear - 1;
                   const isMissingFy = lockReason === "missing_prev_fy_data";
-                  const action = isMissingFy
-                    ? "Annual Report fuer FY[N-1] hochladen"
-                    : "Quartalsberichte hochladen";
-                  const headline = isMissingFy
-                    ? `Estimate gesperrt — bitte Annual Report für FY${prevYear} hochladen`
-                    : `Estimate gesperrt — bitte Quartalsberichte (Q1/Q2/Q3) für FY${prevYear} hochladen`;
-                  const subline = isMissingFy
-                    ? `Ohne FY${prevYear}-Basisdaten haben weder Q-Faktor noch Web-Recherche einen Anker für die Schätzung von FY${prevYear + 1}.`
-                    : "Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich. Ohne diese ist keine belastbare Schätzung möglich.";
+                  const isMissingTargetQ = lockReason === "missing_target_q_reports";
+                  let action: string;
+                  let headline: string;
+                  let subline: string;
+                  if (isMissingFy) {
+                    action = "Annual Report fuer FY[N-1] hochladen";
+                    headline = `Estimate gesperrt — bitte Annual Report für FY${prevYear} hochladen`;
+                    subline = `Ohne FY${prevYear}-Basisdaten haben weder Q-Faktor noch Web-Recherche einen Anker für die Schätzung von FY${targetYear}.`;
+                  } else if (isMissingTargetQ) {
+                    action = `Q1/Q2/Q3-Report für FY${targetYear} hochladen`;
+                    headline = `Estimate gesperrt — bitte Quartalsbericht für FY${targetYear} hochladen`;
+                    subline = `Die Q-Faktor-Methode vergleicht den gleichen Quartal in FY${targetYear} mit FY${prevYear} (apples-to-apples). Solange für FY${targetYear} kein Q-Report vorliegt, gibt es keinen Vergleichsanker und der Estimate würde stumpf den Vorjahreswert kopieren. Lade den ersten verfügbaren Q-Report für FY${targetYear} hoch oder nutze ausschließlich die Web-Recherche.`;
+                  } else {
+                    action = "Quartalsberichte hochladen";
+                    headline = `Estimate gesperrt — bitte Quartalsberichte (Q1/Q2/Q3) für FY${prevYear} hochladen`;
+                    subline = "Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich. Ohne diese ist keine belastbare Schätzung möglich.";
+                  }
                   return [(
                     <tr key={`${company.id}-est-locked`} className="border-t-4 border-border bg-amber-50/70">
                       <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
@@ -1043,10 +1062,11 @@ export function CompanyDashboardPage() {
                         <p className="mt-1 text-xs text-amber-700/80">{subline}</p>
                         {!isMissingFy && (() => {
                           const inProgress = av?.quarter_years_in_progress ?? [];
-                          if (inProgress.includes(prevYear)) {
+                          const checkYear = isMissingTargetQ ? targetYear : prevYear;
+                          if (inProgress.includes(checkYear)) {
                             return (
                               <p className="mt-1 text-xs font-medium text-amber-900">
-                                ⓘ Es gibt bereits Q-Reports für FY{prevYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich prüfen.
+                                ⓘ Es gibt bereits Q-Reports für FY{checkYear}, die Extraktion ist aber noch nicht fertig (PENDING/EXTRACTING/FAILED). Status im IR-Documents-Bereich prüfen.
                               </p>
                             );
                           }

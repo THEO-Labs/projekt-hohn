@@ -309,8 +309,6 @@ def _try_factor_estimate(
     elif est.method == "balance_snapshot":
         qs = ",".join(est.quarters_used) if est.quarters_used else "?"
         source_label = f"Proxy (Bilanz-Snapshot {qs})"
-    elif est.method == "annual_growth" and est.factor is not None:
-        source_label = f"Proxy (Annual-Trend): FY{target_fy - 1} × {est.factor:.4f} (FY{target_fy - 1}/FY{target_fy - 2})"
     elif est.method == "fy_fallback":
         source_label = f"Proxy (FY{target_fy - 1}-Wert, no-growth)"
     else:
@@ -614,7 +612,7 @@ def _process_one_key(
     extras = result.extras or {}
     if extras.get("guidance_method") == "web_research":
         primary_method = "web_guidance"
-    elif extras.get("estimate_method") in ("flow_factor", "balance_snapshot", "fy_fallback", "annual_growth"):
+    elif extras.get("estimate_method") in ("flow_factor", "balance_snapshot", "fy_fallback"):
         primary_method = "q_factor_proxy"
     else:
         primary_method = "provider"

@@ -67,7 +67,7 @@ _MAX_FACTOR = Decimal("5")
 @dataclass
 class EstimateResult:
     value: Decimal
-    method: str  # "flow_factor" | "balance_snapshot" | "annual_growth" | "fy_fallback"
+    method: str  # "flow_factor" | "balance_snapshot" | "fy_fallback"
     explanation: str
     quarters_used: list[str] = field(default_factory=list)
     factor: Decimal | None = None
@@ -206,57 +206,6 @@ def _fy_fallback(
     )
 
 
-def _annual_growth_estimate(
-    prev_fy_val: Decimal,
-    prev_prev_fy_val: Decimal,
-    target_fy_year: int,
-    prev_fy: int,
-    prev_prev_fy: int,
-    key: str,
-    currency: str | None = None,
-    diagnostics: str = "",
-) -> EstimateResult | None:
-    """Forward-Estimate per Annual-zu-Annual-Wachstum: factor = FY[N-1]/FY[N-2],
-    estimate = FY[N-1] * factor.
-
-    Wird genutzt wenn keine Q-Reports im FY[target] verfügbar sind aber zwei
-    aufeinanderfolgende Annual-Reports da sind. Saubere Forward-Forecast-
-    Methode für FY[N+1]-Schätzungen wo Q-Faktor (Same-Period) nicht greift.
-
-    Returns None wenn die Sanity-Gates greifen — Caller fällt dann auf
-    _fy_fallback (no-growth) zurück.
-    """
-    if prev_prev_fy_val == 0:
-        return None
-    if (prev_fy_val * prev_prev_fy_val) < 0:
-        return None
-    if abs(prev_prev_fy_val) < abs(prev_fy_val) * _NEAR_ZERO_FRACTION:
-        return None
-    factor = prev_fy_val / prev_prev_fy_val
-    if abs(factor) > _MAX_FACTOR:
-        return None
-    estimate = prev_fy_val * factor
-    delta_pct = (factor - Decimal("1")) * Decimal("100")
-    cur = f" {currency}" if currency else ""
-    explanation = (
-        f"Schätzung FY{target_fy_year} = FY{prev_fy} × Annual-Wachstumsrate "
-        f"FY{prev_fy}/FY{prev_prev_fy}.  "
-        f"FY{prev_prev_fy} ({key}) = {prev_prev_fy_val:,.0f}{cur}, "
-        f"FY{prev_fy} ({key}) = {prev_fy_val:,.0f}{cur}, "
-        f"Annual-Faktor = {factor:.4f} ({delta_pct:+.2f} % YoY).  "
-        f"Resultat = {estimate:,.0f}{cur}.  "
-        f"Methode: Forward-Forecast über Annual-Trend (keine Q-Reports im FY{target_fy_year} verfügbar"
-        f"{', '+diagnostics if diagnostics else ''}). "
-        f"Annual-Wachstum ist robuster als 'keine Veränderung' aber nimmt linearen Trend an."
-    )
-    return EstimateResult(
-        value=estimate,
-        method="annual_growth",
-        explanation=explanation,
-        factor=factor,
-    )
-
-
 def compute_estimate(
     db: Session,
     company_id: UUID,
@@ -313,45 +262,19 @@ def compute_estimate(
     pair = _matched_quarter_pair(db, company_id, key, target_fy_year, prev_fy)
 
     if pair is None:
-        # Kein gemeinsames Quartal → versuche Annual-Trend, dann FY-Fallback.
+        # Kein gemeinsames Quartal → FY-Fallback wenn möglich.
+        # Hinweis: Die UI sperrt diesen Pfad bereits per getEstimateLockReason
+        # wenn FY[target] gar keine Q-Reports hat — der Fallback hier greift
+        # nur als Defense-in-Depth (z.B. fuer US-Filer ueber Provider-Daten,
+        # oder wenn ein Q-Report zwar hochgeladen ist aber den key nicht ausweist).
         if prev_fy_val is not None:
-            # Diagnose: welche Quartale haben den Wert (key-spezifisch).
-            # Wichtig: Q-Report kann hochgeladen sein aber den Key nicht
-            # ausweisen (z.B. Adidas berichtet FCF nur jaehrlich, nicht in
-            # Q1/Q2/Q3). Daher wir reden von "Quartale mit <key>", nicht
-            # generisch "Q-Reports".
             target_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, target_fy_year) is not None]
             prev_qs = [q for q in QUARTERS if _value_at(db, company_id, key, q, prev_fy) is not None]
-            diagnostics = (
-                f"FY{target_fy_year} hat {key} in {target_qs or 'keinem Quartal'}, "
-                f"FY{prev_fy} hat {key} in {prev_qs or 'keinem Quartal'}"
-            )
-
-            # Versuch 1: Forward-Forecast über Annual-Trend (FY[N-1] × (FY[N-1]/FY[N-2])).
-            # Saubere Methode für FY[N+1]-Schätzungen ohne FY[N]-Q-Daten.
-            prev_prev_fy = prev_fy - 1
-            prev_prev_fy_val = _value_at(db, company_id, key, "FY", prev_prev_fy)
-            if prev_prev_fy_val is not None and prev_prev_fy_val != 0:
-                annual_est = _annual_growth_estimate(
-                    prev_fy_val=prev_fy_val,
-                    prev_prev_fy_val=prev_prev_fy_val,
-                    target_fy_year=target_fy_year,
-                    prev_fy=prev_fy,
-                    prev_prev_fy=prev_prev_fy,
-                    key=key,
-                    currency=currency,
-                    diagnostics=diagnostics,
-                )
-                if annual_est is not None:
-                    return annual_est
-
-            # Versuch 2 (Fallback): keine Veränderung ggue. Vorjahr.
             missing = (
-                f"{diagnostics}. "
+                f"FY{target_fy_year} hat {key} in {target_qs or 'keinem Quartal'}, "
+                f"FY{prev_fy} hat {key} in {prev_qs or 'keinem Quartal'}. "
                 f"Manche Firmen berichten {key} nur jaehrlich, nicht pro Quartal. "
-                f"Faktor-Methode braucht den Wert im gleichen Quartal beider Jahre. "
-                f"Annual-Trend (FY{prev_fy}/FY{prev_prev_fy}) auch nicht verfügbar oder "
-                f"durch Sanity-Gates verworfen."
+                f"Faktor-Methode braucht den Wert im gleichen Quartal beider Jahre."
             )
             return _fy_fallback(
                 prev_fy_val, target_fy_year, prev_fy, key, currency=currency,
