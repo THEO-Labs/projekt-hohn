@@ -1210,10 +1210,19 @@ def explain_company_value(
         client = get_client()
         response = claude_limiter.call(lambda: client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1024,
+            max_tokens=4096,
             tools=[WEB_SEARCH_TOOL],
             messages=[{"role": "user", "content": prompt}],
         ))
+        # stop_reason loggen: max_tokens deutet auf zu kurzes Budget, end_turn
+        # ist normal, tool_use waere unerwartet (wir akzeptieren nur Text).
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "max_tokens":
+            logger.warning(
+                "Explain-call %s/%s/%s wurde bei max_tokens=4096 abgeschnitten — "
+                "Antwort unvollstaendig. Erwaege weitere Erhoehung oder kuerzere Prompt-Struktur.",
+                company.ticker, value_key, period_year,
+            )
         text = _collect_text(response)
         return {"explanation": text or "(Keine Antwort von Claude erhalten)"}
     except Exception as e:
