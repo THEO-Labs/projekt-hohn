@@ -226,10 +226,6 @@ def _run_and_persist_calculations(
                 valuation_trailing["ev_ebitda"] = ev / prev_ebitda
             if prev_mcap is not None and prev_fcf is not None and prev_mcap != 0:
                 valuation_trailing["fcf_yield"] = prev_fcf / prev_mcap * Decimal("100")
-            # Forecast-Year-VALUATION-Keys aus fy_calc rausnehmen damit wir
-            # nicht versehentlich Forward-Multiple persistieren.
-            for k in ("pe_ratio", "ev_ebitda", "fcf_yield"):
-                fy_calc[k] = None
             valuation_keys = {"pe_ratio", "ev_ebitda", "fcf_yield"}
             updated += _persist_calc_results(
                 db, company_id, "FY", period_year,
@@ -237,6 +233,11 @@ def _run_and_persist_calculations(
                 source_name_override=f"Bewertung Stand FY{period_year - 1} (Trailing — Forecast-Year hat keinen Ist-Basis)",
                 is_forecast_override=True,
             )
+            # WICHTIG: VALUATION-Keys aus dem nachfolgenden fy_calc-Persist
+            # ausschliessen, sonst wuerde der zweite _persist_calc_results-Call
+            # die gerade gespeicherten Trailing-Werte mit Forward-Multiples
+            # (oder None) ueberschreiben. allowed_fy_keys ohne valuation_keys.
+            allowed_fy_keys = allowed_fy_keys - valuation_keys
 
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
