@@ -59,9 +59,19 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "LongTermDebt",
         "LongTermDebtNoncurrent",
     ],
-    # EBITDA bewusst NICHT in EDGAR-Map: US-GAAP-Filer reporten EBITDA selten
-    # als single concept (non-GAAP). Yahoo + Web-Fallback uebernehmen das.
 }
+
+# EBITDA-Ableitung fuer EDGAR: EBIT (Operating Income) + D&A (Depreciation & Amortization).
+# US-GAAP-Filer reporten EBITDA nicht als single concept (non-GAAP-Kennzahl),
+# wir aggregieren aus zwei Standard-Konzepten.
+EBITDA_EBIT_CONCEPTS = [
+    "OperatingIncomeLoss",
+]
+EBITDA_DA_CONCEPTS = [
+    "DepreciationDepletionAndAmortization",
+    "DepreciationAndAmortization",
+    "Depreciation",
+]
 
 FCF_OP_CASH_CONCEPTS = [
     "NetCashProvidedByUsedInOperatingActivities",
@@ -75,7 +85,7 @@ FCF_CAPEX_CONCEPTS = [
 
 class EdgarProvider:
     name = "SEC EDGAR"
-    supported_keys = set(CONCEPT_MAP.keys()) | {"fcf", "shares_outstanding"}
+    supported_keys = set(CONCEPT_MAP.keys()) | {"fcf", "shares_outstanding", "ebitda"}
 
     def __init__(self) -> None:
         self._ticker_to_cik: dict[str, str] | None = None
@@ -240,6 +250,28 @@ class EdgarProvider:
                 source_name=f"SEC EDGAR 10-K (FCF = OCF − CapEx, FY{period_year})",
                 source_link=self._filing_link(cik, accn),
                 currency=cur if "fcf" in CURRENCY_KEYS else None,
+            )
+
+        if key == "ebitda":
+            ebit, cur, accn = self._find_value(facts, EBITDA_EBIT_CONCEPTS, period_year, fy_end_month, fy_end_day)
+            da, _, _ = self._find_value(facts, EBITDA_DA_CONCEPTS, period_year, fy_end_month, fy_end_day)
+            if ebit is None:
+                return None
+            # Wenn D&A nicht findbar (selten — manche Filer reporten es nur im
+            # 10-K Notes-Bereich, nicht als XBRL concept), nehmen wir EBIT als
+            # konservative Approximation und markieren das in der Source.
+            if da is None:
+                return ProviderResult(
+                    value=ebit,
+                    source_name=f"SEC EDGAR 10-K (EBITDA ≈ EBIT, D&A nicht in XBRL — FY{period_year})",
+                    source_link=self._filing_link(cik, accn),
+                    currency=cur if "ebitda" in CURRENCY_KEYS else None,
+                )
+            return ProviderResult(
+                value=ebit + abs(da),
+                source_name=f"SEC EDGAR 10-K (EBITDA = EBIT + D&A, FY{period_year})",
+                source_link=self._filing_link(cik, accn),
+                currency=cur if "ebitda" in CURRENCY_KEYS else None,
             )
 
         if key == "shares_outstanding":

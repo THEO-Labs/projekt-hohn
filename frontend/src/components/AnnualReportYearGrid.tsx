@@ -9,6 +9,7 @@ import {
   triggerIRDocumentExtraction,
   type IRDocument,
 } from "@/api/irDocuments";
+import { getFyAvailability } from "@/api/values";
 import { uploadGate, useUploadActive } from "@/lib/uploadGate";
 
 const YEARS = [2025, 2024, 2023, 2022, 2021, 2020, 2019];
@@ -39,12 +40,20 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
   const [docs, setDocs] = useState<IRDocument[]>([]);
   const [uploading, setUploading] = useState<number | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [isUS, setIsUS] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingYear, setPendingYear] = useState<number | null>(null);
   const globalUploadActive = useUploadActive();
   const blockedByOtherUpload = globalUploadActive && uploading == null;
 
   const refresh = () => listIRDocuments(companyId).then(setDocs).catch(() => undefined);
+
+  useEffect(() => {
+    // US-Filer haben EDGAR als Datenquelle — Annual Reports werden automatisch
+    // gepullt, Upload ist nicht noetig (und verwirrt). Quartalsberichte koennen
+    // optional weiter manuell hochgeladen werden.
+    getFyAvailability(companyId).then((av) => setIsUS(av.is_us)).catch(() => undefined);
+  }, [companyId]);
 
   useEffect(() => {
     refresh();
@@ -135,6 +144,15 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         <FileText className="h-3.5 w-3.5" />
         Annual Reports
       </div>
+      {isUS && (
+        <div className="mb-2 flex items-start gap-1.5 rounded border border-sky-300 bg-sky-50 px-2 py-1.5 text-[10px] text-sky-800">
+          <Check className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>
+            <strong>US-Filer</strong> — Annual Report-Daten kommen automatisch via SEC EDGAR (XBRL).
+            Manueller Upload ist deaktiviert. Quartalsberichte können optional unten hochgeladen werden.
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-7 gap-1.5">
         {YEARS.map((year) => {
           const doc = docByYear(year);
@@ -219,9 +237,13 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
           return (
             <button key={year}
               onClick={() => onPickYear(year)}
-              disabled={blockedByOtherUpload}
+              disabled={blockedByOtherUpload || isUS}
               className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-2 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-background disabled:hover:text-muted-foreground"
-              title={blockedByOtherUpload ? "Anderer Upload läuft, bitte warten…" : anyExtracting ? `Annual Report ${year} hochladen — wird in Warteschlange aufgenommen.` : `Annual Report ${year} hochladen`}
+              title={isUS
+                ? "US-Filer — Annual Report-Daten kommen automatisch via SEC EDGAR. Manueller Upload nicht noetig."
+                : blockedByOtherUpload ? "Anderer Upload läuft, bitte warten…"
+                : anyExtracting ? `Annual Report ${year} hochladen — wird in Warteschlange aufgenommen.`
+                : `Annual Report ${year} hochladen`}
             >
               <Upload className="h-3.5 w-3.5" />
               <span className="text-[10px] font-semibold">{year}</span>
@@ -237,7 +259,9 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         </div>
       )}
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
-        Annual Reports sind die Hauptquelle für Finanzdaten. Bei US-Filern (ISIN US…) liefert zusätzlich EDGAR Daten — bei Non-US-Firmen ist die Hohn-Rendite ohne hochgeladenen Annual Report gesperrt. Max {MAX_UPLOAD_MB} MB pro PDF.
+        {isUS
+          ? `US-Filer: Annual Report-Daten kommen automatisch via SEC EDGAR — kein Upload noetig. Max ${MAX_UPLOAD_MB} MB pro PDF (Quartalsberichte).`
+          : `Annual Reports sind die Hauptquelle fuer Finanzdaten bei Non-US-Firmen — ohne hochgeladenen Annual Report ist die Hohn-Rendite gesperrt. Max ${MAX_UPLOAD_MB} MB pro PDF.`}
       </p>
       <QuarterlyReportGrid
         companyId={companyId}
