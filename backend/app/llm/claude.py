@@ -481,6 +481,7 @@ _YOY_CAP_KEYS: dict[str, tuple[float, float]] = {
     "net_income": (1.5, 0.5),
     "fcf": (1.6, 0.4),
     "sbc": (1.4, 0.6),
+    "ebitda": (1.5, 0.5),
     # Buyback: neue Programme koennen 10-30x vom ESOP-Cycling-Vorjahr abweichen
     # (z.B. Adidas FY2025 €43M ESOP-only -> FY2026 €1Mrd neues Programm = 23x).
     # Cap auf 30x damit echte Programme durchgehen, aber 100x+ als Halluzinationen

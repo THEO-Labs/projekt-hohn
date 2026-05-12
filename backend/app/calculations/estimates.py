@@ -35,6 +35,7 @@ FLOW_KEYS = frozenset({
     "sbc",
     "buyback_volume",
     "dividends",
+    "ebitda",
 })
 
 BALANCE_KEYS = frozenset({

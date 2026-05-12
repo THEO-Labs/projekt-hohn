@@ -191,7 +191,7 @@ const HOHN_LOCKED_KEYS = new Set(["hohn_return_simple", "hohn_return_detailed"])
 // FY[N-1]-Wert + Faktor-Berechnung).
 const ESTIMATE_PRIMARY_KEYS = new Set([
   "net_income", "fcf", "sbc", "buyback_volume", "dividends",
-  "net_debt", "shares_outstanding",
+  "net_debt", "shares_outstanding", "ebitda",
 ]);
 
 type VariantValues = Map<string, number | null>;
