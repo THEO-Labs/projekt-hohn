@@ -1517,14 +1517,24 @@ export function CompanyDashboardPage() {
                               const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
                               const pdfReason = reasonMatch?.[1]?.trim();
                               const isCalc = d.source_type === "CALCULATED";
-                              const tooltipText = hohnPartialBlock
+                              // Spezial-Case: pe_ratio bei negativem Net Income ist
+                              // mathematisch nicht definiert (Verlust-Jahr). Statt
+                              // 'Inputs fehlen' sagen wir das klar.
+                              const niForKey = cRows.find((r) => r.value_key === "net_income");
+                              const niNum = niForKey?.numeric_value != null ? parseFloat(String(niForKey.numeric_value)) : null;
+                              const isPeNotDefined = d.key === "pe_ratio" && niNum != null && niNum <= 0;
+                              const tooltipText = isPeNotDefined
+                                ? `P/E nicht definiert: Net Income ${niNum != null ? `${(niNum/1_000_000).toFixed(0)} Mio` : ""} ist negativ/null (Verlust-Jahr). KGV ist bei Verlusten konzeptionell nicht aussagekräftig.`
+                                : hohnPartialBlock
                                 ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${fyPartialMissing.join(", ")}. Klick auf die fehlenden Felder um sie zu fuellen.`
                                 : pdfNullSource
                                 ? `Annual Report analysiert, kein Wert für diese Kennzahl gefunden${pdfReason ? `: ${pdfReason}` : ""}. Auto-Web-Fallback hat ebenfalls nichts gefunden.`
                                 : isCalc
                                 ? `Berechnung nicht möglich - benötigte Eingabewerte fehlen${FORMULAS[d.key] ? ` (${FORMULAS[d.key]})` : ""}`
                                 : `Wert fehlt - weder im PDF, von Yahoo/EDGAR noch via Web-Recherche gefunden. 'Werte berechnen' nochmal triggern.`;
-                              const labelText = hohnPartialBlock
+                              const labelText = isPeNotDefined
+                                ? "N/A (Verlust)"
+                                : hohnPartialBlock
                                 ? "Komponenten fehlen"
                                 : pdfNullSource
                                 ? "Im Bericht nicht gefunden"
