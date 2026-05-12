@@ -291,6 +291,11 @@ function buildVariantValues(
   const hohnSimple = sumIfAllPresent([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
   const hohnDetailed = sumIfAllPresent([divYield, niGrowth, netBuybackYield, ndChangePct]);
 
+  // VALUATION-Keys (pe_ratio, ev_ebitda, ebitda, actual_return) kommen direkt
+  // aus der Row — sie sind im Forecast-Year entweder Trailing-Calc (pe_ratio,
+  // ev_ebitda, fcf_yield) oder echter Forecast-Wert (ebitda) bzw. Realized-TSR
+  // (actual_return). pick() greift via _isTrailingValuation / primary_method-
+  // Heuristik bereits den korrekten Wert ab.
   return new Map<string, number | null>([
     ["fcf", fcf], ["sbc", sbc], ["buyback_volume", buyback], ["dividends", dividends],
     ["net_income", netIncome], ["net_debt", netDebt],
@@ -300,6 +305,10 @@ function buildVariantValues(
     ["buyback_yield", buybackYield], ["net_buyback", netBuyback], ["net_buyback_yield", netBuybackYield],
     ["ni_growth", niGrowth], ["net_debt_change", ndChange], ["net_debt_change_pct", ndChangePct],
     ["hohn_return_simple", hohnSimple], ["hohn_return_detailed", hohnDetailed],
+    ["pe_ratio", raw.get("pe_ratio") ?? null],
+    ["ev_ebitda", raw.get("ev_ebitda") ?? null],
+    ["ebitda", raw.get("ebitda") ?? null],
+    ["actual_return", raw.get("actual_return") ?? null],
   ]);
 }
 
