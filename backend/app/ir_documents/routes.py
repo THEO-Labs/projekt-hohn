@@ -134,26 +134,26 @@ def _post_extraction_web_fallback(
 
         label = f"{vd.label_en} ({vd.label_de})"
         attempted += 1
+        from app.llm.research import research_value_dual
         try:
-            web_val, source, url, _user_prompt, assistant = research_value(
+            dual = research_value_dual(
                 company.name, company.ticker, label, company.currency,
                 period_type=period_type, period_year=period_year, value_key=key,
             )
+            web_val = dual.value
+            source = dual.source
+            url = dual.url
         except Exception as e:
             logger.warning("Post-extraction web fallback %s/%s/%s/%s failed: %s",
                            company.ticker, key, period_type, period_year, e)
             continue
 
         if web_val is None:
-            preview = (assistant or "")[:300].replace("\n", " ")
-            logger.info("Web-fallback %s/%s/%s/%s: NO VALUE — Claude said: %s",
-                        company.ticker, key, period_type, period_year, preview)
-            continue
-        web_val = validate_claude_value(key, web_val)
-        if web_val is None:
-            logger.info("Web-fallback %s/%s/%s/%s: value rejected by sanity-range",
+            logger.info("Web-fallback %s/%s/%s/%s: NO VALUE (Claude+Gemini lieferten beide nichts)",
                         company.ticker, key, period_type, period_year)
             continue
+        # dual.value ist bereits validiert von beiden Providern. Kein zusaetzlicher
+        # validate_claude_value-Call noetig.
         # Sign-norm für ALWAYS_POSITIVE_KEYS (sbc/buyback/dividends/shares):
         # Claude liefert manchmal negative Cash-Outflow-Werte (Cashflow-Konvention).
         from app.ir_documents.extraction import ALWAYS_POSITIVE_KEYS

@@ -293,11 +293,13 @@ def _try_web_guidance(
     key: str,
     target_fy: int,
 ):
-    """Web-Recherche für FY-Guidance. Returns ProviderResult oder None."""
+    """Web-Recherche für FY-Guidance via Dual-Provider (Claude + Gemini, Mittel).
+    Faellt auf Claude-only zurueck wenn GEMINI_API_KEY nicht gesetzt ist.
+    Returns ProviderResult oder None."""
     from app.config import settings
     if not settings.anthropic_api_key:
         return None
-    from app.llm.claude import research_value, validate_claude_value
+    from app.llm.research import research_value_dual
     from app.providers.base import ProviderResult
 
     vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
@@ -319,33 +321,36 @@ def _try_web_guidance(
     )
     prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
     try:
-        val, source, url, _user_prompt, _assistant_response = research_value(
+        dual = research_value_dual(
             company.name, company.ticker, label, company.currency,
             period_type="FY", period_year=target_fy, value_key=key,
             prev_fy_val=prev_fy_val,
         )
     except Exception as e:
-        logger.warning("Web-Guidance Claude call failed for %s/%s/FY%s: %s",
+        logger.warning("Web-Guidance dual research failed for %s/%s/FY%s: %s",
                        company.ticker, key, target_fy, e)
         return None
 
-    if val is None:
-        logger.info("Web-Guidance %s/%s/FY%s: no value extracted",
+    if dual.value is None:
+        logger.info("Web-Guidance %s/%s/FY%s: keine Provider lieferte einen Wert",
                     company.ticker, key, target_fy)
         return None
-    val_validated = validate_claude_value(key, val, prev_fy_val=prev_fy_val, is_forward_year=True)
-    if val_validated is None:
-        logger.info("Web-Guidance %s/%s/FY%s: value %s failed sanity-range/yoy-cap",
-                    company.ticker, key, target_fy, val)
-        return None
-    val = val_validated
 
     return ProviderResult(
-        value=val,
-        source_name=f"Web-Guidance: {source}" if source else "Web-Guidance (Claude-Recherche)",
-        source_link=url,
+        value=dual.value,
+        source_name=f"Web-Guidance: {dual.source}" if dual.source else "Web-Guidance (Dual-Recherche)",
+        source_link=dual.url,
         currency=company.currency if key in CURRENCY_KEYS else None,
-        extras={"is_forecast": True, "guidance_method": "web_research"},
+        extras={
+            "is_forecast": True,
+            "guidance_method": "web_research",
+            "providers_responded": dual.providers_responded,
+            "divergent": dual.divergent,
+            "claude_value": str(dual.claude.value) if dual.claude.value is not None else None,
+            "claude_source": dual.claude.source,
+            "gemini_value": str(dual.gemini.value) if dual.gemini.value is not None else None,
+            "gemini_source": dual.gemini.source,
+        },
     )
 
 
