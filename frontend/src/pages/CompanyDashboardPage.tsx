@@ -68,7 +68,7 @@ const CUM_INPUT_FY_KEYS = [
 const CATEGORY_LABELS: Record<string, string> = {
   HOHN_RETURN: "Hohn-Rendite",
   VALUATION: "Bewertung",
-  FCF: "FCF Yield",
+  FCF: "Free Cash Flow",
   NI_GROWTH: "Net Income Growth",
   SBC: "SBC",
   BUYBACKS: "Buybacks",
@@ -669,7 +669,10 @@ export function CompanyDashboardPage() {
     const isExpanded = !isCumMode && expandedSections.has(cat);
     // actual_return ist FY-spezifisch (Yahoo MCap-Anker), CUM rechnet über mehrere FYs.
     const cumFactorDefs = factorDefs.filter((d) => d.key !== "market_cap" && d.key !== "actual_return");
-    const baseVisibleDefs = isCumMode ? cumFactorDefs : (isExpanded ? allDefs : factorDefs);
+    // Wenn die Kategorie KEINE Faktoren hat (z.B. FCF nach Verschiebung von fcf_yield
+    // -> VALUATION), zeige Inputs direkt — sonst sieht User leere Spalte + 'einklappbar'.
+    const hasFactors = factorDefs.length > 0;
+    const baseVisibleDefs = isCumMode ? cumFactorDefs : (isExpanded || !hasFactors ? allDefs : factorDefs);
     const visibleSectionDefs: (ValueDefinition & { isPrevYear?: boolean; basedOnKey?: string })[] = [];
     for (const d of baseVisibleDefs) {
       visibleSectionDefs.push(d);
@@ -688,7 +691,9 @@ export function CompanyDashboardPage() {
       category: cat,
       label: CATEGORY_LABELS[cat],
       defs: visibleSectionDefs,
-      hiddenInputCount: isCumMode ? 0 : inputDefs.length,
+      // Wenn die Kategorie keine Faktoren hat, sind die Inputs immer sichtbar
+      // -> nichts zum Einklappen anzeigen.
+      hiddenInputCount: (isCumMode || !hasFactors) ? 0 : inputDefs.length,
       isExpanded,
       isEmptyInCompact: factorDefs.length === 0,
     };
