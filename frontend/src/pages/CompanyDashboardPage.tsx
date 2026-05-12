@@ -201,8 +201,21 @@ function _toNum(n: number | string | null | undefined): number | null {
   return typeof n === "string" ? parseFloat(n) : n;
 }
 
+// CALCULATED Trailing-Werte (pe_ratio, ev_ebitda, fcf_yield) im Forecast-Year
+// werden methoden-unabhaengig berechnet (FY[N-1]-Anker). Sie sollen in BEIDEN
+// Estimate-Rows (Q-Faktor + Web) den gleichen Trailing-Wert zeigen.
+const VALUATION_TRAILING_KEYS = new Set(["pe_ratio", "ev_ebitda", "fcf_yield"]);
+
+function _isTrailingValuation(cv: CompanyValue): boolean {
+  return VALUATION_TRAILING_KEYS.has(cv.value_key)
+    && !!cv.is_forecast
+    && (cv.source_name || "").includes("Bewertung Stand FY");
+}
+
 function _getFaktorValue(cv: CompanyValue): number | null {
   if (!cv.is_forecast) return _toNum(cv.numeric_value);
+  // Trailing-Bewertung: methoden-unabhaengig, immer den Wert zeigen.
+  if (_isTrailingValuation(cv)) return _toNum(cv.numeric_value);
   // primary_method ist explizit (neu) — Source-Name nur als Legacy-Fallback
   // fuer alte Rows ohne primary_method.
   const isProxyPrimary = cv.primary_method === "q_factor_proxy"
@@ -216,6 +229,8 @@ function _getFaktorValue(cv: CompanyValue): number | null {
 
 function _getWebValue(cv: CompanyValue): number | null {
   if (!cv.is_forecast) return _toNum(cv.numeric_value);
+  // Trailing-Bewertung: methoden-unabhaengig, immer den Wert zeigen.
+  if (_isTrailingValuation(cv)) return _toNum(cv.numeric_value);
   const isWebPrimary = cv.primary_method === "web_guidance"
     || (cv.primary_method == null && (cv.source_name || "").includes("Web-Guidance"));
   if (isWebPrimary && !cv.manually_overridden) return _toNum(cv.numeric_value);
