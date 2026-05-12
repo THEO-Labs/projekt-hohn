@@ -75,7 +75,7 @@ class CompanyValue(Base):
     numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(25, 6), nullable=True)
     text_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
-    source_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     source_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     manually_overridden: Mapped[bool] = mapped_column(Boolean, default=False)

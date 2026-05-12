@@ -120,6 +120,12 @@ def research_value_dual(
 
     # Aggregation
     cv, gv = claude_res.value, gemini_res.value
+    # Pro-Provider-Source auf 600 chars truncaten damit auch lange Begruendungen
+    # nicht das DB-source_name-Limit (2048 chars) sprengen. Bei Konsens-Strings
+    # mit beiden Providers bleibt noch Platz fuer Praefix+Mittel-Werte.
+    def _short(s: str | None) -> str:
+        return (s or "KI-Einschätzung")[:600]
+
     if cv is not None and gv is not None:
         mean_val = (cv + gv) / Decimal("2")
         diff = _pct_diff(cv, gv)
@@ -127,18 +133,18 @@ def research_value_dual(
         if divergent:
             source = (
                 f"⚠ DIVERGENZ ({diff*100:.0f}% Abweichung) — Mittel: {mean_val:,.0f} "
-                f"{currency} | Claude: {cv:,.0f} ({claude_res.source or 'KI-Einschätzung'}) "
-                f"| Gemini: {gv:,.0f} ({gemini_res.source or 'KI-Einschätzung'})"
+                f"{currency} | Claude: {cv:,.0f} ({_short(claude_res.source)}) "
+                f"| Gemini: {gv:,.0f} ({_short(gemini_res.source)})"
             )
         else:
             source = (
                 f"Konsens (Claude+Gemini Mittel): {mean_val:,.0f} {currency} "
-                f"| Claude: {cv:,.0f} ({claude_res.source or 'KI'}) "
-                f"| Gemini: {gv:,.0f} ({gemini_res.source or 'KI'})"
+                f"| Claude: {cv:,.0f} ({_short(claude_res.source)}) "
+                f"| Gemini: {gv:,.0f} ({_short(gemini_res.source)})"
             )
         return DualResearchResult(
             value=mean_val,
-            source=source[:1024],
+            source=source[:1900],  # extra safety margin unter DB-Limit 2048
             url=claude_res.url or gemini_res.url,
             claude=claude_res,
             gemini=gemini_res,
@@ -148,7 +154,7 @@ def research_value_dual(
     if cv is not None:
         return DualResearchResult(
             value=cv,
-            source=(f"Claude-only (Gemini lieferte nichts): {claude_res.source or 'KI-Recherche'}")[:1024],
+            source=(f"Claude-only (Gemini lieferte nichts): {_short(claude_res.source)}")[:1900],
             url=claude_res.url,
             claude=claude_res,
             gemini=gemini_res,
@@ -158,7 +164,7 @@ def research_value_dual(
     if gv is not None:
         return DualResearchResult(
             value=gv,
-            source=(f"Gemini-only (Claude lieferte nichts): {gemini_res.source or 'KI-Recherche'}")[:1024],
+            source=(f"Gemini-only (Claude lieferte nichts): {_short(gemini_res.source)}")[:1900],
             url=gemini_res.url,
             claude=claude_res,
             gemini=gemini_res,

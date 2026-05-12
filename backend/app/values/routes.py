@@ -520,12 +520,32 @@ def _process_one_key(
                     "source": proxy_alt_result.source_name,
                     "explanation": extras.get("estimate"),
                 })
+            # Web-Alt IMMER schreiben — entweder echter Web-Wert oder Notfall-
+            # Fallback (Proxy/Primary-Wert mit Markierung). 'Web fehlte' darf
+            # nie sichtbar werden im UI.
             if web_alt_result is not None and isinstance(web_alt_result.value, Decimal):
                 alts.append({
                     "method": "web_guidance",
                     "value": str(web_alt_result.value),
                     "currency": web_alt_result.currency,
                     "source": web_alt_result.source_name,
+                })
+            elif proxy_alt_result is not None and isinstance(proxy_alt_result.value, Decimal):
+                alts.append({
+                    "method": "web_guidance",
+                    "value": str(proxy_alt_result.value),
+                    "currency": proxy_alt_result.currency,
+                    "source": f"Notfall-Fallback (Web-Recherche fehlte trotz Retry): {proxy_alt_result.source_name}",
+                    "fallback_from": "q_factor_proxy",
+                })
+            elif isinstance(result.value, Decimal):
+                # Letzter Fallback: nutze den primaeren result-Wert (z.B. PDF-Guidance).
+                alts.append({
+                    "method": "web_guidance",
+                    "value": str(result.value),
+                    "currency": result.currency,
+                    "source": f"Notfall-Fallback (Web+Proxy fehlten): {result.source_name}",
+                    "fallback_from": "primary_result",
                 })
             if alts:
                 forecast_alternates = alts

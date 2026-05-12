@@ -481,8 +481,13 @@ _YOY_CAP_KEYS: dict[str, tuple[float, float]] = {
     "net_income": (1.5, 0.5),
     "fcf": (1.6, 0.4),
     "sbc": (1.4, 0.6),
-    "buyback_volume": (3.0, 0.2),     # Programme starten/stoppen
-    "dividends": (2.0, 0.3),          # Dividenden-Sprünge nach Krisenjahren
+    # Buyback: neue Programme koennen 10-30x vom ESOP-Cycling-Vorjahr abweichen
+    # (z.B. Adidas FY2025 €43M ESOP-only -> FY2026 €1Mrd neues Programm = 23x).
+    # Cap auf 30x damit echte Programme durchgehen, aber 100x+ als Halluzinationen
+    # erkannt werden.
+    "buyback_volume": (30.0, 0.05),
+    # Dividends: Sprünge nach Krisenjahren legitim (z.B. Adidas 2024 €0.70 -> 2026 €2.80)
+    "dividends": (5.0, 0.1),
 }
 
 
