@@ -19,7 +19,7 @@ const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
 // Anzahl der Werte die wir aus jedem PDF extrahieren — muss zur EXTRACTION_KEYS-Liste
 // in backend/app/ir_documents/extraction.py passen.
-const TOTAL_EXTRACTION_KEYS = 7;
+const TOTAL_EXTRACTION_KEYS = 8;
 
 function checkSize(file: File, label: string): boolean {
   if (file.size > MAX_UPLOAD_BYTES) {
