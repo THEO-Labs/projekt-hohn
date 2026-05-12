@@ -10,4 +10,5 @@ CURRENCY_KEYS = frozenset({
     "fcf",
     "net_income",
     "dividends",
+    "ebitda",
 })

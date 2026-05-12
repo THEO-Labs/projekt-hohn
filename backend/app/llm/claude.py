@@ -338,7 +338,7 @@ def _fallback_extract_value(text: str) -> Decimal | None:
 # duplizieren als Set für die unit-heuristik unten.
 _LIKELY_CURRENCY_KEYS = frozenset({
     "net_income", "fcf", "sbc", "buyback_volume", "dividends",
-    "net_debt", "market_cap",
+    "net_debt", "market_cap", "ebitda",
 })
 
 
@@ -422,6 +422,9 @@ _CLAUDE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "buyback_volume": (0, 1_000_000_000_000),
     "dividends": (0, 1_000_000_000_000),
     "net_debt": (-5_000_000_000_000, 10_000_000_000_000),
+    # EBITDA: meist 2-5x Net Income, kann bei extrem-CapEx-lastigen Firmen
+    # (Telekom, Versorger) hoeher sein. Range groesszuegig.
+    "ebitda": (-2_000_000_000_000, 10_000_000_000_000),
 }
 
 
@@ -458,6 +461,15 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
     "shares_outstanding": (
         "Diluted Weighted Average Shares Outstanding aus der Income Statement, "
         "ODER (bei Stammdaten-Snapshot) aktueller Bestand zum letzten Stichtag aus IR."
+    ),
+    "ebitda": (
+        "EBITDA (Earnings Before Interest, Tax, Depreciation & Amortization). "
+        "Standard-Definition: Operating Income + D&A. Suchorte: Highlights/KPI-"
+        "Tabelle, Income Statement (oft als 'EBITDA' direkt ausgewiesen), Notes "
+        "zu Segment-Reporting. Bei IFRS-Filern oft als 'EBITDA adjusted' oder "
+        "'EBITDA before special items' — nutze die GAAP-/IFRS-Reporting-Zahl, "
+        "NICHT die Adjusted/Pro-Forma-Variante. Bei Banken/Versicherern: nicht "
+        "anwendbar — Equivalent: Operating Income / Pre-Tax Profit."
     ),
 }
 

@@ -16,7 +16,6 @@ SEED_VALUES = [
     {"key": "net_buyback_yield", "label_de": "Net Buyback / Market Cap", "label_en": "Net Buyback / Market Cap", "category": "BUYBACKS", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 28},
 
     # FCF
-    {"key": "fcf_yield", "label_de": "FCF-Rendite", "label_en": "FCF Yield", "category": "FCF", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 30},
     {"key": "fcf", "label_de": "Free Cash Flow", "label_en": "Free Cash Flow", "category": "FCF", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 31},
 
     # NI GROWTH
@@ -35,5 +34,11 @@ SEED_VALUES = [
     # HOHN RETURN
     {"key": "hohn_return_simple", "label_de": "Hohn-Rendite (einfach)", "label_en": "Hohn Return (simple)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 70},
     {"key": "hohn_return_detailed", "label_de": "Hohn-Rendite (detailed)", "label_en": "Hohn Return (detailed)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 71},
-    {"key": "actual_return", "label_de": "Tatsächliche Rendite (FY)", "label_en": "Actual Return (FY)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 72},
+
+    # VALUATION (Bewertungs-Multiples — immer auf Ist-Werten, im Estimate-Mode FY[N-1]-Snapshot)
+    {"key": "actual_return", "label_de": "Tatsächliche Rendite (FY)", "label_en": "Actual Return (FY)", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 80},
+    {"key": "pe_ratio", "label_de": "KGV", "label_en": "P/E Ratio", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 81},
+    {"key": "ev_ebitda", "label_de": "EV / EBITDA", "label_en": "EV / EBITDA", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 82},
+    {"key": "fcf_yield", "label_de": "FCF-Rendite", "label_en": "FCF Yield", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 83},
+    {"key": "ebitda", "label_de": "EBITDA", "label_en": "EBITDA", "category": "VALUATION", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 84},
 ]

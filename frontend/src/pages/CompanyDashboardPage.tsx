@@ -30,7 +30,7 @@ import { getFxRates } from "@/api/fx";
 import { parseNumericInput } from "@/lib/parseNumeric";
 
 const CATEGORY_ORDER = [
-  "HOHN_RETURN", "FCF", "NI_GROWTH", "SBC", "BUYBACKS",
+  "HOHN_RETURN", "VALUATION", "FCF", "NI_GROWTH", "SBC", "BUYBACKS",
   "DIVIDENDS", "DEBT", "STAMMDATEN",
 ];
 
@@ -67,6 +67,7 @@ const CUM_INPUT_FY_KEYS = [
 
 const CATEGORY_LABELS: Record<string, string> = {
   HOHN_RETURN: "Hohn-Rendite",
+  VALUATION: "Bewertung",
   FCF: "FCF Yield",
   NI_GROWTH: "Net Income Growth",
   SBC: "SBC",
@@ -85,6 +86,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   NI_GROWTH: "bg-violet-50 text-violet-700 border-violet-200",
   DIVIDENDS: "bg-emerald-50 text-emerald-700 border-emerald-200",
   HOHN_RETURN: "bg-sky-100 text-sky-800 border-sky-300",
+  VALUATION: "bg-indigo-100 text-indigo-800 border-indigo-300",
 };
 
 type PeriodOption =
@@ -130,6 +132,8 @@ const FORMULAS: Record<string, string> = {
   hohn_return_simple: "FCF Yield + NI Growth − SBC/MCap + ΔND/MCap",
   hohn_return_detailed: "Dividend Yield + NI Growth + Net Buyback/MCap + ΔND/MCap",
   actual_return: "(MCap Ende FY / MCap Anfang FY − 1) × 100  [TSR via Yahoo Adj Close]",
+  pe_ratio: "Market Cap / Net Income  (KGV, nur bei positivem NI)",
+  ev_ebitda: "(Market Cap + Net Debt) / EBITDA",
 };
 
 type ColorTier = "excellent" | "good" | "neutral" | "weak" | "bad";

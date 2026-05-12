@@ -133,6 +133,15 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "(3) Cover/Highlights des Annual Report. "
      "Im Zweifel: zeitpunktbezogene Shares (Bilanz) bevorzugen, weil wir damit Market Cap berechnen. "
      "WERT als ABSOLUTE STÜCK-ZAHL (z.B. 178549084), NICHT in Mio."),
+    ("ebitda",
+     "EBITDA (Earnings Before Interest, Tax, Depreciation & Amortization) für die Periode. "
+     "Suchorte: (1) Highlights / KPI-Tabelle am Anfang des AR — oft als 'EBITDA: X' direkt ausgewiesen. "
+     "(2) Income Statement → 'Operating Income' / 'Operating Profit' (EBIT) + 'Depreciation' + 'Amortization' aufaddieren. "
+     "(3) Segment-Reporting-Note → Konzern-Aggregate. "
+     "(4) Bei IFRS-Filern: oft als 'EBITDA' direkt oder als 'EBIT + D&A'. "
+     "WICHTIG: Bevorzuge die REPORTED/GAAP/IFRS-Zahl, NICHT die 'Adjusted EBITDA' / 'EBITDA before special items' / 'Pro Forma'. "
+     "Bei Banken/Versicherern: nicht anwendbar — Equivalent: Pre-Tax Operating Profit. "
+     "WERT in Konzern-Waehrung, POSITIV (Verluste extrem selten bei EBITDA-Level)."),
 ]
 
 

@@ -59,6 +59,8 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "LongTermDebt",
         "LongTermDebtNoncurrent",
     ],
+    # EBITDA bewusst NICHT in EDGAR-Map: US-GAAP-Filer reporten EBITDA selten
+    # als single concept (non-GAAP). Yahoo + Web-Fallback uebernehmen das.
 }
 
 FCF_OP_CASH_CONCEPTS = [

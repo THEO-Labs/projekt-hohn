@@ -30,6 +30,8 @@ FY_CALC_KEYS = {
     "net_debt_change_pct",
     "dividend_yield",
     "actual_return",
+    "pe_ratio",
+    "ev_ebitda",
 } | HOHN_KEYS
 
 CALCULATED_KEYS = STAMMDATEN_CALC_KEYS | FY_CALC_KEYS
@@ -79,6 +81,17 @@ def calculate_fy(
 
     fcf = current.get("fcf")
     results["fcf_yield"] = _safe_div_pct(fcf, market_cap)
+
+    # VALUATION-Multiples (immer auf Ist-Werten):
+    # KGV = Market Cap / Net Income (nur sinnvoll bei positivem NI).
+    # EV/EBITDA = (Market Cap + Net Debt) / EBITDA.
+    ebitda = current.get("ebitda")
+    ni_for_pe = current.get("net_income")
+    if market_cap is not None and ni_for_pe is not None and ni_for_pe > 0:
+        results["pe_ratio"] = market_cap / ni_for_pe
+    if market_cap is not None and ebitda is not None and ebitda > 0:
+        ev = market_cap + (net_debt if net_debt is not None else Decimal("0"))
+        results["ev_ebitda"] = ev / ebitda
 
     ni = current.get("net_income")
     if previous:

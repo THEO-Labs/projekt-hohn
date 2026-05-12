@@ -19,6 +19,7 @@ INFO_KEY_MAP = {
 
 FINANCIALS_ROWS = {
     "net_income": ["Net Income", "Net Income Common Stockholders"],
+    "ebitda": ["EBITDA", "Normalized EBITDA"],
 }
 
 BALANCE_SHEET_ROWS = {
@@ -54,6 +55,7 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "sbc": (0, 1e15),
     "net_income": (-1e15, 1e15),
     "fcf": (-1e15, 1e15),
+    "ebitda": (-2e15, 1e16),
     "cash_and_equivalents": (0, 1e15),
     "marketable_securities_st": (0, 1e15),
     "marketable_securities_lt": (0, 1e15),

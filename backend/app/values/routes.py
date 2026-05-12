@@ -69,9 +69,12 @@ def _persist_calc_results(
     calc_results: dict[str, Decimal | None],
     allowed_keys: set[str],
     company_currency: str | None,
+    source_name_override: str | None = None,
+    is_forecast_override: bool | None = None,
 ) -> list[CompanyValue]:
     by_key = {row.value_key: row for row in existing_rows}
     updated: list[CompanyValue] = []
+    default_source = source_name_override or "Calculated"
 
     for key, value in calc_results.items():
         if key not in allowed_keys:
@@ -90,10 +93,12 @@ def _persist_calc_results(
                 # reset the flag.
                 continue
             existing.numeric_value = value
-            existing.source_name = "Calculated"
+            existing.source_name = default_source
             existing.source_link = None
             existing.fetched_at = datetime.now(timezone.utc)
             existing.from_ir_pdf = False
+            if is_forecast_override is not None:
+                existing.is_forecast = is_forecast_override
             if calc_currency and not existing.currency:
                 existing.currency = calc_currency
             updated.append(existing)
@@ -105,10 +110,11 @@ def _persist_calc_results(
                 period_type=period_type,
                 period_year=period_year,
                 numeric_value=value,
-                source_name="Calculated",
+                source_name=default_source,
                 source_link=None,
                 fetched_at=datetime.now(timezone.utc),
                 currency=calc_currency,
+                is_forecast=bool(is_forecast_override) if is_forecast_override is not None else False,
             )
             db.add(cv)
             updated.append(cv)
@@ -188,6 +194,50 @@ def _run_and_persist_calculations(
         fy_calc = calculate_fy(current, previous, stammdaten, next_year_market_cap=next_mcap)
 
         allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
+
+        # Forecast-Year-Erkennung: wenn fuer dieses FY die Kern-Inputs als
+        # Forecast in DB stehen (z.B. net_income aus Web-Guidance), ueberlagern
+        # wir die VALUATION-Multiples (pe_ratio, ev_ebitda, fcf_yield) mit
+        # Werten aus dem Vorjahr (FY[N-1] = Ist-Werte). User-Anforderung:
+        # "im Estimate-Mode soll Bewertung den Stand FY[N-1] zeigen, nicht
+        # Forward-Multiple mit Forecast-NI".
+        # actual_return bleibt ausgenommen — der ist nur fuer abgeschlossene FY
+        # sinnvoll und braucht weiter den next_year_market_cap-Anker.
+        is_forecast_year = any(
+            r.is_forecast and r.value_key in ("net_income", "ebitda", "fcf", "net_debt", "market_cap")
+            for r in current_rows
+        )
+        if is_forecast_year and previous:
+            # Trailing-Bewertung: prev-Werte + prev-MCap (FY[N-1]-Ende = current.market_cap = FY[N]-Anker)
+            prev_mcap = previous.get("market_cap")
+            prev_ni = previous.get("net_income")
+            prev_ebitda = previous.get("ebitda")
+            prev_net_debt = previous.get("net_debt")
+            prev_fcf = previous.get("fcf")
+            valuation_trailing: dict[str, Decimal | None] = {
+                "pe_ratio": None,
+                "ev_ebitda": None,
+                "fcf_yield": None,
+            }
+            if prev_mcap is not None and prev_ni is not None and prev_ni > 0:
+                valuation_trailing["pe_ratio"] = prev_mcap / prev_ni
+            if prev_mcap is not None and prev_ebitda is not None and prev_ebitda > 0:
+                ev = prev_mcap + (prev_net_debt if prev_net_debt is not None else Decimal("0"))
+                valuation_trailing["ev_ebitda"] = ev / prev_ebitda
+            if prev_mcap is not None and prev_fcf is not None and prev_mcap != 0:
+                valuation_trailing["fcf_yield"] = prev_fcf / prev_mcap * Decimal("100")
+            # Forecast-Year-VALUATION-Keys aus fy_calc rausnehmen damit wir
+            # nicht versehentlich Forward-Multiple persistieren.
+            for k in ("pe_ratio", "ev_ebitda", "fcf_yield"):
+                fy_calc[k] = None
+            valuation_keys = {"pe_ratio", "ev_ebitda", "fcf_yield"}
+            updated += _persist_calc_results(
+                db, company_id, "FY", period_year,
+                current_rows, valuation_trailing, valuation_keys, company_currency,
+                source_name_override=f"Bewertung Stand FY{period_year - 1} (Trailing — Forecast-Year hat keinen Ist-Basis)",
+                is_forecast_override=True,
+            )
+
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
             current_rows, fy_calc, allowed_fy_keys, company_currency,
