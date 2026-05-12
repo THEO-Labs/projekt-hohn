@@ -22,6 +22,7 @@ class ValueCategory(str, enum.Enum):
     DELTA_ND = "DELTA_ND"
     DIVIDENDS = "DIVIDENDS"
     HOHN_RETURN = "HOHN_RETURN"
+    VALUATION = "VALUATION"
     # legacy — bleibt als enum-Wert wegen Bestandsdaten, wird im Code nicht mehr genutzt
     CASH_DEBT = "CASH_DEBT"
     BUYBACKS_SBC = "BUYBACKS_SBC"
