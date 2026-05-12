@@ -1670,15 +1670,23 @@ export function CompanyDashboardPage() {
             if (webAlt.value != null) displayValue = parseFloat(webAlt.value);
           }
 
-          // Confidence-Logic nutzt jetzt cv.primary_method (explizit) mit
-          // Source-Name-Heuristik als Legacy-Fallback fuer alte Rows.
+          // Confidence-Logic: Variant-aware! Wenn User die Q-Faktor-Variante
+          // explizit ansieht (tooltip.variant=='faktor'), zeige Q-Faktor-Badge —
+          // selbst wenn primary_method=='web_guidance' (Web ist primaerer Wert).
+          // Analog fuer Web-Variante. Im FY-Mode (kein variant) gilt primary_method.
           const pm = cv.primary_method;
-          const isClaudeResearch = pm === "web_guidance"
+          const variantIsFaktor = tooltip.variant === "faktor";
+          const variantIsWeb = tooltip.variant === "web";
+          const isClaudeResearch = variantIsWeb || (!variantIsFaktor && (
+            pm === "web_guidance"
             || (pm == null && ((displaySource || "").includes("Claude-Recherche")
-                || (displaySource || "").includes("Web-Guidance")));
-          const isProxySource = pm === "q_factor_proxy"
-            || (pm == null && (displaySource || "").includes("Proxy"));
-          const confidence = cv.manually_overridden || pm === "manual"
+                || (displaySource || "").includes("Web-Guidance")))
+          ));
+          const isProxySource = variantIsFaktor || (!variantIsWeb && (
+            pm === "q_factor_proxy"
+            || (pm == null && (displaySource || "").includes("Proxy"))
+          ));
+          const confidence = (cv.manually_overridden || pm === "manual") && !variantIsFaktor && !variantIsWeb
             ? { label: "Manuell überschrieben", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Pencil }
             : isProxySource
             ? { label: "Q-Faktor-Proxy (Schätzung)", color: "bg-amber-100 text-amber-800 border-amber-300", icon: Calculator }
@@ -1714,14 +1722,14 @@ export function CompanyDashboardPage() {
                   left: Math.min(tooltip.x, window.innerWidth - 500),
                   // Smart positioning: wenn unten kein Platz, Tooltip nach oben versetzen.
                   top: (() => {
-                    const desiredHeight = 720;
+                    const desiredHeight = Math.min(900, window.innerHeight - 32);
                     const margin = 16;
                     if (tooltip.y + desiredHeight + margin <= window.innerHeight) {
                       return tooltip.y;
                     }
                     return Math.max(margin, window.innerHeight - desiredHeight - margin);
                   })(),
-                  maxHeight: `${Math.min(720, window.innerHeight - 32)}px`,
+                  maxHeight: `${Math.min(900, window.innerHeight - 32)}px`,
                 }}>
                 <div className="flex flex-col overflow-y-auto">
                 {/* Header */}
@@ -1966,9 +1974,19 @@ export function CompanyDashboardPage() {
                         </div>
                       )}
                       {isExplainHere && (
-                        <div className="mt-2 rounded-lg border border-primary/30 bg-primary/5 p-3">
+                        <div
+                          className="mt-2 rounded-lg border border-primary/30 bg-primary/5 p-3"
+                          ref={(el) => {
+                            // Auto-scroll zur Erklaerung sobald sie geladen ist,
+                            // damit User den Inhalt sieht statt nur den Anfang.
+                            if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                          }}>
+                          <div className="mb-1.5 flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-primary/80">KI-Einordnung</span>
+                            <span className="text-[10px] text-muted-foreground italic">scrollbar wenn lang</span>
+                          </div>
                           <div
-                            className="text-[11px] leading-relaxed text-foreground"
+                            className="max-h-[420px] overflow-y-auto pr-1 text-[12px] leading-relaxed text-foreground"
                             dangerouslySetInnerHTML={{ __html: renderMarkdown(explainResult.text) }}
                           />
                         </div>
