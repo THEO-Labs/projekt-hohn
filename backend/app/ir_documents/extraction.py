@@ -192,16 +192,44 @@ GAAP / NON-GAAP PFLICHT (nur fuer net_income, ebitda, fcf):
 Suche IMMER beide Varianten parallel:
   - 'value': Reported (GAAP/IFRS, offizielle Income-Statement-Zeile)
   - 'value_adjusted': Adjusted / Non-GAAP / Underlying / Pro Forma — bereinigt
-    um Sondereffekte (Restructuring, Impairments, M&A, Steuer-Sondereffekte).
-    Suchorte: Highlights-Tabelle, Earnings Release, Management Report,
-    'Adjusted Net Income' / 'Underlying Net Income' / 'Net Income before
-    Special Items' / 'Operating Net Income'. IFRS-Filer nutzen oft
-    'Underlying' oder 'bereinigt' / 'adjustiertes Ergebnis'.
-  - 'adjustments_note': Reconciliation (z.B. 'Yeezy-Impairment +500M,
-    Restructuring +120M, Steuer-Sondereffekt -30M').
-  - 'adjustments_source': Seitenzahl/Snippet der Adjusted-Quelle.
-Wenn keine Adjusted-Variante reportet: value_adjusted=null, adjustments_note=
-'Firma reportet keine Adjusted-Variante'.
+    um Sondereffekte.
+
+WICHTIG — DU MUSST AKTIV RECHNEN wenn die Firma Adjusted-KPIs reportet aber
+nicht die exakt benoetigte Adjusted-Variante:
+
+  EBITDA-Adjusted Reconciliation-Pflicht:
+    Wenn die Firma 'EBIT Adjusted' oder 'Operating Profit (Adj)' UND D&A
+    (Depreciation & Amortization) separat reportet, dann RECHNE:
+      EBITDA Adjusted = EBIT Adjusted + |D&A|
+    BEISPIEL Airbus FY 2025: EBIT Adjusted = €4.000 Mio (Highlights/PR),
+    D&A = €3.133 Mio (Cash Flow Statement) -> EBITDA Adj = €7.133 Mio.
+    Dokumentiere die Rechnung in adjustments_note:
+      'EBIT Adj €4.0B + D&A €3.1B = EBITDA Adj €7.1B'.
+
+  FCF-Adjusted Pflicht:
+    'FCF before Customer Financing' (Airbus), 'Free Cash Flow Underlying'
+    (Adidas), 'Adjusted FCF' (Visa) sind direkte Adjusted-FCF-Varianten.
+    Wenn als KPI ausgewiesen: einfach uebernehmen.
+
+  Net Income Adjusted: typisch 'Adjusted Net Income', 'Underlying Net Income',
+    'Net Income before exceptionals'. Wenn nicht reportet: null.
+
+Sektor-Begriffe die du EXPLIZIT suchen sollst:
+- Airbus/BMW/Daimler/Industrials: 'EBIT Adjusted', 'FCF before Customer
+  Financing', 'Net Income before exceptionals'
+- Adidas/Consumer-IFRS: 'Operating profit underlying', 'Underlying net
+  income', 'Adjusted EBITDA'
+- US-Filer (Visa/Apple): 'Adjusted Net Income', 'Non-GAAP EPS × Aktien',
+  'Adjusted EBITDA'
+- Allianz/Versicherer: 'Operating Profit', 'Shareholders Core Net Income'
+- Banken: 'Underlying Profit', 'Adjusted Operating Profit'
+
+Wenn keine Adjusted-Variante reportet UND nicht ableitbar:
+  value_adjusted=null,
+  adjustments_note='Firma reportet keine Adjusted/Non-GAAP-Variante (geprueft:
+  Highlights S.X, Income Statement S.Y, kein Reconciliation)'
+DAS ist auch ein gueltiges Resultat — nicht raten.
+
 Fuer ALLE anderen Keys (sbc, buyback, dividends, net_debt, shares_outstanding):
 KEINE Adjusted-Variante noetig (per Definition gleich Reported).
 """
@@ -511,7 +539,7 @@ def _call_claude_extraction(client, content_blocks: list, model: str) -> str:
         try:
             response = claude_limiter.call(lambda: client.messages.create(
                 model=model,
-                max_tokens=8192,
+                max_tokens=16384,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": content_blocks}],
                 extra_headers={"anthropic-beta": "context-1m-2025-08-07"},
@@ -708,6 +736,18 @@ def extract_values_from_pdf(
 
     results: dict[str, dict] = {key: _parse_one_entry(key, parsed.get(key)) for key, _ in EXTRACTION_KEYS}
     guidance_fy = _parse_guidance_block(parsed.get("guidance_fy"))
+
+    # Diagnostisches Logging: zeige was Claude fuer die Adjusted-Felder geliefert
+    # hat (nur NI/EBITDA/FCF — die anderen Keys haben kein Adjusted-Pendant).
+    adj_status = []
+    for k in ("net_income", "ebitda", "fcf"):
+        e = parsed.get(k) if isinstance(parsed, dict) else None
+        if isinstance(e, dict):
+            adj_status.append(f"{k}=adj:{e.get('value_adjusted')!r}")
+        else:
+            adj_status.append(f"{k}=missing")
+    logger.info("PDF extraction %s/%s/%s Adjusted-Status: %s",
+                company_name, period_year, period_coverage, " | ".join(adj_status))
 
     # Identify keys we still don't have — but skip those Claude marked
     # explicitly as "Kein X in der Periode" (e.g. no buyback this year).
