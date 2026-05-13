@@ -1274,7 +1274,9 @@ export function CompanyDashboardPage() {
                           if (d.isPrevYear) {
                             const baseKey = (d as { basedOnKey?: string }).basedOnKey;
                             const prevCv = baseKey ? cPrev.find((v) => v.value_key === baseKey) : undefined;
-                            const prevNum = _toNum(prevCv?.numeric_value ?? null);
+                            // Mode-aware Prev-Year-Anzeige damit der angezeigte Wert
+                            // zur NI-Growth-Berechnung konsistent ist.
+                            const prevNum = prevCv ? _primaryByMode(prevCv, valuationMode) : null;
                             const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
                             const prevDisplay = shouldConvert ? (convertCurrency(prevNum, prevCv?.currency ?? null) ?? prevNum) : prevNum;
                             return (
@@ -1527,8 +1529,9 @@ export function CompanyDashboardPage() {
                         const baseKey = d.basedOnKey as string;
                         const prevRows = prevYearValuesMap.get(company.id) ?? [];
                         const prevCv = prevRows.find((v) => v.value_key === baseKey);
-                        const prevRawStr = prevCv?.numeric_value ?? null;
-                        const prevRaw = prevRawStr == null ? null : (typeof prevRawStr === "string" ? parseFloat(prevRawStr) : prevRawStr);
+                        // Mode-aware Prev-Year-Wert (Reported vs Adjusted) — sonst
+                        // ist FY-1-Anzeige inkonsistent zu NI-Growth-Berechnung.
+                        const prevRaw = prevCv ? _primaryByMode(prevCv, valuationMode) : null;
                         const prevValid = prevRaw != null && !isNaN(prevRaw) ? prevRaw : null;
                         const shouldConvertPrev = d.is_currency && d.data_type === "NUMERIC" && prevCv?.currency;
                         const convertedPrev = shouldConvertPrev ? convertCurrency(prevValid, prevCv?.currency ?? null) : prevValid;
