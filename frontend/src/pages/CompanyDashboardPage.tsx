@@ -206,37 +206,95 @@ function _toNum(n: number | string | null | undefined): number | null {
 // Estimate-Rows (Q-Faktor + Web) den gleichen Trailing-Wert zeigen.
 const VALUATION_TRAILING_KEYS = new Set(["pe_ratio", "ev_ebitda", "fcf_yield"]);
 
+// Keys mit Adjusted/Non-GAAP-Variante. Andere Keys (SBC, Buyback, Dividends,
+// Net Debt, Shares Outstanding) sind per Definition Reported-only.
+const ADJUSTABLE_INPUT_KEYS = new Set(["net_income", "ebitda", "fcf"]);
+
+type ValuationMode = "reported" | "adjusted";
+
+const VALUATION_MODE_STORAGE_KEY = "hohn:valuation_mode";
+
+function loadValuationMode(): ValuationMode {
+  try {
+    const stored = localStorage.getItem(VALUATION_MODE_STORAGE_KEY);
+    return stored === "adjusted" ? "adjusted" : "reported";
+  } catch { return "reported"; }
+}
+
+function saveValuationMode(mode: ValuationMode): void {
+  try { localStorage.setItem(VALUATION_MODE_STORAGE_KEY, mode); } catch { /* ignore */ }
+}
+
+// Mode-aware Wert: gibt im Adjusted-Mode den Adjusted-Wert zurueck wenn
+// vorhanden — sonst Fallback auf Reported mit Marker-Flag fuer UI.
+type ModeValue = {
+  value: number | null;
+  isAdjustedActive: boolean;     // true wenn echter Adj-Wert verwendet wurde
+  isFallbackToReported: boolean; // true wenn Adj-Mode aber Adj-Wert null -> Reported genutzt
+};
+
+function _toNumSafe(n: number | string | null | undefined): number | null {
+  if (n == null) return null;
+  return typeof n === "string" ? parseFloat(n) : n;
+}
+
+function getModeValue(cv: CompanyValue | null | undefined, mode: ValuationMode): ModeValue {
+  if (!cv) return { value: null, isAdjustedActive: false, isFallbackToReported: false };
+  const reported = _toNumSafe(cv.numeric_value);
+  const adjusted = _toNumSafe(cv.numeric_value_adjusted ?? null);
+  if (mode === "reported") {
+    return { value: reported, isAdjustedActive: false, isFallbackToReported: false };
+  }
+  // Adjusted-Mode: nur wenn Key adjusted-relevant ist und Adjusted-Wert da
+  if (ADJUSTABLE_INPUT_KEYS.has(cv.value_key) && adjusted != null) {
+    return { value: adjusted, isAdjustedActive: true, isFallbackToReported: false };
+  }
+  // Fallback: Reported anzeigen wenn Adjusted-Mode aktiv aber kein Adj-Wert
+  // — gilt sowohl fuer adjustable Keys ohne reportet Adj als auch fuer
+  // non-adjustable Keys (SBC, etc.) die per Definition gleich sind.
+  const isFallback = ADJUSTABLE_INPUT_KEYS.has(cv.value_key);
+  return { value: reported, isAdjustedActive: false, isFallbackToReported: isFallback };
+}
+
 function _isTrailingValuation(cv: CompanyValue): boolean {
   return VALUATION_TRAILING_KEYS.has(cv.value_key)
     && !!cv.is_forecast
     && (cv.source_name || "").includes("Bewertung Stand FY");
 }
 
-function _getFaktorValue(cv: CompanyValue): number | null {
-  if (!cv.is_forecast) return _toNum(cv.numeric_value);
+// Helper: gibt den "primary" Wert eines cv zurueck — entweder Reported
+// (numeric_value) oder Adjusted (numeric_value_adjusted) je nach Mode.
+// Fallback auf Reported wenn Adjusted nicht da.
+function _primaryByMode(cv: CompanyValue, mode: ValuationMode): number | null {
+  const mv = getModeValue(cv, mode);
+  return mv.value;
+}
+
+function _getFaktorValue(cv: CompanyValue, mode: ValuationMode = "reported"): number | null {
+  if (!cv.is_forecast) return _primaryByMode(cv, mode);
   // Trailing-Bewertung: methoden-unabhaengig, immer den Wert zeigen.
-  if (_isTrailingValuation(cv)) return _toNum(cv.numeric_value);
+  if (_isTrailingValuation(cv)) return _primaryByMode(cv, mode);
   // primary_method ist explizit (neu) — Source-Name nur als Legacy-Fallback
   // fuer alte Rows ohne primary_method.
   const isProxyPrimary = cv.primary_method === "q_factor_proxy"
     || (cv.primary_method == null && (cv.source_name || "").includes("Proxy"));
-  if (isProxyPrimary && !cv.manually_overridden) return _toNum(cv.numeric_value);
+  if (isProxyPrimary && !cv.manually_overridden) return _primaryByMode(cv, mode);
   const alt = cv.forecast_alternates?.find((a) => a.method === "q_factor_proxy");
   if (alt?.value != null) return parseFloat(alt.value);
-  if (cv.manually_overridden) return _toNum(cv.numeric_value);
+  if (cv.manually_overridden) return _primaryByMode(cv, mode);
   return null;
 }
 
-function _getWebValue(cv: CompanyValue): number | null {
-  if (!cv.is_forecast) return _toNum(cv.numeric_value);
+function _getWebValue(cv: CompanyValue, mode: ValuationMode = "reported"): number | null {
+  if (!cv.is_forecast) return _primaryByMode(cv, mode);
   // Trailing-Bewertung: methoden-unabhaengig, immer den Wert zeigen.
-  if (_isTrailingValuation(cv)) return _toNum(cv.numeric_value);
+  if (_isTrailingValuation(cv)) return _primaryByMode(cv, mode);
   const isWebPrimary = cv.primary_method === "web_guidance"
     || (cv.primary_method == null && (cv.source_name || "").includes("Web-Guidance"));
-  if (isWebPrimary && !cv.manually_overridden) return _toNum(cv.numeric_value);
+  if (isWebPrimary && !cv.manually_overridden) return _primaryByMode(cv, mode);
   const alt = cv.forecast_alternates?.find((a) => a.method === "web_guidance");
   if (alt?.value != null) return parseFloat(alt.value);
-  if (cv.manually_overridden) return _toNum(cv.numeric_value);
+  if (cv.manually_overridden) return _primaryByMode(cv, mode);
   return null;
 }
 
@@ -249,12 +307,15 @@ function buildVariantValues(
   rows: CompanyValue[],
   prevRows: CompanyValue[],
   variant: "faktor" | "web",
+  mode: ValuationMode = "reported",
 ): VariantValues {
-  const pick = variant === "faktor" ? _getFaktorValue : _getWebValue;
+  const pickFn = variant === "faktor" ? _getFaktorValue : _getWebValue;
   const raw = new Map<string, number | null>();
-  for (const r of rows) raw.set(r.value_key, pick(r));
+  for (const r of rows) raw.set(r.value_key, pickFn(r, mode));
+  // Prev-Werte mode-konsistent: bei Mode=Adjusted nutzt NI-Growth Adj-NI
+  // im Zähler UND Nenner (sonst Apples-to-Oranges-Vergleich).
   const prev = new Map<string, number | null>();
-  for (const r of prevRows) prev.set(r.value_key, _toNum(r.numeric_value));
+  for (const r of prevRows) prev.set(r.value_key, _primaryByMode(r, mode));
 
   const fcf = raw.get("fcf") ?? null;
   const sbc = raw.get("sbc") ?? null;
@@ -418,6 +479,11 @@ export function CompanyDashboardPage() {
   const [cumIdx, setCumIdx] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [isLoadingPeriod, setIsLoadingPeriod] = useState(false);
+  const [valuationMode, setValuationMode] = useState<ValuationMode>(() => loadValuationMode());
+  const toggleValuationMode = (m: ValuationMode) => {
+    setValuationMode(m);
+    saveValuationMode(m);
+  };
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
   const [explainResult, setExplainResult] = useState<{ key: string; companyId: string; periodYear: number | null; text: string } | null>(null);
@@ -832,11 +898,32 @@ export function CompanyDashboardPage() {
               : `Finanzdaten: Geschäftsjahr ${period.year} · MCap-Anker: Anfang FY (= Ende FY${(period.year ?? 0) - 1})`}
           </span>
           {isLoadingPeriod && (
-            <span className="ml-auto flex items-center gap-1.5 text-xs text-primary">
+            <span className="flex items-center gap-1.5 text-xs text-primary">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Lade Daten…
             </span>
           )}
+          {/* GAAP/Non-GAAP Toggle — wirkt auf Net Income, EBITDA, FCF und
+              kaskadiert auf P/E, EV/EBITDA, FCF-Yield, NI-Growth, Hohn-Rendite. */}
+          <div className="ml-auto inline-flex items-center rounded-md border border-border bg-card p-0.5"
+               title="Schaltet zwischen Reported (GAAP/IFRS) und Adjusted (Non-GAAP/Underlying). Tooltip zeigt immer beide Werte.">
+            <button
+              onClick={() => toggleValuationMode("reported")}
+              className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                valuationMode === "reported"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >Reported</button>
+            <button
+              onClick={() => toggleValuationMode("adjusted")}
+              className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                valuationMode === "adjusted"
+                  ? "bg-amber-100 text-amber-900"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >Adjusted</button>
+          </div>
         </div>
 
         {period.value === "FY" && period.year !== undefined && period.year < new Date().getFullYear() && (() => {
@@ -1116,8 +1203,8 @@ export function CompanyDashboardPage() {
                 // sehen, kein Recherchieren-Button pro Zelle).
                 const showDual = isEstimateMode;
                 if (showDual) {
-                  const faktor = buildVariantValues(cRows, cPrev, "faktor");
-                  const web = buildVariantValues(cRows, cPrev, "web");
+                  const faktor = buildVariantValues(cRows, cPrev, "faktor", valuationMode);
+                  const web = buildVariantValues(cRows, cPrev, "web", valuationMode);
                   const isRunningThis = refreshStatuses.get(company.id)?.status === "running";
                   const qFactorCellLock = isQFactorCellLocked(av, period.year);
                   const renderEstimateRow = (
@@ -1254,6 +1341,8 @@ export function CompanyDashboardPage() {
                           // → visuell ausgrauen damit User sieht es ist kein echter Web-Treffer.
                           const webAlt = cellCv?.forecast_alternates?.find((a) => a.method === "web_guidance");
                           const isWebFallbackToProxy = label === "Web-Recherche" && webAlt?.fallback_from === "q_factor_proxy";
+                          // Adjusted-Mode-Marker fuer Estimate-Zellen:
+                          const modeInfoDual = cellCv ? getModeValue(cellCv, valuationMode) : null;
                           const onCellClick = isClickableEstimate ? (e: React.MouseEvent<HTMLElement>) => {
                             e.stopPropagation();
                             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -1271,6 +1360,14 @@ export function CompanyDashboardPage() {
                               onClick={onCellClick}>
                               <div className="flex items-center gap-1.5">
                                 <span className={`font-mono text-sm ${isWebFallbackToProxy ? "italic" : ""}`}>{formatValue(display, d.unit, displayCurrency)}</span>
+                                {valuationMode === "adjusted" && modeInfoDual?.isAdjustedActive && (
+                                  <span className="shrink-0 rounded bg-amber-200/80 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-900"
+                                    title="Adjusted/Non-GAAP-Wert">A</span>
+                                )}
+                                {valuationMode === "adjusted" && modeInfoDual?.isFallbackToReported && (
+                                  <span className="shrink-0 rounded bg-slate-200 px-1 py-0.5 text-[9px] font-bold uppercase text-slate-700"
+                                    title="Adjusted nicht reportet — zeige GAAP/IFRS-Reported als Fallback">R*</span>
+                                )}
                                 {isWebFallbackToProxy && (
                                   <span className="shrink-0 rounded bg-orange-100 px-1 py-0.5 text-[9px] font-bold uppercase text-orange-700"
                                     title="Web-Recherche fehlte — Proxy-Fallback">
@@ -1440,9 +1537,10 @@ export function CompanyDashboardPage() {
                       }
 
                       const cv = getVal(company.id, d.key);
-                      const rawStr = cv?.numeric_value ?? null;
-                      const raw: number | null = rawStr == null ? null : (typeof rawStr === "string" ? parseFloat(rawStr) : rawStr);
-                      const rawValid = raw != null && !isNaN(raw) ? raw : null;
+                      // Mode-aware Wert-Auswahl (Reported vs Adjusted) mit Fallback-Info
+                      const modeVal = cv ? getModeValue(cv, valuationMode) : { value: null, isAdjustedActive: false, isFallbackToReported: false };
+                      const raw: number | null = modeVal.value != null && !isNaN(modeVal.value) ? modeVal.value : null;
+                      const rawValid = raw;
                       const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && cv?.currency;
                       const convertedVal = shouldConvert ? convertCurrency(rawValid, cv?.currency ?? null) : rawValid;
                       const fxUnknown = shouldConvert && rawValid !== null && convertedVal === null;
@@ -1578,6 +1676,14 @@ export function CompanyDashboardPage() {
                                   ? cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : (cv?.text_value ?? t.noValue)
                                   : formatValue(displayVal, d.unit, displayCurrency)}
                               </span>
+                              {valuationMode === "adjusted" && modeVal.isAdjustedActive && (
+                                <span className="shrink-0 rounded bg-amber-200/80 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-900"
+                                  title="Adjusted/Non-GAAP-Wert">A</span>
+                              )}
+                              {valuationMode === "adjusted" && modeVal.isFallbackToReported && (
+                                <span className="shrink-0 rounded bg-slate-200 px-1 py-0.5 text-[9px] font-bold uppercase text-slate-700"
+                                  title="Adjusted nicht reportet — zeige GAAP/IFRS-Reported als Fallback">R*</span>
+                              )}
                               {fxUnknown && (
                                 <span
                                   title={`Wechselkurs ${cv?.currency} → ${displayCurrency} unbekannt, Wert bleibt in ${cv?.currency}`}
@@ -1830,6 +1936,66 @@ export function CompanyDashboardPage() {
                       ) : (
                         <p className="text-sm italic text-amber-800">Keine Q-Faktor-Erklärung verfügbar — bitte Werte neu berechnen.</p>
                       )}
+                    </div>
+                  </section>
+                )}
+
+                {/* Section: GAAP / Non-GAAP (nur fuer adjusted-relevante Keys) */}
+                {ADJUSTABLE_INPUT_KEYS.has(tooltip.key) && (
+                  <section className="mt-4 px-4">
+                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-indigo-700">
+                      Reported vs Adjusted
+                    </h4>
+                    <div className="rounded-lg border-2 border-indigo-300 bg-indigo-50 px-4 py-3 space-y-2">
+                      {(() => {
+                        const reportedNum = cv.numeric_value != null
+                          ? (typeof cv.numeric_value === "string" ? parseFloat(cv.numeric_value) : cv.numeric_value)
+                          : null;
+                        const adjustedNum = cv.numeric_value_adjusted != null
+                          ? (typeof cv.numeric_value_adjusted === "string" ? parseFloat(cv.numeric_value_adjusted) : cv.numeric_value_adjusted)
+                          : null;
+                        const diff = (reportedNum != null && adjustedNum != null && reportedNum !== 0)
+                          ? ((adjustedNum - reportedNum) / Math.abs(reportedNum)) * 100
+                          : null;
+                        return (
+                          <>
+                            <div className="flex items-baseline justify-between gap-2">
+                              <span className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">Reported (GAAP/IFRS)</span>
+                              <span className="font-mono text-sm font-bold text-indigo-900">
+                                {reportedNum != null ? formatValue(reportedNum, def.unit, displayCurrency) : "—"}
+                              </span>
+                            </div>
+                            <div className="flex items-baseline justify-between gap-2 border-t border-indigo-200 pt-2">
+                              <span className="text-xs font-semibold text-amber-700 uppercase tracking-wide">Adjusted (Non-GAAP)</span>
+                              <span className="font-mono text-sm font-bold text-amber-900">
+                                {adjustedNum != null ? formatValue(adjustedNum, def.unit, displayCurrency) : (
+                                  <span className="text-xs italic text-muted-foreground">nicht reportet</span>
+                                )}
+                              </span>
+                            </div>
+                            {diff != null && (
+                              <div className="flex items-baseline justify-between gap-2 border-t border-indigo-200 pt-2">
+                                <span className="text-xs text-muted-foreground">Differenz</span>
+                                <span className={`font-mono text-sm font-semibold ${diff >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                                  {diff >= 0 ? "+" : ""}{diff.toFixed(1)}%
+                                </span>
+                              </div>
+                            )}
+                            {cv.adjustments_note && (
+                              <div className="border-t border-indigo-200 pt-2">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Adjustments</div>
+                                <div className="mt-0.5 text-xs text-indigo-900 whitespace-pre-wrap">{cv.adjustments_note}</div>
+                              </div>
+                            )}
+                            {cv.adjustments_source && (
+                              <div className="border-t border-indigo-200 pt-2">
+                                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Quelle (Adjusted)</div>
+                                <div className="mt-0.5 text-[11px] text-indigo-800">{cv.adjustments_source}</div>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   </section>
                 )}

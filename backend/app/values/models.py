@@ -73,6 +73,13 @@ class CompanyValue(Base):
     period_type: Mapped[str] = mapped_column(String(16), nullable=False, default="SNAPSHOT")
     is_forecast: Mapped[bool] = mapped_column(Boolean, default=False)
     numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(25, 6), nullable=True)
+    # Adjusted/Non-GAAP/Underlying-Variante (firmen-eigene Bereinigung):
+    # NULL wenn die Firma keinen Adjusted-Wert reportet (oder Wert nicht
+    # gefunden wurde). Frontend faellt im Adjusted-Mode dann auf
+    # numeric_value (Reported) zurueck mit grauer Asterisk-Markierung.
+    numeric_value_adjusted: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    adjustments_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    adjustments_source: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     text_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     source_name: Mapped[str | None] = mapped_column(String(2048), nullable=True)

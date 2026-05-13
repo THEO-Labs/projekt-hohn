@@ -37,6 +37,9 @@ class CompanyValueOut(BaseModel):
     period_type: str
     is_forecast: bool
     numeric_value: Decimal | None
+    numeric_value_adjusted: Decimal | None = None
+    adjustments_note: str | None = None
+    adjustments_source: str | None = None
     text_value: str | None
     currency: str | None
     source_name: str | None

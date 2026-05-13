@@ -159,6 +159,12 @@ def _post_extraction_web_fallback(
         from app.ir_documents.extraction import ALWAYS_POSITIVE_KEYS
         if key in ALWAYS_POSITIVE_KEYS and web_val < 0:
             web_val = abs(web_val)
+        # Adjusted-Variante aus Dual-Research (nur fuer ni/ebitda/fcf relevant).
+        web_val_adjusted = dual.value_adjusted
+        web_adj_note = dual.adjustments_note
+        web_adj_source = dual.adjustments_source
+        if web_val_adjusted is not None and key in ALWAYS_POSITIVE_KEYS and web_val_adjusted < 0:
+            web_val_adjusted = abs(web_val_adjusted)
 
         existing = (
             db.query(CompanyValue)
@@ -186,11 +192,15 @@ def _post_extraction_web_fallback(
             with db.begin_nested():
                 if existing:
                     existing.numeric_value = web_val
-                    existing.source_name = new_source[:512]
+                    existing.source_name = new_source[:1900]
                     existing.source_link = url or existing.source_link
                     existing.currency = currency or existing.currency
                     existing.fetched_at = now
                     existing.from_ir_pdf = False
+                    if web_val_adjusted is not None:
+                        existing.numeric_value_adjusted = web_val_adjusted
+                        existing.adjustments_note = (web_adj_note or "")[:4000] or None
+                        existing.adjustments_source = (web_adj_source or "")[:2048] or None
                 else:
                     db.add(CompanyValue(
                         id=uuid4(),
@@ -199,7 +209,10 @@ def _post_extraction_web_fallback(
                         period_type=period_type,
                         period_year=period_year,
                         numeric_value=web_val,
-                        source_name=new_source[:512],
+                        numeric_value_adjusted=web_val_adjusted,
+                        adjustments_note=(web_adj_note or "")[:4000] or None,
+                        adjustments_source=(web_adj_source or "")[:2048] or None,
+                        source_name=new_source[:1900],
                         source_link=url or source_link,
                         currency=currency,
                         fetched_at=now,
@@ -231,11 +244,15 @@ def _post_extraction_web_fallback(
             if retry_existing.manually_overridden:
                 continue
             retry_existing.numeric_value = web_val
-            retry_existing.source_name = new_source[:512]
+            retry_existing.source_name = new_source[:1900]
             retry_existing.source_link = url or retry_existing.source_link
             retry_existing.currency = currency or retry_existing.currency
             retry_existing.fetched_at = now
             retry_existing.from_ir_pdf = False
+            if web_val_adjusted is not None:
+                retry_existing.numeric_value_adjusted = web_val_adjusted
+                retry_existing.adjustments_note = (web_adj_note or "")[:4000] or None
+                retry_existing.adjustments_source = (web_adj_source or "")[:2048] or None
         filled += 1
         # Resultat ans extraction_results-Mapping zurueckgeben damit der
         # Caller das JSON enrichen kann (UI-Counter zeigt sonst PDF-only).
@@ -313,6 +330,10 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
             if existing and existing.manually_overridden:
                 continue  # never overwrite manual
 
+            # Adjusted/Underlying-Werte aus PDF (nur fuer NI/EBITDA/FCF).
+            value_adjusted = info.get("value_adjusted") if isinstance(info.get("value_adjusted"), Decimal) else None
+            adjustments_note = info.get("adjustments_note")
+            adjustments_source = info.get("adjustments_source")
             if isinstance(value, Decimal):
                 source_name = f"PDF: {doc.display_name}" + (f" (S.{page})" if page else "")
                 if existing:
@@ -322,6 +343,10 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                     existing.currency = currency
                     existing.fetched_at = now
                     existing.from_ir_pdf = True
+                    if value_adjusted is not None:
+                        existing.numeric_value_adjusted = value_adjusted
+                        existing.adjustments_note = (adjustments_note or "")[:4000] or None
+                        existing.adjustments_source = (adjustments_source or "")[:2048] or None
                 else:
                     db.add(CompanyValue(
                         id=uuid4(),
@@ -330,6 +355,9 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                         period_type=period_type,
                         period_year=period_year,
                         numeric_value=value,
+                        numeric_value_adjusted=value_adjusted,
+                        adjustments_note=(adjustments_note or "")[:4000] or None,
+                        adjustments_source=(adjustments_source or "")[:2048] or None,
                         source_name=source_name,
                         source_link=source_link,
                         currency=currency,

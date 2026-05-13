@@ -31,6 +31,9 @@ export type CompanyValue = {
   period_type: string;
   is_forecast: boolean;
   numeric_value: number | null;
+  numeric_value_adjusted?: number | null;
+  adjustments_note?: string | null;
+  adjustments_source?: string | null;
   text_value: string | null;
   currency: string | null;
   source_name: string | null;

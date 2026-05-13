@@ -237,6 +237,23 @@ ZEITRAUM: FY2026e
 KONFIDENZ: niedrig
 BEGRUENDUNG: FY2025-Dividende beschlossen am 14.04.2026, Auszahlung 23.04.2026 → faellt in FY2026 Cashflow. Umrechnung mit EUR/USD-Kurs vom Stichtag.
 
+GAAP/NON-GAAP-PFLICHT (nur fuer net_income, ebitda, fcf):
+Wenn der gesuchte Wert net_income, ebitda oder fcf ist, MUSST du zusaetzlich
+die Adjusted/Non-GAAP/Underlying-Variante liefern, falls vorhanden. Format:
+
+  WERT_ADJUSTED: 20500000000           (Non-GAAP Net Income, in Base-Units)
+  QUELLE_ADJUSTED: Visa Q4 2024 Earnings Release S.3
+  ADJUSTMENTS: Litigation Reserve +500M, Contingent Consideration +300M
+
+Wenn die Firma KEINEN Adjusted-Wert reportet (z.B. reine GAAP-Reporting ohne
+non-GAAP Reconciliation), liefere:
+
+  WERT_ADJUSTED: keine
+  ADJUSTMENTS: Firma reportet keine Adjusted/Non-GAAP-Variante.
+
+Fuer ALLE anderen Keys (sbc, buyback, dividends, net_debt, shares_outstanding)
+gibt es per Definition keinen Adjusted-Pendant — KEINE WERT_ADJUSTED-Zeile noetig.
+
 FALSCHES FORMAT (NIE so antworten):
 "Hier die Berechnung: **Gesamtdividende: €2,519 Mio**" — fehlt WERT:-Zeile am Anfang.
 "**WERT: $2.960 Mio**" — Markdown-Sterne UND nicht in Base-Units.
@@ -285,6 +302,28 @@ def extract_research_value(text: str) -> Decimal | None:
     logger.warning("research: Claude antwortete ohne WERT-Pattern — caller bekommt None. Antwort-Preview: %s",
                    preview)
     return None
+
+
+def extract_research_value_adjusted(text: str) -> tuple[Decimal | None, str | None, str | None]:
+    """Sucht WERT_ADJUSTED + QUELLE_ADJUSTED + ADJUSTMENTS aus Claude/Gemini Response.
+    Returns (value_adjusted_or_None, source_adjusted, adjustments_note).
+    Wenn 'keine' / 'none' / leer → (None, None, note).
+    """
+    m = re.search(r"WERT_ADJUSTED:\s*([^\n]+)", text)
+    if not m:
+        return None, None, None
+    raw = m.group(1).strip()
+    note_match = re.search(r"ADJUSTMENTS:\s*([^\n]+)", text)
+    source_match = re.search(r"QUELLE_ADJUSTED:\s*([^\n]+)", text)
+    note = note_match.group(1).strip() if note_match else None
+    source = source_match.group(1).strip() if source_match else None
+    if re.match(r"^(keine|none|n/a|\-|null|nicht\s+vorhanden|nicht\s+reportet)\.?$", raw, re.IGNORECASE):
+        return None, source, note
+    val = _parse_numeric_string(raw)
+    if val is None:
+        return None, source, note
+    val = _apply_unit_scale(val, text, raw)
+    return val, source, note
 
 
 def _fallback_extract_value(text: str) -> Decimal | None:

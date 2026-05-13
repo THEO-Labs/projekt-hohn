@@ -187,6 +187,23 @@ WICHTIGE REGELN:
 8. Vorzeichen-Regel: Net Income mit echtem Vorzeichen (Verluste negativ),
    Bilanz-Posten und Cash-Outflows (SBC, Buyback, Dividends) immer POSITIV
    als Betrag (Vorzeichen ignorieren).
+
+GAAP / NON-GAAP PFLICHT (nur fuer net_income, ebitda, fcf):
+Suche IMMER beide Varianten parallel:
+  - 'value': Reported (GAAP/IFRS, offizielle Income-Statement-Zeile)
+  - 'value_adjusted': Adjusted / Non-GAAP / Underlying / Pro Forma — bereinigt
+    um Sondereffekte (Restructuring, Impairments, M&A, Steuer-Sondereffekte).
+    Suchorte: Highlights-Tabelle, Earnings Release, Management Report,
+    'Adjusted Net Income' / 'Underlying Net Income' / 'Net Income before
+    Special Items' / 'Operating Net Income'. IFRS-Filer nutzen oft
+    'Underlying' oder 'bereinigt' / 'adjustiertes Ergebnis'.
+  - 'adjustments_note': Reconciliation (z.B. 'Yeezy-Impairment +500M,
+    Restructuring +120M, Steuer-Sondereffekt -30M').
+  - 'adjustments_source': Seitenzahl/Snippet der Adjusted-Quelle.
+Wenn keine Adjusted-Variante reportet: value_adjusted=null, adjustments_note=
+'Firma reportet keine Adjusted-Variante'.
+Fuer ALLE anderen Keys (sbc, buyback, dividends, net_debt, shares_outstanding):
+KEINE Adjusted-Variante noetig (per Definition gleich Reported).
 """
 
 
@@ -503,6 +520,21 @@ def _call_extraction_with_escalation(
     return _call_claude_extraction(client, blocks_sonnet, EXTRACTION_MODEL_BIG)
 
 
+# Keys fuer die wir Adjusted/Non-GAAP/Underlying-Variante extrahieren.
+# Alle anderen Keys sind per Definition gleich (SBC, Buyback, Dividends,
+# Net Debt, Shares Outstanding = Cash-Flows oder Bilanz-Snapshots).
+ADJUSTED_RELEVANT_KEYS = frozenset({"net_income", "ebitda", "fcf"})
+
+
+def _parse_decimal(raw_val) -> Decimal | None:
+    if raw_val is None:
+        return None
+    try:
+        return Decimal(str(raw_val))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _parse_one_entry(key: str, entry: dict | None) -> dict:
     """Normalize a single key's entry from Claude's JSON output.
     PDF-Extraction ist ehrlich: wenn der Wert nicht im PDF steht, returnen wir
@@ -511,16 +543,30 @@ def _parse_one_entry(key: str, entry: dict | None) -> dict:
     if not isinstance(entry, dict):
         return {"value": None, "reason": "Key missing in response"}
     raw_val = entry.get("value")
+    decimal_val = _parse_decimal(raw_val) if raw_val is not None else None
+    # Adjusted nur fuer relevante Keys parsen.
+    decimal_adjusted: Decimal | None = None
+    adjustments_note: str | None = None
+    adjustments_source: str | None = None
+    if key in ADJUSTED_RELEVANT_KEYS:
+        decimal_adjusted = _parse_decimal(entry.get("value_adjusted"))
+        adjustments_note = entry.get("adjustments_note")
+        adjustments_source = entry.get("adjustments_source")
+        if key in ALWAYS_POSITIVE_KEYS and decimal_adjusted is not None and decimal_adjusted < 0:
+            decimal_adjusted = abs(decimal_adjusted)
     if raw_val is None:
-        return {
+        result = {
             "value": None,
             "currency": entry.get("currency"),
             "page": entry.get("page"),
             "reason": entry.get("reason") or "Im Bericht nicht ausgewiesen",
         }
-    try:
-        decimal_val = Decimal(str(raw_val))
-    except (InvalidOperation, ValueError):
+        if decimal_adjusted is not None:
+            result["value_adjusted"] = decimal_adjusted
+            result["adjustments_note"] = adjustments_note
+            result["adjustments_source"] = adjustments_source
+        return result
+    if decimal_val is None:
         return {
             "value": None,
             "currency": entry.get("currency"),
@@ -529,13 +575,18 @@ def _parse_one_entry(key: str, entry: dict | None) -> dict:
         }
     if key in ALWAYS_POSITIVE_KEYS and decimal_val < 0:
         decimal_val = abs(decimal_val)
-    return {
+    result = {
         "value": decimal_val,
         "currency": entry.get("currency"),
         "page": entry.get("page"),
         "quote": entry.get("quote"),
         "period_basis": entry.get("period_basis"),
     }
+    if decimal_adjusted is not None:
+        result["value_adjusted"] = decimal_adjusted
+        result["adjustments_note"] = adjustments_note
+        result["adjustments_source"] = adjustments_source
+    return result
 
 
 def _build_retry_prompt(missing_keys: list[str], period_coverage: str, period_year: int, company_name: str) -> str:

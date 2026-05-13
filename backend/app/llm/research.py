@@ -13,10 +13,11 @@ Aggregation-Logik:
 """
 import concurrent.futures
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from app.config import settings
+from app.llm.claude import extract_research_value_adjusted
 from app.llm.claude import research_value as research_value_claude
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,10 @@ class ProviderResult:
     source: str | None
     url: str | None
     content: str | None  # raw response text fuer Erklaerung
+    # Adjusted/Non-GAAP-Variante (nur fuer ni/ebitda/fcf relevant).
+    value_adjusted: Decimal | None = None
+    adjustments_note: str | None = None
+    adjustments_source: str | None = None
 
 
 @dataclass
@@ -46,6 +51,10 @@ class DualResearchResult:
     divergent: bool
     # Anzahl Provider die einen Wert geliefert haben (0/1/2)
     providers_responded: int
+    # Aggregierter Adjusted-Wert (Mittel beider Provider falls vorhanden)
+    value_adjusted: Decimal | None = None
+    adjustments_note: str | None = None
+    adjustments_source: str | None = None
 
 
 def _pct_diff(a: Decimal, b: Decimal) -> float:
@@ -77,6 +86,16 @@ def research_value_dual(
     wenn GEMINI_API_KEY nicht gesetzt ist."""
     gemini_available = bool(settings.gemini_api_key)
 
+    # Adjusted nur fuer NI/EBITDA/FCF relevant — andere Keys haben per Definition
+    # keine Non-GAAP-Variante (SBC, Buyback, Dividends sind Cash-Flows; Net Debt
+    # ist Bilanz-Snapshot; Shares Outstanding ist physisch).
+    adjusted_relevant = value_key in {"net_income", "ebitda", "fcf"}
+
+    def _parse_adjusted(content: str | None) -> tuple[Decimal | None, str | None, str | None]:
+        if not content or not adjusted_relevant:
+            return None, None, None
+        return extract_research_value_adjusted(content)
+
     # Beide Provider parallel mit ThreadPoolExecutor (synchroner SDK-Code).
     def _call_claude() -> ProviderResult:
         try:
@@ -85,7 +104,11 @@ def research_value_dual(
                 period_type=period_type, period_year=period_year, value_key=value_key,
                 prev_fy_val=prev_fy_val,
             )
-            return ProviderResult(value=v, source=s, url=u, content=c)
+            adj, adj_src, adj_note = _parse_adjusted(c)
+            return ProviderResult(
+                value=v, source=s, url=u, content=c,
+                value_adjusted=adj, adjustments_source=adj_src, adjustments_note=adj_note,
+            )
         except Exception as e:
             logger.warning("Dual research: Claude-Provider failed %s/%s: %s",
                            ticker, value_key or "?", e)
@@ -101,7 +124,11 @@ def research_value_dual(
                 period_type=period_type, period_year=period_year, value_key=value_key,
                 prev_fy_val=prev_fy_val,
             )
-            return ProviderResult(value=v, source=s, url=u, content=c)
+            adj, adj_src, adj_note = _parse_adjusted(c)
+            return ProviderResult(
+                value=v, source=s, url=u, content=c,
+                value_adjusted=adj, adjustments_source=adj_src, adjustments_note=adj_note,
+            )
         except Exception as e:
             logger.warning("Dual research: Gemini-Provider failed %s/%s: %s",
                            ticker, value_key or "?", e)
@@ -125,6 +152,36 @@ def research_value_dual(
     # mit beiden Providers bleibt noch Platz fuer Praefix+Mittel-Werte.
     def _short(s: str | None) -> str:
         return (s or "KI-Einschätzung")[:600]
+
+    # Adjusted-Aggregation: gleiche Mean-Logik wie Reported. Nur wenn beide
+    # Provider Adjusted geliefert haben mitteln. Sonst Single-Provider-Wert.
+    cv_adj, gv_adj = claude_res.value_adjusted, gemini_res.value_adjusted
+    aggregated_adjusted: Decimal | None
+    aggregated_adj_note: str | None
+    aggregated_adj_source: str | None
+    if cv_adj is not None and gv_adj is not None:
+        aggregated_adjusted = (cv_adj + gv_adj) / Decimal("2")
+        adj_diff = _pct_diff(cv_adj, gv_adj)
+        adj_div_marker = "⚠ DIVERGENZ " if adj_diff > 0.5 else ""
+        aggregated_adj_note = (
+            f"{adj_div_marker}Claude: {cv_adj:,.0f} ({claude_res.adjustments_note or '—'}) "
+            f"| Gemini: {gv_adj:,.0f} ({gemini_res.adjustments_note or '—'})"
+        )[:4000]
+        aggregated_adj_source = (
+            f"Claude: {claude_res.adjustments_source or '—'} | Gemini: {gemini_res.adjustments_source or '—'}"
+        )[:2048]
+    elif cv_adj is not None:
+        aggregated_adjusted = cv_adj
+        aggregated_adj_note = (claude_res.adjustments_note or "")[:4000] or None
+        aggregated_adj_source = (claude_res.adjustments_source or "")[:2048] or None
+    elif gv_adj is not None:
+        aggregated_adjusted = gv_adj
+        aggregated_adj_note = (gemini_res.adjustments_note or "")[:4000] or None
+        aggregated_adj_source = (gemini_res.adjustments_source or "")[:2048] or None
+    else:
+        aggregated_adjusted = None
+        aggregated_adj_note = None
+        aggregated_adj_source = None
 
     if cv is not None and gv is not None:
         mean_val = (cv + gv) / Decimal("2")
@@ -150,6 +207,9 @@ def research_value_dual(
             gemini=gemini_res,
             divergent=divergent,
             providers_responded=2,
+            value_adjusted=aggregated_adjusted,
+            adjustments_note=aggregated_adj_note,
+            adjustments_source=aggregated_adj_source,
         )
     if cv is not None:
         return DualResearchResult(
@@ -160,6 +220,9 @@ def research_value_dual(
             gemini=gemini_res,
             divergent=False,
             providers_responded=1,
+            value_adjusted=aggregated_adjusted,
+            adjustments_note=aggregated_adj_note,
+            adjustments_source=aggregated_adj_source,
         )
     if gv is not None:
         return DualResearchResult(
@@ -170,6 +233,9 @@ def research_value_dual(
             gemini=gemini_res,
             divergent=False,
             providers_responded=1,
+            value_adjusted=aggregated_adjusted,
+            adjustments_note=aggregated_adj_note,
+            adjustments_source=aggregated_adj_source,
         )
     return DualResearchResult(
         value=None,

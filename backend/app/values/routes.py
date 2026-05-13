@@ -351,6 +351,10 @@ def _try_web_guidance(
             "claude_source": dual.claude.source,
             "gemini_value": str(dual.gemini.value) if dual.gemini.value is not None else None,
             "gemini_source": dual.gemini.source,
+            # Adjusted/Non-GAAP-Variante (nur fuer ni/ebitda/fcf relevant).
+            "value_adjusted": str(dual.value_adjusted) if dual.value_adjusted is not None else None,
+            "adjustments_note": dual.adjustments_note,
+            "adjustments_source": dual.adjustments_source,
         },
     )
 
@@ -707,6 +711,17 @@ def _process_one_key(
     else:
         primary_method = "provider"
 
+    # Adjusted/Non-GAAP-Variante aus extras parsen (kommt von Dual-Web-Research).
+    raw_adj = extras.get("value_adjusted")
+    value_adjusted: Decimal | None = None
+    if raw_adj is not None:
+        try:
+            value_adjusted = Decimal(str(raw_adj))
+        except Exception:
+            value_adjusted = None
+    adjustments_note_val = extras.get("adjustments_note")
+    adjustments_source_val = extras.get("adjustments_source")
+
     def _apply_update(target: CompanyValue) -> None:
         target.numeric_value = numeric_value
         target.text_value = text_value
@@ -722,6 +737,12 @@ def _process_one_key(
         # Manual-Override-Flag zuruecksetzen wenn Refresh erfolgreich war
         # (User-Override war temporaer).
         target.manually_overridden = False
+        # Adjusted-Werte nur ueberschreiben wenn der Run Adjusted geliefert hat
+        # — sonst alten Adjusted-Wert (z.B. aus AR-PDF) erhalten.
+        if value_adjusted is not None:
+            target.numeric_value_adjusted = value_adjusted
+            target.adjustments_note = (adjustments_note_val or "")[:4000] or None
+            target.adjustments_source = (adjustments_source_val or "")[:2048] or None
         # forecast_alternates nur überschreiben wenn dieser Run sie explizit
         # berechnet hat (Estimate-Pfad). Sonst bleiben vorhandene Alternates
         # erhalten — Provider-Pfad darf den Drilldown-Tooltip nicht clobbern.
@@ -742,6 +763,9 @@ def _process_one_key(
             period_type=effective_period_type,
             period_year=effective_period_year,
             numeric_value=numeric_value,
+            numeric_value_adjusted=value_adjusted,
+            adjustments_note=(adjustments_note_val or "")[:4000] or None,
+            adjustments_source=(adjustments_source_val or "")[:2048] or None,
             text_value=text_value,
             currency=result.currency,
             source_name=result.source_name,
