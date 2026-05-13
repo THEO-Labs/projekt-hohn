@@ -1323,6 +1323,33 @@ export function CompanyDashboardPage() {
                               ? "Web-Recherche fehlte. Klick oben 'Werte berechnen' für einen erneuten Versuch."
                               : "Q-Faktor nicht möglich (z.B. fehlende Q-Daten oder Saisonalitäts-Gate).";
                             const labelText = isHohn ? "Komponenten fehlen" : (isWebRow ? "Web fehlte" : "—");
+                            // Manueller Override auch im Estimate-Mode bei leeren Cells.
+                            // Schreibt den primary value (= sichtbar in beiden Rows: Faktor + Web).
+                            const canManualEstimate = !isHohn && d.data_type === "NUMERIC" && period.year != null;
+                            const handleEstimateManual = async () => {
+                              const input = window.prompt(
+                                `${d.label_en} (FY${period.year}e) — Wert manuell eintragen (in ${cellCv?.currency || company.currency || "Base-Units"}):`,
+                                "",
+                              );
+                              if (input == null || input.trim() === "") return;
+                              const num = parseNumericInput(input);
+                              if (isNaN(num)) {
+                                toast.error("Ungültiger Zahlenwert");
+                                return;
+                              }
+                              try {
+                                await overrideValue(
+                                  company.id, d.key,
+                                  { numeric_value: num, source_name: "Manuell" },
+                                  "FY", period.year,
+                                );
+                                await loadAllValues();
+                                toast.success(`${d.label_en} manuell gesetzt — wird beim Refresh überschrieben.`);
+                              } catch (e) {
+                                const detail = (e as { message?: string })?.message;
+                                toast.error(detail || "Speichern fehlgeschlagen");
+                              }
+                            };
                             return (
                               <td key={`${company.id}-${label}-${d.key}`}
                                 className={`border-r border-border/40 px-3 py-2${groupSep(d.key)}`}
@@ -1330,6 +1357,15 @@ export function CompanyDashboardPage() {
                                 <div className="flex items-center gap-1.5">
                                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-600/70" />
                                   <span className="text-xs italic text-muted-foreground">{labelText}</span>
+                                  {canManualEstimate && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleEstimateManual(); }}
+                                      className="ml-1 inline-flex items-center rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-800 hover:bg-amber-100"
+                                      title="Wert manuell eintragen (überschreibt den fehlenden Wert für beide Methoden)"
+                                    >
+                                      manuell
+                                    </button>
+                                  )}
                                 </div>
                               </td>
                             );
