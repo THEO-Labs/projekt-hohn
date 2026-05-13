@@ -164,8 +164,10 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
         <div className="mb-2 flex items-start gap-1.5 rounded border border-sky-300 bg-sky-50 px-2 py-1.5 text-[10px] text-sky-800">
           <Check className="mt-0.5 h-3 w-3 shrink-0" />
           <span>
-            <strong>US-Filer</strong> — Annual Report-Daten kommen automatisch via SEC EDGAR (XBRL).
-            Manueller Upload ist deaktiviert. Quartalsberichte können optional unten hochgeladen werden.
+            <strong>US-Filer</strong> — Reported-Daten (GAAP) kommen automatisch via SEC EDGAR (XBRL).
+            <strong> Annual Report Upload ist optional</strong> — er liefert zusätzlich die Adjusted/Non-GAAP-Varianten
+            für Net Income, EBITDA und FCF (XBRL hat keine Standard-Tags für Non-GAAP).
+            Ohne Upload nutzt das Tool Web-Recherche als Fallback für Adjusted.
           </span>
         </div>
       )}
@@ -251,16 +253,19 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
           return (
             <button key={year}
               onClick={() => onPickYear(year)}
-              disabled={blockedByOtherUpload || isUS}
-              className="flex flex-col items-center justify-center gap-0.5 rounded border border-dashed border-border bg-background px-1 py-2 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-background disabled:hover:text-muted-foreground"
+              disabled={blockedByOtherUpload}
+              className={`flex flex-col items-center justify-center gap-0.5 rounded border border-dashed bg-background px-1 py-2 text-muted-foreground transition-colors hover:bg-primary/5 hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border disabled:hover:bg-background disabled:hover:text-muted-foreground ${
+                isUS ? "border-sky-300 hover:border-sky-500" : "border-border hover:border-primary/50"
+              }`}
               title={isUS
-                ? "US-Filer — Annual Report-Daten kommen automatisch via SEC EDGAR. Manueller Upload nicht noetig."
+                ? `Annual Report ${year} hochladen (optional) — bringt Adjusted/Non-GAAP-Werte zusätzlich zu EDGAR-Reported.`
                 : blockedByOtherUpload ? "Anderer Upload läuft, bitte warten…"
                 : anyExtracting ? `Annual Report ${year} hochladen — wird in Warteschlange aufgenommen.`
                 : `Annual Report ${year} hochladen`}
             >
               <Upload className="h-3.5 w-3.5" />
               <span className="text-[10px] font-semibold">{year}</span>
+              {isUS && <span className="text-[8px] leading-none text-sky-600">opt.</span>}
             </button>
           );
         })}
@@ -274,7 +279,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
       )}
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
         {isUS
-          ? `US-Filer: Annual Report-Daten kommen automatisch via SEC EDGAR — kein Upload noetig. Max ${MAX_UPLOAD_MB} MB pro PDF (Quartalsberichte).`
+          ? `US-Filer: Reported (GAAP) kommt automatisch via SEC EDGAR. Annual Report Upload optional fuer Adjusted/Non-GAAP-Werte (XBRL hat keine Standard-Tags dafuer). Web-Recherche-Fallback fuer Adjusted greift wenn kein Upload. Max ${MAX_UPLOAD_MB} MB pro PDF.`
           : `Annual Reports sind die Hauptquelle fuer Finanzdaten bei Non-US-Firmen — ohne hochgeladenen Annual Report ist die Hohn-Rendite gesperrt. Max ${MAX_UPLOAD_MB} MB pro PDF.`}
       </p>
       <QuarterlyReportGrid

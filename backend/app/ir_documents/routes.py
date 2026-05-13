@@ -90,13 +90,21 @@ def _post_extraction_web_fallback(
         results.items(),
         key=lambda kv: (KEY_PRIORITY.index(kv[0]) if kv[0] in KEY_PRIORITY else len(KEY_PRIORITY))
     )
+    # Adjusted-relevante Keys: fuer diese triggern wir Web-Fallback auch dann,
+    # wenn 'value' (Reported) da ist aber 'value_adjusted' fehlt — der Dual-
+    # Web-Call holt Adjusted automatisch mit, kostet 0 zusaetzliche Calls
+    # gegenueber 'nur Reported'.
+    ADJUSTED_RELEVANT = {"net_income", "ebitda", "fcf"}
     for key, info in sorted_items:
         if attempted >= MAX_WEB_FALLBACKS_PER_PDF:
             logger.info("Web-fallback cap (%d) reached for doc %s, skipping further keys",
                         MAX_WEB_FALLBACKS_PER_PDF, doc.id)
             break
-        if info.get("value") is not None:
-            continue  # PDF hat einen Wert — nichts nachfüllen
+        has_reported = info.get("value") is not None
+        has_adjusted = info.get("value_adjusted") is not None
+        needs_adjusted_lookup = key in ADJUSTED_RELEVANT and not has_adjusted
+        if has_reported and not needs_adjusted_lookup:
+            continue  # alles da, nichts nachfuellen
         vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
         if vd is None or vd.source_type != SourceType.API:
             continue
@@ -118,22 +126,26 @@ def _post_extraction_web_fallback(
             .one_or_none()
         )
         if existing_web is not None:
-            logger.info("Web-fallback %s/%s/%s/%s: skip Claude-Call — schon ein Web-Fallback-Wert vorhanden (%s), aber merge in extraction_results",
-                        company.ticker, key, period_type, period_year, existing_web.numeric_value)
-            # WICHTIG: Auch wenn der Claude-Call geskipped wird, muessen wir den
-            # existierenden Web-Fallback-Wert in fallback_results eintragen,
-            # damit json_safe_results den Wert behaelt (sonst zeigt UI 6/7
-            # nach Re-Extract obwohl DB 7/7 hat).
-            fallback_results[key] = {
-                "value": str(existing_web.numeric_value),
-                "value_adjusted": str(existing_web.numeric_value_adjusted) if existing_web.numeric_value_adjusted is not None else None,
-                "adjustments_note": existing_web.adjustments_note,
-                "adjustments_source": existing_web.adjustments_source,
-                "currency": existing_web.currency,
-                "source": (existing_web.source_name or "")[:512],
-                "fallback_via_web": True,
-            }
-            continue
+            # Skip nur wenn der existing Web-Wert auch alle Adjusted-Felder
+            # abdeckt (oder Key kein Adjusted braucht). Sonst Claude erneut
+            # rufen damit Adjusted nachgeholt wird.
+            adj_complete = (key not in ADJUSTED_RELEVANT) or (existing_web.numeric_value_adjusted is not None)
+            if adj_complete:
+                logger.info("Web-fallback %s/%s/%s/%s: skip Claude-Call — schon ein Web-Fallback-Wert vorhanden (%s), aber merge in extraction_results",
+                            company.ticker, key, period_type, period_year, existing_web.numeric_value)
+                fallback_results[key] = {
+                    "value": str(existing_web.numeric_value),
+                    "value_adjusted": str(existing_web.numeric_value_adjusted) if existing_web.numeric_value_adjusted is not None else None,
+                    "adjustments_note": existing_web.adjustments_note,
+                    "adjustments_source": existing_web.adjustments_source,
+                    "currency": existing_web.currency,
+                    "source": (existing_web.source_name or "")[:512],
+                    "fallback_via_web": True,
+                }
+                continue
+            else:
+                logger.info("Web-fallback %s/%s/%s/%s: existing Web-Wert hat kein Adjusted — Claude-Call fuer Adjusted-Nachhol",
+                            company.ticker, key, period_type, period_year)
 
         label = f"{vd.label_en} ({vd.label_de})"
         attempted += 1
@@ -194,16 +206,29 @@ def _post_extraction_web_fallback(
         try:
             with db.begin_nested():
                 if existing:
-                    existing.numeric_value = web_val
-                    existing.source_name = new_source[:1900]
-                    existing.source_link = url or existing.source_link
-                    existing.currency = currency or existing.currency
-                    existing.fetched_at = now
-                    existing.from_ir_pdf = False
-                    if web_val_adjusted is not None:
+                    # ADJUSTED-ONLY-MODUS: PDF lieferte Reported (existing.numeric_value
+                    # ist da), wir holen nur Adjusted nach. Reported NICHT ueberschreiben.
+                    if has_reported and existing.numeric_value is not None and web_val_adjusted is not None:
                         existing.numeric_value_adjusted = web_val_adjusted
                         existing.adjustments_note = (web_adj_note or "")[:4000] or None
                         existing.adjustments_source = (web_adj_source or "")[:2048] or None
+                        # source_name behalten — Reported-Source bleibt fuehrend.
+                        # Optional ergänzen: '+ Web-Adjusted'
+                        if existing.source_name and " + Web-Adjusted" not in existing.source_name:
+                            existing.source_name = (existing.source_name + " + Web-Adjusted")[:1900]
+                        existing.fetched_at = now
+                    else:
+                        # Standardpfad: Reported aus Web (PDF lieferte gar nichts).
+                        existing.numeric_value = web_val
+                        existing.source_name = new_source[:1900]
+                        existing.source_link = url or existing.source_link
+                        existing.currency = currency or existing.currency
+                        existing.fetched_at = now
+                        existing.from_ir_pdf = False
+                        if web_val_adjusted is not None:
+                            existing.numeric_value_adjusted = web_val_adjusted
+                            existing.adjustments_note = (web_adj_note or "")[:4000] or None
+                            existing.adjustments_source = (web_adj_source or "")[:2048] or None
                 else:
                     db.add(CompanyValue(
                         id=uuid4(),
@@ -259,17 +284,37 @@ def _post_extraction_web_fallback(
         filled += 1
         # Resultat ans extraction_results-Mapping zurueckgeben damit der
         # Caller das JSON enrichen kann (UI-Counter zeigt sonst PDF-only).
-        fallback_results[key] = {
-            "value": str(web_val),
-            "value_adjusted": str(web_val_adjusted) if web_val_adjusted is not None else None,
-            "adjustments_note": web_adj_note,
-            "adjustments_source": web_adj_source,
-            "currency": currency,
-            "source": new_source[:1900],
-            "fallback_via_web": True,
-        }
-        logger.info("Web-fallback filled %s/%s/%s/%s = %s (src=%s)",
-                    company.ticker, key, period_type, period_year, web_val, source)
+        # Bei Adjusted-only-Modus (PDF hatte Reported, wir holten nur Adj):
+        # Reported-Value aus dem PDF-info-dict behalten, NICHT durch web_val
+        # ueberschreiben (web_val ist hier eh aus dem gleichen Search-Run
+        # aber Source-of-Truth bleibt PDF fuer Reported).
+        if has_reported and info.get("value") is not None:
+            fallback_results[key] = {
+                "value": str(info.get("value")),
+                "value_adjusted": str(web_val_adjusted) if web_val_adjusted is not None else None,
+                "adjustments_note": web_adj_note,
+                "adjustments_source": web_adj_source,
+                "currency": info.get("currency") or currency,
+                "source": (info.get("source") or "PDF") + " + Web-Adjusted",
+                "page": info.get("page"),
+                "quote": info.get("quote"),
+                "period_basis": info.get("period_basis"),
+                "fallback_via_web": True,
+            }
+        else:
+            fallback_results[key] = {
+                "value": str(web_val),
+                "value_adjusted": str(web_val_adjusted) if web_val_adjusted is not None else None,
+                "adjustments_note": web_adj_note,
+                "adjustments_source": web_adj_source,
+                "currency": currency,
+                "source": new_source[:1900],
+                "fallback_via_web": True,
+            }
+        logger.info("Web-fallback filled %s/%s/%s/%s = %s adj=%s (src=%s)",
+                    company.ticker, key, period_type, period_year,
+                    web_val if not has_reported else "(PDF-Reported)",
+                    web_val_adjusted, source)
     return filled, fallback_results
 
 

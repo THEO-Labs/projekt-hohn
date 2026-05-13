@@ -504,6 +504,59 @@ def _process_one_key(
             getattr(company, "fiscal_year_end_month", None),
             getattr(company, "fiscal_year_end_day", None),
         )
+        # US-Filer + adjustable-Key (NI/EBITDA/FCF): EDGAR liefert nur Reported.
+        # Adjusted/Non-GAAP via Dual-Web-Research nachholen — strukturell, weil
+        # XBRL keine Standard-Tags fuer Non-GAAP hat. Kosten: 1 Web-Call pro
+        # Key pro Refresh, nur fuer adjustable-Keys, nur fuer FY-Mode.
+        if (
+            result is not None
+            and isinstance(result.value, Decimal)
+            and is_us_company(company)
+            and key in {"net_income", "ebitda", "fcf"}
+            and payload.period_type == "FY"
+            and payload.period_year is not None
+        ):
+            try:
+                from app.llm.research import research_value_dual
+                from app.providers.base import ProviderResult
+                # Vorjahres-Anker fuer YoY-Cap-Sanity.
+                prev_row = (
+                    db.query(CompanyValue)
+                    .filter(
+                        CompanyValue.company_id == company_id,
+                        CompanyValue.value_key == key,
+                        CompanyValue.period_type == "FY",
+                        CompanyValue.period_year == payload.period_year - 1,
+                    )
+                    .one_or_none()
+                )
+                prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
+                vd_for_lbl = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+                label = f"{vd_for_lbl.label_en} ({vd_for_lbl.label_de})" if vd_for_lbl else key
+                dual_adj = research_value_dual(
+                    company.name, ticker, label, company.currency,
+                    period_type="FY", period_year=payload.period_year, value_key=key,
+                    prev_fy_val=prev_fy_val,
+                )
+                if dual_adj.value_adjusted is not None:
+                    # Adjusted-Felder in result.extras mergen — _apply_update
+                    # liest sie da raus und persistiert sie parallel zu Reported.
+                    extras_merged = dict(result.extras or {})
+                    extras_merged["value_adjusted"] = str(dual_adj.value_adjusted)
+                    extras_merged["adjustments_note"] = dual_adj.adjustments_note
+                    extras_merged["adjustments_source"] = dual_adj.adjustments_source
+                    result = ProviderResult(
+                        value=result.value,
+                        source_name=result.source_name,
+                        source_link=result.source_link,
+                        currency=result.currency,
+                        extras=extras_merged,
+                    )
+                    logger.info("EDGAR + Web-Adjusted Merge fuer %s/%s/FY%s: reported=%s adjusted=%s",
+                                ticker, key, payload.period_year, result.value, dual_adj.value_adjusted)
+            except Exception as e:
+                logger.warning("Web-Adjusted-Lookup nach EDGAR fehlgeschlagen %s/%s/FY%s: %s",
+                               ticker, key, payload.period_year, e)
         # Wenn Provider erfolgreich war + wir sind im Estimate-Mode + ESTIMABLE
         # Key, rechne trotzdem Q-Faktor + Web fuer den Drilldown-Vergleich
         # (sonst sehen US-Filer keine alternativen Methoden im Tooltip).
