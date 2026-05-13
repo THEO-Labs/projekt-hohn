@@ -310,6 +310,7 @@ def _try_web_guidance(
     label = f"{vd.label_en} ({vd.label_de})"
     # FY[N-1]-Anker fuer Konsens-Sanity (YoY-Cap) und Currency-Cross-Check.
     prev_fy = target_fy - 1
+    # Forecast+Actual koennen beide existieren — Actual bevorzugen (is_forecast=False sortiert zuerst).
     prev_row = (
         db.query(CompanyValue)
         .filter(
@@ -318,7 +319,8 @@ def _try_web_guidance(
             CompanyValue.period_type == "FY",
             CompanyValue.period_year == prev_fy,
         )
-        .one_or_none()
+        .order_by(CompanyValue.is_forecast.asc())
+        .first()
     )
     prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
     try:
@@ -519,7 +521,8 @@ def _process_one_key(
             try:
                 from app.llm.research import research_value_dual
                 from app.providers.base import ProviderResult
-                # Vorjahres-Anker fuer YoY-Cap-Sanity.
+                # Vorjahres-Anker fuer YoY-Cap-Sanity. Hier kann es 2 Rows
+                # geben (Forecast + Actual fuers gleiche Year) — Actual bevorzugen.
                 prev_row = (
                     db.query(CompanyValue)
                     .filter(
@@ -528,7 +531,8 @@ def _process_one_key(
                         CompanyValue.period_type == "FY",
                         CompanyValue.period_year == payload.period_year - 1,
                     )
-                    .one_or_none()
+                    .order_by(CompanyValue.is_forecast.asc())
+                    .first()
                 )
                 prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
                 vd_for_lbl = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
