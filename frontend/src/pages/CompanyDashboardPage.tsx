@@ -1668,6 +1668,10 @@ export function CompanyDashboardPage() {
                               const hohnPartialBlock = fyPartialMissing.length > 0;
                               const isMissing = noCv || pdfNullSource || cvEmpty || hohnPartialBlock || notFound.has(`${company.id}:${d.key}`);
                               if (!isMissing) return null;
+                              // Wenn User gerade inline-editing in dieser Cell ist:
+                              // missing-Display unterdruecken, damit der edit-input
+                              // sichtbar wird (greift NACH dem missing-IIFE).
+                              if (isEditing) return null;
                               const reasonMatch = pdfNullSource ? cv?.source_name?.match(/kein Wert:\s*(.+)$/) : null;
                               const pdfReason = reasonMatch?.[1]?.trim();
                               const isCalc = d.source_type === "CALCULATED";
@@ -1693,10 +1697,28 @@ export function CompanyDashboardPage() {
                                 : pdfNullSource
                                 ? "Im Bericht nicht gefunden"
                                 : isCalc ? "Inputs fehlen" : "Wert nicht gefunden";
+                              // Manueller Override bei leerer Cell: User kann
+                              // direkt einen Wert eintragen wenn weder Provider
+                              // noch Web/Q-Faktor was gefunden hat.
+                              const canManualFill = !isQualitative && d.data_type === "NUMERIC"
+                                && period.value === "FY" && period.year != null
+                                && !isPeNotDefined;
                               return (
                                 <div className="group/nf flex items-center gap-1.5" title={tooltipText}>
                                   <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
                                   <span className="text-xs text-amber-700">{labelText}</span>
+                                  {canManualFill && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditCell({ companyId: company.id, key: d.key, value: "" });
+                                      }}
+                                      className="ml-1 inline-flex items-center rounded border border-amber-400 bg-amber-50 px-1 py-0.5 text-[9px] font-semibold uppercase text-amber-800 hover:bg-amber-100"
+                                      title="Wert manuell eintragen (überschreibt den fehlenden Provider-/Web-Wert)"
+                                    >
+                                      manuell
+                                    </button>
+                                  )}
                                 </div>
                               );
                             })() ?? (
