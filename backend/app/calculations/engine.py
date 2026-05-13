@@ -57,14 +57,31 @@ def calculate_fy(
     previous: dict[str, Decimal | None] | None,
     stammdaten: dict[str, Decimal | None],
     next_year_market_cap: Decimal | None = None,
-) -> dict[str, Decimal | None]:
-    results: dict[str, Decimal | None] = {k: None for k in FY_CALC_KEYS}
+    current_adjusted: dict[str, Decimal | None] | None = None,
+    previous_adjusted: dict[str, Decimal | None] | None = None,
+) -> tuple[dict[str, Decimal | None], dict[str, Decimal | None]]:
+    """Berechnet Calculated-Werte fuer das FY.
 
-    # `current.market_cap` is now stored as the START-of-FY snapshot (anchor
-    # = FY-end of period_year-1) by _fetch_and_store_historical_mcap, so this
-    # gives the investor-entry-point denominator directly. SNAPSHOT MCap is
-    # only used as fallback when historical hasn't been fetched yet.
-    market_cap = current.get("market_cap") or stammdaten.get("market_cap")
+    Returns (results, results_adjusted):
+      - results: mit Reported-Inputs (Standard)
+      - results_adjusted: mit Adjusted-Inputs fuer NI/EBITDA/FCF wenn vorhanden,
+        sonst Fallback auf Reported. Wird genutzt um numeric_value_adjusted-
+        Felder fuer Calculated-Multiples zu persistieren, damit Frontend bei
+        Adjusted-Toggle keine Re-Berechnung machen muss.
+    """
+    results: dict[str, Decimal | None] = {k: None for k in FY_CALC_KEYS}
+    results_adjusted: dict[str, Decimal | None] = {k: None for k in FY_CALC_KEYS}
+
+    # market_cap_calc bevorzugt: PDF-shares × Yahoo-stock_price ist sauberer
+    # Anker als Yahoo's eigener marketCap-Field (der bei Klassen-Aktien wie
+    # Airbnb falsche shares-Zahlen nutzt). market_cap als Fallback wenn
+    # market_cap_calc nicht da ist (AR-(N-1) nicht hochgeladen).
+    market_cap = (
+        current.get("market_cap_calc")
+        or current.get("market_cap")
+        or stammdaten.get("market_cap_calc")
+        or stammdaten.get("market_cap")
+    )
 
     # net_debt kommt jetzt direkt aus der Extraktion (Primary Key) — keine
     # Aggregation aus Cash/Lease/LT-Debt-Subkomponenten mehr.
@@ -82,7 +99,7 @@ def calculate_fy(
     fcf = current.get("fcf")
     results["fcf_yield"] = _safe_div_pct(fcf, market_cap)
 
-    # VALUATION-Multiples (immer auf Ist-Werten):
+    # VALUATION-Multiples (Reported-Inputs):
     # KGV = Market Cap / Net Income (nur sinnvoll bei positivem NI).
     # EV/EBITDA = (Market Cap + Net Debt) / EBITDA.
     ebitda = current.get("ebitda")
@@ -93,6 +110,24 @@ def calculate_fy(
         ev = market_cap + (net_debt if net_debt is not None else Decimal("0"))
         results["ev_ebitda"] = ev / ebitda
 
+    # VALUATION-Multiples Adjusted: nur persistieren wenn echter Adjusted-Input
+    # da ist (sonst bleibt numeric_value_adjusted=NULL und Frontend zeigt korrekt
+    # 'kein Adj'-Fallback-Marker).
+    ca = current_adjusted or {}
+    ni_adj_raw = ca.get("net_income")
+    ebitda_adj_raw = ca.get("ebitda")
+    fcf_adj_raw = ca.get("fcf")
+    if market_cap is not None and fcf_adj_raw is not None and market_cap != 0:
+        results_adjusted["fcf_yield"] = fcf_adj_raw / market_cap * Decimal("100")
+    if market_cap is not None and ni_adj_raw is not None and ni_adj_raw > 0:
+        results_adjusted["pe_ratio"] = market_cap / ni_adj_raw
+    if market_cap is not None and ebitda_adj_raw is not None and ebitda_adj_raw > 0:
+        ev = market_cap + (net_debt if net_debt is not None else Decimal("0"))
+        results_adjusted["ev_ebitda"] = ev / ebitda_adj_raw
+    # Fuer NI-Growth + Hohn-Rendite-Adj brauchen wir Fallback (sonst kaskadieren
+    # Forecast-Years die nur Adj-Prev haben aber kein Adj-Current ins Leere).
+    ni_adj = ni_adj_raw if ni_adj_raw is not None else ni_for_pe
+
     ni = current.get("net_income")
     if previous:
         ni_prev = previous.get("net_income")
@@ -101,6 +136,11 @@ def calculate_fy(
             # bei negativem Vorjahres-Net-Income korrekt bleibt (Turnaround
             # von Verlust → Gewinn = positives Wachstum, nicht negatives).
             results["ni_growth"] = (ni - ni_prev) / abs(ni_prev) * Decimal("100")
+        # NI-Growth Adjusted: mode-konsistent (Adj-NI / Adj-NI-Prev).
+        pa = previous_adjusted or {}
+        ni_adj_prev = pa.get("net_income") if pa.get("net_income") is not None else ni_prev
+        if ni_adj is not None and ni_adj_prev is not None and ni_adj_prev != 0:
+            results_adjusted["ni_growth"] = (ni_adj - ni_adj_prev) / abs(ni_adj_prev) * Decimal("100")
 
         # ΔNet Debt = previous − current (positive = Schulden-Abbau / Cash-Wachstum).
         prev_net_debt = previous.get("net_debt")
@@ -162,7 +202,37 @@ def calculate_fy(
             total_d += -val if sign == "-" else val
         results["hohn_return_detailed"] = total_d
 
-    return results
+    # Hohn-Rendite Adjusted: gleiche Formeln aber mit Adjusted-Komponenten
+    # (fcf_yield_adj, ni_growth_adj). sbc/buyback/dividends/net-debt-change
+    # bleiben Reported (kein Adjusted-Pendant per Definition).
+    fcf_yield_adj = results_adjusted.get("fcf_yield")
+    ni_growth_adj = results_adjusted.get("ni_growth")
+    simple_parts_adj = [
+        ("+", fcf_yield_adj if fcf_yield_adj is not None else fcf_yield),
+        ("+", ni_growth_adj if ni_growth_adj is not None else ni_growth),
+        ("-", sbc_yield),
+        ("+", nd_change_pct),
+    ]
+    available_simple_adj = [(s, v) for s, v in simple_parts_adj if v is not None]
+    if available_simple_adj:
+        total_adj = Decimal("0")
+        for sign, val in available_simple_adj:
+            total_adj += -val if sign == "-" else val
+        results_adjusted["hohn_return_simple"] = total_adj
+    detailed_parts_adj = [
+        ("+", div_yield),
+        ("+", ni_growth_adj if ni_growth_adj is not None else ni_growth),
+        ("+", net_buyback_yield),
+        ("+", nd_change_pct),
+    ]
+    available_detailed_adj = [(s, v) for s, v in detailed_parts_adj if v is not None]
+    if available_detailed_adj:
+        total_d_adj = Decimal("0")
+        for sign, val in available_detailed_adj:
+            total_d_adj += -val if sign == "-" else val
+        results_adjusted["hohn_return_detailed"] = total_d_adj
+
+    return results, results_adjusted
 
 
 CUMULATIVE_KEYS = (

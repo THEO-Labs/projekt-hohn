@@ -60,6 +60,17 @@ def _load_value_map(
     return rows, values
 
 
+def _load_adjusted_map(rows: list[CompanyValue]) -> dict[str, Decimal | None]:
+    """Adjusted-Werte aus einem CompanyValue-Set. Nur fuer NI/EBITDA/FCF
+    relevant; andere Keys haben numeric_value_adjusted=NULL und sind in der
+    Map nicht enthalten."""
+    return {
+        row.value_key: row.numeric_value_adjusted
+        for row in rows
+        if row.numeric_value_adjusted is not None
+    }
+
+
 def _persist_calc_results(
     db: Session,
     company_id: UUID,
@@ -71,17 +82,20 @@ def _persist_calc_results(
     company_currency: str | None,
     source_name_override: str | None = None,
     is_forecast_override: bool | None = None,
+    calc_results_adjusted: dict[str, Decimal | None] | None = None,
 ) -> list[CompanyValue]:
     by_key = {row.value_key: row for row in existing_rows}
     updated: list[CompanyValue] = []
     default_source = source_name_override or "Calculated"
+    adj_map = calc_results_adjusted or {}
 
     for key, value in calc_results.items():
         if key not in allowed_keys:
             continue
 
         existing = by_key.get(key)
-        if value is None and existing is None:
+        adj_value = adj_map.get(key)
+        if value is None and adj_value is None and existing is None:
             continue
 
         calc_currency = company_currency if key in CURRENCY_KEYS else None
@@ -93,6 +107,7 @@ def _persist_calc_results(
                 # reset the flag.
                 continue
             existing.numeric_value = value
+            existing.numeric_value_adjusted = adj_value
             existing.source_name = default_source
             existing.source_link = None
             existing.fetched_at = datetime.now(timezone.utc)
@@ -110,6 +125,7 @@ def _persist_calc_results(
                 period_type=period_type,
                 period_year=period_year,
                 numeric_value=value,
+                numeric_value_adjusted=adj_value,
                 source_name=default_source,
                 source_link=None,
                 fetched_at=datetime.now(timezone.utc),
@@ -191,7 +207,14 @@ def _run_and_persist_calculations(
                 except Exception as e:
                     logger.warning("Auto-fetch FY+1 anchor for actual_return failed %s/%s: %s",
                                    company_id, period_year + 1, e)
-        fy_calc = calculate_fy(current, previous, stammdaten, next_year_market_cap=next_mcap)
+        current_adj = _load_adjusted_map(current_rows)
+        previous_adj = _load_adjusted_map(_prev_rows)
+        fy_calc, fy_calc_adj = calculate_fy(
+            current, previous, stammdaten,
+            next_year_market_cap=next_mcap,
+            current_adjusted=current_adj,
+            previous_adjusted=previous_adj,
+        )
 
         allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
 
@@ -209,29 +232,50 @@ def _run_and_persist_calculations(
         )
         if is_forecast_year and previous:
             # Trailing-Bewertung: prev-Werte + prev-MCap (FY[N-1]-Ende = current.market_cap = FY[N]-Anker)
-            prev_mcap = previous.get("market_cap")
+            prev_mcap = (
+                previous.get("market_cap_calc")
+                or previous.get("market_cap")
+            )
             prev_ni = previous.get("net_income")
             prev_ebitda = previous.get("ebitda")
             prev_net_debt = previous.get("net_debt")
             prev_fcf = previous.get("fcf")
+            # Adjusted-Variante fuer FY[N-1]: aus _load_adjusted_map (kommt
+            # weiter unten — daher hier inline berechnen).
+            prev_ni_adj = previous_adj.get("net_income") if previous_adj.get("net_income") is not None else prev_ni
+            prev_ebitda_adj = previous_adj.get("ebitda") if previous_adj.get("ebitda") is not None else prev_ebitda
+            prev_fcf_adj = previous_adj.get("fcf") if previous_adj.get("fcf") is not None else prev_fcf
             valuation_trailing: dict[str, Decimal | None] = {
+                "pe_ratio": None,
+                "ev_ebitda": None,
+                "fcf_yield": None,
+            }
+            valuation_trailing_adj: dict[str, Decimal | None] = {
                 "pe_ratio": None,
                 "ev_ebitda": None,
                 "fcf_yield": None,
             }
             if prev_mcap is not None and prev_ni is not None and prev_ni > 0:
                 valuation_trailing["pe_ratio"] = prev_mcap / prev_ni
+            if prev_mcap is not None and prev_ni_adj is not None and prev_ni_adj > 0:
+                valuation_trailing_adj["pe_ratio"] = prev_mcap / prev_ni_adj
             if prev_mcap is not None and prev_ebitda is not None and prev_ebitda > 0:
                 ev = prev_mcap + (prev_net_debt if prev_net_debt is not None else Decimal("0"))
                 valuation_trailing["ev_ebitda"] = ev / prev_ebitda
+            if prev_mcap is not None and prev_ebitda_adj is not None and prev_ebitda_adj > 0:
+                ev = prev_mcap + (prev_net_debt if prev_net_debt is not None else Decimal("0"))
+                valuation_trailing_adj["ev_ebitda"] = ev / prev_ebitda_adj
             if prev_mcap is not None and prev_fcf is not None and prev_mcap != 0:
                 valuation_trailing["fcf_yield"] = prev_fcf / prev_mcap * Decimal("100")
+            if prev_mcap is not None and prev_fcf_adj is not None and prev_mcap != 0:
+                valuation_trailing_adj["fcf_yield"] = prev_fcf_adj / prev_mcap * Decimal("100")
             valuation_keys = {"pe_ratio", "ev_ebitda", "fcf_yield"}
             updated += _persist_calc_results(
                 db, company_id, "FY", period_year,
                 current_rows, valuation_trailing, valuation_keys, company_currency,
                 source_name_override=f"Bewertung Stand FY{period_year - 1} (Trailing — Forecast-Year hat keinen Ist-Basis)",
                 is_forecast_override=True,
+                calc_results_adjusted=valuation_trailing_adj,
             )
             # WICHTIG: VALUATION-Keys aus dem nachfolgenden fy_calc-Persist
             # ausschliessen, sonst wuerde der zweite _persist_calc_results-Call
@@ -242,6 +286,7 @@ def _run_and_persist_calculations(
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
             current_rows, fy_calc, allowed_fy_keys, company_currency,
+            calc_results_adjusted=fy_calc_adj,
         )
 
     return updated
