@@ -1349,24 +1349,30 @@ export function CompanyDashboardPage() {
                             const isOpen = tooltip?.key === d.key && tooltip?.companyId === company.id && tooltip?.variant === "faktor";
                             setTooltip(isOpen ? null : { key: d.key, companyId: company.id, x: rect.left, y: rect.bottom + 6, variant: "faktor" });
                           } : undefined;
+                          const isAdjFallback = valuationMode === "adjusted" && modeInfoDual?.isFallbackToReported;
                           return (
                             <td key={`${company.id}-${label}-${d.key}`}
-                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""} ${isWebFallbackToProxy ? "opacity-60" : ""}${groupSep(d.key)}`}
-                              title={isClickableEstimate
+                              className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${tierBg} ${isClickableEstimate ? "cursor-pointer hover:bg-amber-100/40" : ""} ${isWebFallbackToProxy ? "opacity-60" : ""} ${isAdjFallback ? "bg-slate-200/60" : ""}${groupSep(d.key)}`}
+                              title={isAdjFallback
+                                ? "ADJUSTED FALLBACK — kein Non-GAAP/Adjusted-Wert reportet. Zeige Reported (GAAP/IFRS) als Notbehelf. Click 'Werte berechnen' triggert Adjusted-Recherche."
+                                : isClickableEstimate
                                 ? "Klick für Drilldown: FY-Vorjahres-Wert + Faktor-Berechnung"
                                 : isWebFallbackToProxy
                                 ? "Web-Recherche hat keine Zahlen gefunden — Wert ist Proxy-Fallback (identisch zur Q-Faktor-Zeile)"
                                 : undefined}
                               onClick={onCellClick}>
                               <div className="flex items-center gap-1.5">
-                                <span className={`font-mono text-sm ${isWebFallbackToProxy ? "italic" : ""}`}>{formatValue(display, d.unit, displayCurrency)}</span>
+                                <span className={`font-mono text-sm ${isWebFallbackToProxy ? "italic" : ""} ${isAdjFallback ? "italic text-slate-500 line-through decoration-slate-400 decoration-1" : ""}`}>{formatValue(display, d.unit, displayCurrency)}</span>
                                 {valuationMode === "adjusted" && modeInfoDual?.isAdjustedActive && (
                                   <span className="shrink-0 rounded bg-amber-200/80 px-1 py-0.5 text-[9px] font-bold uppercase text-amber-900"
                                     title="Adjusted/Non-GAAP-Wert">A</span>
                                 )}
-                                {valuationMode === "adjusted" && modeInfoDual?.isFallbackToReported && (
-                                  <span className="shrink-0 rounded bg-slate-200 px-1 py-0.5 text-[9px] font-bold uppercase text-slate-700"
-                                    title="Adjusted nicht reportet — zeige GAAP/IFRS-Reported als Fallback">R*</span>
+                                {isAdjFallback && (
+                                  <span className="shrink-0 inline-flex items-center gap-0.5 rounded border border-slate-400 bg-slate-300/60 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-700"
+                                    title="Adjusted-Wert FEHLT — fallback auf Reported (GAAP/IFRS). Refresh triggert Adjusted-Recherche.">
+                                    <AlertTriangle className="h-2.5 w-2.5" />
+                                    kein&nbsp;Adj
+                                  </span>
                                 )}
                                 {isWebFallbackToProxy && (
                                   <span className="shrink-0 rounded bg-orange-100 px-1 py-0.5 text-[9px] font-bold uppercase text-orange-700"
@@ -1669,7 +1675,11 @@ export function CompanyDashboardPage() {
                               );
                             })() ?? (
                             <>
-                              <span className="font-mono text-sm text-foreground">
+                              <span className={`font-mono text-sm ${
+                                valuationMode === "adjusted" && modeVal.isFallbackToReported
+                                  ? "italic text-slate-500 line-through decoration-slate-400 decoration-1"
+                                  : "text-foreground"
+                              }`}>
                                 {d.data_type === "TEXT"
                                   ? cv?.text_value ?? (cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue)
                                   : d.data_type === "FACTOR"
@@ -1681,8 +1691,12 @@ export function CompanyDashboardPage() {
                                   title="Adjusted/Non-GAAP-Wert">A</span>
                               )}
                               {valuationMode === "adjusted" && modeVal.isFallbackToReported && (
-                                <span className="shrink-0 rounded bg-slate-200 px-1 py-0.5 text-[9px] font-bold uppercase text-slate-700"
-                                  title="Adjusted nicht reportet — zeige GAAP/IFRS-Reported als Fallback">R*</span>
+                                <span className="shrink-0 inline-flex items-center gap-0.5 rounded border border-slate-400 bg-slate-300/60 px-1.5 py-0.5 text-[9px] font-bold uppercase text-slate-700"
+                                  title="Adjusted-Wert FEHLT — fallback auf Reported (GAAP/IFRS). Refresh triggert Adjusted-Recherche."
+                                >
+                                  <AlertTriangle className="h-2.5 w-2.5" />
+                                  kein&nbsp;Adj
+                                </span>
                               )}
                               {fxUnknown && (
                                 <span

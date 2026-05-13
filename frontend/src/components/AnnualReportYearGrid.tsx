@@ -19,8 +19,24 @@ const MAX_UPLOAD_MB = 50;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
 // Anzahl der Werte die wir aus jedem PDF extrahieren — muss zur EXTRACTION_KEYS-Liste
-// in backend/app/ir_documents/extraction.py passen.
-const TOTAL_EXTRACTION_KEYS = 8;
+// in backend/app/ir_documents/extraction.py passen. 8 Reported-Keys (net_income,
+// fcf, sbc, buyback_volume, dividends, net_debt, shares_outstanding, ebitda) +
+// 3 Adjusted-Varianten (NI/EBITDA/FCF haben Non-GAAP/Underlying-Pendant).
+const TOTAL_REPORTED_KEYS = 8;
+const ADJUSTED_KEYS_SET = new Set(["net_income", "ebitda", "fcf"]);
+const TOTAL_EXTRACTION_KEYS = TOTAL_REPORTED_KEYS + ADJUSTED_KEYS_SET.size; // = 11
+
+function countExtracted(extraction_results: unknown): number {
+  if (!extraction_results || typeof extraction_results !== "object") return 0;
+  let cnt = 0;
+  for (const [key, raw] of Object.entries(extraction_results as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as { value?: unknown; value_adjusted?: unknown };
+    if (entry.value != null) cnt += 1;
+    if (ADJUSTED_KEYS_SET.has(key) && entry.value_adjusted != null) cnt += 1;
+  }
+  return cnt;
+}
 
 function checkSize(file: File, label: string): boolean {
   if (file.size > MAX_UPLOAD_BYTES) {
@@ -165,9 +181,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
             const isInQueue = isPending || isRunning;
             const isFailed = status === "FAILED";
             const isDone = status === "DONE";
-            const numExtracted = doc.extraction_results
-              ? Object.values(doc.extraction_results).filter((v: unknown) => (v as { value?: unknown })?.value != null).length
-              : 0;
+            const numExtracted = countExtracted(doc.extraction_results);
             const colorClasses = isInQueue
               ? "border-amber-300 bg-amber-50 text-amber-800"
               : isFailed

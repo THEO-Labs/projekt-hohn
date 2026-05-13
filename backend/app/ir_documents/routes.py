@@ -126,6 +126,9 @@ def _post_extraction_web_fallback(
             # nach Re-Extract obwohl DB 7/7 hat).
             fallback_results[key] = {
                 "value": str(existing_web.numeric_value),
+                "value_adjusted": str(existing_web.numeric_value_adjusted) if existing_web.numeric_value_adjusted is not None else None,
+                "adjustments_note": existing_web.adjustments_note,
+                "adjustments_source": existing_web.adjustments_source,
                 "currency": existing_web.currency,
                 "source": (existing_web.source_name or "")[:512],
                 "fallback_via_web": True,
@@ -258,8 +261,11 @@ def _post_extraction_web_fallback(
         # Caller das JSON enrichen kann (UI-Counter zeigt sonst PDF-only).
         fallback_results[key] = {
             "value": str(web_val),
+            "value_adjusted": str(web_val_adjusted) if web_val_adjusted is not None else None,
+            "adjustments_note": web_adj_note,
+            "adjustments_source": web_adj_source,
             "currency": currency,
-            "source": new_source[:512],
+            "source": new_source[:1900],
             "fallback_via_web": True,
         }
         logger.info("Web-fallback filled %s/%s/%s/%s = %s (src=%s)",
