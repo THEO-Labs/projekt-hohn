@@ -281,6 +281,40 @@ Pro Key folgendes Schema:
   "period_basis": "FY" | "Q1_YTD" | "Q1_standalone" | "H1" | ... ,
   "reason": null wenn Wert gefunden, sonst Erklärung welche Stellen geprüft
             wurden und warum nichts da war (Auto-Web-Fallback approximiert dann)
+}}
+
+NUR FUER net_income, ebitda, fcf — ZUSAETZLICHE Felder im gleichen JSON-Objekt
+(PFLICHT-Felder, NICHT optional):
+{{
+  "value_adjusted": <Adjusted/Non-GAAP/Underlying-Zahl in Base-Units oder null>,
+  "adjustments_note": "<Reconciliation, z.B. 'Restructuring +120M, M&A-Kosten +80M'> oder null",
+  "adjustments_source": "<Seitenzahl/Snippet der Adjusted-Quelle> oder null"
+}}
+
+Sektor-spezifische Adjusted-Begriffe die du suchen sollst:
+- Airbus, BMW, Daimler: "EBIT Adjusted", "FCF before Customer Financing",
+  "Net Income before exceptionals"
+- Adidas: "Operating profit underlying", "Underlying net income", "Adjusted EBITDA"
+- US-Filer (Visa, Apple): "Adjusted Net Income", "Non-GAAP EPS × Aktien =
+  Adjusted NI", "Adjusted EBITDA"
+- Allianz/Versicherer: "Operating Profit", "Shareholder's Core Net Income"
+- Banken: "Underlying Profit", "Adjusted Operating Profit"
+
+Wenn die Firma KEINE Adjusted-Variante reportet (z.B. reine GAAP-Filer ohne
+Non-GAAP Reconciliation): value_adjusted=null,
+adjustments_note="Firma reportet keine Adjusted/Non-GAAP-Variante" — DAS
+ist auch ein gueltiges Resultat, NICHT raten.
+
+Beispiel Airbus FY 2025 ebitda:
+{{
+  "value": 14215000000,
+  "value_adjusted": 7080000000,
+  "adjustments_note": "EBIT Adjusted FY2025 €4.0 Mrd + D&A €3.1 Mrd = €7.1 Mrd EBITDA Adjusted (ohne Restrukturierungs- und A350-Programm-Effekte)",
+  "adjustments_source": "Press Release S.3 + Cash Flow Statement S.45",
+  "currency": "EUR",
+  "page": 4,
+  "quote": "Profit before financial result and income taxes 6,082 + D&A 3,133",
+  "period_basis": "FY"
 }}{guidance_section}
 
 PDF-DISZIPLIN: value=null ist ehrlich, wenn die Kennzahl wirklich nicht im
