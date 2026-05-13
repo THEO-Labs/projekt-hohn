@@ -360,6 +360,31 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
         period_type = doc.period_coverage.value  # "FY" or "Q1" etc.
         period_year = doc.period_year
         source_link = f"/api/companies/{company_id}/ir-documents/{doc_id}/download"
+        # Stammdaten-Anker-Konvention: shares_outstanding aus einem Annual Report
+        # ist semantisch ein 31.12.N-Snapshot (= Anfang FY (N+1)). Wir speichern
+        # es deshalb unter period_year=(N+1), damit market_cap/stock_price/shares
+        # einheitlich den FY-Anker des Folgejahres referenzieren.
+        is_annual_report = (
+            period_type == "FY"
+            and doc.document_type.value in ("ANNUAL_REPORT", "FORM_10K", "FORM_20F")
+        )
+        # Quartalsberichte fuer shares: bleiben period_year=N (Q-Snapshot).
+        # Aufraeumen: alte 'falsch' platzierte shares-Row aus frueheren AR-Extracts
+        # (= End-of-FY-N unter period_year=N) loeschen, damit der neue Anker-Wert
+        # (period_year=N+1) eindeutig wird und market_cap_calc-Logik konsistent ist.
+        if (
+            period_type == "FY"
+            and doc.document_type.value in ("ANNUAL_REPORT", "FORM_10K", "FORM_20F")
+        ):
+            db.query(CompanyValue).filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == "shares_outstanding",
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == period_year,
+                CompanyValue.from_ir_pdf.is_(True),
+                CompanyValue.manually_overridden.is_(False),
+            ).delete(synchronize_session=False)
+
         for key, info in results.items():
             value = info.get("value")
             page = info.get("page")
@@ -367,13 +392,19 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
             reason = info.get("reason") or "im Bericht nicht gefunden"
             now = datetime.now(timezone.utc)
 
+            # shares_outstanding aus Annual Report -> Anker fuer FY (N+1).
+            target_period_year = period_year
+            target_period_type = period_type
+            if key == "shares_outstanding" and is_annual_report:
+                target_period_year = period_year + 1
+
             existing = (
                 db.query(CompanyValue)
                 .filter(
                     CompanyValue.company_id == company_id,
                     CompanyValue.value_key == key,
-                    CompanyValue.period_type == period_type,
-                    CompanyValue.period_year == period_year,
+                    CompanyValue.period_type == target_period_type,
+                    CompanyValue.period_year == target_period_year,
                     CompanyValue.is_forecast.is_(False),
                 )
                 .one_or_none()
@@ -403,8 +434,8 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                         id=uuid4(),
                         company_id=company_id,
                         value_key=key,
-                        period_type=period_type,
-                        period_year=period_year,
+                        period_type=target_period_type,
+                        period_year=target_period_year,
                         numeric_value=value,
                         numeric_value_adjusted=value_adjusted,
                         adjustments_note=(adjustments_note or "")[:4000] or None,
@@ -432,8 +463,8 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                         id=uuid4(),
                         company_id=company_id,
                         value_key=key,
-                        period_type=period_type,
-                        period_year=period_year,
+                        period_type=target_period_type,
+                        period_year=target_period_year,
                         numeric_value=None,
                         source_name=source_name,
                         source_link=source_link,
