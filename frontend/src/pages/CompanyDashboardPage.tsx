@@ -306,10 +306,14 @@ function _safeYield(v: number | null, mcap: number | null): number | null {
 function buildVariantValues(
   rows: CompanyValue[],
   prevRows: CompanyValue[],
-  variant: "faktor" | "web",
+  variant: "faktor" | "web" | "fy",
   mode: ValuationMode = "reported",
 ): VariantValues {
-  const pickFn = variant === "faktor" ? _getFaktorValue : _getWebValue;
+  const pickFn = variant === "faktor"
+    ? _getFaktorValue
+    : variant === "web"
+      ? _getWebValue
+      : (cv: CompanyValue, m: ValuationMode) => _primaryByMode(cv, m);
   const raw = new Map<string, number | null>();
   for (const r of rows) raw.set(r.value_key, pickFn(r, mode));
   // Prev-Werte mode-konsistent: bei Mode=Adjusted nutzt NI-Growth Adj-NI
@@ -352,11 +356,20 @@ function buildVariantValues(
   const hohnSimple = sumIfAllPresent([fcfYield, niGrowth, sbcYield != null ? -sbcYield : null, ndChangePct]);
   const hohnDetailed = sumIfAllPresent([divYield, niGrowth, netBuybackYield, ndChangePct]);
 
-  // VALUATION-Keys (pe_ratio, ev_ebitda, ebitda, actual_return) kommen direkt
-  // aus der Row — sie sind im Forecast-Year entweder Trailing-Calc (pe_ratio,
-  // ev_ebitda, fcf_yield) oder echter Forecast-Wert (ebitda) bzw. Realized-TSR
-  // (actual_return). pick() greift via _isTrailingValuation / primary_method-
-  // Heuristik bereits den korrekten Wert ab.
+  // VALUATION-Multiples mode-aware rechnen aus den mode-spezifischen Inputs.
+  // Reported-Mode: nutzt Reported NI/EBITDA. Adjusted-Mode: Adjusted-Werte
+  // (siehe pick-Logic oben). So bekommt pe_ratio/ev_ebitda automatisch die
+  // 'Adjusted-Variante' im Adjusted-Mode ohne Backend-Persistenz noetig.
+  const ebitdaVal = raw.get("ebitda") ?? null;
+  let peRatio: number | null = null;
+  if (marketCap != null && netIncome != null && netIncome > 0) {
+    peRatio = marketCap / netIncome;
+  }
+  let evEbitda: number | null = null;
+  if (marketCap != null && ebitdaVal != null && ebitdaVal > 0) {
+    const ev = marketCap + (netDebt ?? 0);
+    evEbitda = ev / ebitdaVal;
+  }
   return new Map<string, number | null>([
     ["fcf", fcf], ["sbc", sbc], ["buyback_volume", buyback], ["dividends", dividends],
     ["net_income", netIncome], ["net_debt", netDebt],
@@ -366,9 +379,9 @@ function buildVariantValues(
     ["buyback_yield", buybackYield], ["net_buyback", netBuyback], ["net_buyback_yield", netBuybackYield],
     ["ni_growth", niGrowth], ["net_debt_change", ndChange], ["net_debt_change_pct", ndChangePct],
     ["hohn_return_simple", hohnSimple], ["hohn_return_detailed", hohnDetailed],
-    ["pe_ratio", raw.get("pe_ratio") ?? null],
-    ["ev_ebitda", raw.get("ev_ebitda") ?? null],
-    ["ebitda", raw.get("ebitda") ?? null],
+    ["pe_ratio", peRatio],
+    ["ev_ebitda", evEbitda],
+    ["ebitda", ebitdaVal],
     ["actual_return", raw.get("actual_return") ?? null],
   ]);
 }
@@ -1112,6 +1125,13 @@ export function CompanyDashboardPage() {
                 const cRows = valuesMap.get(company.id) ?? [];
                 const cPrev = prevYearValuesMap.get(company.id) ?? [];
                 const av = availabilityMap.get(company.id);
+                // FY-Mode Mode-aware Recompute fuer Calculated Keys (Hohn-Rendite,
+                // NI-Growth, P/E, EV/EBITDA, FCF-Yield, etc.). Backend persistiert
+                // diese mit Reported-Inputs; im Adjusted-Mode muessen sie frontend-
+                // side neu gerechnet werden damit Hohn-Rendite kaskadiert.
+                const fyModeRecomputed = (period.value === "FY" && !isEstimateMode && valuationMode === "adjusted")
+                  ? buildVariantValues(cRows, cPrev, "fy", valuationMode)
+                  : null;
                 const estLocked = isEstimateMode && isEstimateLocked(av, period.year);
                 const fyHistLocked = period.value === "FY" && !isEstimateMode && isFyHistoricalLocked(av, period.year);
                 const totalCols = visibleDefs.length + grouped.filter((g) => g.defs.length === 0).length + 1;
@@ -1545,7 +1565,13 @@ export function CompanyDashboardPage() {
                       const cv = getVal(company.id, d.key);
                       // Mode-aware Wert-Auswahl (Reported vs Adjusted) mit Fallback-Info
                       const modeVal = cv ? getModeValue(cv, valuationMode) : { value: null, isAdjustedActive: false, isFallbackToReported: false };
-                      const raw: number | null = modeVal.value != null && !isNaN(modeVal.value) ? modeVal.value : null;
+                      // FY-Mode + Adjusted: Calculated-Keys (Hohn-Rendite, NI-Growth,
+                      // P/E etc.) frontend-side neu gerechnet aus Adjusted-Inputs.
+                      const isCalcKey = d.source_type === "CALCULATED" && d.key !== "actual_return";
+                      const recomputedFY = (fyModeRecomputed && isCalcKey) ? fyModeRecomputed.get(d.key) ?? null : null;
+                      const raw: number | null = recomputedFY != null
+                        ? recomputedFY
+                        : (modeVal.value != null && !isNaN(modeVal.value) ? modeVal.value : null);
                       const rawValid = raw;
                       const shouldConvert = d.is_currency && d.data_type === "NUMERIC" && cv?.currency;
                       const convertedVal = shouldConvert ? convertCurrency(rawValid, cv?.currency ?? null) : rawValid;
