@@ -196,10 +196,6 @@ const ESTIMATE_PRIMARY_KEYS = new Set([
 
 type VariantValues = Map<string, number | null>;
 
-function _toNum(n: number | string | null | undefined): number | null {
-  if (n == null) return null;
-  return typeof n === "string" ? parseFloat(n) : n;
-}
 
 // CALCULATED Trailing-Werte (pe_ratio, ev_ebitda, fcf_yield) im Forecast-Year
 // werden methoden-unabhaengig berechnet (FY[N-1]-Anker). Sie sollen in BEIDEN
