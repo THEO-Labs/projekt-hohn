@@ -226,8 +226,13 @@ def _run_and_persist_calculations(
         # Forward-Multiple mit Forecast-NI".
         # actual_return bleibt ausgenommen — der ist nur fuer abgeschlossene FY
         # sinnvoll und braucht weiter den next_year_market_cap-Anker.
+        _fc_keys = ("net_income", "ebitda", "fcf", "net_debt", "market_cap")
+        _has_actual = {
+            k: any(r.value_key == k and not r.is_forecast and r.numeric_value is not None for r in current_rows)
+            for k in _fc_keys
+        }
         is_forecast_year = any(
-            r.is_forecast and r.value_key in ("net_income", "ebitda", "fcf", "net_debt", "market_cap")
+            r.is_forecast and r.value_key in _fc_keys and not _has_actual[r.value_key]
             for r in current_rows
         )
         if is_forecast_year and previous:

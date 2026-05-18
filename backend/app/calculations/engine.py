@@ -76,12 +76,20 @@ def calculate_fy(
     # Anker als Yahoo's eigener marketCap-Field (der bei Klassen-Aktien wie
     # Airbnb falsche shares-Zahlen nutzt). market_cap als Fallback wenn
     # market_cap_calc nicht da ist (AR-(N-1) nicht hochgeladen).
-    market_cap = (
-        current.get("market_cap_calc")
-        or current.get("market_cap")
-        or stammdaten.get("market_cap_calc")
-        or stammdaten.get("market_cap")
-    )
+    # Sanity-Check: Wenn market_cap_calc um Faktor 2+ von Yahoo market_cap
+    # abweicht, deutet das auf einen Stock-Split-Mismatch hin (Yahoo Adj Close
+    # ist retroaktiv split-adjustiert, PDF-Shares aus aelteren AR-Reports sind
+    # NICHT). In dem Fall Yahoo market_cap nehmen (split-konsistent).
+    mcap_calc = current.get("market_cap_calc") or stammdaten.get("market_cap_calc")
+    mcap_yahoo = current.get("market_cap") or stammdaten.get("market_cap")
+    if mcap_calc is not None and mcap_yahoo is not None and mcap_yahoo != 0:
+        ratio = mcap_calc / mcap_yahoo
+        if ratio < Decimal("0.5") or ratio > Decimal("2.0"):
+            market_cap = mcap_yahoo
+        else:
+            market_cap = mcap_calc
+    else:
+        market_cap = mcap_calc or mcap_yahoo
 
     # net_debt kommt jetzt direkt aus der Extraktion (Primary Key) — keine
     # Aggregation aus Cash/Lease/LT-Debt-Subkomponenten mehr.
