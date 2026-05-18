@@ -237,10 +237,15 @@ def _run_and_persist_calculations(
         )
         if is_forecast_year and previous:
             # Trailing-Bewertung: prev-Werte + prev-MCap (FY[N-1]-Ende = current.market_cap = FY[N]-Anker)
-            prev_mcap = (
-                previous.get("market_cap_calc")
-                or previous.get("market_cap")
-            )
+            # Stock-Split-Sanity analog engine.calculate_fy: bei Faktor 2+
+            # Abweichung Yahoo bevorzugen (z.B. ServiceNow 5-for-1 Split 2025).
+            _calc = previous.get("market_cap_calc")
+            _yh = previous.get("market_cap")
+            if _calc is not None and _yh is not None and _yh != 0:
+                _ratio = _calc / _yh
+                prev_mcap = _yh if (_ratio < Decimal("0.5") or _ratio > Decimal("2.0")) else _calc
+            else:
+                prev_mcap = _calc or _yh
             prev_ni = previous.get("net_income")
             prev_ebitda = previous.get("ebitda")
             prev_net_debt = previous.get("net_debt")
