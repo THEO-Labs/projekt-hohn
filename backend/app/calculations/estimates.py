@@ -89,7 +89,8 @@ def _value_at(
             CompanyValue.period_type == period_type,
             CompanyValue.period_year == period_year,
         )
-        .one_or_none()
+        .order_by(CompanyValue.is_forecast.asc())
+        .first()
     )
     return row.numeric_value if row and row.numeric_value is not None else None
 

@@ -621,30 +621,59 @@ def _persist_guidance_as_fy_forecast(
             continue
 
         source_name = f"Guidance from {doc.display_name}" + (f" (S.{page})" if page else "")
-        if existing:
-            existing.numeric_value = value
-            existing.source_name = source_name
-            existing.source_link = source_link
-            existing.currency = currency
-            existing.fetched_at = now
-            existing.from_ir_pdf = True
-            existing.is_forecast = True
-        else:
-            db.add(CompanyValue(
-                id=uuid4(),
-                company_id=company_id,
-                value_key=key,
-                period_type="FY",
-                period_year=fy_target,
-                numeric_value=value,
-                source_name=source_name,
-                source_link=source_link,
-                currency=currency,
-                fetched_at=now,
-                from_ir_pdf=True,
-                is_forecast=True,
-            ))
-        written += 1
+        try:
+            with db.begin_nested():
+                if existing:
+                    existing.numeric_value = value
+                    existing.source_name = source_name
+                    existing.source_link = source_link
+                    existing.currency = currency
+                    existing.fetched_at = now
+                    existing.from_ir_pdf = True
+                    existing.is_forecast = True
+                else:
+                    db.add(CompanyValue(
+                        id=uuid4(),
+                        company_id=company_id,
+                        value_key=key,
+                        period_type="FY",
+                        period_year=fy_target,
+                        numeric_value=value,
+                        source_name=source_name,
+                        source_link=source_link,
+                        currency=currency,
+                        fetched_at=now,
+                        from_ir_pdf=True,
+                        is_forecast=True,
+                    ))
+                    db.flush()
+            written += 1
+        except IntegrityError as ie:
+            logger.warning(
+                "Guidance-Persist %s/%s/FY%s: UniqueViolation (race?), retry via reload+update: %s",
+                doc.display_name, key, fy_target, str(ie)[:160],
+            )
+            db.expire_all()
+            retry = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company_id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type == "FY",
+                    CompanyValue.period_year == fy_target,
+                    CompanyValue.is_forecast.is_(True),
+                )
+                .one_or_none()
+            )
+            if retry is None or retry.manually_overridden:
+                continue
+            retry.numeric_value = value
+            retry.source_name = source_name
+            retry.source_link = source_link
+            retry.currency = currency
+            retry.fetched_at = now
+            retry.from_ir_pdf = True
+            written += 1
     if written:
         logger.info("Persisted %d guidance values as FY%s forecast for company=%s",
                     written, fy_target, company_id)
