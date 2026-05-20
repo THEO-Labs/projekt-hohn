@@ -27,7 +27,7 @@ FORWARD_YEAR_HINT = (
     "1. IR-Guidance aus dem letzten Q4/Q1-Earnings-Call Transcript oder "
     "Press Release (Management-Outlook).\n"
     "2. Investor Presentations / Guidance-Folien (z.B. 'FY{YEAR} Outlook').\n"
-    "3. Analysten-Konsens (Yahoo Finance Analyst Estimates, Factset, "
+    "3. Analysten-Konsens (Bloomberg Analyst Estimates, Factset, "
     "Refinitiv, Seeking Alpha Consensus).\n"
     "4. Fallback: letzter verfügbarer Istwert aus dem jüngsten Quartals-"
     "oder Jahresbericht (10-Q / 10-K).\n\n"

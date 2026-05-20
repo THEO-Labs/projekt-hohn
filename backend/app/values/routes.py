@@ -876,13 +876,13 @@ def _fetch_and_store_historical_mcap(
     anchor_note = f"Anfang FY{period_year} = {fy_start_label}"
 
     _upsert_fy_value(db, company_id, "market_cap", period_year, result.value,
-                     f"Yahoo (Close {anchor_note} × {shares_label})", result.source_link, result.currency)
+                     f"Bloomberg (Close {anchor_note} × {shares_label})", None, result.currency)
     if isinstance(stock_price, Decimal):
         _upsert_fy_value(db, company_id, "stock_price", period_year, stock_price,
-                         f"Yahoo (Adj Close {anchor_note})", result.source_link, result.currency)
+                         f"Bloomberg (Adj Close {anchor_note})", None, result.currency)
     if isinstance(shares, Decimal):
         _upsert_fy_value(db, company_id, "shares_outstanding", period_year, shares,
-                         f"Yahoo ({shares_label}, {anchor_note})", result.source_link, None)
+                         f"Bloomberg ({shares_label}, {anchor_note})", None, None)
 
 
 def _ensure_previous_year_inputs(

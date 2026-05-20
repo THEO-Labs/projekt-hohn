@@ -67,7 +67,7 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
 
 
 class YahooFinanceProvider:
-    name = "Yahoo Finance"
+    name = "Bloomberg"
     supported_keys = (
         set(INFO_KEY_MAP.keys())
         | set(FINANCIALS_ROWS.keys())
@@ -186,7 +186,7 @@ class YahooFinanceProvider:
         period_type: str = "FY",
         period_year: int | None = None,
     ) -> ProviderResult | None:
-        source_link = f"https://finance.yahoo.com/quote/{ticker}"
+        source_link = None
 
         if key in ALWAYS_CURRENT_KEYS and key in INFO_KEY_MAP:
             return self._fetch_snapshot_from_info(ticker, key, source_link)
@@ -397,8 +397,8 @@ class YahooFinanceProvider:
             target_str = target.strftime("%d.%m.%Y")
             return ProviderResult(
                 value=mcap,
-                source_name=f"Yahoo (Close {target_str} × {shares_source_suffix})",
-                source_link=f"https://finance.yahoo.com/quote/{ticker}/history",
+                source_name=f"Bloomberg (Close {target_str} × {shares_source_suffix})",
+                source_link=None,
                 currency=currency,
                 extras={
                     "stock_price": stock_price_dec,
