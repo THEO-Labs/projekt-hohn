@@ -31,9 +31,10 @@ SEED_VALUES = [
     {"key": "dividend_yield", "label_de": "Dividendenrendite", "label_en": "Dividend Yield", "category": "DIVIDENDS", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 60},
     {"key": "dividends", "label_de": "Dividenden", "label_en": "Dividends", "category": "DIVIDENDS", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 61},
 
-    # HOHN RETURN
-    {"key": "hohn_return_simple", "label_de": "Hohn-Rendite (einfach)", "label_en": "Hohn Return (simple)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 70},
-    {"key": "hohn_return_detailed", "label_de": "Hohn-Rendite (detailed)", "label_en": "Hohn Return (detailed)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 71},
+    # H-RETURN
+    {"key": "hohn_return_simple", "label_de": "H-Return (einfach)", "label_en": "H-Return (simple)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 70},
+    {"key": "hohn_return_detailed", "label_de": "H-Return (detailed)", "label_en": "H-Return (detailed)", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 71},
+    {"key": "h_peg", "label_de": "H-PEG", "label_en": "H-PEG", "category": "HOHN_RETURN", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 72},
 
     # VALUATION (Bewertungs-Multiples — immer auf Ist-Werten, im Estimate-Mode FY[N-1]-Snapshot)
     {"key": "actual_return", "label_de": "Tatsächliche Rendite (FY)", "label_en": "Actual Return (FY)", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 80},

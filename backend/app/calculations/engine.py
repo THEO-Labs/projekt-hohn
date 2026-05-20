@@ -17,7 +17,7 @@ def _cagr_pct(growth_factor: Decimal, n: int) -> Decimal | None:
 
 STAMMDATEN_CALC_KEYS = {"market_cap_calc"}
 
-HOHN_KEYS = {"hohn_return_simple", "hohn_return_detailed"}
+HOHN_KEYS = {"hohn_return_simple", "hohn_return_detailed", "h_peg"}
 
 FY_CALC_KEYS = {
     "net_buyback",
@@ -59,6 +59,7 @@ def calculate_fy(
     next_year_market_cap: Decimal | None = None,
     current_adjusted: dict[str, Decimal | None] | None = None,
     previous_adjusted: dict[str, Decimal | None] | None = None,
+    is_running_fy: bool = False,
 ) -> tuple[dict[str, Decimal | None], dict[str, Decimal | None]]:
     """Berechnet Calculated-Werte fuer das FY.
 
@@ -80,8 +81,17 @@ def calculate_fy(
     # abweicht, deutet das auf einen Stock-Split-Mismatch hin (Yahoo Adj Close
     # ist retroaktiv split-adjustiert, PDF-Shares aus aelteren AR-Reports sind
     # NICHT). In dem Fall Yahoo market_cap nehmen (split-konsistent).
-    mcap_calc = current.get("market_cap_calc") or stammdaten.get("market_cap_calc")
-    mcap_yahoo = current.get("market_cap") or stammdaten.get("market_cap")
+    #
+    # Bei laufendem FY (Estimate-Mode): aktuelle MCap (SNAPSHOT, heute) statt
+    # 01.01.-FY-Anker. Anker bleibt nur fuer abgeschlossene FYs relevant
+    # (Performance-Berechnungen). Kunden-Anforderung: laufende H-Return soll
+    # auf "Preis den ich heute zahlen muesste" basieren.
+    if is_running_fy:
+        mcap_calc = stammdaten.get("market_cap_calc") or current.get("market_cap_calc")
+        mcap_yahoo = stammdaten.get("market_cap") or current.get("market_cap")
+    else:
+        mcap_calc = current.get("market_cap_calc") or stammdaten.get("market_cap_calc")
+        mcap_yahoo = current.get("market_cap") or stammdaten.get("market_cap")
     if mcap_calc is not None and mcap_yahoo is not None and mcap_yahoo != 0:
         ratio = mcap_calc / mcap_yahoo
         if ratio < Decimal("0.5") or ratio > Decimal("2.0"):
@@ -239,6 +249,17 @@ def calculate_fy(
         for sign, val in available_detailed_adj:
             total_d_adj += -val if sign == "-" else val
         results_adjusted["hohn_return_detailed"] = total_d_adj
+
+    # H-PEG analog zur PEG-Ratio (P/E / Growth): H-Return (detailed) / NI-Growth.
+    # < 1 = guenstig bewertet relativ zum Wachstum, > 1 = teuer.
+    # Nur sinnvoll bei positivem Wachstum — bei ni_growth <= 0 bleibt NULL.
+    h_return_d = results.get("hohn_return_detailed")
+    if h_return_d is not None and ni_growth is not None and ni_growth > 0:
+        results["h_peg"] = h_return_d / ni_growth
+    h_return_d_adj = results_adjusted.get("hohn_return_detailed")
+    ni_growth_for_peg_adj = ni_growth_adj if ni_growth_adj is not None else ni_growth
+    if h_return_d_adj is not None and ni_growth_for_peg_adj is not None and ni_growth_for_peg_adj > 0:
+        results_adjusted["h_peg"] = h_return_d_adj / ni_growth_for_peg_adj
 
     return results, results_adjusted
 

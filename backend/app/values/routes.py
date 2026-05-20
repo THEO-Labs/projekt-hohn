@@ -209,14 +209,6 @@ def _run_and_persist_calculations(
                                    company_id, period_year + 1, e)
         current_adj = _load_adjusted_map(current_rows)
         previous_adj = _load_adjusted_map(_prev_rows)
-        fy_calc, fy_calc_adj = calculate_fy(
-            current, previous, stammdaten,
-            next_year_market_cap=next_mcap,
-            current_adjusted=current_adj,
-            previous_adjusted=previous_adj,
-        )
-
-        allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
 
         # Forecast-Year-Erkennung: wenn fuer dieses FY die Kern-Inputs als
         # Forecast in DB stehen (z.B. net_income aus Web-Guidance), ueberlagern
@@ -235,6 +227,16 @@ def _run_and_persist_calculations(
             r.is_forecast and r.value_key in _fc_keys and not _has_actual[r.value_key]
             for r in current_rows
         )
+
+        fy_calc, fy_calc_adj = calculate_fy(
+            current, previous, stammdaten,
+            next_year_market_cap=next_mcap,
+            current_adjusted=current_adj,
+            previous_adjusted=previous_adj,
+            is_running_fy=is_forecast_year,
+        )
+
+        allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
         if is_forecast_year and previous:
             # Trailing-Bewertung: prev-Werte + prev-MCap (FY[N-1]-Ende = current.market_cap = FY[N]-Anker)
             # Stock-Split-Sanity analog engine.calculate_fy: bei Faktor 2+

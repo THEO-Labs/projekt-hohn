@@ -280,7 +280,7 @@ export function AnnualReportYearGrid({ companyId, companyName }: Props) {
       <p className="mt-1.5 text-[10px] text-muted-foreground/80">
         {isUS
           ? `US-Filer: Reported (GAAP) kommt automatisch via SEC EDGAR. Annual Report Upload optional fuer Adjusted/Non-GAAP-Werte (XBRL hat keine Standard-Tags dafuer). Web-Recherche-Fallback fuer Adjusted greift wenn kein Upload. Max ${MAX_UPLOAD_MB} MB pro PDF.`
-          : `Annual Reports sind die Hauptquelle fuer Finanzdaten bei Non-US-Firmen — ohne hochgeladenen Annual Report ist die Hohn-Rendite gesperrt. Max ${MAX_UPLOAD_MB} MB pro PDF.`}
+          : `Annual Reports sind die Hauptquelle fuer Finanzdaten bei Non-US-Firmen — ohne hochgeladenen Annual Report ist die H-Return gesperrt. Max ${MAX_UPLOAD_MB} MB pro PDF.`}
       </p>
       <QuarterlyReportGrid
         companyId={companyId}

@@ -1,5 +1,5 @@
 export const t = {
-  appTitle: "Hohn-Rendite Tool",
+  appTitle: "H-Return Tool",
   login: "Anmelden",
   logout: "Abmelden",
   email: "E-Mail",

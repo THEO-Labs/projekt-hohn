@@ -66,7 +66,7 @@ const CUM_INPUT_FY_KEYS = [
 
 
 const CATEGORY_LABELS: Record<string, string> = {
-  HOHN_RETURN: "Hohn-Rendite",
+  HOHN_RETURN: "H-Return",
   VALUATION: "Bewertung",
   FCF: "Free Cash Flow",
   NI_GROWTH: "Net Income Growth",
@@ -204,7 +204,15 @@ const VALUATION_TRAILING_KEYS = new Set(["pe_ratio", "ev_ebitda", "fcf_yield"]);
 
 // Keys mit Adjusted/Non-GAAP-Variante. Andere Keys (SBC, Buyback, Dividends,
 // Net Debt, Shares Outstanding) sind per Definition Reported-only.
-const ADJUSTABLE_INPUT_KEYS = new Set(["net_income", "ebitda", "fcf"]);
+// Inputs + Calculated-Multiples deren Adjusted-Variante backend-seitig
+// persistiert wird (numeric_value_adjusted). Im Estimate-Mode (Forecast-Year)
+// muessen die Calc-Multiples hier listed sein, damit der Toggle den
+// backend-persistierten Adjusted-Wert direkt zieht (kein Frontend-Recompute).
+const ADJUSTABLE_INPUT_KEYS = new Set([
+  "net_income", "ebitda", "fcf",
+  "pe_ratio", "ev_ebitda", "fcf_yield", "ni_growth",
+  "hohn_return_simple", "hohn_return_detailed", "h_peg",
+]);
 
 type ValuationMode = "reported" | "adjusted";
 
@@ -913,7 +921,7 @@ export function CompanyDashboardPage() {
             </span>
           )}
           {/* GAAP/Non-GAAP Toggle — wirkt auf Net Income, EBITDA, FCF und
-              kaskadiert auf P/E, EV/EBITDA, FCF-Yield, NI-Growth, Hohn-Rendite. */}
+              kaskadiert auf P/E, EV/EBITDA, FCF-Yield, NI-Growth, H-Return. */}
           <div className="ml-auto inline-flex items-center rounded-md border border-border bg-card p-0.5"
                title="Schaltet zwischen Reported (GAAP/IFRS) und Adjusted (Non-GAAP/Underlying). Tooltip zeigt immer beide Werte.">
             <button
@@ -942,10 +950,10 @@ export function CompanyDashboardPage() {
             <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
               <div className="flex items-center gap-2 font-semibold">
                 <Lock className="h-4 w-4 text-amber-600" />
-                Hohn-Rendite gesperrt für {locked.length} {locked.length === 1 ? "Firma" : "Firmen"} (FY{period.year})
+                H-Return gesperrt für {locked.length} {locked.length === 1 ? "Firma" : "Firmen"} (FY{period.year})
               </div>
               <p className="mt-1 text-[11px] text-amber-800/90">
-                Bei Non-US-Unternehmen ist die Hohn-Rendite für abgeschlossene FYs nur berechenbar, wenn ein
+                Bei Non-US-Unternehmen ist die H-Return für abgeschlossene FYs nur berechenbar, wenn ein
                 fertig extrahierter Annual Report vorliegt. Lade den Geschäftsbericht in der Firmen-Verwaltung hoch.
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1761,7 +1769,9 @@ export function CompanyDashboardPage() {
                               <span className={`font-mono text-sm ${
                                 valuationMode === "adjusted" && modeVal.isFallbackToReported
                                   ? "italic text-slate-500 line-through decoration-slate-400 decoration-1"
-                                  : "text-foreground"
+                                  : isCalculated
+                                    ? "text-foreground"
+                                    : "text-blue-700"
                               }`}>
                                 {d.data_type === "TEXT"
                                   ? cv?.text_value ?? (cv?.numeric_value != null ? parseFloat(String(cv.numeric_value)).toFixed(2) : t.noValue)
