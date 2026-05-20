@@ -40,6 +40,7 @@ const CATEGORY_ORDER = [
 const FACTOR_KEYS = new Set([
   "hohn_return_simple",
   "hohn_return_detailed",
+  "h_peg",
   "actual_return",
   "fcf_yield",
   "ni_growth",
@@ -544,6 +545,15 @@ export function CompanyDashboardPage() {
     const alwaysCurrentApiKeys = new Set(
       definitions.filter((d) => d.always_current && d.source_type !== "QUALITATIVE").map((d) => d.key)
     );
+    // STAMMDATEN-Keys (stock_price, market_cap, shares_outstanding, market_cap_calc)
+    // im laufenden/zukuenftigen FY: SNAPSHOT (heute) bevorzugen statt 01.01.-FY-Anker.
+    // Kunden-Anforderung: bei Estimates sieht der User Werte von HEUTE, nicht 01.01.
+    const stammdatenKeys = new Set(
+      definitions.filter((d) => d.category === "STAMMDATEN").map((d) => d.key)
+    );
+    const useSnapshotForStammdaten = period.value === "FY"
+      && period.year !== undefined
+      && period.year >= new Date().getFullYear();
 
     if (period.value === "CUM") {
       const cumMap = new Map<string, CumulativeValuesResponse>();
@@ -592,6 +602,11 @@ export function CompanyDashboardPage() {
         const allKeys = new Set([...periodVals.map((v) => v.value_key), ...snapshotVals.map((v) => v.value_key)]);
         const merged = [...allKeys].map((key) => {
           if (qualitativeOnlyKeys.has(key)) {
+            return snapshotVals.find((v) => v.value_key === key) ?? periodKeyMap.get(key);
+          }
+          // Estimate-Mode (laufendes/zukuenftiges FY): Stammdaten aus SNAPSHOT
+          // (heute), nicht 01.01.-FY-Anker.
+          if (useSnapshotForStammdaten && stammdatenKeys.has(key)) {
             return snapshotVals.find((v) => v.value_key === key) ?? periodKeyMap.get(key);
           }
           if (alwaysCurrentApiKeys.has(key)) {
