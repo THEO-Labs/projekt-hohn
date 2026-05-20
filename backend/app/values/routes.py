@@ -418,44 +418,6 @@ def _try_web_guidance(
     )
 
 
-def _try_factor_estimate(
-    db: Session,
-    company,
-    company_id: UUID,
-    key: str,
-    target_fy: int,
-):
-    """Q-Faktor-Estimate als Proxy. Returns ProviderResult oder None."""
-    from app.calculations.estimates import compute_estimate
-    from app.providers.base import ProviderResult
-
-    try:
-        est = compute_estimate(db, company_id, key, target_fy, currency=company.currency)
-    except Exception as e:
-        logger.warning("Estimate failed for %s/%s/FY%s: %s", company.ticker, key, target_fy, e)
-        return None
-    if est is None:
-        return None
-
-    if est.method == "flow_factor" and est.factor is not None:
-        source_label = f"Proxy (Q-Faktor): FY{target_fy - 1} × Faktor {est.factor:.4f}"
-    elif est.method == "balance_snapshot":
-        qs = ",".join(est.quarters_used) if est.quarters_used else "?"
-        source_label = f"Proxy (Bilanz-Snapshot {qs})"
-    elif est.method == "fy_fallback":
-        source_label = f"Proxy (FY{target_fy - 1}-Wert, no-growth)"
-    else:
-        source_label = f"Proxy ({est.method})"
-
-    return ProviderResult(
-        value=est.value,
-        source_name=source_label,
-        source_link=None,
-        currency=company.currency if key in CURRENCY_KEYS else None,
-        extras={"is_forecast": True, "estimate": est.explanation, "estimate_method": est.method},
-    )
-
-
 def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day):
     for provider in get_providers(key):
         try:
@@ -487,18 +449,14 @@ def _process_one_key(
 
     Source-Strategie:
       - Stammdaten (stock_price/shares/market_cap): immer Yahoo
-      - Laufende FY + estimable key: Q-Faktor-Estimate aus Quartals-PDFs
       - US-Filer (ISIN US...): EDGAR + Yahoo Provider-Chain
-      - Non-US: keine Provider — der Wert kommt ausschliesslich aus dem
-        Annual-Report-PDF (oder bleibt fehlend, dann muss der User explizit
-        "Mit Claude recherchieren" klicken)
-    Claude wird NIE automatisch aufgerufen.
+      - Non-US + Estimates: Web-Recherche (Claude+Gemini-Konsens)
+      - Sonst (historisches FY): Annual-Report-PDF (oder Web-Fallback)
     """
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
 
     from datetime import date as _date_today
-    from app.calculations.estimates import ESTIMABLE_KEYS
 
     is_stammdaten = key in ALWAYS_CURRENT_KEYS
     is_running_fy = (
@@ -540,10 +498,7 @@ def _process_one_key(
     result = None
 
     # PDF-Guidance / Manual-Override für Forecast: primary numeric_value
-    # bleibt unangetastet (User-Wahl/PDF respektieren). ABER: wir berechnen
-    # trotzdem Web+Q-Faktor parallel weiter, damit forecast_alternates für
-    # das Drilldown-Tooltip aktuell bleibt. Erst NACH dem ESTIMATE-Block
-    # wird entschieden ob primary geupdated wird.
+    # bleibt unangetastet (User-Wahl/PDF respektieren).
     forecast_locked = bool(
         forecast_existing
         and (forecast_existing.manually_overridden
@@ -552,11 +507,8 @@ def _process_one_key(
 
     # Fallback-Kette pro Cell:
     #   1. Provider-Chain (EDGAR/Yahoo) — schnell wenn US oder Stammdaten
-    #   2. Estimate-Mode (laufendes FY + ESTIMABLE): BEIDE Methoden parallel
-    #      rechnen — Web-Recherche und Q-Faktor-Proxy. Primary = Web (mit Q-Faktor
-    #      Fallback wenn Web leer), zweite Methode wandert in forecast_alternates.
-    #   3. Sonst: Web-Recherche als universeller Fallback für FY-Werte.
-    forecast_alternates: list[dict] | None = None
+    #   2. Web-Recherche (Claude+Gemini-Konsens) als universeller Fallback fuer
+    #      FY-Werte ohne Provider-Quelle (Non-US, oder Estimate-Mode).
     if is_stammdaten or is_us_company(company):
         result = _try_providers(
             ticker, key, payload,
@@ -618,144 +570,16 @@ def _process_one_key(
             except Exception as e:
                 logger.warning("Web-Adjusted-Lookup nach EDGAR fehlgeschlagen %s/%s/FY%s: %s",
                                ticker, key, payload.period_year, e)
-        # Wenn Provider erfolgreich war + wir sind im Estimate-Mode + ESTIMABLE
-        # Key, rechne trotzdem Q-Faktor + Web fuer den Drilldown-Vergleich
-        # (sonst sehen US-Filer keine alternativen Methoden im Tooltip).
-        if (
-            result is not None
-            and is_running_fy
-            and key in ESTIMABLE_KEYS
-            and not is_stammdaten
-        ):
-            web_alt_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
-            proxy_alt_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
-            alts: list[dict] = []
-            if proxy_alt_result is not None and isinstance(proxy_alt_result.value, Decimal):
-                extras = proxy_alt_result.extras or {}
-                alts.append({
-                    "method": "q_factor_proxy",
-                    "value": str(proxy_alt_result.value),
-                    "currency": proxy_alt_result.currency,
-                    "source": proxy_alt_result.source_name,
-                    "explanation": extras.get("estimate"),
-                })
-            # Web-Alt IMMER schreiben — entweder echter Web-Wert oder Notfall-
-            # Fallback (Proxy/Primary-Wert mit Markierung). 'Web fehlte' darf
-            # nie sichtbar werden im UI.
-            if web_alt_result is not None and isinstance(web_alt_result.value, Decimal):
-                alts.append({
-                    "method": "web_guidance",
-                    "value": str(web_alt_result.value),
-                    "currency": web_alt_result.currency,
-                    "source": web_alt_result.source_name,
-                })
-            elif proxy_alt_result is not None and isinstance(proxy_alt_result.value, Decimal):
-                alts.append({
-                    "method": "web_guidance",
-                    "value": str(proxy_alt_result.value),
-                    "currency": proxy_alt_result.currency,
-                    "source": f"Notfall-Fallback (Web-Recherche fehlte trotz Retry): {proxy_alt_result.source_name}",
-                    "fallback_from": "q_factor_proxy",
-                })
-            elif isinstance(result.value, Decimal):
-                # Letzter Fallback: nutze den primaeren result-Wert (z.B. PDF-Guidance).
-                alts.append({
-                    "method": "web_guidance",
-                    "value": str(result.value),
-                    "currency": result.currency,
-                    "source": f"Notfall-Fallback (Web+Proxy fehlten): {result.source_name}",
-                    "fallback_from": "primary_result",
-                })
-            if alts:
-                forecast_alternates = alts
-
-    if result is None and is_running_fy and key in ESTIMABLE_KEYS:
-        web_result = _try_web_guidance(db, company, company_id, key, effective_period_year)
-        proxy_result = _try_factor_estimate(db, company, company_id, key, effective_period_year)
-
-        def _to_alt(r, method: str) -> dict:
-            if r is not None and isinstance(r.value, Decimal):
-                extras = r.extras or {}
-                return {
-                    "method": method,
-                    "value": str(r.value),
-                    "currency": r.currency,
-                    "source": r.source_name,
-                    "explanation": extras.get("estimate"),
-                }
-            return {
-                "method": method,
-                "value": None,
-                "currency": None,
-                "source": None,
-                "error_reason": (
-                    "Claude-Recherche lieferte keinen Wert."
-                    if method == "web_guidance"
-                    else "Q-Faktor-Proxy nicht möglich (z.B. fehlende Q-Daten)."
-                ),
-            }
-
-        # Beide Alternates IMMER schreiben damit der UI-Vergleich (dual-row) und
-        # Drilldown an einem vorhersehbaren Ort stehen — egal welche Methode
-        # letztendlich primary wird (Web, Proxy, oder PDF/Manual via forecast_locked).
-        proxy_alt = _to_alt(proxy_result, "q_factor_proxy")
-        web_alt_obj: dict
-        if web_result is not None and isinstance(web_result.value, Decimal):
-            web_alt_obj = {
-                "method": "web_guidance",
-                "value": str(web_result.value),
-                "currency": web_result.currency,
-                "source": web_result.source_name,
-            }
-        elif proxy_result is not None and isinstance(proxy_result.value, Decimal):
-            # Web hat trotz Retry nichts geliefert — Notfall-Fallback: Web-Slot
-            # bekommt den Proxy-Wert damit die Web-Row im UI nie leer ist.
-            # Source-Label markiert klar dass Web fehlschlug.
-            web_alt_obj = {
-                "method": "web_guidance",
-                "value": str(proxy_result.value),
-                "currency": proxy_result.currency,
-                "source": (
-                    f"Notfall-Fallback (Web-Recherche fehlte trotz Retry): "
-                    f"{proxy_result.source_name}"
-                ),
-                "fallback_from": "q_factor_proxy",
-            }
-        else:
-            # Auch Proxy fehlt — wirklich kein Wert moeglich. Sehr selten.
-            web_alt_obj = {
-                "method": "web_guidance",
-                "value": None,
-                "currency": None,
-                "source": None,
-                "error_reason": (
-                    "Web-Recherche und Q-Faktor-Proxy haben beide nichts geliefert. "
-                    "Vorjahres-AR pruefen ob FY[N-1]-Wert vorhanden ist."
-                ),
-            }
-        forecast_alternates = [proxy_alt, web_alt_obj]
-
-        if web_result is not None:
-            result = web_result
-        elif proxy_result is not None:
-            result = proxy_result
-        # else: result bleibt None — primary bleibt unangetastet (forecast_locked-Pfad)
-
     if result is None and not is_stammdaten:
-        # Universeller Fallback für historische FY-Werte (z.B. PDF leer, Non-US).
-        # Skip wenn Estimate-Branch oben schon Web-Recherche versucht hat —
-        # sonst doppelter Anthropic-Call ohne neuen Erkenntnis.
-        already_tried_web = is_running_fy and key in ESTIMABLE_KEYS
+        # Universeller Fallback fuer FY-Werte ohne Provider-Treffer:
+        # Web-Recherche (Claude+Gemini-Konsens). Greift sowohl bei historischen
+        # FY (Non-US ohne PDF-Treffer) als auch bei Estimates (laufendes FY).
         target_fy = effective_period_year if effective_period_year is not None else 0
-        if target_fy > 0 and not already_tried_web:
+        if target_fy > 0:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
 
-    # Forecast-Lock: primary numeric_value bleibt wie er war (Manual/PDF),
-    # aber alternates werden upgedatet damit das Tooltip-Drilldown frisch ist.
+    # Forecast-Lock: primary numeric_value bleibt wie er war (Manual/PDF).
     if forecast_locked and forecast_existing is not None:
-        if forecast_alternates:
-            forecast_existing.forecast_alternates = forecast_alternates
-            db.flush()
         updated.append(forecast_existing)
         return True
 
@@ -820,8 +644,6 @@ def _process_one_key(
     extras = result.extras or {}
     if extras.get("guidance_method") == "web_research":
         primary_method = "web_guidance"
-    elif extras.get("estimate_method") in ("flow_factor", "balance_snapshot", "fy_fallback"):
-        primary_method = "q_factor_proxy"
     else:
         primary_method = "provider"
 
@@ -857,11 +679,6 @@ def _process_one_key(
             target.numeric_value_adjusted = value_adjusted
             target.adjustments_note = (adjustments_note_val or "")[:4000] or None
             target.adjustments_source = (adjustments_source_val or "")[:2048] or None
-        # forecast_alternates nur überschreiben wenn dieser Run sie explizit
-        # berechnet hat (Estimate-Pfad). Sonst bleiben vorhandene Alternates
-        # erhalten — Provider-Pfad darf den Drilldown-Tooltip nicht clobbern.
-        if forecast_alternates is not None:
-            target.forecast_alternates = forecast_alternates
 
     try:
         if existing:
@@ -887,7 +704,6 @@ def _process_one_key(
             fetched_at=now,
             last_refresh_attempt=now,
             is_forecast=is_forecast_flag,
-            forecast_alternates=forecast_alternates,
             primary_method=primary_method,
         )
         try:

@@ -398,36 +398,18 @@ function getEstimateLockReason(
   av: FyAvailability | undefined,
   periodYear: number | undefined,
 ): EstimateLockReason {
-  // Estimate-Mode benoetigt:
-  //  1. FY[N-1]-Daten (Anker fuer Faktor)
-  //  2. Q-Reports im FY[N-1] (fuer apples-to-apples Vergleich)
-  //  3. Q-Reports im FY[N] (target) — sonst ist Same-Period-Match strukturell
-  //     unmoeglich und der Q-Faktor-Wert waere nur ein verkleideter "no-growth"-
-  //     Fallback. Lock zwingt User Q1/Q2/Q3-Report hochzuladen oder Web-Wert
-  //     zu nutzen.
-  // US-Filer: EDGAR/Yahoo liefern Q-Daten ohne PDF-Upload (quarter_years wird
-  // dort vom Backend automatisch gefuellt).
+  // Estimate-Mode benoetigt FY[N-1]-Daten als Anker (NI-Growth, Net-Debt-Change
+  // brauchen Vorjahres-Werte). Ohne Vorjahres-AR ist die Schaetzung blind.
+  // Q-Faktor wurde entfernt — keine Q-Report-Pflicht mehr.
   if (!av || periodYear === undefined) return null;
   if (av.is_us) return null;
   const prevYear = periodYear - 1;
   if (!av.fy_years_with_data.includes(prevYear)) return "missing_prev_fy_data";
-  if (!av.quarter_years.includes(prevYear)) return "missing_q_reports";
-  const inProgress = av.quarter_years_in_progress ?? [];
-  if (!av.quarter_years.includes(periodYear) && !inProgress.includes(periodYear)) {
-    return "missing_target_q_reports";
-  }
   return null;
 }
 
 function isEstimateLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
-  // Komplett-Lock (ganze Zeile) nur bei missing_prev_fy_data oder missing_q_reports.
-  // missing_target_q_reports → nur Q-Faktor-Cell sperren, Web-Recherche laeuft weiter.
-  const reason = getEstimateLockReason(av, periodYear);
-  return reason === "missing_prev_fy_data" || reason === "missing_q_reports";
-}
-
-function isQFactorCellLocked(av: FyAvailability | undefined, periodYear: number | undefined): boolean {
-  return getEstimateLockReason(av, periodYear) === "missing_target_q_reports";
+  return getEstimateLockReason(av, periodYear) === "missing_prev_fy_data";
 }
 
 function _escapeHtml(s: string): string {
@@ -1186,24 +1168,14 @@ export function CompanyDashboardPage() {
                   )];
                 }
 
-                // Estimate-Mode locked -> Lock-Row mit reason-spezifischer Message
+                // Estimate-Mode locked -> Lock-Row wenn FY[N-1]-Anker fehlt
                 if (estLocked) {
-                  const lockReason = getEstimateLockReason(av, period.year);
                   const targetYear = period.year ?? new Date().getFullYear();
                   const prevYear = targetYear - 1;
-                  const isMissingFy = lockReason === "missing_prev_fy_data";
-                  let action: string;
-                  let headline: string;
-                  let subline: string;
-                  if (isMissingFy) {
-                    action = "Annual Report fuer FY[N-1] hochladen";
-                    headline = `Estimate gesperrt — bitte Annual Report für FY${prevYear} hochladen`;
-                    subline = `Ohne FY${prevYear}-Basisdaten haben weder Q-Faktor noch Web-Recherche einen Anker für die Schätzung von FY${targetYear}.`;
-                  } else {
-                    action = "Quartalsberichte hochladen";
-                    headline = `Estimate gesperrt — bitte mindestens einen Quartalsbericht (Q1/Q2/Q3) für FY${prevYear} hochladen`;
-                    subline = "Die Q-Faktor-Methode braucht Vorjahres-Quartale für den apples-to-apples Vergleich. Ohne diese ist keine belastbare Schätzung möglich.";
-                  }
+                  const action = "Annual Report fuer FY[N-1] hochladen";
+                  const headline = `Estimate gesperrt — bitte Annual Report für FY${prevYear} hochladen`;
+                  const subline = `Ohne FY${prevYear}-Basisdaten hat die Web-Recherche keinen Anker für die Schätzung von FY${targetYear} (NI-Growth, Net-Debt-Change brauchen Vorjahres-Werte).`;
+                  const isMissingFy = true;
                   return [(
                     <tr key={`${company.id}-est-locked`} className="border-t-4 border-border bg-amber-50/70">
                       <td className="sticky left-0 z-10 whitespace-nowrap border-r bg-amber-50 px-3 py-3 align-middle">
@@ -1237,10 +1209,10 @@ export function CompanyDashboardPage() {
                   )];
                 }
 
-                // Estimate-Mode: immer dual-row Layout sobald nicht gelockt
-                // (auch wenn noch keine Werte da sind — User soll 'Werte berechnen'
-                // sehen, kein Recherchieren-Button pro Zelle).
-                const showDual = isEstimateMode;
+                // Q-Faktor entfernt — Estimate-Mode nutzt den normalen Single-Row-
+                // Pfad. Werte kommen aus Web-Recherche (Claude+Gemini) und/oder
+                // Q-PDF-Guidance, beides ueber den Standard-Cell-Renderer.
+                const showDual = false;
                 if (showDual) {
                   const faktor = buildVariantValues(cRows, cPrev, "faktor", valuationMode);
                   const web = buildVariantValues(cRows, cPrev, "web", valuationMode);

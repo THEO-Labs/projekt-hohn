@@ -89,7 +89,7 @@ class CompanyValue(Base):
     from_ir_pdf: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     forecast_alternates: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     # Explizites Methoden-Marker fuer das Frontend statt Source-Name-Heuristik:
-    # 'web_guidance' | 'q_factor_proxy' | 'pdf' | 'manual' | 'provider' | 'calculated'.
+    # 'web_guidance' | 'pdf' | 'manual' | 'provider' | 'calculated'.
     # Nullable damit alte Rows weiter funktionieren (Frontend hat Fallback auf
     # Source-Name-Match wenn primary_method=None ist).
     primary_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
