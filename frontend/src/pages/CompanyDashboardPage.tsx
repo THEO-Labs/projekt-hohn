@@ -695,9 +695,20 @@ export function CompanyDashboardPage() {
     });
   };
 
-  const handleRefreshCompany = async (c: Company) => {
-    const apiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
+  const handleRefreshCompany = async (c: Company, stammdatenOnly: boolean = false) => {
+    const allApiKeys = definitions.filter((d) => d.source_type === "API").map((d) => d.key);
+    // Stammdaten-Only ("Daily Numbers"): nur Live-API-Stammdaten-Keys
+    // (Market Cap, Stock Price, Shares Outstanding). Backend filtert
+    // zusaetzlich auf ALWAYS_CURRENT_KEYS — Frontend-Filter ist Optimierung
+    // um nicht alle Keys ueber den Wire zu schicken.
+    const stammdatenKeys = new Set(
+      definitions.filter((d) => d.category === "STAMMDATEN" && d.source_type === "API").map((d) => d.key)
+    );
+    const apiKeys = stammdatenOnly
+      ? allApiKeys.filter((k) => stammdatenKeys.has(k))
+      : allApiKeys;
     // Pre-Refresh-Warnung: zeig dem User welche Manual-Werte zerstoert werden.
+    // Bei Stammdaten-Only nur Stammdaten-Manuals warnen.
     const cRows = valuesMap.get(c.id) ?? [];
     const manualKeys = cRows
       .filter((r) => r.manually_overridden && apiKeys.includes(r.value_key))
@@ -715,7 +726,7 @@ export function CompanyDashboardPage() {
     }
     setRefreshStatuses((prev) => new Map(prev).set(c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }));
     try {
-      const updated = await refreshValues(c.id, apiKeys, period.value, period.year);
+      const updated = await refreshValues(c.id, apiKeys, period.value, period.year, stammdatenOnly);
       setValuesMap((prev) => {
         const next = new Map(prev);
         const existing = next.get(c.id) ?? [];
@@ -1224,6 +1235,12 @@ export function CompanyDashboardPage() {
                       const disabledReason = canCompute
                         ? null
                         : "Lade zuerst mindestens einen Annual Report hoch (Non-US-Firma).";
+                      // Im Estimate-Mode (laufendes FY) zeigen wir zwei Buttons:
+                      // 1) Vollberechnung mit Web-Recherche fuer Forecasts
+                      // 2) Nur Stammdaten (Live-MCap/Stock-Price) — taeglicher Quick-Refresh
+                      const isEstimateRow = period.value === "FY"
+                        && period.year !== undefined
+                        && period.year >= new Date().getFullYear();
                       return (
                         <div className="flex items-center gap-2">
                           <span>{company.name}</span>
@@ -1231,14 +1248,25 @@ export function CompanyDashboardPage() {
                             {company.ticker}
                           </span>
                           <button
-                            onClick={() => handleRefreshCompany(company)}
+                            onClick={() => handleRefreshCompany(company, false)}
                             disabled={isRunning || !canCompute}
-                            title={disabledReason ?? "Werte für diese Firma neu berechnen"}
+                            title={disabledReason ?? "Vollberechnung: alle Fundamentals via Web-Recherche neu holen (teuer, mehrere Minuten)"}
                             className="ml-1 inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/40 bg-primary/5 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-primary/5"
                           >
                             <RefreshCw className={`h-3 w-3 ${isRunning ? "animate-spin" : ""}`} />
-                            {isRunning ? "Berechnet…" : "Werte berechnen"}
+                            {isRunning ? "Berechnet…" : (isEstimateRow ? "Vollberechnung" : "Werte berechnen")}
                           </button>
+                          {isEstimateRow && (
+                            <button
+                              onClick={() => handleRefreshCompany(company, true)}
+                              disabled={isRunning || !canCompute}
+                              title="Daily Numbers: nur Live-Stammdaten (Market Cap, Stock Price, Shares) per API neu holen — schnell, keine Web-Recherche"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-emerald-600/40 bg-emerald-50 px-2 py-1 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-emerald-50"
+                            >
+                              <RefreshCw className={`h-3 w-3 ${isRunning ? "animate-spin" : ""}`} />
+                              Daily Numbers
+                            </button>
+                          )}
                         </div>
                       );
                     })()}
@@ -1372,12 +1400,13 @@ export function CompanyDashboardPage() {
                       const fyTierBg = fyTier ? TIER_BG[fyTier] : "";
                       const isStammdatenKey = d.category === "STAMMDATEN";
                       const showFyAsOf = isStammdatenKey && cv?.period_type === "FY" && cv?.period_year != null;
-                      // Try parsing as-of date from source_name (e.g. "Adj Close 30.09.2025") — most reliable
+                      // Try parsing as-of date from source_name (e.g. "Adj Close 30.09.2025") — most reliable.
+                      // Fallback: FY-Ende des Vorjahres (Stammdaten = Anker am letzten Tag von FY[N-1]).
                       const sourceDateMatch = cv?.source_name?.match(/(\d{2}\.\d{2}\.\d{4})/);
                       const fyAsOfBadge = showFyAsOf
                         ? (sourceDateMatch?.[1]
-                            ?? (company.fiscal_year_end_day && company.fiscal_year_end_month
-                                ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cv?.period_year}`
+                            ?? (company.fiscal_year_end_day && company.fiscal_year_end_month && cv?.period_year != null
+                                ? `${String(company.fiscal_year_end_day).padStart(2, "0")}.${String(company.fiscal_year_end_month).padStart(2, "0")}.${cv.period_year - 1}`
                                 : `FY${cv?.period_year}`))
                         : null;
                       // Partial-Hohn detect: if any required component for hohn_return_simple/detailed is missing
@@ -1618,8 +1647,13 @@ export function CompanyDashboardPage() {
             if (cv.period_type === "FY" && cv.period_year) {
               const m = tooltipCompany?.fiscal_year_end_month;
               const d = tooltipCompany?.fiscal_year_end_day;
+              // Stammdaten (mcap, stock, shares, mcap_calc) = Snapshot am
+              // letzten Tag von FY[N-1] (Backtest-Anker). Annual-Werte (NI,
+              // FCF, EBITDA …) decken die ganze Periode bis FY-Ende N ab.
+              const isStammdatenAnchor = def.category === "STAMMDATEN";
+              const yearToShow = isStammdatenAnchor ? cv.period_year - 1 : cv.period_year;
               if (m && d) {
-                return `${String(d).padStart(2, "0")}.${String(m).padStart(2, "0")}.${cv.period_year} (FY-Ende ${cv.period_year})`;
+                return `${String(d).padStart(2, "0")}.${String(m).padStart(2, "0")}.${yearToShow} (FY-Ende ${yearToShow})`;
               }
               return `FY ${cv.period_year}`;
             }

@@ -72,24 +72,8 @@ def research_value_gemini(
     if is_forward and period_year:
         forward_block = "\n\n" + FORWARD_YEAR_HINT.replace("{YEAR}", str(period_year))
 
+    # YoY-Korridor-Hint im Prompt entfernt (Sanity-Checks deaktiviert).
     anchor_block = ""
-    if is_forward and prev_fy_val is not None and value_key in _YOY_CAP_KEYS:
-        max_growth, max_shrink = _YOY_CAP_KEYS[value_key]
-        try:
-            prev_f = float(prev_fy_val)
-            anchor_block = (
-                f"\n\nFY{period_year - 1}-ANKER: Der zuletzt bekannte FY-Wert fuer "
-                f"{value_label} ist {prev_f:,.0f} {currency}. Deine FY{period_year}e-"
-                f"Schaetzung MUSS in einem plausiblen YoY-Korridor liegen: "
-                f"{prev_f * max_shrink:,.0f} bis {prev_f * max_growth:,.0f} {currency} "
-                f"(= {(max_shrink-1)*100:+.0f}% bis {(max_growth-1)*100:+.0f}% YoY). "
-                f"Werte ausserhalb werden serverseitig REJECTED — pruefe Konsens und "
-                f"Quelle nochmal. Wenn deine Quelle einen Sprung >+50% andeutet, "
-                f"zitiere die Management-Guidance/Earnings-Call wortwoertlich in "
-                f"BEGRUENDUNG."
-            )
-        except (ValueError, TypeError):
-            pass
 
     user_prompt = (
         f"{RESEARCH_PROMPT}\n\n---\n\n"

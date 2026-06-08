@@ -211,13 +211,12 @@ def _run_and_persist_calculations(
         previous_adj = _load_adjusted_map(_prev_rows)
 
         # Forecast-Year-Erkennung: wenn fuer dieses FY die Kern-Inputs als
-        # Forecast in DB stehen (z.B. net_income aus Web-Guidance), ueberlagern
-        # wir die VALUATION-Multiples (pe_ratio, ev_ebitda, fcf_yield) mit
-        # Werten aus dem Vorjahr (FY[N-1] = Ist-Werte). User-Anforderung:
-        # "im Estimate-Mode soll Bewertung den Stand FY[N-1] zeigen, nicht
-        # Forward-Multiple mit Forecast-NI".
-        # actual_return bleibt ausgenommen — der ist nur fuer abgeschlossene FY
-        # sinnvoll und braucht weiter den next_year_market_cap-Anker.
+        # Forecast in DB stehen (z.B. net_income aus Web-Guidance), nutzt die
+        # Engine den aktuellen Stammdaten-Snapshot fuer MCap.
+        # Trailing-Bewertung (FY[N-1]-Multiples im Estimate-Mode) entfernt —
+        # User-Anforderung: auf der Estimates-Seite immer die aktuellen
+        # Stammdaten (Live-Snapshot) nutzen, nicht historische FY-1-Werte.
+        # → PE/EV-EBITDA/FCF-Yield sind jetzt Forward-Multiples mit Live-MCap.
         _fc_keys = ("net_income", "ebitda", "fcf", "net_debt", "market_cap")
         _has_actual = {
             k: any(r.value_key == k and not r.is_forecast and r.numeric_value is not None for r in current_rows)
@@ -237,63 +236,6 @@ def _run_and_persist_calculations(
         )
 
         allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
-        if is_forecast_year and previous:
-            # Trailing-Bewertung: prev-Werte + prev-MCap (FY[N-1]-Ende = current.market_cap = FY[N]-Anker)
-            # Stock-Split-Sanity analog engine.calculate_fy: bei Faktor 2+
-            # Abweichung Yahoo bevorzugen (z.B. ServiceNow 5-for-1 Split 2025).
-            _calc = previous.get("market_cap_calc")
-            _yh = previous.get("market_cap")
-            if _calc is not None and _yh is not None and _yh != 0:
-                _ratio = _calc / _yh
-                prev_mcap = _yh if (_ratio < Decimal("0.5") or _ratio > Decimal("2.0")) else _calc
-            else:
-                prev_mcap = _calc or _yh
-            prev_ni = previous.get("net_income")
-            prev_ebitda = previous.get("ebitda")
-            prev_net_debt = previous.get("net_debt")
-            prev_fcf = previous.get("fcf")
-            # Adjusted-Variante fuer FY[N-1]: aus _load_adjusted_map (kommt
-            # weiter unten — daher hier inline berechnen).
-            prev_ni_adj = previous_adj.get("net_income") if previous_adj.get("net_income") is not None else prev_ni
-            prev_ebitda_adj = previous_adj.get("ebitda") if previous_adj.get("ebitda") is not None else prev_ebitda
-            prev_fcf_adj = previous_adj.get("fcf") if previous_adj.get("fcf") is not None else prev_fcf
-            valuation_trailing: dict[str, Decimal | None] = {
-                "pe_ratio": None,
-                "ev_ebitda": None,
-                "fcf_yield": None,
-            }
-            valuation_trailing_adj: dict[str, Decimal | None] = {
-                "pe_ratio": None,
-                "ev_ebitda": None,
-                "fcf_yield": None,
-            }
-            if prev_mcap is not None and prev_ni is not None and prev_ni > 0:
-                valuation_trailing["pe_ratio"] = prev_mcap / prev_ni
-            if prev_mcap is not None and prev_ni_adj is not None and prev_ni_adj > 0:
-                valuation_trailing_adj["pe_ratio"] = prev_mcap / prev_ni_adj
-            if prev_mcap is not None and prev_ebitda is not None and prev_ebitda > 0:
-                ev = prev_mcap + (prev_net_debt if prev_net_debt is not None else Decimal("0"))
-                valuation_trailing["ev_ebitda"] = ev / prev_ebitda
-            if prev_mcap is not None and prev_ebitda_adj is not None and prev_ebitda_adj > 0:
-                ev = prev_mcap + (prev_net_debt if prev_net_debt is not None else Decimal("0"))
-                valuation_trailing_adj["ev_ebitda"] = ev / prev_ebitda_adj
-            if prev_mcap is not None and prev_fcf is not None and prev_mcap != 0:
-                valuation_trailing["fcf_yield"] = prev_fcf / prev_mcap * Decimal("100")
-            if prev_mcap is not None and prev_fcf_adj is not None and prev_mcap != 0:
-                valuation_trailing_adj["fcf_yield"] = prev_fcf_adj / prev_mcap * Decimal("100")
-            valuation_keys = {"pe_ratio", "ev_ebitda", "fcf_yield"}
-            updated += _persist_calc_results(
-                db, company_id, "FY", period_year,
-                current_rows, valuation_trailing, valuation_keys, company_currency,
-                source_name_override=f"Bewertung Stand FY{period_year - 1} (Trailing — Forecast-Year hat keinen Ist-Basis)",
-                is_forecast_override=True,
-                calc_results_adjusted=valuation_trailing_adj,
-            )
-            # WICHTIG: VALUATION-Keys aus dem nachfolgenden fy_calc-Persist
-            # ausschliessen, sonst wuerde der zweite _persist_calc_results-Call
-            # die gerade gespeicherten Trailing-Werte mit Forward-Multiples
-            # (oder None) ueberschreiben. allowed_fy_keys ohne valuation_keys.
-            allowed_fy_keys = allowed_fy_keys - valuation_keys
 
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
@@ -497,19 +439,34 @@ def _process_one_key(
     pre_existing = forecast_existing if is_running_fy else actuals_existing
     result = None
 
-    # PDF-Guidance / Manual-Override für Forecast: primary numeric_value
-    # bleibt unangetastet (User-Wahl/PDF respektieren).
-    forecast_locked = bool(
-        forecast_existing
-        and (forecast_existing.manually_overridden
-             or (forecast_existing.from_ir_pdf and forecast_existing.numeric_value is not None))
+    # Manual-Override bleibt Hard-Lock — User-Eingabe wird nie automatisch
+    # ueberschrieben.
+    forecast_locked = bool(forecast_existing and forecast_existing.manually_overridden)
+
+    # PDF-Guidance-Challenge: PDF-Wert ist nicht mehr Hard-Lock. Web-Recherche
+    # laeuft auch wenn PDF-Wert da ist; bei Divergenz > PDF_GUIDANCE_CHALLENGE_THRESHOLD
+    # uebernimmt der Web-Wert (Quartals-Guidance kann veralten, z.B. nach
+    # neueren Management-Aussagen, Pre-Announcements oder geupdateten Analyst-
+    # Konsens-Werten zwischen Q-Reports).
+    pdf_guidance_value: Decimal | None = (
+        forecast_existing.numeric_value
+        if (
+            forecast_existing
+            and forecast_existing.from_ir_pdf
+            and forecast_existing.numeric_value is not None
+            and not forecast_existing.manually_overridden
+        )
+        else None
     )
+    PDF_GUIDANCE_CHALLENGE_THRESHOLD = Decimal("0.15")
 
     # Fallback-Kette pro Cell:
-    #   1. Provider-Chain (EDGAR/Yahoo) — schnell wenn US oder Stammdaten
+    #   1. Provider-Chain (EDGAR/Yahoo) — fuer Stammdaten und ABGESCHLOSSENE FY
+    #      (US-Filer). EDGAR liefert keine Forward-Forecasts → bei
+    #      is_running_fy=True (Estimate-Mode) explizit ueberspringen.
     #   2. Web-Recherche (Claude+Gemini-Konsens) als universeller Fallback fuer
     #      FY-Werte ohne Provider-Quelle (Non-US, oder Estimate-Mode).
-    if is_stammdaten or is_us_company(company):
+    if is_stammdaten or (is_us_company(company) and not is_running_fy):
         result = _try_providers(
             ticker, key, payload,
             getattr(company, "fiscal_year_end_month", None),
@@ -578,10 +535,60 @@ def _process_one_key(
         if target_fy > 0:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
 
-    # Forecast-Lock: primary numeric_value bleibt wie er war (Manual/PDF).
+    # Forecast-Lock: nur Manual-Override blockiert ein automatisches Update.
     if forecast_locked and forecast_existing is not None:
         updated.append(forecast_existing)
         return True
+
+    # PDF-Guidance-Challenge: PDF-Wert hatte den Slot besetzt, Web-Recherche
+    # hat einen Vergleichswert geliefert. Bei kleiner Abweichung (< Threshold)
+    # PDF behalten — Q-Guidance ist erstmal authoritativ. Bei groesserer
+    # Abweichung Web uebernehmen — Quartals-Guidance wurde durch neuere
+    # Aussagen ueberholt.
+    if (
+        pdf_guidance_value is not None
+        and result is not None
+        and isinstance(result.value, Decimal)
+        and forecast_existing is not None
+    ):
+        try:
+            pdf_abs = abs(pdf_guidance_value)
+            web_val = result.value
+            web_abs = abs(web_val)
+            if pdf_abs > 0:
+                diff = abs(web_abs - pdf_abs) / pdf_abs
+                if diff < PDF_GUIDANCE_CHALLENGE_THRESHOLD:
+                    logger.info(
+                        "PDF-Guidance-Challenge %s/%s/%s: Web=%s bestaetigt PDF=%s "
+                        "(Abweichung %.1f%% < %.0f%%) — PDF-Wert bleibt",
+                        ticker, key, effective_period_year, web_val, pdf_guidance_value,
+                        float(diff) * 100, float(PDF_GUIDANCE_CHALLENGE_THRESHOLD) * 100,
+                    )
+                    forecast_existing.last_refresh_attempt = datetime.now(timezone.utc)
+                    db.flush()
+                    updated.append(forecast_existing)
+                    return True
+                # Divergenz: Web uebernimmt. Source-Name kennzeichnet die Update-Geschichte.
+                logger.info(
+                    "PDF-Guidance-Challenge %s/%s/%s: Web=%s weicht von PDF=%s ab "
+                    "(%.1f%% >= %.0f%%) — Web-Wert uebernehmen",
+                    ticker, key, effective_period_year, web_val, pdf_guidance_value,
+                    float(diff) * 100, float(PDF_GUIDANCE_CHALLENGE_THRESHOLD) * 100,
+                )
+                from app.providers.base import ProviderResult as _PR
+                pdf_src_short = (forecast_existing.source_name or "PDF-Guidance")[:80]
+                result = _PR(
+                    value=result.value,
+                    source_name=f"PDF-Guidance ueberholt ({pdf_src_short}) -> {result.source_name}",
+                    source_link=result.source_link,
+                    currency=result.currency,
+                    extras=result.extras,
+                )
+        except Exception as e:
+            logger.warning(
+                "PDF-Guidance-Challenge %s/%s/%s failed (%s) — Web-Wert nimmt PDF-Slot ohne Vergleich",
+                ticker, key, effective_period_year, e,
+            )
 
     if result is None:
         # Refresh hat nichts geliefert. Aber: wir markieren die last_refresh_attempt
@@ -859,21 +866,22 @@ def _fetch_and_store_historical_mcap(
     if result is None or not isinstance(result.value, Decimal):
         return
 
-    # The actual close picked by Yahoo is the last trading day on-or-before
-    # (anchor_year, fy_month, fy_day). Economically that close = price the
-    # investor saw at start of the next trading day, i.e. day-1 of FY=period_year.
-    # We display that day-1 date in the source label so the UI reads cleanly.
-    from datetime import date as _date, timedelta as _td
+    # Bloomberg-Close = last trading day on-or-before (anchor_year, fy_month, fy_day).
+    # Konvention: Stammdaten der FY-Row[N] = Snapshot am letzten Tag von FY[N-1]
+    # ("FY-Ende N-1"). Wirtschaftlich = Anfang FY[N] (gleicher Trading-Tag).
+    # Label-Format einheitlich "FY-Ende {N-1} = DD.MM.YYYY" — damit alle 4
+    # Stammdaten-Felder (mcap, stock, shares, mcap_calc) identisches Datum-Tag im UI zeigen.
+    from datetime import date as _date
     try:
-        fy_start_label = (_date(anchor_year, fy_month, fy_day) + _td(days=1)).strftime("%d.%m.%Y")
+        fy_end_label = _date(anchor_year, fy_month, fy_day).strftime("%d.%m.%Y")
     except ValueError:
-        fy_start_label = f"01.01.{period_year}"
+        fy_end_label = f"31.12.{anchor_year}"
     extras = getattr(result, "extras", None) or {}
     stock_price = extras.get("stock_price") if isinstance(extras, dict) else None
     shares = extras.get("shares_outstanding") if isinstance(extras, dict) else None
     shares_source = extras.get("shares_source") if isinstance(extras, dict) else None
     shares_label = shares_source or "current Shares"
-    anchor_note = f"Anfang FY{period_year} = {fy_start_label}"
+    anchor_note = f"FY-Ende {anchor_year} = {fy_end_label}"
 
     _upsert_fy_value(db, company_id, "market_cap", period_year, result.value,
                      f"Bloomberg (Close {anchor_note} × {shares_label})", None, result.currency)
@@ -962,9 +970,17 @@ def refresh_company_values(
                 db.flush()
     updated = []
 
-    start_job(company_id, len(payload.keys))
+    # Stammdaten-Only-Modus: nur die Live-API-Stammdaten-Keys refreshen
+    # (Market Cap, Stock Price, Shares Outstanding) — kein FY-Fundamental-
+    # Web-Research. "Daily Numbers"-Button im UI.
+    if payload.stammdaten_only:
+        effective_keys = [k for k in payload.keys if k in ALWAYS_CURRENT_KEYS]
+    else:
+        effective_keys = payload.keys
+
+    start_job(company_id, len(effective_keys))
     try:
-        for key in payload.keys:
+        for key in effective_keys:
             update_job(company_id, key)
             try:
                 wrote = _process_one_key(
@@ -984,7 +1000,9 @@ def refresh_company_values(
 
         db.commit()
 
-        if payload.period_type == "FY" and payload.period_year is not None:
+        # Bei Stammdaten-Only: kein historisches MCap-Fetch, kein Prev-Year-
+        # Refresh — die haben mit den taeglichen Live-Werten nichts zu tun.
+        if not payload.stammdaten_only and payload.period_type == "FY" and payload.period_year is not None:
             from datetime import date
             current_calendar_year = date.today().year
             if payload.period_year < current_calendar_year:
@@ -996,6 +1014,9 @@ def refresh_company_values(
             _ensure_previous_year_inputs(db, ticker, company, company_id, payload.period_year)
             db.commit()
 
+        # Calculations laufen IMMER — auch bei Stammdaten-Only, damit
+        # market_cap_calc + abhaengige Multiples (PE, EV/EBITDA, FCF-Yield)
+        # mit den neuen Live-Stammdaten neu berechnet werden.
         set_phase(company_id, "calculating", "Berechnete Werte aktualisieren")
         _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
         db.commit()

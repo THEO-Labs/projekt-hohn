@@ -57,6 +57,10 @@ class RefreshRequest(BaseModel):
     keys: list[str]
     period_type: str = "FY"
     period_year: int | None = None
+    # True = nur Stammdaten-Keys (Live-Snapshot via API) refreshen, kein
+    # FY-Fundamental-Web-Research. Use-Case: "Daily Numbers"-Button — User
+    # will MCap/Stock-Price tagesaktuell ohne teure Web-Recherche.
+    stammdaten_only: bool = False
 
 
 class OverrideRequest(BaseModel):

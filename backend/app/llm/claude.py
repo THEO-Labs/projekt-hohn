@@ -146,12 +146,6 @@ A. **Sektor-Pflicht zuerst checken**: Bevor du irgendeine Zahl ableitest,
    Premium-/Deposit-Inflows als 'Free' Cash zählen die in Anlage-Assets oder
    Reserve-Accounts gebunden sind. NUTZE die Equivalent-Definitionen unten.
 
-B. **Konsens-Sanity**: Forward-Year-Schätzungen für Net Income, FCF, SBC, Buyback,
-   Dividends sollten **nicht mehr als +50% YoY** über FY[N-1]-Istwert liegen
-   (außer es gibt eine konkrete Management-Guidance die eine starke Erhöhung
-   ankündigt — dann musst du das in BEGRUENDUNG explizit zitieren). Wenn deine
-   Schätzung über 1,5× FY[N-1] liegt: STOP, prüfe Quelle nochmal.
-
 C. **Konsistenz Output ↔ Begründung**: Wenn du in BEGRUENDUNG rechnest "EPS €X ×
    Aktien Y = Z" oder "FY[N-1] × Wachstumsrate = Z", dann MUSS dein WERT das
    Z sein (±2% Rundung erlaubt). Inkonsistenz = ungültige Antwort.
@@ -382,56 +376,8 @@ _LIKELY_CURRENCY_KEYS = frozenset({
 
 
 def detect_calculation_inconsistency(value: Decimal, content: str) -> str | None:
-    """Sucht in Claude-Output nach 'X × Y = Z' / 'X * Y = Z' / 'Resultat: Z'-Pattern
-    und prueft ob Z mit dem ausgegebenen WERT konsistent ist.
-
-    Returns: error-message wenn Inkonsistenz >5% gefunden wurde (Caller koennte
-    retry triggern), sonst None (alles plausibel).
-    """
-    if not content or value == 0:
-        return None
-    try:
-        wert = float(value)
-    except (ValueError, OverflowError):
-        return None
-    # Kandidaten-Resultate aus Multiplikations-/Divisions-/Resultat-Patterns
-    # extrahieren. Wir suchen nach Zahlen mit Einheits-Suffix (Mio/Mrd/Mio EUR/etc).
-    candidates: list[float] = []
-    for pat in (
-        r"=\s*\*?\*?[\$€£]?\s*([\d.,]+)\s*(Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?",
-        r"(?:Resultat|Ergebnis|Endergebnis|Total)\s*[:=]\s*\*?\*?[\$€£]?\s*([\d.,]+)\s*(Mrd|Milliarden|Mio|Millionen|billion|million|[BMK])\.?",
-    ):
-        for m in re.finditer(pat, content, re.IGNORECASE):
-            raw_num = m.group(1).replace(".", "").replace(",", ".") if m.group(1).count(",") == 1 else m.group(1).replace(",", "")
-            try:
-                num = float(raw_num)
-            except ValueError:
-                continue
-            unit = (m.group(2) or "").lower()
-            if unit in ("mrd", "milliarden", "billion", "b"):
-                num *= 1_000_000_000
-            elif unit in ("mio", "millionen", "million", "m"):
-                num *= 1_000_000
-            elif unit == "k":
-                num *= 1_000
-            if num > 1_000_000:  # nur konzern-skalige Zahlen
-                candidates.append(num)
-    if not candidates:
-        return None
-    # Best-Match: die nachvollziehbarste Berechnung ist die mit kleinster Diff
-    # zu WERT — wenn aber selbst die best-match >5% abweicht, ist die
-    # Begruendung inkonsistent.
-    diffs = [abs(c - abs(wert)) / max(abs(wert), 1.0) for c in candidates]
-    best_diff = min(diffs)
-    if best_diff > 0.05:
-        # Mindestens ein Result-Kandidat existiert aber alle weichen >5% ab.
-        # Das deutet auf inkonsistente Begruendung hin.
-        best_candidate = candidates[diffs.index(best_diff)]
-        return (
-            f"Begruendung enthaelt Berechnung mit Resultat ~{best_candidate:,.0f} aber "
-            f"WERT={wert:,.0f} — Abweichung {best_diff*100:.1f}%. Begruendung muss "
-            f"rechnerisch zum Output passen."
-        )
+    """Self-Consistency-Check deaktiviert (Kunden-Anforderung).
+    Funktion bleibt als Pass-Through erhalten, damit Caller-Signatur unveraendert ist."""
     return None
 
 
@@ -538,95 +484,9 @@ def validate_claude_value(
     prev_fy_val: Decimal | None = None,
     is_forward_year: bool = False,
 ) -> Decimal | None:
-    """Range-Check für Claude-Werte. None wenn ausserhalb plausibler Range
-    oder wenn die unit-heuristik anschlaegt (Currency-Wert verdaechtig klein
-    -> Claude hat vermutlich Mio/Mrd vergessen).
-
-    prev_fy_val (optional): wenn vorhanden, machen wir mehrere Cross-Checks:
-      - Currency-Mismatch via Größenordnungs-Ratio (>100x oder <0.01x → reject).
-      - YoY-Cap fuer Forward-Year: pro Key max plausibles Wachstum/Schrumpfen.
-        Hard-Reject wenn ueberschritten (Konsens-Sanity).
-    """
-    limits = _CLAUDE_SANITY_CHECKS.get(key)
-    if limits is None:
-        return value
-    lo, hi = limits
-    try:
-        fval = float(value)
-    except (ValueError, OverflowError):
-        logger.warning("Claude value sanity: cannot convert value for key=%s, dropping", key)
-        return None
-    if fval < lo or fval > hi:
-        logger.warning(
-            "Claude value sanity failed for key=%s: value=%s out of range [%s, %s], dropping",
-            key, value, lo, hi,
-        )
-        return None
-    if detect_unit_error(key, value):
-        logger.warning(
-            "Claude value sanity: %s=%s suspicious klein (Unit-Verwechslung Mio/Mrd?) — dropping",
-            key, value,
-        )
-        return None
-    # Currency/Unit-Cross-Check via FY[N-1]: Wert sollte in Groessenordnung
-    # liegen. 100x Diff = wahrscheinlich Currency-Mismatch (INR vs EUR ~80x,
-    # JPY vs USD ~150x), 0.01x Diff = umgekehrt. Mind. 1M-Schwelle damit
-    # 0-Vergleiche oder Mikro-Werte das nicht triggern.
-    if prev_fy_val is not None and key in _LIKELY_CURRENCY_KEYS:
-        try:
-            prev_abs = abs(float(prev_fy_val))
-            curr_abs = abs(fval)
-            if prev_abs > 1_000_000 and curr_abs > 1_000_000:
-                ratio = max(curr_abs / prev_abs, prev_abs / curr_abs)
-                if ratio > 100:
-                    logger.warning(
-                        "Claude value sanity: %s=%s vs prev_fy=%s ratio %.1fx — "
-                        "Currency-Mismatch verdaechtig (z.B. INR statt EUR), dropping",
-                        key, value, prev_fy_val, ratio,
-                    )
-                    return None
-            # YoY-Cap fuer Forward-Year: Konsens-Sanity. Per-Key plausible
-            # Range fuer YoY-Aenderung. Net Debt ausgenommen (Sign-Swings sind
-            # legitim z.B. Net Cash → Net Debt nach grosser Akquisition).
-            if is_forward_year and key in _YOY_CAP_KEYS and prev_abs > 1_000_000:
-                max_growth, max_shrink = _YOY_CAP_KEYS[key]
-                # Vorzeichen-Aware: bei gleichem Vorzeichen pruefen wir die
-                # absolute Skalierung. Bei verschiedenen Vorzeichen
-                # (z.B. NI von Verlust → Profit) gilt der Cap nicht.
-                if (fval * float(prev_fy_val)) > 0:
-                    growth_factor = curr_abs / prev_abs
-                    if growth_factor > max_growth:
-                        logger.warning(
-                            "Claude YoY-Cap %s: forward=%s vs prev_fy=%s growth=%.2fx "
-                            "(max %.2fx) — vermutlich zu optimistisch / Konsens-Drift, "
-                            "dropping fuer Retry",
-                            key, value, prev_fy_val, growth_factor, max_growth,
-                        )
-                        return None
-                    if growth_factor < max_shrink:
-                        logger.warning(
-                            "Claude YoY-Cap %s: forward=%s vs prev_fy=%s shrink=%.2fx "
-                            "(min %.2fx) — vermutlich zu pessimistisch, dropping",
-                            key, value, prev_fy_val, growth_factor, max_shrink,
-                        )
-                        return None
-        except (ValueError, OverflowError):
-            pass
-    if fval == 0:
-        if key == "sbc":
-            # SBC=0 ist bei boersennotierten Firmen praktisch nie korrekt
-            # (selbst Versicherer/Banken haben Personnel-share-based payments).
-            # Reject damit der Retry-Mechanismus eine echte Schaetzung erzwingt.
-            logger.warning(
-                "Claude value: sbc=0 — bei boersennotierten Firmen praktisch nie korrekt. "
-                "Reject damit Retry eine echte Approximation erzwingt."
-            )
-            return None
-        if key in ("buyback_volume", "dividends", "net_income", "fcf"):
-            logger.info(
-                "Claude value: %s=0 — kann legitim sein (Firma zahlt z.B. keine Dividende) "
-                "oder ein Default-Fallback. Source-Name pruefen.", key,
-            )
+    """Sanity-Checks deaktiviert (Kunden-Anforderung): keine Range/Unit/YoY-Cap/
+    Currency-Cross-Rejects mehr. Funktion bleibt als Pass-Through erhalten,
+    damit Caller-Signatur unveraendert ist."""
     return value
 
 
@@ -734,26 +594,8 @@ def research_value(
             f"WERT: 0 nur wenn deine Approximation tatsächlich 0 ergibt. NIE als Fallback."
         )
 
-    # Konsens-Sanity-Hint: prev_fy_val als Anker im Prompt benennen damit Claude
-    # weiss welcher YoY-Cap gilt. Reduziert Konsens-Drift bei Forward-Forecasts.
+    # YoY-Korridor-Hint im Prompt entfernt (Sanity-Checks deaktiviert).
     anchor_block = ""
-    if is_forward and prev_fy_val is not None and value_key in _YOY_CAP_KEYS:
-        max_growth, max_shrink = _YOY_CAP_KEYS[value_key]
-        try:
-            prev_f = float(prev_fy_val)
-            anchor_block = (
-                f"\n\nFY{period_year - 1}-ANKER: Der zuletzt bekannte FY-Wert fuer "
-                f"{value_label} ist {prev_f:,.0f} {currency}. Deine FY{period_year}e-"
-                f"Schaetzung MUSS in einem plausiblen YoY-Korridor liegen: "
-                f"{prev_f * max_shrink:,.0f} bis {prev_f * max_growth:,.0f} {currency} "
-                f"(= {(max_shrink-1)*100:+.0f}% bis {(max_growth-1)*100:+.0f}% YoY). "
-                f"Werte ausserhalb werden serverseitig REJECTED — pruefe Konsens und "
-                f"Quelle nochmal. Wenn deine Quelle einen Sprung >+50% andeutet, "
-                f"zitiere die Management-Guidance/Earnings-Call wortwoertlich in "
-                f"BEGRUENDUNG."
-            )
-        except (ValueError, TypeError):
-            pass
 
     user_prompt = (
         f"Unternehmen: {company_name} ({ticker}, {currency})\n"

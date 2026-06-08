@@ -82,13 +82,13 @@ def calculate_fy(
     # ist retroaktiv split-adjustiert, PDF-Shares aus aelteren AR-Reports sind
     # NICHT). In dem Fall Yahoo market_cap nehmen (split-konsistent).
     #
-    # Bei laufendem FY (Estimate-Mode): aktuelle MCap (SNAPSHOT, heute) statt
-    # 01.01.-FY-Anker. Anker bleibt nur fuer abgeschlossene FYs relevant
-    # (Performance-Berechnungen). Kunden-Anforderung: laufende H-Return soll
-    # auf "Preis den ich heute zahlen muesste" basieren.
+    # Bei laufendem FY (Estimate-Mode): IMMER aktuelle Stammdaten (Live-
+    # Snapshot, heute) — kein Fallback auf FY-Anker. Kunden-Anforderung:
+    # Estimates-Berechnungen mit dem Wert, der in den Stammdaten-Zellen liegt.
+    # Bei abgeschlossenem FY: FY-Anker (Anfang FY = Ende FY-1), Fallback Snapshot.
     if is_running_fy:
-        mcap_calc = stammdaten.get("market_cap_calc") or current.get("market_cap_calc")
-        mcap_yahoo = stammdaten.get("market_cap") or current.get("market_cap")
+        mcap_calc = stammdaten.get("market_cap_calc")
+        mcap_yahoo = stammdaten.get("market_cap")
     else:
         mcap_calc = current.get("market_cap_calc") or stammdaten.get("market_cap_calc")
         mcap_yahoo = current.get("market_cap") or stammdaten.get("market_cap")

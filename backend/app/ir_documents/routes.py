@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -45,6 +46,132 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     if not portfolio or portfolio.owner_user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return company
+
+
+def _pre_extraction_edgar_sweep(
+    db: Session,
+    doc: IRDocument,
+    company: Company,
+) -> dict[str, dict]:
+    """EDGAR-first fuer FY-Annual-Reports von US-Filern.
+
+    Zieht vor der PDF-Extraktion alle EDGAR-supported Keys direkt aus den
+    SEC-XBRL-Company-Facts (10-K/20-F). Bei Treffer wird CompanyValue mit
+    source_name='SEC EDGAR ...' und from_ir_pdf=False persistiert.
+
+    Provider-Chain abgeschlossene FY:  EDGAR -> PDF -> Claude.
+    Provider-Chain Estimates (Q-PDF):  PDF -> Claude (kein EDGAR fuer Forecasts).
+
+    Quartals-PDFs / non-US-Filer: no-op (EdgarProvider.fetch returnt None bei
+    period_type!=FY oder unbekanntem CIK) — der PDF->Claude-Flow laeuft
+    unveraendert weiter.
+
+    Returns: dict {key: {value, source, currency, from_edgar}} der gefuellten
+    Keys, das vom Caller in das extraction_results-JSON gemerged wird und im
+    PDF-Persist-Loop als Skip-Marker dient (EDGAR > PDF-Override).
+    """
+    edgar_hits: dict[str, dict] = {}
+    period_type = doc.period_coverage.value
+    period_year = doc.period_year
+    if period_type != "FY":
+        return edgar_hits
+
+    from app.ir_documents.extraction import EXTRACTION_KEYS
+    from app.providers.edgar import EdgarProvider
+    from app.values.currency_keys import CURRENCY_KEYS
+
+    edgar = EdgarProvider()
+    if edgar._get_cik(company.ticker) is None:
+        logger.info("EDGAR-Pre-Sweep skip %s — kein EDGAR-CIK (non-US-Filer)",
+                    company.ticker)
+        return edgar_hits
+
+    fy_em = company.fiscal_year_end_month
+    fy_ed = company.fiscal_year_end_day
+    is_annual_report = doc.document_type.value in (
+        "ANNUAL_REPORT", "FORM_10K", "FORM_20F",
+    )
+    now = datetime.now(timezone.utc)
+
+    for key, _hint in EXTRACTION_KEYS:
+        if key not in edgar.supported_keys:
+            continue
+        try:
+            result = edgar.fetch(
+                ticker=company.ticker,
+                key=key,
+                period_type="FY",
+                period_year=period_year,
+                fy_end_month=fy_em,
+                fy_end_day=fy_ed,
+            )
+        except Exception as e:
+            logger.warning("EDGAR-Pre-Sweep %s/%s/%d failed: %s",
+                           company.ticker, key, period_year, e)
+            continue
+        if result is None or result.value is None:
+            continue
+
+        target_py = period_year + 1 if (
+            key == "shares_outstanding" and is_annual_report
+        ) else period_year
+
+        existing = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company.id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == target_py,
+                CompanyValue.is_forecast.is_(False),
+            )
+            .one_or_none()
+        )
+        if existing and existing.manually_overridden:
+            continue
+        currency = company.currency if key in CURRENCY_KEYS else None
+        val = result.value if isinstance(result.value, Decimal) else Decimal(str(result.value))
+        try:
+            with db.begin_nested():
+                if existing:
+                    existing.numeric_value = val
+                    existing.source_name = result.source_name[:1900]
+                    existing.source_link = result.source_link
+                    existing.currency = currency or existing.currency
+                    existing.fetched_at = now
+                    existing.from_ir_pdf = False
+                else:
+                    db.add(CompanyValue(
+                        id=uuid4(),
+                        company_id=company.id,
+                        value_key=key,
+                        period_type="FY",
+                        period_year=target_py,
+                        numeric_value=val,
+                        source_name=result.source_name[:1900],
+                        source_link=result.source_link,
+                        currency=currency,
+                        fetched_at=now,
+                        from_ir_pdf=False,
+                    ))
+                    db.flush()
+            edgar_hits[key] = {
+                "value": str(val),
+                "source": result.source_name,
+                "currency": currency,
+                "from_edgar": True,
+            }
+        except IntegrityError as ie:
+            logger.warning("EDGAR-Pre-Sweep %s/%s/%d IntegrityError: %s",
+                           company.ticker, key, period_year, str(ie)[:120])
+            continue
+
+    if edgar_hits:
+        db.commit()
+        logger.info("EDGAR-Pre-Sweep filled %d keys for %s/FY%d: %s",
+                    len(edgar_hits), company.ticker, period_year,
+                    list(edgar_hits.keys()))
+    return edgar_hits
 
 
 def _post_extraction_web_fallback(
@@ -108,9 +235,10 @@ def _post_extraction_web_fallback(
         vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
         if vd is None or vd.source_type != SourceType.API:
             continue
-        # Idempotenz: wenn vorher schon ein Web-Wert geschrieben wurde
-        # (source_name beginnt mit 'PDF leer'), nicht erneut Claude triggern
-        # bei Re-Extraktion. Spart Cost bei iterativen User-Tests.
+        # Idempotenz: wenn vorher schon ein Non-PDF-Wert geschrieben wurde —
+        # EDGAR-Pre-Sweep ('SEC EDGAR ...') oder fruehere Web-Recherche
+        # ('PDF leer ...') — nicht erneut Claude triggern bei Re-Extraktion.
+        # Spart Cost bei iterativen User-Tests und respektiert EDGAR > Claude.
         existing_web = (
             db.query(CompanyValue)
             .filter(
@@ -121,18 +249,23 @@ def _post_extraction_web_fallback(
                 CompanyValue.is_forecast.is_(False),
                 CompanyValue.from_ir_pdf.is_(False),
                 CompanyValue.numeric_value.isnot(None),
-                CompanyValue.source_name.like("PDF leer%"),
+                or_(
+                    CompanyValue.source_name.like("PDF leer%"),
+                    CompanyValue.source_name.like("SEC EDGAR%"),
+                ),
             )
             .one_or_none()
         )
         if existing_web is not None:
-            # Skip nur wenn der existing Web-Wert auch alle Adjusted-Felder
+            # Skip nur wenn der existing Wert auch alle Adjusted-Felder
             # abdeckt (oder Key kein Adjusted braucht). Sonst Claude erneut
-            # rufen damit Adjusted nachgeholt wird.
+            # rufen damit Adjusted nachgeholt wird — EDGAR kann kein Adjusted.
             adj_complete = (key not in ADJUSTED_RELEVANT) or (existing_web.numeric_value_adjusted is not None)
             if adj_complete:
-                logger.info("Web-fallback %s/%s/%s/%s: skip Claude-Call — schon ein Web-Fallback-Wert vorhanden (%s), aber merge in extraction_results",
-                            company.ticker, key, period_type, period_year, existing_web.numeric_value)
+                logger.info("Web-fallback %s/%s/%s/%s: skip Claude-Call — schon Pre-fill (%s, Quelle: %s)",
+                            company.ticker, key, period_type, period_year,
+                            existing_web.numeric_value,
+                            (existing_web.source_name or "")[:60])
                 fallback_results[key] = {
                     "value": str(existing_web.numeric_value),
                     "value_adjusted": str(existing_web.numeric_value_adjusted) if existing_web.numeric_value_adjusted is not None else None,
@@ -206,19 +339,20 @@ def _post_extraction_web_fallback(
         try:
             with db.begin_nested():
                 if existing:
-                    # ADJUSTED-ONLY-MODUS: PDF lieferte Reported (existing.numeric_value
-                    # ist da), wir holen nur Adjusted nach. Reported NICHT ueberschreiben.
-                    if has_reported and existing.numeric_value is not None and web_val_adjusted is not None:
-                        existing.numeric_value_adjusted = web_val_adjusted
-                        existing.adjustments_note = (web_adj_note or "")[:4000] or None
-                        existing.adjustments_source = (web_adj_source or "")[:2048] or None
-                        # source_name behalten — Reported-Source bleibt fuehrend.
-                        # Optional ergänzen: '+ Web-Adjusted'
-                        if existing.source_name and " + Web-Adjusted" not in existing.source_name:
-                            existing.source_name = (existing.source_name + " + Web-Adjusted")[:1900]
-                        existing.fetched_at = now
+                    if existing.numeric_value is not None:
+                        # ADJUSTED-ONLY-MODUS: Reported NIE ueberschreiben (egal
+                        # ob EDGAR, PDF oder fruehere Web-Recherche). Nur das
+                        # fehlende Adjusted-Feld nachholen.
+                        if web_val_adjusted is not None:
+                            existing.numeric_value_adjusted = web_val_adjusted
+                            existing.adjustments_note = (web_adj_note or "")[:4000] or None
+                            existing.adjustments_source = (web_adj_source or "")[:2048] or None
+                            if existing.source_name and " + Web-Adjusted" not in existing.source_name:
+                                existing.source_name = (existing.source_name + " + Web-Adjusted")[:1900]
+                            existing.fetched_at = now
                     else:
-                        # Standardpfad: Reported aus Web (PDF lieferte gar nichts).
+                        # Standardpfad: existing-Row hat noch keinen Reported
+                        # (z.B. PDF-Placeholder mit value=None) → mit Web fuellen.
                         existing.numeric_value = web_val
                         existing.source_name = new_source[:1900]
                         existing.source_link = url or existing.source_link
@@ -333,6 +467,17 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
         doc.extraction_status = ExtractionStatus.EXTRACTING
         db.commit()
 
+        # EDGAR-Pre-Sweep fuer FY-Annual-Reports von US-Filern. Bei Treffer
+        # wird CompanyValue mit source 'SEC EDGAR ...' persistiert; PDF-Persist
+        # skippt diese Keys (EDGAR > PDF), Web-Fallback ebenfalls (EDGAR > Claude).
+        # Q-PDFs / non-US: no-op, Estimates-Flow PDF->Claude bleibt unveraendert.
+        try:
+            edgar_hits = _pre_extraction_edgar_sweep(db, doc=doc, company=company)
+        except Exception as e:
+            logger.exception("EDGAR-Pre-Sweep failed for doc %s: %s", doc_id, e)
+            db.rollback()
+            edgar_hits = {}
+
         try:
             results, guidance_fy, raw = extract_values_from_pdf(
                 Path(doc.storage_path),
@@ -386,6 +531,14 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
             ).delete(synchronize_session=False)
 
         for key, info in results.items():
+            # EDGAR-Pre-Sweep hat diesen Key bereits gefuellt → PDF nicht
+            # ueberschreiben (EDGAR = authoritativ fuer abgeschlossene FY).
+            # EDGAR-Resultat ins extraction_results-JSON mergen damit der
+            # UI-Counter den Key als 'gefuellt' zaehlt.
+            if key in edgar_hits:
+                json_safe_results[key] = edgar_hits[key]
+                continue
+
             value = info.get("value")
             page = info.get("page")
             currency = info.get("currency")
@@ -498,6 +651,22 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
                 },
             }
 
+            # Auto-Challenge fuer alle persistierten PDF-Guidance-Werte:
+            # vergleicht jeden PDF-Wert mit Claude+Gemini Web-Recherche und
+            # uebernimmt bei Abweichung > 15% den Web-Wert. Faengt Faelle wie
+            # Broadcom $10M-Buyback-Fragment (Side-Sentence im Q-PDF falsch
+            # als FY-Guidance extrahiert) direkt beim Upload ab — der User
+            # muss nicht erst manuell refreshen.
+            try:
+                _auto_challenge_guidance_via_web(
+                    db, company=company, doc=doc,
+                    fy_target=guidance_target_fy, guidance=guidance_fy,
+                )
+            except Exception as e:
+                logger.exception("Auto-Challenge guidance failed for doc %s: %s",
+                                 doc_id, e)
+                db.rollback()
+
         # Auto-Web-Fallback: für jeden None-Key in den Results probiert Claude
         # Web-Recherche und füllt die Row falls erfolgreich. Source wird zu
         # 'PDF leer (<reason>) → Claude-Recherche: <quelle>'.
@@ -557,6 +726,72 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
         # Q1/Q2/Q3) und werden von der Web-Recherche bei Bedarf als Kontext genutzt.
     finally:
         db.close()
+
+
+def _auto_challenge_guidance_via_web(
+    db,
+    company: Company,
+    doc: IRDocument,
+    fy_target: int,
+    guidance: dict[str, dict],
+) -> int:
+    """Auto-Challenge fuer alle persistierten PDF-Guidance-Werte direkt nach
+    Extraktion: triggert _process_one_key fuer jeden Guidance-Key, was die
+    vorhandene PDF-Guidance-Challenge-Logik (PDF vs Claude+Gemini Web-Mittel)
+    aufruft. Bei Divergenz > 15% uebernimmt der Web-Wert.
+
+    Catches Faelle wo PDF-Extraktion einen fragmentalen Wert (z.B. '$10M buyback
+    in Q1' aus einem Side-Sentence) faelschlich als FY-Guidance interpretiert hat —
+    der Broadcom-Bug-Case: $10M Buyback vs realer FY-Erwartung $5-15B.
+
+    Cost: ~1 Dual-Web-Call pro Guidance-Key. Cap bei MAX_CHALLENGES_PER_PDF
+    damit ein PDF mit vielen Guidance-Keys nicht $1+ kostet.
+    """
+    from app.values.routes import _process_one_key
+
+    MAX_CHALLENGES_PER_PDF = 7
+    challenged_count = 0
+    dummy_updated: list = []
+
+    class _Payload:
+        def __init__(self, fy: int):
+            self.period_type = "FY"
+            self.period_year = fy
+
+    payload = _Payload(fy_target)
+
+    for key, info in guidance.items():
+        if challenged_count >= MAX_CHALLENGES_PER_PDF:
+            logger.info("Auto-Challenge cap (%d) reached for doc %s — skip remaining keys",
+                        MAX_CHALLENGES_PER_PDF, doc.id)
+            break
+        if not isinstance(info.get("value"), Decimal):
+            continue
+        try:
+            _process_one_key(
+                db=db,
+                key=key,
+                ticker=company.ticker,
+                company=company,
+                company_id=company.id,
+                payload=payload,
+                updated=dummy_updated,
+            )
+            challenged_count += 1
+        except Exception as e:
+            logger.warning("Auto-Challenge %s/%s/FY%s failed: %s",
+                           company.ticker, key, fy_target, e)
+            db.rollback()
+
+    if challenged_count:
+        try:
+            db.commit()
+        except Exception as e:
+            logger.warning("Auto-Challenge commit failed for doc %s: %s", doc.id, e)
+            db.rollback()
+        logger.info("Auto-Challenge ran %d/%d PDF-guidance values for %s/FY%d (doc %s)",
+                    challenged_count, len(guidance), company.ticker, fy_target, doc.id)
+    return challenged_count
 
 
 def _persist_guidance_as_fy_forecast(

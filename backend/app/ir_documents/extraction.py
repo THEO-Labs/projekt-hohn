@@ -104,16 +104,31 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "Aktienrückkäufe (Cash-Outflow für Treasury Share Purchases) für die Periode. "
      "Suchorte: (1) Cash Flow Statement → 'Repurchase of common stock' / 'Treasury stock purchases' / 'Acquisition of treasury shares' im Financing-Abschnitt. "
      "(2) Statement of Changes in Equity → 'Purchase of treasury shares' / 'Aktienrückkauf'. "
-     "(3) Notes/Press Release zu Buyback Programs — VORSICHT: nur das in der "
-     "GEMELDETEN PERIODE tatsaechlich AUSGEGEBENE Cash. NICHT eine Multi-Year-"
-     "Authorisation (z.B. '$50B Buyback Program approved' = ueber mehrere Jahre, "
-     "nicht jaehrlich!). Im Zweifel den CF-Statement-Wert nehmen, der ist "
-     "periodenecht. "
+     "(3) Notes/Press Release zu Buyback Programs. "
+     "⚠️ ABSOLUT KRITISCH — DREI HAEUFIGE FALLEN: "
+     "(a) Multi-Year-Authorisation NIE als Periodenwert nehmen: '$50B Buyback "
+     "Program approved' = Programm-Volumen ueber mehrere Jahre, NICHT die "
+     "jaehrliche Ausgabe. "
+     "(b) Q-Snippet-Bug: Ein Satz wie 'we repurchased $10M in Q1' im Quartals- "
+     "bericht ist KEIN Periodenwert fuer FY und NIE Forward-Guidance. Im Zweifel "
+     "den Cash-Flow-Statement-Wert nehmen, der ist periodenecht. "
+     "(c) Plausibilitaets-Selbstcheck: bei Mega-Cap-Firmen (Apple/Microsoft/ "
+     "Broadcom/NVDA) ist Annual Buyback typisch $5-50B. Ein extrahierter Wert "
+     "<$100M fuer eine Firma mit MCap >$100B ist mit hoechster Wahrscheinlichkeit "
+     "ein Fragment-Misread — pruefe nochmal CF-Statement, nimm nicht das Fragment. "
      "WERT: POSITIV als Cash-Outflow-Betrag (Vorzeichen ignorieren). Wenn KEIN Rückkaufprogramm aktiv war, value=0 und reason='Kein Rückkauf in der Periode'."),
     ("dividends",
      "Dividenden-Cashout / Dividends Paid für die Periode (zur Vermeidung: Bezahlte Dividenden ≠ je Aktie ≠ vorgeschlagene Dividende). "
      "Suchorte: (1) Cash Flow Statement → 'Dividends paid to shareholders' / 'Cash dividends' im Financing-Abschnitt. "
      "(2) Statement of Changes in Equity → 'Dividends paid' / 'Dividenden-Ausschüttung'. "
+     "⚠️ FORWARD vs. ACTUAL: Eine Aussage 'Dividend per share will be $X' ist NUR "
+     "die Pro-Aktie-Erhoehung — multipliziere mit Shares Outstanding fuer das "
+     "Total-Volumen. Ein Q-Mention 'we paid €120M dividends in Q1' ist Q-Actual, "
+     "kein FY-Wert. "
+     "Plausibilitaets-Selbstcheck: bei Mega-Cap-Firmen (Apple/Microsoft/Broadcom) "
+     "Annual Dividends typisch $5-20B. Ein extrahierter Wert <$100M bei MCap "
+     ">$100B ist hoechstwahrscheinlich ein Fragment-Misread oder Pro-Share-Wert "
+     "der versehentlich als Total uebernommen wurde. "
      "WERT: POSITIV als Auszahlungsbetrag. Wenn KEINE Dividende, value=0 und reason='Keine Dividendenzahlung in der Periode'."),
     ("net_debt",
      "Net Financial Debt / Nettofinanzschulden / Net Debt zum Bilanzstichtag. "
@@ -139,6 +154,14 @@ EXTRACTION_KEYS: list[tuple[str, str]] = [
      "(2) Income Statement → 'Operating Income' / 'Operating Profit' (EBIT) + 'Depreciation' + 'Amortization' aufaddieren. "
      "(3) Segment-Reporting-Note → Konzern-Aggregate. "
      "(4) Bei IFRS-Filern: oft als 'EBITDA' direkt oder als 'EBIT + D&A'. "
+     "⚠️ US-GAAP-REALITAET: US-GAAP definiert EBITDA NICHT als Line-Item. "
+     "D&A ist in COGS/SG&A vermengt — du musst es aus dem Cash-Flow-Statement "
+     "(Add-back im Operating Activities, 'Depreciation, amortization and accretion') holen. "
+     "Reines GAAP-EBITDA = Operating Income (EBIT) + D&A aus CF-Statement. "
+     "Wenn die US-Firma nur 'Adjusted EBITDA' kommuniziert (typisch bei Tech wie NVDA/CRM/SNOW/NOW): "
+     "DAS gehoert in value_adjusted, NICHT in value. Fuer value: selbst rechnen EBIT + D&A. "
+     "Wenn D&A nicht aus dem CF-Statement extrahierbar (selten): value=EBIT + reason="
+     "'D&A nicht separat ausweisbar — value=EBIT als untere Schranke'. "
      "WICHTIG: Bevorzuge die REPORTED/GAAP/IFRS-Zahl, NICHT die 'Adjusted EBITDA' / 'EBITDA before special items' / 'Pro Forma'. "
      "Bei Banken/Versicherern: nicht anwendbar — Equivalent: Pre-Tax Operating Profit. "
      "WERT in Konzern-Waehrung, POSITIV (Verluste extrem selten bei EBITDA-Level)."),
@@ -187,6 +210,22 @@ WICHTIGE REGELN:
 8. Vorzeichen-Regel: Net Income mit echtem Vorzeichen (Verluste negativ),
    Bilanz-Posten und Cash-Outflows (SBC, Buyback, Dividends) immer POSITIV
    als Betrag (Vorzeichen ignorieren).
+
+PLAUSIBILITAETS-PFLICHT vor jedem value-Setting:
+Bevor du einen Wert in das JSON-Output schreibst, fuehre einen Self-Check durch:
+- Passt die Groessenordnung zu dem Unternehmen das du extrahierst?
+  Eine Firma mit Revenue $50B hat NICHT $10M Annual Buyback (das waere
+  0.02% des Cashflows — unrealistisch). Bei Mega-Caps (MCap >$100B) sind
+  typische Annual-Cash-Returns (Buyback + Dividenden) zusammen $10-50B/Jahr.
+- Steht der Wert im Cash-Flow-Statement (= autoritativ fuer Periodensummen)
+  oder ist es ein Side-Sentence (= moeglicherweise nur Q-Subset oder
+  Programm-Volumen)?
+- Wenn ein Wert <0.1% der Marktkapitalisierung der Firma fuer eine
+  CF-Position (Buyback/Dividend) erscheint: PRUEFE DEN KONTEXT NOCHMAL.
+  Wahrscheinlich liest du gerade einen Q-Subset oder ein Pro-Share-Detail
+  statt der FY-Summe.
+- Bei Q-Berichten: pruefe 'period_basis' aktiv — ein Wert der Q1 standalone
+  ist (period_basis='Q1_standalone') gehoert NICHT als FY-Wert ausgegeben.
 
 GAAP / NON-GAAP PFLICHT (nur fuer net_income, ebitda, fcf):
 Suche IMMER beide Varianten parallel:
@@ -260,11 +299,41 @@ FY{guidance_target}. Typische Stellen:
 - Highlights-Folie ('FY{guidance_target} Outlook')
 - Annual Report Schluss-Kapitel 'Outlook for {guidance_target}'
 
-Phrasen wie:
+Phrasen die ECHTE Guidance signalisieren:
 - 'We expect Net Income FY{guidance_target} in the range X to Y'
 - 'FY{guidance_target} Free Cash Flow guidance: ~Z'
 - 'Wir erwarten Nettofinanzschulden FY{guidance_target} von X'
 - 'Confirmed dividend payout policy of N%'
+- 'Our buyback authorization remains $X billion through end of FY{guidance_target}'
+
+⚠️ ABSOLUT KRITISCH — UNTERSCHEIDE FY-GUIDANCE vs. QUARTAL-ACTUAL:
+
+Ein Quartalsbericht erwähnt OFT Q-IST-Werte ('we repurchased $10M in Q1') —
+diese sind KEINE FY-Guidance. Sie sind Q-Ausführungs-Daten und gehören
+NICHT in das guidance_fy-Objekt.
+
+Konkrete Anti-Beispiele (NIE als FY-Guidance werten):
+✗ 'We completed $10M share repurchases in the first quarter' → Q-Actual
+✗ 'Cash dividends paid in Q1 amounted to €120M' → Q-Actual
+✗ 'YTD buyback volume of $300M' → kumulierter Ist-Wert, KEINE Forward-Aussage
+✗ 'We have $20B remaining authorization' → Programm-Volumen ≠ FY-Erwartung
+   (kann ueber mehrere Jahre laufen)
+
+Was IST FY-Guidance:
+✓ 'We expect to return ~$15B to shareholders via buybacks in FY{guidance_target}'
+✓ 'FY{guidance_target} dividend per share expected at $2.00 (= Total ~$1.5B)'
+✓ 'Full-year capital return guidance: $X-$Y billion'
+✓ 'Anticipated FY net debt position: $50-60B by year-end'
+
+PLAUSIBILITAETS-PFLICHT vor du einen Guidance-Wert einsetzt:
+1. Pruefe ob der Wert WIRKLICH eine FY-Aussage ist oder nur ein Q-Snippet.
+2. Pruefe ob die Groessenordnung sinnvoll ist:
+   - Annual Buyback einer Mega-Cap-Firma (MCap > $500B) ist typisch
+     $5-30B/Jahr; eine '$10M Guidance' bei so einer Firma ist faktisch
+     unmoeglich → DAS ist kein Guidance-Wert, sondern ein Fragment.
+   - Annual Dividends-Volumen analog ($5-15B bei Mega-Caps).
+3. Wenn unsicher → value=null + reason='Kein expliziter FY-Outlook-Statement
+   gefunden, nur Q-Actual-Mention auf S.X erwaehnt'.
 
 Wenn eine Range gegeben ist (X bis Y), nimm den Mittelwert als value und
 notiere die Range im quote-Feld. Wenn nur ein Punktwert: nimm den.
@@ -280,11 +349,12 @@ Pro Guidance-Key:
   "value": <Zahl in Base-Units oder null>,
   "currency": ...,
   "page": ...,
-  "quote": "<Originalzitat inkl. Range falls gegeben>",
-  "reason": null oder "Keine Guidance für diesen Wert im Bericht"
+  "quote": "<Originalzitat inkl. Range falls gegeben — MUSS eine Forward-Aussage sein>",
+  "reason": null oder "Keine FY-Guidance — nur Q-Actual auf S.X erwaehnt"
 }}
 
 Wenn der Bericht KEINE Guidance enthaelt: setze "guidance_fy": {{}} (leeres Objekt).
+LIEBER null als ein Q-Fragment als Guidance falsch zu deklarieren.
 """ if guidance_target is not None else ""
     )
     return f"""Unternehmen: {company_name}

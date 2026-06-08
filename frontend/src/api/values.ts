@@ -63,7 +63,8 @@ export const refreshValues = (
   companyId: string,
   keys: string[],
   periodType = "SNAPSHOT",
-  periodYear?: number
+  periodYear?: number,
+  stammdatenOnly: boolean = false,
 ) =>
   api<CompanyValue[]>(`/api/companies/${companyId}/values/refresh`, {
     method: "POST",
@@ -71,6 +72,7 @@ export const refreshValues = (
       keys,
       period_type: periodType,
       period_year: periodYear ?? null,
+      stammdaten_only: stammdatenOnly,
     }),
   });
 
