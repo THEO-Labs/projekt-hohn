@@ -431,6 +431,24 @@ def extract_research_value(text: str) -> Decimal | None:
     return None
 
 
+def extract_kontext_fy_total(text: str) -> Decimal | None:
+    """Liest KONTEXT_FY_TOTAL_FALLS_BEKANNT aus Per-Q-Aggregation-Responses.
+    Returns None wenn nicht vorhanden, 'N/A' oder nicht parsebar.
+    """
+    if not text:
+        return None
+    m = re.search(r"KONTEXT_FY_TOTAL[_A-Z]*:\s*([^\n]+)", text)
+    if not m:
+        return None
+    raw = m.group(1).strip().rstrip(".,)")
+    if re.match(r"^(n/?a|none|keine|nicht\s+bekannt|unbekannt|\-)\.?$", raw, re.IGNORECASE):
+        return None
+    val = _parse_numeric_string(raw)
+    if val is None:
+        return None
+    return _apply_unit_scale(val, text, raw)
+
+
 def extract_research_value_adjusted(text: str) -> tuple[Decimal | None, str | None, str | None]:
     """Sucht WERT_ADJUSTED + QUELLE_ADJUSTED + ADJUSTMENTS aus Claude Response.
     Returns (value_adjusted_or_None, source_adjusted, adjustments_note).
@@ -789,12 +807,15 @@ def research_value(
                     f"NUR das einzelne Quartal, KEIN FY-Total, KEIN YTD-Kumulativ. "
                     "Die anderen Quartale oben sind VERIFIZIERTE Actuals und liefern "
                     "Run-Rate-Trend/Margin/Saisonalitaet fuer deine Schaetzung.\n"
-                    f"REGEL: Dein WERT muss in derselben Groessenordnung liegen wie die "
-                    f"Q-Actuals oben (typisch 0.7x bis 1.5x). Wenn dein Wert > 2x das "
-                    f"groesste der oben gelisteten Q-Actuals, hast du wahrscheinlich "
-                    f"FY-Total oder YTD-Kumulativ geliefert — KORRIGIERE.\n"
                     "Begruende deine Zahl konkret aus dem Q-Trend (z.B. 'Q1->Q2->Q3 "
-                    f"zeigt +X% sequentielles Wachstum, daher {period_type}e ≈ Q3 × (1+X%)')."
+                    f"zeigt +X% sequentielles Wachstum, daher {period_type}e ≈ Q3 × (1+X%)').\n\n"
+                    "STRUKTURIERTE ANTWORT-PFLICHT (Konsistenz-Check):\n"
+                    f"  WERT: <NUR der Standalone-{period_type}-Wert in Base-Units {currency}>\n"
+                    f"  KONTEXT_FY_TOTAL_FALLS_BEKANNT: <FY-Total {period_year} in Base-Units, "
+                    f"falls du ihn aus Konsens/Guidance kennst, sonst 'N/A'>\n"
+                    f"WICHTIG: Wenn dein KONTEXT_FY_TOTAL gleich deinem WERT ist, hast du "
+                    f"versehentlich den FY-Total ins WERT-Feld geschrieben — KORRIGIERE: "
+                    f"WERT = KONTEXT_FY_TOTAL minus Summe der oben gelisteten Q-Actuals."
                 )
             q_actuals_block = (
                 f"\n\nPFLICHT-ANKER QUARTALS-ACTUALS (aus unserer 10-Q-Extraktion, autoritativ):\n"

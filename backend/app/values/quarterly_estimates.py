@@ -203,25 +203,49 @@ def _estimate_single_quarter(
     if v is None:
         return None, None, None, None, None, None
 
-    # Plausibilitaets-Check gegen Kumulativ-Bug: wenn Claude trotz "STANDALONE"-Prompt
-    # einen FY-Total / YTD-kumulativ liefert (typisch fuer Q4-Call wenn das Modell
-    # 9M-Actual + Q4-Estimate addiert), wird der Wert verworfen.
-    # Heuristik: Q-Wert > 2.5x das groesste bekannte Q-Actual.
-    if key in SUMMABLE_QUARTERLY_KEYS and q_actuals_for_prompt:
+    # Auto-Korrektur Kumulativ-Bug (Per-Q-Aggregation): Claude muss bei q_actuals-
+    # Calls neben WERT auch KONTEXT_FY_TOTAL_FALLS_BEKANNT liefern. Wenn WERT
+    # praktisch identisch zum FY-Total ist (Toleranz 2%), hat das Modell den
+    # FY-Total ins WERT-Feld geschrieben statt den Standalone-Q-Wert.
+    # In dem Fall korrigieren wir mathematisch: WERT_korr = FY_Total - Sigma(known Q).
+    correction_note = ""
+    if (
+        key in SUMMABLE_QUARTERLY_KEYS
+        and q_actuals_for_prompt
+        and content
+    ):
         try:
-            max_known = max(
-                (abs(qv) for qv in q_actuals_for_prompt.values() if qv is not None),
-                default=None,
-            )
-            if max_known is not None and max_known > 0 and abs(v) > Decimal("2.5") * max_known:
-                logger.warning(
-                    "Q-Estimate Plausibility-Reject %s/%s/%s/FY%s: v=%.0f > 2.5x max_known=%.0f "
-                    "(vermutlich FY-Total/YTD-Kumulativ statt Standalone)",
-                    company.ticker, key, quarter, period_year, float(v), float(max_known),
-                )
-                return None, None, None, None, None, None
+            from app.llm.claude import extract_kontext_fy_total
+            fy_total_hint = extract_kontext_fy_total(content)
+            if fy_total_hint is not None and abs(fy_total_hint) > 0:
+                rel_diff = abs(abs(v) - abs(fy_total_hint)) / abs(fy_total_hint)
+                if rel_diff <= Decimal("0.02"):
+                    known_sum = sum(
+                        (abs(qv) for qv in q_actuals_for_prompt.values() if qv is not None),
+                        Decimal("0"),
+                    )
+                    corrected = fy_total_hint - known_sum
+                    if corrected > 0:
+                        logger.warning(
+                            "Q-Estimate Auto-Correct %s/%s/%s/FY%s: WERT %.0f == FY-Total %.0f "
+                            "-> korrigiert auf %.0f (FY-Total - Sigma Q-Actuals %.0f)",
+                            company.ticker, key, quarter, period_year,
+                            float(v), float(fy_total_hint), float(corrected), float(known_sum),
+                        )
+                        correction_note = (
+                            f" [AUTO-KORRIGIERT: Claude lieferte initial FY-Total "
+                            f"{float(fy_total_hint):,.0f}, korrigiert zu Standalone-{quarter} "
+                            f"= FY-Total - Sigma(Q-Actuals)]"
+                        )
+                        v = corrected
+                    else:
+                        logger.warning(
+                            "Q-Estimate Auto-Correct skipped %s/%s/%s/FY%s: FY-Total - Sigma "
+                            "negativ (%.0f)", company.ticker, key, quarter, period_year,
+                            float(corrected),
+                        )
         except Exception as exc:
-            logger.debug("Q-Estimate plausibility-check skipped: %s", exc)
+            logger.debug("Q-Estimate kontext-fy-total parse skipped: %s", exc)
 
     adj_val: Decimal | None = None
     adj_src: str | None = None
@@ -230,7 +254,10 @@ def _estimate_single_quarter(
         adj_val, adj_src, adj_note = extract_research_value_adjusted(content)
 
     raw_src = (s or "KI-Einschätzung")[:3800]
-    src_name = f"Claude-Q-Estimate ({quarter} FY{period_year}): {float(v):,.0f} {company.currency} | {raw_src}"[:3900]
+    src_name = (
+        f"Claude-Q-Estimate ({quarter} FY{period_year}): {float(v):,.0f} "
+        f"{company.currency}{correction_note} | {raw_src}"
+    )[:3900]
     return v, src_name, u, adj_val, adj_note, adj_src
 
 
