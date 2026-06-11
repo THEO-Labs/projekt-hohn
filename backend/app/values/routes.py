@@ -321,14 +321,46 @@ def _try_web_guidance(
         .first()
     )
     prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
+
+    # Q-Actuals-Anker: aus unseren PDF-Extraktionen (Q1/Q2/Q3) bereits in DB
+    # gespeicherte Quartalswerte fuer das target_fy holen. Diese werden als
+    # PFLICHT-Anker in Claude's Prompt injiziert — verhindert dass Claude
+    # die Q-Aufschluesselung aus Web-Recherche selbst herleitet und dabei
+    # widersprechende Werte liefert. Claude muss Q1-Q3 EXAKT uebernehmen
+    # und nur Q4 schaetzen.
+    q_actuals_rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
+            CompanyValue.period_year == target_fy,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .order_by(CompanyValue.period_type)
+        .all()
+    )
+    q_actuals: dict[str, Decimal] = {}
+    for row in q_actuals_rows:
+        # Bei Duplikaten (PDF + Web-Fallback): PDF-Wert bevorzugen
+        if row.period_type in q_actuals and not row.from_ir_pdf:
+            continue
+        q_actuals[row.period_type] = row.numeric_value
+    if q_actuals:
+        logger.info("Web-Guidance %s/%s/FY%s: Q-Actuals-Anker gefunden: %s",
+                    company.ticker, key, target_fy,
+                    {k: f"{float(v):,.0f}" for k, v in q_actuals.items()})
+
     try:
         dual = research_value_dual(
             company.name, company.ticker, label, company.currency,
             period_type="FY", period_year=target_fy, value_key=key,
             prev_fy_val=prev_fy_val,
+            q_actuals=q_actuals or None,
         )
     except Exception as e:
-        logger.warning("Web-Guidance dual research failed for %s/%s/FY%s: %s",
+        logger.warning("Web-Guidance research failed for %s/%s/FY%s: %s",
                        company.ticker, key, target_fy, e)
         return None
 

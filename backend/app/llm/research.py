@@ -58,9 +58,14 @@ def research_value_dual(
     period_year: int | None = None,
     value_key: str | None = None,
     prev_fy_val: Decimal | None = None,
+    q_actuals: dict[str, Decimal] | None = None,
 ) -> DualResearchResult:
     """Claude-only Web-Recherche. Function-Name beibehalten fuer Caller-API-
-    Kompatibilitaet; intern ist nichts mehr dual."""
+    Kompatibilitaet; intern ist nichts mehr dual.
+
+    q_actuals (optional): bereits in DB gespeicherte Q-Actuals fuer das
+    target FY (z.B. {"Q1": 25663000000, "Q2": 5882000000, "Q3": 15803000000}).
+    Werden als PFLICHT-Anker in den Prompt injiziert."""
     adjusted_relevant = value_key in {"net_income", "ebitda", "fcf"}
 
     try:
@@ -68,6 +73,7 @@ def research_value_dual(
             company_name, ticker, value_label, currency,
             period_type=period_type, period_year=period_year, value_key=value_key,
             prev_fy_val=prev_fy_val,
+            q_actuals=q_actuals,
         )
     except Exception as e:
         logger.warning("Claude research failed %s/%s: %s", ticker, value_key or "?", e)

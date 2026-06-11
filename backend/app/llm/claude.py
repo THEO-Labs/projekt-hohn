@@ -655,13 +655,16 @@ def research_value(
     period_year: int | None = None,
     value_key: str | None = None,
     prev_fy_val: Decimal | None = None,
+    q_actuals: dict[str, Decimal] | None = None,
 ) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
     """Web-Recherche für eine einzelne Kennzahl.
     Returns (value, source_name, source_url, user_prompt, assistant_response).
 
-    prev_fy_val (optional): wird fuer YoY-Cap-Sanity-Check und Konsens-Sanity-Hint
-    im Prompt genutzt. Reduziert deutlich Konsens-Optimismus und Halluzinations-
-    Drift bei Forward-Forecasts.
+    prev_fy_val (optional): FY[N-1]-Anker fuer Currency-Cross-Check.
+
+    q_actuals (optional): bereits in DB gespeicherte Q-Actuals (aus 10-Q-PDFs)
+    fuer das target FY. Werden als PFLICHT-Anker in den Prompt injiziert
+    damit Claude die Q-Aufschluesselung nicht falsch herleitet.
     """
     is_forward = _is_forward_year(period_year)
     is_quarter = period_type in ("Q1", "Q2", "Q3", "Q4")
@@ -730,6 +733,30 @@ def research_value(
     # YoY-Korridor-Hint im Prompt entfernt (Sanity-Checks deaktiviert).
     anchor_block = ""
 
+    # Q-Actuals-Anker-Block: bereits in DB gespeicherte Q-Actuals aus 10-Q-PDFs
+    # werden als PFLICHT-Anker injiziert. Verhindert dass Claude bei FY-Forecast
+    # die Q-Aufschluesselung selbst aus Web-Recherche herleitet und dabei
+    # widersprechende Werte liefert. Anwendung primaer fuer Forward-Year-FY-Calls.
+    q_actuals_block = ""
+    if q_actuals and is_forward and period_type == "FY":
+        actuals_lines = []
+        for q in ("Q1", "Q2", "Q3", "Q4"):
+            v = q_actuals.get(q)
+            if v is not None:
+                actuals_lines.append(f"  {q} FY{period_year} actual = {float(v):,.0f} {currency}")
+        if actuals_lines:
+            q_actuals_block = (
+                f"\n\nPFLICHT-ANKER QUARTALS-ACTUALS (aus unserer 10-Q-Extraktion, autoritativ):\n"
+                + "\n".join(actuals_lines)
+                + "\n\nDiese Werte sind aus den hochgeladenen 10-Q-PDFs des Unternehmens extrahiert "
+                  "und VERIFIZIERT. Nutze sie EXAKT in der Quartals-Aufschluesselung. "
+                  "Leite Q1-Q3 NICHT aus Web-Recherche oder Arithmetik (z.B. 9M minus Q2+Q3) ab — "
+                  "die Web-Werte oder deine eigenen Ableitungen wuerden den verifizierten "
+                  "10-Q-Werten widersprechen. Schaetze NUR das/die fehlende(n) Quartal(e).\n"
+                  "FY-Total = Summe (Q1 + Q2 + Q3 + Q4). Konsistenz-Pflicht: WERT muss = "
+                  "FY-Total sein."
+            )
+
     user_prompt = (
         f"Unternehmen: {company_name} ({ticker}, {currency})\n"
         f"Gesuchte Kennzahl: {value_label}\n"
@@ -746,6 +773,7 @@ def research_value(
         f"{forward_block}"
         f"{hint_block}"
         f"{anchor_block}"
+        f"{q_actuals_block}"
     )
 
     def _do_call(messages: list[dict]) -> str:
