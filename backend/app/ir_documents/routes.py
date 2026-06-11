@@ -297,7 +297,7 @@ def _post_extraction_web_fallback(
             continue
 
         if web_val is None:
-            logger.info("Web-fallback %s/%s/%s/%s: NO VALUE (Claude+Gemini lieferten beide nichts)",
+            logger.info("Web-fallback %s/%s/%s/%s: NO VALUE (Claude lieferten beide nichts)",
                         company.ticker, key, period_type, period_year)
             continue
         # dual.value ist bereits validiert von beiden Providern. Kein zusaetzlicher
@@ -652,7 +652,7 @@ def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
             }
 
             # Auto-Challenge fuer alle persistierten PDF-Guidance-Werte:
-            # vergleicht jeden PDF-Wert mit Claude+Gemini Web-Recherche und
+            # vergleicht jeden PDF-Wert mit Claude Web-Recherche und
             # uebernimmt bei Abweichung > 15% den Web-Wert. Faengt Faelle wie
             # Broadcom $10M-Buyback-Fragment (Side-Sentence im Q-PDF falsch
             # als FY-Guidance extrahiert) direkt beim Upload ab — der User
@@ -737,7 +737,7 @@ def _auto_challenge_guidance_via_web(
 ) -> int:
     """Auto-Challenge fuer alle persistierten PDF-Guidance-Werte direkt nach
     Extraktion: triggert _process_one_key fuer jeden Guidance-Key, was die
-    vorhandene PDF-Guidance-Challenge-Logik (PDF vs Claude+Gemini Web-Mittel)
+    vorhandene PDF-Guidance-Challenge-Logik (PDF vs Claude Web-Mittel)
     aufruft. Bei Divergenz > 15% uebernimmt der Web-Wert.
 
     Catches Faelle wo PDF-Extraktion einen fragmentalen Wert (z.B. '$10M buyback

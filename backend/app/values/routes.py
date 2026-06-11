@@ -293,8 +293,7 @@ def _try_web_guidance(
     key: str,
     target_fy: int,
 ):
-    """Web-Recherche für FY-Guidance via Dual-Provider (Claude + Gemini, Mittel).
-    Faellt auf Claude-only zurueck wenn GEMINI_API_KEY nicht gesetzt ist.
+    """Web-Recherche für FY-Guidance via Claude.
     Returns ProviderResult oder None."""
     from app.config import settings
     if not settings.anthropic_api_key:
@@ -340,18 +339,15 @@ def _try_web_guidance(
 
     return ProviderResult(
         value=dual.value,
-        source_name=f"Web-Guidance: {dual.source}" if dual.source else "Web-Guidance (Dual-Recherche)",
+        source_name=f"Web-Guidance: {dual.source}" if dual.source else "Web-Guidance (Claude-Recherche)",
         source_link=dual.url,
         currency=company.currency if key in CURRENCY_KEYS else None,
         extras={
             "is_forecast": True,
             "guidance_method": "web_research",
             "providers_responded": dual.providers_responded,
-            "divergent": dual.divergent,
             "claude_value": str(dual.claude.value) if dual.claude.value is not None else None,
             "claude_source": dual.claude.source,
-            "gemini_value": str(dual.gemini.value) if dual.gemini.value is not None else None,
-            "gemini_source": dual.gemini.source,
             # Adjusted/Non-GAAP-Variante (nur fuer ni/ebitda/fcf relevant).
             "value_adjusted": str(dual.value_adjusted) if dual.value_adjusted is not None else None,
             "adjustments_note": dual.adjustments_note,
@@ -392,7 +388,7 @@ def _process_one_key(
     Source-Strategie:
       - Stammdaten (stock_price/shares/market_cap): immer Yahoo
       - US-Filer (ISIN US...): EDGAR + Yahoo Provider-Chain
-      - Non-US + Estimates: Web-Recherche (Claude+Gemini-Konsens)
+      - Non-US + Estimates: Web-Recherche (Claude-Recherche)
       - Sonst (historisches FY): Annual-Report-PDF (oder Web-Fallback)
     """
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
@@ -464,7 +460,7 @@ def _process_one_key(
     #   1. Provider-Chain (EDGAR/Yahoo) — fuer Stammdaten und ABGESCHLOSSENE FY
     #      (US-Filer). EDGAR liefert keine Forward-Forecasts → bei
     #      is_running_fy=True (Estimate-Mode) explizit ueberspringen.
-    #   2. Web-Recherche (Claude+Gemini-Konsens) als universeller Fallback fuer
+    #   2. Web-Recherche (Claude-Recherche) als universeller Fallback fuer
     #      FY-Werte ohne Provider-Quelle (Non-US, oder Estimate-Mode).
     if is_stammdaten or (is_us_company(company) and not is_running_fy):
         result = _try_providers(
@@ -529,7 +525,7 @@ def _process_one_key(
                                ticker, key, payload.period_year, e)
     if result is None and not is_stammdaten:
         # Universeller Fallback fuer FY-Werte ohne Provider-Treffer:
-        # Web-Recherche (Claude+Gemini-Konsens). Greift sowohl bei historischen
+        # Web-Recherche (Claude-Recherche). Greift sowohl bei historischen
         # FY (Non-US ohne PDF-Treffer) als auch bei Estimates (laufendes FY).
         target_fy = effective_period_year if effective_period_year is not None else 0
         if target_fy > 0:

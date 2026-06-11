@@ -15,8 +15,6 @@ class Settings(BaseSettings):
     allowed_origins: str = ""
     anthropic_api_key: str = ""
     claude_rate_limit_interval: float = 12.0
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
 
     @property
     def origins_list(self) -> list[str]:

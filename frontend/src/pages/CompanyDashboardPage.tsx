@@ -455,8 +455,7 @@ function _parseNumberWithUnit(raw: string, unit: string | undefined): number {
  *    Q2 $10.3B (actual), Q3e ~$15.5B (Konsens), Q4e $17.5B (Konsens)
  *    = FY-Total $51.3B"
  *
- * Parst nur den ERSTEN gefundenen Block (Claude's Antwort — Gemini's
- * Block kommt danach und ist redundant). Returns null wenn kein Block gefunden.
+ * Parst den ersten gefundenen Block. Returns null wenn kein Block gefunden.
  */
 function parseQuartalsBreakdown(source: string | null | undefined): ParsedBreakdown | null {
   if (!source) return null;
@@ -1347,7 +1346,7 @@ export function CompanyDashboardPage() {
                 }
 
                 // Q-Faktor entfernt — Estimate-Mode nutzt den normalen Single-Row-
-                // Pfad. Werte kommen aus Web-Recherche (Claude+Gemini) und/oder
+                // Pfad. Werte kommen aus Web-Recherche (Claude) und/oder
                 // Q-PDF-Guidance, beides ueber den Standard-Cell-Renderer.
                 return [(
                 <tr key={company.id} className="border-b border-border/30 last:border-b-0 hover:bg-muted/20">

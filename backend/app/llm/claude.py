@@ -432,7 +432,7 @@ def extract_research_value(text: str) -> Decimal | None:
 
 
 def extract_research_value_adjusted(text: str) -> tuple[Decimal | None, str | None, str | None]:
-    """Sucht WERT_ADJUSTED + QUELLE_ADJUSTED + ADJUSTMENTS aus Claude/Gemini Response.
+    """Sucht WERT_ADJUSTED + QUELLE_ADJUSTED + ADJUSTMENTS aus Claude Response.
     Returns (value_adjusted_or_None, source_adjusted, adjustments_note).
     Wenn 'keine' / 'none' / leer → (None, None, note).
     """
