@@ -734,27 +734,39 @@ def research_value(
     anchor_block = ""
 
     # Q-Actuals-Anker-Block: bereits in DB gespeicherte Q-Actuals aus 10-Q-PDFs
-    # werden als PFLICHT-Anker injiziert. Verhindert dass Claude bei FY-Forecast
-    # die Q-Aufschluesselung selbst aus Web-Recherche herleitet und dabei
-    # widersprechende Werte liefert. Anwendung primaer fuer Forward-Year-FY-Calls.
+    # werden als PFLICHT-Anker injiziert. Verhindert dass Claude die Q-Aufschluesselung
+    # selbst aus Web-Recherche herleitet und dabei widersprechende Werte liefert.
+    # Greift sowohl fuer FY-Forecasts als auch fuer Per-Q-Calls (= Estimate
+    # eines einzelnen fehlenden Quartals mit Kontext der anderen 3).
     q_actuals_block = ""
-    if q_actuals and is_forward and period_type == "FY":
+    if q_actuals and is_forward and period_type in ("FY", "Q1", "Q2", "Q3", "Q4"):
         actuals_lines = []
         for q in ("Q1", "Q2", "Q3", "Q4"):
             v = q_actuals.get(q)
             if v is not None:
                 actuals_lines.append(f"  {q} FY{period_year} actual = {float(v):,.0f} {currency}")
         if actuals_lines:
+            if period_type == "FY":
+                instruction = (
+                    "Nutze sie EXAKT in der Quartals-Aufschluesselung. Leite die Werte "
+                    "NICHT aus Web-Recherche oder Arithmetik ab — die Web-Werte oder "
+                    "deine Ableitungen wuerden den verifizierten 10-Q-Werten widersprechen. "
+                    "Schaetze NUR das/die fehlende(n) Quartal(e).\n"
+                    "FY-Total = Summe (Q1 + Q2 + Q3 + Q4). Konsistenz-Pflicht: WERT = FY-Total."
+                )
+            else:
+                instruction = (
+                    f"Du schaetzt JETZT NUR {period_type} FY{period_year} (das einzige "
+                    "fehlende Quartal). Die anderen Quartale sind oben als VERIFIZIERTE "
+                    "Actuals gegeben — sie liefern Run-Rate-Trend, Margin-Niveau und "
+                    "saisonalen Kontext fuer deine Schaetzung. Begruende deine Zahl "
+                    "konkret aus dem Q-Trend (z.B. 'Q1->Q2->Q3 zeigt +X% sequentielles "
+                    f"Wachstum, daher {period_type}e ≈ ...')."
+                )
             q_actuals_block = (
                 f"\n\nPFLICHT-ANKER QUARTALS-ACTUALS (aus unserer 10-Q-Extraktion, autoritativ):\n"
                 + "\n".join(actuals_lines)
-                + "\n\nDiese Werte sind aus den hochgeladenen 10-Q-PDFs des Unternehmens extrahiert "
-                  "und VERIFIZIERT. Nutze sie EXAKT in der Quartals-Aufschluesselung. "
-                  "Leite Q1-Q3 NICHT aus Web-Recherche oder Arithmetik (z.B. 9M minus Q2+Q3) ab — "
-                  "die Web-Werte oder deine eigenen Ableitungen wuerden den verifizierten "
-                  "10-Q-Werten widersprechen. Schaetze NUR das/die fehlende(n) Quartal(e).\n"
-                  "FY-Total = Summe (Q1 + Q2 + Q3 + Q4). Konsistenz-Pflicht: WERT muss = "
-                  "FY-Total sein."
+                + "\n\n" + instruction
             )
 
     user_prompt = (

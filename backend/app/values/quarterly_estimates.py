@@ -123,6 +123,11 @@ def _upsert_q_estimate(
         return None
     if existing and existing.manually_overridden:
         return existing
+    # PDF-Q-Guidance (z.B. Management-Outlook fuer Q4 aus Q3-PDF) ist
+    # authoritativ — wird nicht stumm durch Claude-Web-Estimate ueberschrieben.
+    # (Future: Challenge-Mechanismus analog _try_web_guidance bei Divergenz.)
+    if existing and existing.from_ir_pdf and existing.numeric_value is not None:
+        return existing
     now = datetime.now(timezone.utc)
     try:
         with db.begin_nested():
@@ -238,6 +243,7 @@ def estimate_fy_via_quarterly_sum(
     q_adj_values: dict[str, Decimal] = {}
     q_sources: dict[str, str] = {}
     q_origin: dict[str, str] = {}  # "actual"|"manual"|"estimate"
+    first_url: str | None = None
 
     for q in QUARTERS:
         existing = _get_q_row(db, company_id, key, target_fy, q)
@@ -275,6 +281,8 @@ def estimate_fy_via_quarterly_sum(
             q_adj_values[q] = adj_v
         q_sources[q] = f"{q}: Claude-Estimate ({float(v):,.0f})"
         q_origin[q] = "estimate"
+        if first_url is None and url:
+            first_url = url
         _upsert_q_estimate(
             db, company_id, key, target_fy, q,
             value=v, source_name=src_full or "Claude-Q-Estimate",
@@ -321,4 +329,4 @@ def estimate_fy_via_quarterly_sum(
     fy_adj_note = ("Adjusted pro Q: " + " | ".join(adj_summary_parts))[:4000] if adj_summary_parts else None
     fy_adj_source = "Pro-Q-Aggregat aus Claude-Q-Estimates + PDF-Actuals" if q_adj_values else None
 
-    return fy_value, fy_source, None, fy_adj_value, fy_adj_note, fy_adj_source
+    return fy_value, fy_source, first_url, fy_adj_value, fy_adj_note, fy_adj_source

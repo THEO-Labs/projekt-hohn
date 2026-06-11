@@ -705,7 +705,7 @@ def _process_one_key(
     # Primary-Method-Marker setzen: explizites Field statt fragile
     # Source-Name-Heuristik im Frontend.
     extras = result.extras or {}
-    if extras.get("guidance_method") == "web_research":
+    if extras.get("guidance_method") in ("web_research", "quarterly_aggregation"):
         primary_method = "web_guidance"
     else:
         primary_method = "provider"

@@ -2050,6 +2050,14 @@ export function CompanyDashboardPage() {
                       // Primary path: DB-driven Q-Tabelle aus dem neuen quarterly_estimates-Pipeline.
                       // Greift bei den 7 Estimate-Keys + Shares Outstanding (Verlauf).
                       const isQuarterlyKey = QUARTERLY_ESTIMATE_KEYS.has(tooltip.key) || tooltip.key === "shares_outstanding";
+                      if (isQuarterlyKey && quarterlyBreakdown === null && quarterlyBreakdownLoading) {
+                        return (
+                          <div className="space-y-2">
+                            <div className={`text-sm font-medium ${tooltip.variant === "web" ? "text-sky-900" : "text-foreground"}`}>{displaySource ?? "—"}</div>
+                            <div className="text-[11px] text-muted-foreground">Lade Quartals-Aufschlüsselung…</div>
+                          </div>
+                        );
+                      }
                       if (isQuarterlyKey && quarterlyBreakdown !== null) {
                         const valCurrency = cv.currency ?? "USD";
                         const byQ = new Map<string, CompanyValue>();
