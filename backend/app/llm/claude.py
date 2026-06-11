@@ -303,6 +303,30 @@ non-GAAP Reconciliation), liefere:
   WERT_ADJUSTED: keine
   ADJUSTMENTS: Firma reportet keine Adjusted/Non-GAAP-Variante.
 
+⚠️ ABSOLUT KRITISCHE FALLE — EPS×Aktien-Konversion bei net_income:
+Wenn du einen EPS-Konsens-Wert findest (Yahoo Finance Analyst Estimates,
+MarketBeat, SimplyWallSt, Seeking-Alpha "Earnings Estimates") und EPS x Aktien
+rechnest um NI zu approximieren, PRUEFE ZWINGEND ob der zitierte EPS GAAP
+oder Non-GAAP ist. Aggregatoren publizieren PRIMAER Non-GAAP-EPS (Adjusted/
+Diluted Pro-Forma):
+  - Yahoo Finance "Earnings Estimate": Non-GAAP-EPS
+  - MarketBeat "Next year EPS": Non-GAAP-EPS
+  - StockAnalysis "Forward EPS": meist Non-GAAP
+  - GAAP-EPS gibt es nur direkt in 10-Q/10-K oder 8-K-Press-Release
+
+REGEL:
+  Non-GAAP-EPS x Shares = ADJUSTED NI -> gehoert in WERT_ADJUSTED, NICHT WERT.
+  Nutze KEINEN Non-GAAP-EPS x Shares fuer WERT (= Reported/GAAP-NI), das ist
+  KONZEPT-FEHLER und produziert eine total falsche Zahl (typisch 30-50%
+  ueberhoehte NI weil SBC + Amortisation Add-Backs reingerechnet werden).
+
+KORREKT bei net_income wenn nur Non-GAAP-EPS-Konsens auffindbar:
+  Option A: WERT = approximierter GAAP-NI (= Non-GAAP-NI x 0.7-0.8) mit
+            BEGRUENDUNG die das erklaert.
+  Option B: WERT = letzter Q-Run-Rate-Annualisierung aus GAAP-Quartalswerten
+            (Q1+Q2 actual + Q3e+Q4e mit historischer Margin).
+  WERT_ADJUSTED = Non-GAAP-EPS x Shares (saubere Konversion).
+
 Fuer ALLE anderen Keys (sbc, buyback, dividends, net_debt, shares_outstanding)
 gibt es per Definition keinen Adjusted-Pendant — KEINE WERT_ADJUSTED-Zeile noetig.
 
