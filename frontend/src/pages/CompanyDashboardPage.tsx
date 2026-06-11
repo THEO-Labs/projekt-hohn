@@ -460,7 +460,10 @@ function _parseNumberWithUnit(raw: string, unit: string | undefined): number {
  */
 function parseQuartalsBreakdown(source: string | null | undefined): ParsedBreakdown | null {
   if (!source) return null;
-  const markerRegex = /Quartals[- ]?Auf?schl[uü]es+elung\s*:/i;
+  // Akzeptiert beide Schreibweisen:
+  //   "Quartals-Aufschlüsselung" (Umlaut: ü + sselung)
+  //   "Quartals-Aufschluesselung" (ASCII: ue + sselung)
+  const markerRegex = /Quartals[- ]?Auf?schl(?:ü|ue)s+elung\s*:/i;
   const markerMatch = source.match(markerRegex);
   if (!markerMatch) return null;
   const markerIdx = markerMatch.index ?? -1;
