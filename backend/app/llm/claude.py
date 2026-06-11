@@ -157,6 +157,56 @@ D. **Quellen-URL-Pflicht für Datumsangaben**: Wenn du in QUELLE ein konkretes
    spezifische URL nennen kannst, lass das konkrete Datum weg und schreib
    'lt. IR/Annual Report' allgemein. Halluzinierte Daten ohne URL = Disqualifikation.
 
+E. **Konsens-Anchoring-Pflicht (PFLICHT bei Forward-Year/Estimate-Werten)**:
+   Bei Forward-Year-Schätzungen (FY[N]e wo N >= aktuelles Jahr) MUSST du in QUELLE
+   die Analyst-Konsens-Range explizit zitieren. Recherchiere aktiv und nenne:
+     - Welcher Konsens-Aggregator zitiert wird: Bloomberg-Konsens, Refinitiv I/B/E/S,
+       S&P Capital IQ, Visible Alpha, Reuters-Konsens, Yahoo Finance Analyst
+       Estimates, oder Aggregator-Plattformen (StockAnalysis, Macrotrends,
+       SimplyWallSt, Seeking-Alpha).
+     - Anzahl der Analysten im Konsens (wenn auffindbar, z.B. "32 Analysten").
+     - Range: Low - Median - High wenn verfügbar, sonst nur Median/Konsens.
+   FORMAT in QUELLE:
+     "Bloomberg-Konsens FY2026 (32 Analysten, Range $48-54B, Median $51B) +
+      eigene IR-Verifikation: ..."
+     ODER bei nur einem Aggregator:
+     "Yahoo Finance Konsens FY2026 (15 Analysten, Mean $51.3B)"
+     ODER wenn kein Konsens auffindbar:
+     "KI-Einschätzung basierend auf FY[N-1]-Anker × Wachstumsrate (kein
+      Analyst-Konsens öffentlich auffindbar)"
+   Diese Angaben werden im UI direkt sichtbar — der User braucht sie um Mandanten
+   gegenüber zu rechtfertigen warum unser Wert vom Kunden-Modell abweicht.
+   Wenn du keine Konsens-Range zitierst obwohl eine existiert: ungueltige Antwort.
+
+F. **Quartals-Aufschluesselungs-Pflicht (PFLICHT bei Forward-Year-Werten)**:
+   Bei Forward-Year-Werten MUSST du IMMER die bisher veroeffentlichten Quartale
+   AUSDRUECKLICH in QUELLE aufschluesseln, plus die Forecast-Quartale die zur
+   FY-Summe fuehren. Das macht den FY-Wert nachvollziehbar und ermoeglicht dem
+   User einen direkten Sanity-Check (z.B. ob Q3-Forecast plausibel waechst vs
+   Q2-Actual).
+
+   FORMAT — pflichtgemaess am Ende der QUELLE-Zeile als kompakte Auflistung:
+     "... | Quartals-Aufschluesselung: Q1 $8.0B (actual lt. 10-Q), Q2 $10.3B
+      (actual lt. 10-Q), Q3e $15.5B (Konsens), Q4e $17.5B (Konsens) =
+      FY-Total $51.3B"
+
+   Reihenfolge:
+     - Q1: actual ODER Konsens (mit Label "actual" oder "e" markieren)
+     - Q2: actual ODER Konsens
+     - Q3: actual ODER Konsens
+     - Q4: actual ODER Konsens
+     - FY-Total: muss der Summe entsprechen (Konsistenz-Pflicht)
+
+   Wenn fuer ein Quartal kein konkreter Wert verfuegbar: "Q3e ~$X (impliziert
+   aus FY-Konsens − bisherige Q-Actuals)". NIE auslassen.
+
+   Bei Forward-Year-Werten ohne veroeffentlichte Q-Actuals (Beginn FY): nutze
+   nur die Forecast-Reihe pro Quartal.
+
+   Bei Werten die NICHT cumulative/aufaddierbar sind (Net Debt, Shares
+   Outstanding): statt Q-Aufschluesselung Quartalsstaende auflisten
+   ("Q1-Ende $X, Q2-Ende $Y, Q4e $Z").
+
 WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
 
 1. **Exakter Wert** aus Aggregator (stockanalysis, macrotrends, wsj, wisesheets)
@@ -225,11 +275,19 @@ Den Rechenweg darfst du erst danach in BEGRUENDUNG erklären.
 KORREKTES FORMAT (genau so):
 WERT: 2960000000
 EINHEIT: USD
-QUELLE: Approximation: Airbus IR FY2025 Dividende €3,20/Aktie × 787,2 Mio Aktien × 1,1752 EUR/USD
+QUELLE: Bloomberg-Konsens FY2026 (28 Analysten, Range $2.8B-$3.1B, Median $2.95B) + Airbus IR-Press-Release 14.04.2026 | Quartals-Aufschluesselung: Q1 0$ (no payment), Q2 $2.96B (April-Auszahlung gesamte FY-Dividende), Q3 0$, Q4 0$ = FY-Total $2.96B (einmal jaehrlich)
 QUELLE_URL: https://www.airbus.com/en/investors
 ZEITRAUM: FY2026e
-KONFIDENZ: niedrig
-BEGRUENDUNG: FY2025-Dividende beschlossen am 14.04.2026, Auszahlung 23.04.2026 → faellt in FY2026 Cashflow. Umrechnung mit EUR/USD-Kurs vom Stichtag.
+KONFIDENZ: mittel
+BEGRUENDUNG: Bloomberg-Konsens-Median liegt bei $2.95B, eigene IR-Verifikation bestaetigt: FY2025-Dividende €3,20/Aktie × 787,2 Mio Aktien × 1,1752 EUR/USD = $2.96B. Auszahlung 23.04.2026 faellt in FY2026 Cashflow.
+
+KORREKTES FORMAT bei Forward-Year ohne expliziten Konsens-Aggregator:
+WERT: 51279000000
+EINHEIT: USD
+QUELLE: Wall-Street-Konsens FY2026 FCF (Refinitiv I/B/E/S 30+ Analysten, Range $46-56B, Median $51B) — eigene Validation: H1 2026 actual $18.3B × Run-Rate-Annualisierung mit Q4-Bias | Quartals-Aufschluesselung: Q1 $8.0B (actual lt. 10-Q), Q2 $10.3B (actual lt. 10-Q), Q3e $15.5B (Konsens, +50% sequential durch Q4-Bias), Q4e $17.5B (Konsens) = FY-Total $51.3B
+QUELLE_URL: https://www.broadcom.com/company/news/financial-releases
+ZEITRAUM: FY2026e
+KONFIDENZ: mittel
 
 GAAP/NON-GAAP-PFLICHT (nur fuer net_income, ebitda, fcf):
 Wenn der gesuchte Wert net_income, ebitda oder fcf ist, MUSST du zusaetzlich
