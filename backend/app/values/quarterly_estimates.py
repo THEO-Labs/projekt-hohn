@@ -203,6 +203,26 @@ def _estimate_single_quarter(
     if v is None:
         return None, None, None, None, None, None
 
+    # Plausibilitaets-Check gegen Kumulativ-Bug: wenn Claude trotz "STANDALONE"-Prompt
+    # einen FY-Total / YTD-kumulativ liefert (typisch fuer Q4-Call wenn das Modell
+    # 9M-Actual + Q4-Estimate addiert), wird der Wert verworfen.
+    # Heuristik: Q-Wert > 2.5x das groesste bekannte Q-Actual.
+    if key in SUMMABLE_QUARTERLY_KEYS and q_actuals_for_prompt:
+        try:
+            max_known = max(
+                (abs(qv) for qv in q_actuals_for_prompt.values() if qv is not None),
+                default=None,
+            )
+            if max_known is not None and max_known > 0 and abs(v) > Decimal("2.5") * max_known:
+                logger.warning(
+                    "Q-Estimate Plausibility-Reject %s/%s/%s/FY%s: v=%.0f > 2.5x max_known=%.0f "
+                    "(vermutlich FY-Total/YTD-Kumulativ statt Standalone)",
+                    company.ticker, key, quarter, period_year, float(v), float(max_known),
+                )
+                return None, None, None, None, None, None
+        except Exception as exc:
+            logger.debug("Q-Estimate plausibility-check skipped: %s", exc)
+
     adj_val: Decimal | None = None
     adj_src: str | None = None
     adj_note: str | None = None

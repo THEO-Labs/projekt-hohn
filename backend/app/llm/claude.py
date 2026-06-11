@@ -668,11 +668,21 @@ def research_value(
     """
     is_forward = _is_forward_year(period_year)
     is_quarter = period_type in ("Q1", "Q2", "Q3", "Q4")
+    # Wenn q_actuals fuer andere Q vorliegen, sind wir in der Per-Q-Aggregation:
+    # dann ist STANDALONE-Q strikt Pflicht (sonst wuerde FY-Sum doppelt zaehlen).
+    is_per_q_aggregation = bool(q_actuals) and is_quarter
     if period_type == "FY" and period_year:
         marker = "e" if is_forward else ""
         period_str = f"Geschäftsjahr {period_year}{marker} (FY{period_year}{marker})"
     elif is_quarter and period_year:
-        period_str = f"{period_type} {period_year} (Quartal — kumulativ year-to-date wenn möglich, sonst standalone)"
+        if is_per_q_aggregation:
+            period_str = (
+                f"{period_type} {period_year} STANDALONE (NUR das einzelne Quartal — "
+                f"KEIN YTD-Kumulativ, KEIN FY-Total. Wenn die Quelle 9M-YTD oder FY-Total "
+                f"ausweist, RECHNE den Standalone-Q-Wert aus durch Subtraktion der anderen Q)"
+            )
+        else:
+            period_str = f"{period_type} {period_year} (Quartal — kumulativ year-to-date wenn möglich, sonst standalone)"
     else:
         period_str = "aktueller/letzter verfügbarer Wert"
 
@@ -697,22 +707,41 @@ def research_value(
         )
     elif is_quarter:
         forward_block = ""
-        historical_constraint = (
-            f" Ziel ist der {period_type}-Wert aus dem Quartalsbericht "
-            f"(idealerweise YTD-kumulativ wenn so ausgewiesen)."
-        )
-        not_found_clause = (
-            "PFLICHT: Liefere IMMER eine echte berechnete Zahl. Reihenfolge:\n"
-            f"  1. Exakter {period_type} {period_year}-Wert aus IR/Aggregator/10-Q.\n"
-            f"  2. YTD-kumulativ wenn standalone-Q nicht findbar.\n"
-            f"  3. Bei Versicherer/Bank/Sektor-Mismatch: AUSRECHNEN das Equivalent "
-            f"(z.B. 'Personnel Expenses × 0.5%' für SBC bei Versicherer, "
-            f"'Total Borrowings - Cash' für Net Debt). RECHNE die konkrete Zahl, "
-            f"liefere sie als WERT.\n"
-            f"  4. Approximation: FY{period_year}-Wert × Quartal-Anteil "
-            f"(0.25 für einzelnes Quartal, 0.50/0.75 für YTD) — als Zahl in WERT.\n"
-            f"WERT: 0 nur wenn deine Approximation tatsächlich 0 ergibt. NIE als Fallback."
-        )
+        if is_per_q_aggregation:
+            historical_constraint = (
+                f" Ziel ist STRIKT der STANDALONE-{period_type}-Wert (nur das einzelne "
+                f"Quartal). KEIN kumulativer Wert, KEIN FY-Total."
+            )
+            not_found_clause = (
+                "PFLICHT: Liefere den STANDALONE-Q-Wert (NUR das einzelne Quartal). Reihenfolge:\n"
+                f"  1. Konsens-Schaetzung NUR fuer {period_type} {period_year} (Visible Alpha, "
+                f"StreetAccount, MarketScreener Q-Range).\n"
+                f"  2. Wenn Quelle YTD-kumulativ ausweist: RECHNE Q-Wert = YTD - sum(andere Q "
+                f"actuals aus PFLICHT-ANKER). Begruende den Rechenschritt.\n"
+                f"  3. Sequentielles Wachstum vom letzten verfuegbaren Actual-Q "
+                f"(Q3-Actual × (1 + sequentielle Wachstumsrate)).\n"
+                f"WERT: NUR die {period_type}-Standalone-Zahl. Wenn du FY-Total oder "
+                f"YTD-Kumulativ lieferst, ist die Antwort FALSCH. Plausibilitaets-Check: "
+                f"dein Q-Wert sollte in der Groessenordnung der anderen Q-Actuals liegen, "
+                f"nicht 4x so gross."
+            )
+        else:
+            historical_constraint = (
+                f" Ziel ist der {period_type}-Wert aus dem Quartalsbericht "
+                f"(idealerweise YTD-kumulativ wenn so ausgewiesen)."
+            )
+            not_found_clause = (
+                "PFLICHT: Liefere IMMER eine echte berechnete Zahl. Reihenfolge:\n"
+                f"  1. Exakter {period_type} {period_year}-Wert aus IR/Aggregator/10-Q.\n"
+                f"  2. YTD-kumulativ wenn standalone-Q nicht findbar.\n"
+                f"  3. Bei Versicherer/Bank/Sektor-Mismatch: AUSRECHNEN das Equivalent "
+                f"(z.B. 'Personnel Expenses × 0.5%' für SBC bei Versicherer, "
+                f"'Total Borrowings - Cash' für Net Debt). RECHNE die konkrete Zahl, "
+                f"liefere sie als WERT.\n"
+                f"  4. Approximation: FY{period_year}-Wert × Quartal-Anteil "
+                f"(0.25 für einzelnes Quartal, 0.50/0.75 für YTD) — als Zahl in WERT.\n"
+                f"WERT: 0 nur wenn deine Approximation tatsächlich 0 ergibt. NIE als Fallback."
+            )
     else:
         forward_block = ""
         historical_constraint = (
@@ -756,12 +785,16 @@ def research_value(
                 )
             else:
                 instruction = (
-                    f"Du schaetzt JETZT NUR {period_type} FY{period_year} (das einzige "
-                    "fehlende Quartal). Die anderen Quartale sind oben als VERIFIZIERTE "
-                    "Actuals gegeben — sie liefern Run-Rate-Trend, Margin-Niveau und "
-                    "saisonalen Kontext fuer deine Schaetzung. Begruende deine Zahl "
-                    "konkret aus dem Q-Trend (z.B. 'Q1->Q2->Q3 zeigt +X% sequentielles "
-                    f"Wachstum, daher {period_type}e ≈ ...')."
+                    f"Du schaetzt JETZT NUR {period_type} FY{period_year} STANDALONE — "
+                    f"NUR das einzelne Quartal, KEIN FY-Total, KEIN YTD-Kumulativ. "
+                    "Die anderen Quartale oben sind VERIFIZIERTE Actuals und liefern "
+                    "Run-Rate-Trend/Margin/Saisonalitaet fuer deine Schaetzung.\n"
+                    f"REGEL: Dein WERT muss in derselben Groessenordnung liegen wie die "
+                    f"Q-Actuals oben (typisch 0.7x bis 1.5x). Wenn dein Wert > 2x das "
+                    f"groesste der oben gelisteten Q-Actuals, hast du wahrscheinlich "
+                    f"FY-Total oder YTD-Kumulativ geliefert — KORRIGIERE.\n"
+                    "Begruende deine Zahl konkret aus dem Q-Trend (z.B. 'Q1->Q2->Q3 "
+                    f"zeigt +X% sequentielles Wachstum, daher {period_type}e ≈ Q3 × (1+X%)')."
                 )
             q_actuals_block = (
                 f"\n\nPFLICHT-ANKER QUARTALS-ACTUALS (aus unserer 10-Q-Extraktion, autoritativ):\n"
