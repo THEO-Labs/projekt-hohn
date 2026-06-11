@@ -147,11 +147,11 @@ def research_value_dual(
 
     # Aggregation
     cv, gv = claude_res.value, gemini_res.value
-    # Pro-Provider-Source auf 900 chars truncaten damit die Quartals-
-    # Aufschluesselung und Konsens-Range-Angabe vollstaendig drin bleibt.
-    # Mit 2x900 + ~150 Overhead = 1950 chars, drunter dem 2048-Spaltenlimit.
+    # Pro-Provider-Source auf 1700 chars truncaten damit Konsens-Range +
+    # Quartals-Aufschluesselung + per-Quartal-Begruendungen alle reinpassen.
+    # DB-Spaltenlimit ist 4096 — mit 2x1700 + ~150 Overhead = 3550 chars Puffer.
     def _short(s: str | None) -> str:
-        return (s or "KI-Einschätzung")[:900]
+        return (s or "KI-Einschätzung")[:1700]
 
     # Adjusted-Aggregation: gleiche Mean-Logik wie Reported. Nur wenn beide
     # Provider Adjusted geliefert haben mitteln. Sonst Single-Provider-Wert.
@@ -201,7 +201,7 @@ def research_value_dual(
             )
         return DualResearchResult(
             value=mean_val,
-            source=source[:2000],  # safety margin unter DB-Spaltenlimit 2048
+            source=source[:3900],  # safety margin unter DB-Spaltenlimit 4096
             url=claude_res.url or gemini_res.url,
             claude=claude_res,
             gemini=gemini_res,
@@ -214,7 +214,7 @@ def research_value_dual(
     if cv is not None:
         return DualResearchResult(
             value=cv,
-            source=(f"Claude-only (Gemini lieferte nichts): {_short(claude_res.source)}")[:2000],
+            source=(f"Claude-only (Gemini lieferte nichts): {_short(claude_res.source)}")[:3900],
             url=claude_res.url,
             claude=claude_res,
             gemini=gemini_res,
@@ -227,7 +227,7 @@ def research_value_dual(
     if gv is not None:
         return DualResearchResult(
             value=gv,
-            source=(f"Gemini-only (Claude lieferte nichts): {_short(gemini_res.source)}")[:2000],
+            source=(f"Gemini-only (Claude lieferte nichts): {_short(gemini_res.source)}")[:3900],
             url=gemini_res.url,
             claude=claude_res,
             gemini=gemini_res,

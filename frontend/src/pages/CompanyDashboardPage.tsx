@@ -472,24 +472,42 @@ function parseQuartalsBreakdown(source: string | null | undefined): ParsedBreakd
   const generalSource = source.slice(0, markerIdx).replace(/\s*\|\s*$/, "").trim();
   const breakdownPart = source.slice(markerIdx + markerMatch[0].length);
 
-  const quarters: QuarterBreakdown[] = [];
+  // Sammle alle Q-Treffer (auch Duplikate), bevorzuge danach den vollstaendigsten.
+  // Truncierte Source-Strings koennen Q1 doppelt enthalten (einmal cut-off ohne Unit,
+  // einmal vollstaendig). Wir bevorzugen den Eintrag mit erkannter Unit (>= 1e6).
+  type RawQHit = { q: 1|2|3|4; value: number; hasUnit: boolean; isActual: boolean; context: string };
+  const allHits: RawQHit[] = [];
   const qRegex = /Q([1-4])(e)?\s*[~≈]?\s*[\$€£]?\s*([\d.,]+)\s*(B|Mrd|Mio|M|Milliarden|Millionen|billion|million)?\b/gi;
   let m: RegExpExecArray | null;
-  const seenQ = new Set<number>();
   while ((m = qRegex.exec(breakdownPart)) !== null) {
     const q = parseInt(m[1]) as 1 | 2 | 3 | 4;
-    if (seenQ.has(q)) continue;
     const hasE = m[2] === "e";
     const value = _parseNumberWithUnit(m[3], m[4]);
     if (isNaN(value)) continue;
-    const after = breakdownPart.slice(m.index, m.index + 250);
-    const ctxMatch = after.match(/\(([^)]*)\)/);
+    const hasUnit = !!m[4];
+    // Sane-Range: Forecast-Werte fuer Mega-Cap-Kennzahlen liegen praktisch
+    // immer im Bereich >$10M. Reine Roh-Zahl ohne Unit (z.B. "Q1 $8") ist
+    // ein Truncation-Artefakt, wird nur als Fallback genutzt.
+    const after = breakdownPart.slice(m.index, m.index + 300);
+    // Context-Match mit Tolerance fuer verschachtelte Parens (greedy bis zur
+    // korrespondierenden Klammer): erstmal nur die naechste flache Klammer.
+    const ctxMatch = after.match(/\(([^()]*)\)/);
     const context = ctxMatch ? ctxMatch[1] : "";
     const isActual = !hasE && /\bactual\b/i.test(context);
-    quarters.push({ q, value, isActual, context });
-    seenQ.add(q);
+    allHits.push({ q, value, hasUnit, isActual, context });
   }
-  quarters.sort((a, b) => a.q - b.q);
+  // Pro Quartal den besten Hit waehlen: mit Unit > ohne Unit; danach groessere Value
+  const bestPerQ = new Map<number, RawQHit>();
+  for (const hit of allHits) {
+    const prev = bestPerQ.get(hit.q);
+    if (!prev) { bestPerQ.set(hit.q, hit); continue; }
+    if (hit.hasUnit && !prev.hasUnit) bestPerQ.set(hit.q, hit);
+    else if (hit.hasUnit === prev.hasUnit && hit.value > prev.value) bestPerQ.set(hit.q, hit);
+  }
+  const quarters: QuarterBreakdown[] = Array.from(bestPerQ.values())
+    .filter((h) => h.hasUnit || h.value >= 1e6)
+    .map((h) => ({ q: h.q, value: h.value, isActual: h.isActual, context: h.context }))
+    .sort((a, b) => a.q - b.q);
 
   let fyTotal: { value: number; raw: string } | null = null;
   const fyRegex = /FY[- ]?(?:Total|Summe)\s*[~≈]?\s*[\$€£]?\s*([\d.,]+)\s*(B|Mrd|Mio|M|Milliarden|Millionen|billion|million)?\b/i;
@@ -499,7 +517,19 @@ function parseQuartalsBreakdown(source: string | null | undefined): ParsedBreakd
     if (!isNaN(fyValue)) fyTotal = { value: fyValue, raw: fyMatch[0] };
   }
 
-  if (quarters.length === 0 && !fyTotal) return null;
+  // Strikte Validierung — nur wenn alle 4 Bedingungen erfuellt sind, geben wir
+  // die Tabelle aus. Sonst null → Frontend faellt auf Plain-Text-Source zurueck.
+  // Verhindert dass truncated/halbe LLM-Antworten falsche Zahlen im UI zeigen.
+  //   1. Alle 4 Quartale geparst (Q1+Q2+Q3+Q4)
+  //   2. Jeder Q-Wert >= 1e6 (= echte Unit erkannt, kein Truncation-Artefakt)
+  //   3. FY-Total geparst
+  //   4. Summe der Q-Werte stimmt mit FY-Total ueberein (Toleranz 5%)
+  if (quarters.length !== 4) return null;
+  if (quarters.some((q) => q.value < 1e6)) return null;
+  if (!fyTotal || fyTotal.value < 1e6) return null;
+  const qSum = quarters.reduce((acc, q) => acc + q.value, 0);
+  const deviation = Math.abs(qSum - fyTotal.value) / fyTotal.value;
+  if (deviation > 0.05) return null;
   return { generalSource, quarters, fyTotal };
 }
 

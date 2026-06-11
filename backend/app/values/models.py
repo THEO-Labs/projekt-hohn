@@ -82,7 +82,7 @@ class CompanyValue(Base):
     adjustments_source: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     text_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
-    source_name: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    source_name: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     source_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
     fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     manually_overridden: Mapped[bool] = mapped_column(Boolean, default=False)

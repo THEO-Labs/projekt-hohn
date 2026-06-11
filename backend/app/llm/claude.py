@@ -181,31 +181,82 @@ E. **Konsens-Anchoring-Pflicht (PFLICHT bei Forward-Year/Estimate-Werten)**:
 F. **Quartals-Aufschluesselungs-Pflicht (PFLICHT bei Forward-Year-Werten)**:
    Bei Forward-Year-Werten MUSST du IMMER die bisher veroeffentlichten Quartale
    AUSDRUECKLICH in QUELLE aufschluesseln, plus die Forecast-Quartale die zur
-   FY-Summe fuehren. Das macht den FY-Wert nachvollziehbar und ermoeglicht dem
-   User einen direkten Sanity-Check (z.B. ob Q3-Forecast plausibel waechst vs
-   Q2-Actual).
+   FY-Summe fuehren.
 
-   FORMAT — pflichtgemaess am Ende der QUELLE-Zeile als kompakte Auflistung:
-     "... | Quartals-Aufschluesselung: Q1 $8.0B (actual lt. 10-Q), Q2 $10.3B
+   FORMAT — pflichtgemaess am Ende der QUELLE-Zeile, KOMPAKT (Werte mit Unit,
+   minimaler Per-Quartal-Kontext in flachen Klammern, KEINE verschachtelten
+   Parens):
+     "| Quartals-Aufschluesselung: Q1 $8.0B (actual lt. 10-Q), Q2 $10.3B
       (actual lt. 10-Q), Q3e $15.5B (Konsens), Q4e $17.5B (Konsens) =
       FY-Total $51.3B"
 
-   Reihenfolge:
-     - Q1: actual ODER Konsens (mit Label "actual" oder "e" markieren)
-     - Q2: actual ODER Konsens
-     - Q3: actual ODER Konsens
-     - Q4: actual ODER Konsens
-     - FY-Total: muss der Summe entsprechen (Konsistenz-Pflicht)
+   ⚠️ ABSOLUT KRITISCH — UNIT-PFLICHT:
+   Jeder Q-Wert MUSS mit Unit angegeben werden (B / Mrd / Mio / M). Eine reine
+   Zahl ohne Unit ist UNGUELTIG ("Q1 $8" ist FALSCH — schreib "Q1 $8.0B").
+   Werte werden im Frontend als Tabelle dargestellt; ohne Unit wird Q1 als $8
+   statt $8.000.000.000 angezeigt = visuelle Bug.
 
-   Wenn fuer ein Quartal kein konkreter Wert verfuegbar: "Q3e ~$X (impliziert
-   aus FY-Konsens − bisherige Q-Actuals)". NIE auslassen.
+   ⚠️ KEINE VERSCHACHTELTEN KLAMMERN im Quartals-Block:
+   Pro Quartal MAX. EIN Klammer-Paar. NICHT: "Q1 $8B (actual (10-Q-Page 5))"
+   sondern: "Q1 $8B (actual lt. 10-Q S.5)". Verschachtelte Parens brechen das
+   Frontend-Parsing.
 
-   Bei Forward-Year-Werten ohne veroeffentlichte Q-Actuals (Beginn FY): nutze
-   nur die Forecast-Reihe pro Quartal.
+   Bei Werten die NICHT cumulative sind (Net Debt, Shares Outstanding): statt
+   Q-Aufschluesselung Quartalsstaende auflisten ("Q1-Ende $X, Q2-Ende $Y").
 
-   Bei Werten die NICHT cumulative/aufaddierbar sind (Net Debt, Shares
-   Outstanding): statt Q-Aufschluesselung Quartalsstaende auflisten
-   ("Q1-Ende $X, Q2-Ende $Y, Q4e $Z").
+G. **EBITDA GAAP-Adj-Bruecke-Pflicht (nur fuer ebitda)**:
+   Bei Forward-Year-EBITDA-Werten gilt eine PRAEZISE Konvertierungsregel
+   zwischen Adjusted EBITDA (Non-GAAP) und GAAP EBITDA:
+
+   GAAP EBITDA = EBIT + D&A
+   Adjusted EBITDA = EBIT + D&A + SBC + Restrukturierung + One-Time-Items
+
+   → Diff (Adj − GAAP) = SBC + One-Time-Items (KEIN D&A-Subtract!)
+
+   ⚠️ HAEUFIGER METHODISCHER FEHLER (NICHT MACHEN):
+   "GAAP EBITDA = Adj EBITDA − SBC − VMware-Intangible-Amortization"
+   → FALSCH! Akquisitions-Intangible-Amortization (VMware bei Broadcom,
+   Activision bei Microsoft, Snap bei Anthropic etc.) IST D&A → wird in
+   BEIDEN EBITDA-Varianten zurueckaddiert. Sie zu subtrahieren ist
+   DOPPEL-ZAEHLUNG die GAAP-EBITDA um 10-20 Mrd. unterschaetzt.
+
+   KORREKT bei Broadcom-aehnlichen Akquisitions-Cases:
+     Adj EBITDA $70B
+     − SBC ~$8.5B
+     − Restrukturierung ~$1B
+     = GAAP EBITDA ~$60.5B
+   (NICHT zusaetzlich − VMware-Amort $14B; die ist in D&A drin)
+
+   Bei US-Filern ohne dezidierten GAAP-EBITDA-Disclosure (Standard-Case):
+   Konstruiere GAAP EBITDA aus 10-Q Income-Statement:
+     EBIT (Operating Income) + D&A (Cash-Flow-Statement) = GAAP EBITDA
+   Dann WERT = GAAP, WERT_ADJUSTED = Non-GAAP-Disclosure der Firma.
+
+H. **Forward-Q4-Methodik (PFLICHT bei AI/Beat-and-Raise-Firmen)**:
+   Bei Forward-Year-Werten gibt es zwei Methoden Q4 zu schaetzen:
+
+   Methode A — Top-Down (FY-Konsens-Subtraktion):
+     Q4 = FY-Konsens − H1-Actuals − Q3-Guidance
+   Methode B — Bottom-Up (Sequential-Growth):
+     Q4 = Q3-Guidance x (1 + typische Q3->Q4-Wachstumsrate)
+
+   ⚠️ WICHTIG — Beide Methoden vergleichen:
+   Wenn Methode B > Methode A um >20% UND die Firma im Beat-and-Raise-Pattern
+   ist (z.B. Broadcom AI, NVDA AI, AMD AI-Acceleration, Apple Services), DANN
+   ist FY-Konsens STALE (= Aggregatoren haben noch nicht nachgezogen) und
+   Methode B (Sequential) ist robuster.
+
+   Indikatoren fuer "FY-Konsens stale":
+     - Q3-Guidance des Managements >FY-Konsens/4 (= Q3 schon ueber Pro-Rata)
+     - Recent Q-Beats > 10% vs prior Konsens
+     - Hyperscaler-/AI-Capex-Cycle mit jaehrlicher Beschleunigung
+
+   In dem Fall: nimm Q4 = Q3-Guidance × 1.05 bis 1.15 (Q4-Bias). Begruende in
+   QUELLE explizit: "FY-Konsens stale (SimplyWallSt $94.7B vs implizit
+   $103B bei Q4-Sequential-Growth) — Methode B als robuster gewaehlt."
+
+   Bei stabilen Reifegrad-Firmen (keine Beat-and-Raise-Pattern) ist Methode A
+   (FY-Konsens-Anchoring) primaer.
 
 WIE DU EINE ZAHL ABLEITEST (verbindliche Reihenfolge):
 
