@@ -416,6 +416,99 @@ function _escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+type QuarterBreakdown = {
+  q: 1 | 2 | 3 | 4;
+  value: number;
+  isActual: boolean;
+  context: string;
+};
+
+type ParsedBreakdown = {
+  generalSource: string;
+  quarters: QuarterBreakdown[];
+  fyTotal: { value: number; raw: string } | null;
+};
+
+function _parseNumberWithUnit(raw: string, unit: string | undefined): number {
+  let valueStr = raw.trim();
+  // Locale: "7,27" → 7.27; "7.27" → unchanged; "1,234.56" or "1.234,56" → last separator is decimal
+  if (valueStr.includes(",") && !valueStr.includes(".")) {
+    valueStr = valueStr.replace(",", ".");
+  } else if (valueStr.includes(",") && valueStr.includes(".")) {
+    const lastComma = valueStr.lastIndexOf(",");
+    const lastDot = valueStr.lastIndexOf(".");
+    if (lastComma > lastDot) valueStr = valueStr.replace(/\./g, "").replace(",", ".");
+    else valueStr = valueStr.replace(/,/g, "");
+  }
+  let value = parseFloat(valueStr);
+  if (isNaN(value)) return NaN;
+  const u = (unit || "").toLowerCase();
+  if (u.startsWith("mrd") || u === "b" || u.startsWith("milliarde") || u.startsWith("billion")) value *= 1e9;
+  else if (u.startsWith("mio") || u === "m" || u.startsWith("millione") || u.startsWith("million")) value *= 1e6;
+  return value;
+}
+
+/**
+ * Extrahiert die Quartals-Aufschluesselung + FY-Total aus einem LLM-Source-String.
+ * Erwartetes Format (von der Konsens-Anchoring-Pflicht im Backend-Prompt):
+ *   "... | Quartals-Aufschluesselung: Q1 $8.0B (actual lt. 10-Q),
+ *    Q2 $10.3B (actual), Q3e ~$15.5B (Konsens), Q4e $17.5B (Konsens)
+ *    = FY-Total $51.3B"
+ *
+ * Parst nur den ERSTEN gefundenen Block (Claude's Antwort — Gemini's
+ * Block kommt danach und ist redundant). Returns null wenn kein Block gefunden.
+ */
+function parseQuartalsBreakdown(source: string | null | undefined): ParsedBreakdown | null {
+  if (!source) return null;
+  const markerRegex = /Quartals[- ]?Auf?schl[uü]es+elung\s*:/i;
+  const markerMatch = source.match(markerRegex);
+  if (!markerMatch) return null;
+  const markerIdx = markerMatch.index ?? -1;
+  if (markerIdx < 0) return null;
+
+  const generalSource = source.slice(0, markerIdx).replace(/\s*\|\s*$/, "").trim();
+  const breakdownPart = source.slice(markerIdx + markerMatch[0].length);
+
+  const quarters: QuarterBreakdown[] = [];
+  const qRegex = /Q([1-4])(e)?\s*[~≈]?\s*[\$€£]?\s*([\d.,]+)\s*(B|Mrd|Mio|M|Milliarden|Millionen|billion|million)?\b/gi;
+  let m: RegExpExecArray | null;
+  const seenQ = new Set<number>();
+  while ((m = qRegex.exec(breakdownPart)) !== null) {
+    const q = parseInt(m[1]) as 1 | 2 | 3 | 4;
+    if (seenQ.has(q)) continue;
+    const hasE = m[2] === "e";
+    const value = _parseNumberWithUnit(m[3], m[4]);
+    if (isNaN(value)) continue;
+    const after = breakdownPart.slice(m.index, m.index + 250);
+    const ctxMatch = after.match(/\(([^)]*)\)/);
+    const context = ctxMatch ? ctxMatch[1] : "";
+    const isActual = !hasE && /\bactual\b/i.test(context);
+    quarters.push({ q, value, isActual, context });
+    seenQ.add(q);
+  }
+  quarters.sort((a, b) => a.q - b.q);
+
+  let fyTotal: { value: number; raw: string } | null = null;
+  const fyRegex = /FY[- ]?(?:Total|Summe)\s*[~≈]?\s*[\$€£]?\s*([\d.,]+)\s*(B|Mrd|Mio|M|Milliarden|Millionen|billion|million)?\b/i;
+  const fyMatch = breakdownPart.match(fyRegex);
+  if (fyMatch) {
+    const fyValue = _parseNumberWithUnit(fyMatch[1], fyMatch[2]);
+    if (!isNaN(fyValue)) fyTotal = { value: fyValue, raw: fyMatch[0] };
+  }
+
+  if (quarters.length === 0 && !fyTotal) return null;
+  return { generalSource, quarters, fyTotal };
+}
+
+function _formatShortMoney(value: number, currency: string | null = "USD"): string {
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  const sym = currency === "EUR" ? "€" : currency === "GBP" ? "£" : "$";
+  if (abs >= 1e9) return `${sign}${sym}${(abs / 1e9).toFixed(2)} B`;
+  if (abs >= 1e6) return `${sign}${sym}${(abs / 1e6).toFixed(0)} M`;
+  return `${sign}${sym}${abs.toFixed(0)}`;
+}
+
 function renderMarkdown(text: string): string {
   // Light Markdown: **bold**, *italic*, headings ##, bullets - / *, line breaks,
   // code `inline`. Robust gegen XSS via _escapeHtml.
@@ -1893,9 +1986,60 @@ export function CompanyDashboardPage() {
                         }`}>{formatValue(displayValue, def.unit, displayCurrency)}</span>
                       </div>
                     )}
-                    <div className={`text-sm font-medium ${
-                      tooltip.variant === "web" ? "text-sky-900" : tooltip.variant === "faktor" ? "text-amber-900" : "text-foreground"
-                    }`}>{displaySource ?? "—"}</div>
+                    {(() => {
+                      const parsed = cv.is_forecast ? parseQuartalsBreakdown(displaySource) : null;
+                      if (!parsed) {
+                        return (
+                          <div className={`text-sm font-medium ${
+                            tooltip.variant === "web" ? "text-sky-900" : tooltip.variant === "faktor" ? "text-amber-900" : "text-foreground"
+                          }`}>{displaySource ?? "—"}</div>
+                        );
+                      }
+                      const valCurrency = cv.currency ?? "USD";
+                      return (
+                        <>
+                          <div className={`text-sm font-medium ${
+                            tooltip.variant === "web" ? "text-sky-900" : "text-foreground"
+                          }`}>{parsed.generalSource}</div>
+                          <div className="mt-2 overflow-hidden rounded-md border border-border bg-background/60">
+                            <div className="border-b border-border bg-muted/40 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                              Quartals-Aufschlüsselung
+                            </div>
+                            <table className="w-full text-[11px] tabular">
+                              <tbody>
+                                {parsed.quarters.map((qb) => (
+                                  <tr key={qb.q} className="border-b border-border/40 last:border-b-0">
+                                    <td className="w-12 px-2 py-1 font-semibold text-muted-foreground">Q{qb.q}</td>
+                                    <td className="px-2 py-1 font-mono text-foreground">{_formatShortMoney(qb.value, valCurrency)}</td>
+                                    <td className="w-16 px-2 py-1 text-right">
+                                      <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                                        qb.isActual ? "bg-emerald-100 text-emerald-700" : "bg-sky-100 text-sky-700"
+                                      }`}>{qb.isActual ? "Actual" : "Estimate"}</span>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {parsed.fyTotal && (
+                                  <tr className="bg-muted/30">
+                                    <td className="px-2 py-1 font-semibold text-foreground">FY</td>
+                                    <td className="px-2 py-1 font-mono font-bold text-foreground">{_formatShortMoney(parsed.fyTotal.value, valCurrency)}</td>
+                                    <td className="px-2 py-1 text-right">
+                                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-slate-700">Summe</span>
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                            {parsed.quarters.some((q) => q.context) && (
+                              <div className="space-y-0.5 border-t border-border/40 bg-muted/20 px-2 py-1.5 text-[10px] text-muted-foreground">
+                                {parsed.quarters.filter((q) => q.context).map((qb) => (
+                                  <div key={qb.q}><span className="font-semibold">Q{qb.q}:</span> {qb.context}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      );
+                    })()}
                     {displayLink && (
                       <a href={displayLink} target="_blank" rel="noreferrer" className={`block truncate text-xs hover:underline ${
                         tooltip.variant === "web" ? "text-sky-700 font-medium" : "text-primary"
