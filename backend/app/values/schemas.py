@@ -49,6 +49,7 @@ class CompanyValueOut(BaseModel):
     forecast_alternates: list[dict] | None = None
     primary_method: str | None = None
     last_refresh_attempt: datetime | None = None
+    from_ir_pdf: bool = False
 
     model_config = {"from_attributes": True}
 

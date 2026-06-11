@@ -43,6 +43,7 @@ export type CompanyValue = {
   forecast_alternates: ForecastAlternate[] | null;
   primary_method?: "web_guidance" | "q_factor_proxy" | "pdf" | "manual" | "provider" | "calculated" | null;
   last_refresh_attempt?: string | null;
+  from_ir_pdf?: boolean;
 };
 
 export const getValueDefinitions = () =>
@@ -58,6 +59,14 @@ export const getCompanyValues = (
   if (periodYear) params.set("period_year", String(periodYear));
   return api<CompanyValue[]>(`/api/companies/${companyId}/values?${params}`);
 };
+
+export const getQuarterlyBreakdown = (
+  companyId: string,
+  valueKey: string,
+  periodYear: number,
+) => api<CompanyValue[]>(
+  `/api/companies/${companyId}/values/${valueKey}/quarterly?period_year=${periodYear}`,
+);
 
 export const refreshValues = (
   companyId: string,

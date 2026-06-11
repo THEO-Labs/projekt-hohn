@@ -286,6 +286,36 @@ def list_company_values(
     return q.all()
 
 
+@values_router.get("/{company_id}/values/{value_key}/quarterly", response_model=list[CompanyValueOut])
+def get_quarterly_breakdown(
+    company_id: UUID,
+    value_key: str,
+    period_year: int = Query(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[CompanyValue]:
+    """Q1/Q2/Q3/Q4 Rows fuer einen Key + FY — fuer das Drilldown-Modal mit
+    Quartals-Tabelle. Bei Duplikaten (PDF-Actual + frueheres Web-Fallback)
+    wird die Actual-Row bevorzugt (is_forecast=False sortiert zuerst)."""
+    _get_owned_company(db, user, company_id)
+    rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
+            CompanyValue.period_year == period_year,
+        )
+        .order_by(CompanyValue.period_type, CompanyValue.is_forecast.asc())
+        .all()
+    )
+    seen: dict[str, CompanyValue] = {}
+    for r in rows:
+        if r.period_type not in seen:
+            seen[r.period_type] = r
+    return list(seen.values())
+
+
 def _try_web_guidance(
     db: Session,
     company,
@@ -306,9 +336,8 @@ def _try_web_guidance(
         return None
 
     label = f"{vd.label_en} ({vd.label_de})"
-    # FY[N-1]-Anker fuer Konsens-Sanity (YoY-Cap) und Currency-Cross-Check.
+    # FY[N-1]-Anker fuer Currency-Cross-Check.
     prev_fy = target_fy - 1
-    # Forecast+Actual koennen beide existieren — Actual bevorzugen (is_forecast=False sortiert zuerst).
     prev_row = (
         db.query(CompanyValue)
         .filter(
@@ -322,42 +351,44 @@ def _try_web_guidance(
     )
     prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
 
-    # Q-Actuals-Anker: aus unseren PDF-Extraktionen (Q1/Q2/Q3) bereits in DB
-    # gespeicherte Quartalswerte fuer das target_fy holen. Diese werden als
-    # PFLICHT-Anker in Claude's Prompt injiziert — verhindert dass Claude
-    # die Q-Aufschluesselung aus Web-Recherche selbst herleitet und dabei
-    # widersprechende Werte liefert. Claude muss Q1-Q3 EXAKT uebernehmen
-    # und nur Q4 schaetzen.
-    q_actuals_rows = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
-            CompanyValue.period_year == target_fy,
-            CompanyValue.is_forecast.is_(False),
-            CompanyValue.numeric_value.isnot(None),
-        )
-        .order_by(CompanyValue.period_type)
-        .all()
+    # Neue Pipeline fuer die 7 Forward-Estimate-Keys (NI, EBITDA, FCF, SBC,
+    # Buyback, Dividends, Net Debt): pro Quartal entweder Actual aus DB
+    # uebernehmen oder Claude-Q-Call fuer das fehlende Quartal. Dann
+    # mathematische Aggregation (Summe oder Q4-Endstand). Eliminiert
+    # FY-LLM-Sum-Drift und nutzt vorhandene 10-Q-Actuals exakt.
+    from app.values.quarterly_estimates import (
+        QUARTERLY_ESTIMATE_KEYS,
+        estimate_fy_via_quarterly_sum,
     )
-    q_actuals: dict[str, Decimal] = {}
-    for row in q_actuals_rows:
-        # Bei Duplikaten (PDF + Web-Fallback): PDF-Wert bevorzugen
-        if row.period_type in q_actuals and not row.from_ir_pdf:
-            continue
-        q_actuals[row.period_type] = row.numeric_value
-    if q_actuals:
-        logger.info("Web-Guidance %s/%s/FY%s: Q-Actuals-Anker gefunden: %s",
-                    company.ticker, key, target_fy,
-                    {k: f"{float(v):,.0f}" for k, v in q_actuals.items()})
+    if key in QUARTERLY_ESTIMATE_KEYS:
+        result = estimate_fy_via_quarterly_sum(
+            db, company=company, key=key,
+            target_fy=target_fy, prev_fy_val=prev_fy_val,
+        )
+        if result is None:
+            return None
+        fy_value, fy_source, fy_url, fy_adj, fy_adj_note, fy_adj_source = result
+        return ProviderResult(
+            value=fy_value,
+            source_name=f"Web-Guidance: {fy_source}",
+            source_link=fy_url,
+            currency=company.currency if key in CURRENCY_KEYS else None,
+            extras={
+                "is_forecast": True,
+                "guidance_method": "quarterly_aggregation",
+                "value_adjusted": str(fy_adj) if fy_adj is not None else None,
+                "adjustments_note": fy_adj_note,
+                "adjustments_source": fy_adj_source,
+            },
+        )
 
+    # Fallback: alte FY-monolith Pipeline fuer Keys ausserhalb der 7 Estimate-Keys.
     try:
         dual = research_value_dual(
             company.name, company.ticker, label, company.currency,
             period_type="FY", period_year=target_fy, value_key=key,
             prev_fy_val=prev_fy_val,
-            q_actuals=q_actuals or None,
+            q_actuals=None,
         )
     except Exception as e:
         logger.warning("Web-Guidance research failed for %s/%s/FY%s: %s",
@@ -365,8 +396,6 @@ def _try_web_guidance(
         return None
 
     if dual.value is None:
-        logger.info("Web-Guidance %s/%s/FY%s: keine Provider lieferte einen Wert",
-                    company.ticker, key, target_fy)
         return None
 
     return ProviderResult(
@@ -380,7 +409,6 @@ def _try_web_guidance(
             "providers_responded": dual.providers_responded,
             "claude_value": str(dual.claude.value) if dual.claude.value is not None else None,
             "claude_source": dual.claude.source,
-            # Adjusted/Non-GAAP-Variante (nur fuer ni/ebitda/fcf relevant).
             "value_adjusted": str(dual.value_adjusted) if dual.value_adjusted is not None else None,
             "adjustments_note": dual.adjustments_note,
             "adjustments_source": dual.adjustments_source,

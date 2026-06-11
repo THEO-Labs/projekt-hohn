@@ -14,6 +14,7 @@ import {
   getCumulativeValues,
   getFyAvailability,
   getRefreshStatus,
+  getQuarterlyBreakdown,
   refreshValues,
   overrideValue,
   explainValue,
@@ -24,6 +25,14 @@ import {
   type FyAvailability,
   type RefreshStatus,
 } from "@/api/values";
+
+const QUARTERLY_ESTIMATE_KEYS = new Set([
+  "net_income", "ebitda", "fcf", "sbc",
+  "buyback_volume", "dividends", "net_debt",
+]);
+const QUARTERLY_SUMMABLE_KEYS = new Set([
+  "net_income", "ebitda", "fcf", "sbc", "buyback_volume", "dividends",
+]);
 import { CumulativeBreakdownDrawer } from "@/components/CumulativeBreakdownDrawer";
 import { RefreshProgressBar } from "@/components/RefreshProgressBar";
 import { getFxRates } from "@/api/fx";
@@ -611,6 +620,8 @@ export function CompanyDashboardPage() {
   };
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [tooltip, setTooltip] = useState<TooltipState>(null);
+  const [quarterlyBreakdown, setQuarterlyBreakdown] = useState<CompanyValue[] | null>(null);
+  const [quarterlyBreakdownLoading, setQuarterlyBreakdownLoading] = useState(false);
   const [explainResult, setExplainResult] = useState<{ key: string; companyId: string; periodYear: number | null; text: string } | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [tooltipEdit, setTooltipEdit] = useState<{ key: string; companyId: string; periodYear: number | null; value: string } | null>(null);
@@ -811,6 +822,23 @@ export function CompanyDashboardPage() {
     const timer = setInterval(() => pollStatuses(companies), 2000);
     return () => clearInterval(timer);
   }, [refreshStatuses, companies, pollStatuses]);
+
+  // Q-Breakdown laden wenn Tooltip auf einem der 7 Estimate-Keys + FY-Periode oeffnet.
+  // Net Debt + Shares Outstanding: auch fuer Snapshot-Mode laden (Verlauf-Anzeige).
+  useEffect(() => {
+    if (!tooltip) { setQuarterlyBreakdown(null); return; }
+    const showQTable = QUARTERLY_ESTIMATE_KEYS.has(tooltip.key) || tooltip.key === "shares_outstanding";
+    if (!showQTable) { setQuarterlyBreakdown(null); return; }
+    const targetYear = period.value === "FY" ? period.year : new Date().getFullYear();
+    if (targetYear === undefined) { setQuarterlyBreakdown(null); return; }
+    setQuarterlyBreakdownLoading(true);
+    let cancelled = false;
+    getQuarterlyBreakdown(tooltip.companyId, tooltip.key, targetYear)
+      .then((rows) => { if (!cancelled) setQuarterlyBreakdown(rows); })
+      .catch(() => { if (!cancelled) setQuarterlyBreakdown([]); })
+      .finally(() => { if (!cancelled) setQuarterlyBreakdownLoading(false); });
+    return () => { cancelled = true; };
+  }, [tooltip, period]);
 
   const toggleCategory = (cat: string) => {
     setExpandedSections((prev) => {
@@ -2019,6 +2047,106 @@ export function CompanyDashboardPage() {
                       </div>
                     )}
                     {(() => {
+                      // Primary path: DB-driven Q-Tabelle aus dem neuen quarterly_estimates-Pipeline.
+                      // Greift bei den 7 Estimate-Keys + Shares Outstanding (Verlauf).
+                      const isQuarterlyKey = QUARTERLY_ESTIMATE_KEYS.has(tooltip.key) || tooltip.key === "shares_outstanding";
+                      if (isQuarterlyKey && quarterlyBreakdown !== null) {
+                        const valCurrency = cv.currency ?? "USD";
+                        const byQ = new Map<string, CompanyValue>();
+                        for (const r of quarterlyBreakdown) {
+                          if (["Q1", "Q2", "Q3", "Q4"].includes(r.period_type)) byQ.set(r.period_type, r);
+                        }
+                        const isSummable = QUARTERLY_SUMMABLE_KEYS.has(tooltip.key);
+                        const fyAggLabel = isSummable ? "Summe Q1-Q4"
+                          : tooltip.key === "net_debt" ? "Q4-Endstand"
+                          : "Verlauf";
+                        const qRowsArr = ["Q1", "Q2", "Q3", "Q4"].map((q) => ({ q, row: byQ.get(q) ?? null }));
+                        const allMissing = qRowsArr.every((r) => r.row === null || r.row.numeric_value == null);
+                        if (allMissing && quarterlyBreakdownLoading) {
+                          return <div className="text-xs text-muted-foreground">Lade Quartals-Aufschluesselung…</div>;
+                        }
+                        if (allMissing) {
+                          return (
+                            <div className={`text-sm font-medium ${tooltip.variant === "web" ? "text-sky-900" : "text-foreground"}`}>
+                              {displaySource ?? "—"}
+                              <div className="mt-2 text-[11px] text-muted-foreground">
+                                Noch keine Quartals-Daten in DB. Klick auf "Vollberechnung" um Q1-Q4 zu generieren.
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <>
+                            <div className={`text-sm font-medium ${tooltip.variant === "web" ? "text-sky-900" : "text-foreground"}`}>
+                              {displaySource ?? "—"}
+                            </div>
+                            <div className="mt-2 overflow-hidden rounded-md border border-border bg-background/60">
+                              <div className="border-b border-border bg-muted/40 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                Quartals-Aufschlüsselung — {fyAggLabel}
+                              </div>
+                              <table className="w-full text-[11px] tabular">
+                                <tbody>
+                                  {qRowsArr.map(({ q, row }) => {
+                                    const val = row?.numeric_value != null ? (typeof row.numeric_value === "string" ? parseFloat(row.numeric_value) : row.numeric_value) : null;
+                                    const isActual = row !== null && !row.is_forecast;
+                                    const isManual = !!row?.manually_overridden;
+                                    const isPdfActual = !!row?.from_ir_pdf && !row.is_forecast;
+                                    const badgeLabel = isManual ? "Manual" : isPdfActual ? "Actual" : isActual ? "Actual" : row ? "Estimate" : "—";
+                                    const badgeClass = isManual ? "bg-violet-100 text-violet-700"
+                                      : isActual ? "bg-emerald-100 text-emerald-700"
+                                      : row ? "bg-sky-100 text-sky-700"
+                                      : "bg-slate-100 text-slate-500";
+                                    return (
+                                      <tr key={q} className="border-b border-border/40 last:border-b-0">
+                                        <td className="w-12 px-2 py-1 font-semibold text-muted-foreground">{q}</td>
+                                        <td className="px-2 py-1 font-mono text-foreground">{val != null ? _formatShortMoney(val, valCurrency) : "—"}</td>
+                                        <td className="w-20 px-2 py-1 text-right">
+                                          <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase ${badgeClass}`}>{badgeLabel}</span>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                  {(() => {
+                                    const values = qRowsArr.map(({ row }) => row?.numeric_value != null ? (typeof row.numeric_value === "string" ? parseFloat(row.numeric_value) : row.numeric_value) : null);
+                                    if (isSummable) {
+                                      const validVals = values.filter((v): v is number => v != null);
+                                      if (validVals.length === 0) return null;
+                                      const sum = validVals.reduce((a, b) => a + b, 0);
+                                      return (
+                                        <tr className="bg-muted/30">
+                                          <td className="px-2 py-1 font-semibold text-foreground">FY</td>
+                                          <td className="px-2 py-1 font-mono font-bold text-foreground">{_formatShortMoney(sum, valCurrency)}</td>
+                                          <td className="px-2 py-1 text-right">
+                                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-slate-700">Σ {validVals.length}/4</span>
+                                          </td>
+                                        </tr>
+                                      );
+                                    }
+                                    if (tooltip.key === "net_debt") {
+                                      const q4 = values[3];
+                                      if (q4 == null) return null;
+                                      return (
+                                        <tr className="bg-muted/30">
+                                          <td className="px-2 py-1 font-semibold text-foreground">FY</td>
+                                          <td className="px-2 py-1 font-mono font-bold text-foreground">{_formatShortMoney(q4, valCurrency)}</td>
+                                          <td className="px-2 py-1 text-right">
+                                            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-slate-700">Q4-Stand</span>
+                                          </td>
+                                        </tr>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
+                                </tbody>
+                              </table>
+                              <div className="border-t border-border/40 bg-muted/20 px-2 py-1.5 text-[10px] text-muted-foreground">
+                                <span className="font-semibold">Legende:</span> Actual = aus 10-Q/PDF · Estimate = Claude-Q-Schätzung · Manual = User-Override
+                              </div>
+                            </div>
+                          </>
+                        );
+                      }
+                      // Fallback: alter Source-String-Parser fuer andere Estimate-Keys (kein Q-Schema).
                       const parsed = cv.is_forecast ? parseQuartalsBreakdown(displaySource) : null;
                       if (!parsed) {
                         return (
