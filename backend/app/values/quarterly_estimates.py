@@ -279,7 +279,11 @@ def estimate_fy_via_quarterly_sum(
         q_values[q] = v
         if adj_v is not None:
             q_adj_values[q] = adj_v
-        q_sources[q] = f"{q}: Claude-Estimate ({float(v):,.0f})"
+        src_detail = (src_full or "").split(" | ", 1)
+        detail_txt = src_detail[1].strip() if len(src_detail) > 1 else ""
+        q_sources[q] = f"{q}: Claude-Estimate ({float(v):,.0f})" + (
+            f" — Begruendung: {detail_txt[:700]}" if detail_txt else ""
+        )
         q_origin[q] = "estimate"
         if first_url is None and url:
             first_url = url
