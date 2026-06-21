@@ -261,6 +261,155 @@ def _estimate_single_quarter(
     return v, src_name, u, adj_val, adj_note, adj_src
 
 
+# Keys die der EDGAR-Q-Fallback unterstuetzt (Income-Statement-Standalone-Q).
+# Net Debt fehlt bewusst: Q-Bilanz braucht 5-Komponenten-Aggregation, separate Iteration.
+EDGAR_QUARTERLY_SUPPORTED = frozenset({
+    "net_income", "ebitda", "fcf", "sbc", "buyback_volume", "dividends",
+})
+
+# Provider-Singleton damit ticker->CIK Map und Facts-Cache reuse zwischen Calls.
+_edgar_provider_singleton = None
+
+
+def _get_edgar_provider():
+    global _edgar_provider_singleton
+    if _edgar_provider_singleton is None:
+        from app.providers.edgar import EdgarProvider
+        _edgar_provider_singleton = EdgarProvider()
+    return _edgar_provider_singleton
+
+
+def _upsert_q_actual_from_provider(
+    db: Session,
+    company_id: UUID,
+    key: str,
+    period_year: int,
+    quarter: str,
+    value: Decimal,
+    source_name: str,
+    source_link: str | None,
+    currency: str | None,
+) -> CompanyValue | None:
+    """Persistiert einen Q-Actual vom Provider (EDGAR). Setzt is_forecast=False.
+    Schreibt nie ueber existierende Actuals (auch nicht aus PDF), Manual-Overrides
+    oder PDF-Guidance. Forecast-Rows werden ueberschrieben."""
+    existing_actual = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == quarter,
+            CompanyValue.period_year == period_year,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .first()
+    )
+    if existing_actual is not None:
+        return existing_actual
+    existing_forecast = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == quarter,
+            CompanyValue.period_year == period_year,
+            CompanyValue.is_forecast.is_(True),
+        )
+        .one_or_none()
+    )
+    if existing_forecast and existing_forecast.manually_overridden:
+        return existing_forecast
+    if existing_forecast and existing_forecast.from_ir_pdf and existing_forecast.numeric_value is not None:
+        return existing_forecast
+    now = datetime.now(timezone.utc)
+    try:
+        with db.begin_nested():
+            if existing_forecast:
+                existing_forecast.numeric_value = value
+                existing_forecast.source_name = source_name[:4000]
+                existing_forecast.source_link = source_link
+                existing_forecast.currency = currency
+                existing_forecast.fetched_at = now
+                existing_forecast.is_forecast = False
+                existing_forecast.from_ir_pdf = False
+                return existing_forecast
+            cv = CompanyValue(
+                id=uuid4(),
+                company_id=company_id,
+                value_key=key,
+                period_type=quarter,
+                period_year=period_year,
+                numeric_value=value,
+                source_name=source_name[:4000],
+                source_link=source_link,
+                currency=currency,
+                fetched_at=now,
+                is_forecast=False,
+            )
+            db.add(cv)
+            db.flush()
+            return cv
+    except IntegrityError as ie:
+        logger.warning("EDGAR Q-Actual upsert %s/%s/%s/%s IntegrityError: %s",
+                       company_id, key, quarter, period_year, str(ie)[:120])
+        return None
+
+
+def _try_edgar_q_actuals(
+    db: Session,
+    company: "Company",
+    key: str,
+    target_fy: int,
+    q_values: dict[str, Decimal],
+    q_sources: dict[str, str],
+    q_origin: dict[str, str],
+    currency: str | None,
+) -> None:
+    """EDGAR-Q-Fallback fuer US-Filer: Standalone-Q-Actuals aus 10-Q-XBRL.
+    Mutiert q_values/q_sources/q_origin direkt, persistiert via _upsert_q_actual_from_provider."""
+    from app.calculations.lock import is_us_company
+    if not is_us_company(company):
+        return
+    if key not in EDGAR_QUARTERLY_SUPPORTED:
+        return
+    fy_end_month = getattr(company, "fiscal_year_end_month", None)
+    fy_end_day = getattr(company, "fiscal_year_end_day", None)
+    if not fy_end_month or not fy_end_day:
+        return
+    provider = _get_edgar_provider()
+    for q in ("Q1", "Q2", "Q3"):
+        if q in q_values:
+            continue
+        try:
+            res = provider.fetch_quarterly(
+                company.ticker, key, target_fy, q,
+                fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+            )
+        except Exception as exc:
+            logger.warning("EDGAR Q-Fetch %s/%s/%s/FY%s exception: %s",
+                           company.ticker, key, q, target_fy, exc)
+            continue
+        if res is None or res.value is None:
+            continue
+        v = Decimal(str(res.value))
+        # Sign normalisation: buyback/dividend werden positiv gespeichert (Outflow).
+        if key in {"buyback_volume", "dividends"} and v < 0:
+            v = abs(v)
+        q_values[q] = v
+        q_sources[q] = f"{q}: actual lt. {res.source_name[:70]}"
+        q_origin[q] = "actual"
+        _upsert_q_actual_from_provider(
+            db, company.id, key, target_fy, q,
+            value=v,
+            source_name=res.source_name,
+            source_link=res.source_link,
+            currency=currency,
+        )
+        logger.info("EDGAR Q-Actual %s/%s/%s/FY%s = %.0f via XBRL",
+                    company.ticker, key, q, target_fy, float(v))
+
+
 def estimate_fy_via_quarterly_sum(
     db: Session,
     company: "Company",
@@ -310,6 +459,15 @@ def estimate_fy_via_quarterly_sum(
                 q_sources[q] = f"{q}: actual lt. {src_short}"
                 q_origin[q] = "actual"
                 continue
+
+    # EDGAR-Q-Fallback (US-Filer): wenn PDF-Actual fehlt, versuche Standalone-Q
+    # aus 10-Q-XBRL zu holen, bevor wir Claude raten lassen.
+    # Q4-laufendes-FY ist nie im 10-Q -> bleibt Claude.
+    _try_edgar_q_actuals(
+        db, company, key, target_fy,
+        q_values=q_values, q_sources=q_sources, q_origin=q_origin,
+        currency=currency,
+    )
 
     for q in QUARTERS:
         if q in q_values:

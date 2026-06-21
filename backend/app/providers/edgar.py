@@ -220,6 +220,159 @@ class EdgarProvider:
             return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn_clean}/{accn}-index.htm"
         return f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=10-K"
 
+    def _q_end_date(
+        self,
+        period_year: int,
+        quarter: str,
+        fy_end_month: int | None,
+        fy_end_day: int | None,
+    ) -> "date | None":
+        """Q-Ende-Datum berechnen aus FY-Ende. Q4 = FY-Ende, Q3 = -3M, Q2 = -6M, Q1 = -9M.
+        Day-Clamping fuer Februar-Ende (z.B. 30 -> 28)."""
+        from datetime import date
+        import calendar
+        if quarter not in ("Q1", "Q2", "Q3", "Q4") or not fy_end_month or not fy_end_day:
+            return None
+        try:
+            fy_end = date(period_year, fy_end_month, fy_end_day)
+        except ValueError:
+            return None
+        months_back = (4 - int(quarter[1])) * 3
+        new_month = fy_end.month - months_back
+        new_year = fy_end.year
+        while new_month <= 0:
+            new_month += 12
+            new_year -= 1
+        last_day = calendar.monthrange(new_year, new_month)[1]
+        return date(new_year, new_month, min(fy_end.day, last_day))
+
+    def _find_q_standalone(
+        self,
+        facts: dict,
+        concepts: list[str],
+        target_end: "date",
+    ) -> tuple[Decimal, str, str | None] | None:
+        """Sucht einen Standalone-Q-Eintrag (start/end Abstand ~90 Tage) zum target_end.
+        Returns (value, currency, accession) oder None.
+        Toleranz: end-Datum +/- 7 Tage, period length 75-100 Tage (deckt 13-week-FY ab)."""
+        from datetime import date
+        us_gaap = facts.get("facts", {}).get("us-gaap", {})
+        for concept_name in concepts:
+            concept_data = us_gaap.get(concept_name)
+            if not concept_data:
+                continue
+            units = concept_data.get("units", {})
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            for unit_name in unit_keys:
+                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                    continue
+                candidates: list[tuple[dict, int]] = []
+                for e in units[unit_name]:
+                    form = e.get("form", "")
+                    if not form.startswith(("10-Q", "10-K")):
+                        continue
+                    end_str = e.get("end") or ""
+                    start_str = e.get("start") or ""
+                    if not end_str or not start_str:
+                        continue
+                    try:
+                        end_d = date.fromisoformat(end_str)
+                        start_d = date.fromisoformat(start_str)
+                    except ValueError:
+                        continue
+                    if abs((end_d - target_end).days) > 7:
+                        continue
+                    period_days = (end_d - start_d).days
+                    if not (75 <= period_days <= 100):
+                        continue
+                    candidates.append((e, period_days))
+                if candidates:
+                    # Earliest filed (= original 10-Q, nicht spaetere Restatement-Amendments)
+                    best = min(candidates, key=lambda c: c[0].get("filed", "9999"))
+                    e = best[0]
+                    return Decimal(str(e["val"])), unit_name, e.get("accn")
+        return None
+
+    def fetch_quarterly(
+        self,
+        ticker: str,
+        key: str,
+        period_year: int,
+        quarter: str,
+        fy_end_month: int | None = None,
+        fy_end_day: int | None = None,
+    ) -> ProviderResult | None:
+        """Liefert einen Standalone-Q-Actual aus 10-Q-XBRL fuer US-Filer.
+        Returns None bei: nicht-US, kein CIK, kein 10-Q-Eintrag, Q4 (kommt erst
+        mit FY-10-K), nicht-supported Key, oder unbekanntem FY-Ende-Datum.
+        Q4-laufendes-FY ist sowieso noch nicht filed. Q4-abgeschlossen wird ueber
+        FY-10-K - 9M-10-Q in der Backtest-Pipeline gehandhabt.
+        """
+        if quarter == "Q4":
+            return None
+        if quarter not in ("Q1", "Q2", "Q3"):
+            return None
+        if key not in self.supported_keys:
+            return None
+        cik = self._get_cik(ticker)
+        if cik is None:
+            return None
+        facts = self._get_facts(cik)
+        if facts is None:
+            return None
+        target_end = self._q_end_date(period_year, quarter, fy_end_month, fy_end_day)
+        if target_end is None:
+            return None
+
+        if key == "fcf":
+            ocf = self._find_q_standalone(facts, FCF_OP_CASH_CONCEPTS, target_end)
+            capex = self._find_q_standalone(facts, FCF_CAPEX_CONCEPTS, target_end)
+            if ocf is None or capex is None:
+                return None
+            ocf_val, cur, accn = ocf
+            capex_val, _, _ = capex
+            return ProviderResult(
+                value=ocf_val - abs(capex_val),
+                source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year}, FCF = OCF - CapEx)",
+                source_link=self._filing_link(cik, accn),
+                currency=cur if "fcf" in CURRENCY_KEYS else None,
+            )
+
+        if key == "ebitda":
+            ebit = self._find_q_standalone(facts, EBITDA_EBIT_CONCEPTS, target_end)
+            da = self._find_q_standalone(facts, EBITDA_DA_CONCEPTS, target_end)
+            if ebit is None:
+                return None
+            ebit_val, cur, accn = ebit
+            if da is None:
+                return ProviderResult(
+                    value=ebit_val,
+                    source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year}, EBITDA ~ EBIT, D&A nicht in XBRL)",
+                    source_link=self._filing_link(cik, accn),
+                    currency=cur if "ebitda" in CURRENCY_KEYS else None,
+                )
+            da_val, _, _ = da
+            return ProviderResult(
+                value=ebit_val + abs(da_val),
+                source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year}, EBITDA = EBIT + D&A)",
+                source_link=self._filing_link(cik, accn),
+                currency=cur if "ebitda" in CURRENCY_KEYS else None,
+            )
+
+        concepts = CONCEPT_MAP.get(key, [])
+        if not concepts:
+            return None
+        result = self._find_q_standalone(facts, concepts, target_end)
+        if result is None:
+            return None
+        val, cur, accn = result
+        return ProviderResult(
+            value=val,
+            source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year})",
+            source_link=self._filing_link(cik, accn),
+            currency=cur if key in CURRENCY_KEYS else None,
+        )
+
     def fetch(
         self,
         ticker: str,
