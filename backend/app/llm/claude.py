@@ -780,6 +780,57 @@ def research_value(
     # YoY-Korridor-Hint im Prompt entfernt (Sanity-Checks deaktiviert).
     anchor_block = ""
 
+    # Definitions-Anker (Sektor-Mismatch-Schutz): wenn prev_fy_val verfuegbar
+    # ist und der Key definitions-sensitiv ist (Net Debt bei Versicherern,
+    # EBITDA bei Banken/Versicherern, FCF bei Finanz-Sektor), wird der Vorjahres-
+    # Wert prominent als Definitions-Anker injiziert. Verhindert dass Claude
+    # eine andere Definition fuer das Forward-Jahr nutzt als im historischen
+    # Backtest verwendet wurde (z.B. Munich Re FY2025: -7.4B Nettocash via
+    # Investment-Portfolio-Definition, dann FY2026: +6.5B Strategic-Debt-
+    # Definition — Vorzeichen-Flip mathematisch unmoeglich).
+    definition_anchor_block = ""
+    if (
+        prev_fy_val is not None
+        and period_year is not None
+        and value_key in {"net_debt", "ebitda", "fcf"}
+    ):
+        prev_year = period_year - 1
+        sign_str = (
+            "NEGATIV (Nettocash-Position: Cash/Investments > Schulden)"
+            if prev_fy_val < 0
+            else "POSITIV (Nettoschulden-Position: Schulden > Cash/Investments)"
+        )
+        if value_key == "net_debt":
+            definition_anchor_block = (
+                f"\n\nPFLICHT-ANKER NET-DEBT-DEFINITION (Sektor-Konsistenz):\n"
+                f"  FY{prev_year} Net Debt = {float(prev_fy_val):,.0f} {currency} "
+                f"({sign_str})\n"
+                "REGEL: Bei Versicherern/Banken existieren MEHRERE valide Net-Debt-"
+                "Definitionen — (a) Investment-Portfolio-Methode (Investment-Assets "
+                "als Cash gegen Debt) liefert oft Nettocash (negativ), (b) Strategic-"
+                "Debt-Methode (nur operative Holding-Cash gegen Debt) liefert oft "
+                "Nettoschulden (positiv). Du MUSST exakt die gleiche Definition "
+                f"nutzen wie im FY{prev_year}-Ankerwert oben — die Vorzeichen-"
+                "Richtung muss konsistent bleiben. Konkret: wenn der Anker NEGATIV "
+                "ist (Nettocash), liefere auch fuer dieses Quartal eine NEGATIVE "
+                "Zahl (Investment-Assets gegen Debt). Wenn der Anker POSITIV ist, "
+                "liefere auch eine POSITIVE Zahl. Ein Vorzeichen-Flip von einem "
+                "Jahr zum naechsten ist bei stabilen Bilanz-Posten unmoeglich.\n"
+                "Begruende in der QUELLE explizit welche Definition du nutzt und "
+                "warum sie mit dem Vorjahres-Anker konsistent ist."
+            )
+        else:
+            definition_anchor_block = (
+                f"\n\nPFLICHT-ANKER {value_key.upper()}-DEFINITION (Sektor-Konsistenz):\n"
+                f"  FY{prev_year} {value_key.upper()} = {float(prev_fy_val):,.0f} {currency}\n"
+                f"REGEL: Bei Banken/Versicherern ist {value_key.upper()} ein Sektor-"
+                "Mismatch — die Definition kann zwischen Quellen variieren. Du MUSST "
+                "die gleiche Definition/Methodik nutzen wie im Vorjahres-Anker oben. "
+                "Eine Definitions-Aenderung zwischen FY-Jahren ist nicht zulaessig "
+                "(macht den YoY-Vergleich unmoeglich). Begruende explizit welche "
+                "Definition du nutzt und warum sie mit dem Anker konsistent ist."
+            )
+
     # Q-Actuals-Anker-Block: bereits in DB gespeicherte Q-Actuals aus 10-Q-PDFs
     # werden als PFLICHT-Anker injiziert. Verhindert dass Claude die Q-Aufschluesselung
     # selbst aus Web-Recherche herleitet und dabei widersprechende Werte liefert.
@@ -839,6 +890,7 @@ def research_value(
         f"{forward_block}"
         f"{hint_block}"
         f"{anchor_block}"
+        f"{definition_anchor_block}"
         f"{q_actuals_block}"
     )
 
