@@ -149,8 +149,12 @@ def _run_and_persist_calculations(
     snapshot_rows, stammdaten = _load_value_map(db, company_id, "SNAPSHOT", None)
 
     stammdaten_calc = calculate_stammdaten(stammdaten)
+    # Stale-Calc-Override: berechnete Stammdaten-Keys (market_cap_calc) IMMER
+    # ueberschreiben — auch wenn der alte Wert noch in stammdaten steht. Sonst
+    # nutzt die FY-Calculation einen stale market_cap_calc nach z.B. Shares-
+    # Outstanding-Korrektur (Dual-Class-Fix).
     for key, val in stammdaten_calc.items():
-        if val is not None and key not in stammdaten:
+        if val is not None:
             stammdaten[key] = val
 
     updated: list[CompanyValue] = []
