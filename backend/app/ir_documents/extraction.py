@@ -602,18 +602,26 @@ def _is_context_too_long(exc: Exception) -> bool:
 def _call_claude_extraction(client, content_blocks: list, model: str) -> str:
     """Single Claude call with retry on transient errors. Returns raw text.
 
-    1M-Context-Beta wird mitgeschickt — Sonnet 4.6 nutzt es, Haiku ignoriert es.
+    1M-Context-Beta nur fuer Sonnet — Haiku verwirft den Header und kann zu
+    spurious 'context too long' Eskalationen fuehren.
     """
+    # 1M-Context-Beta NUR fuer Sonnet (Haiku braucht es nicht und kann
+    # einen Beta-Header als Fehler interpretieren -> teure False-Eskalation).
+    extra_headers = {}
+    if "sonnet" in model.lower():
+        extra_headers["anthropic-beta"] = "context-1m-2025-08-07"
     last_exc: Exception | None = None
     for attempt in range(2):
         try:
-            response = claude_limiter.call(lambda: client.messages.create(
+            kwargs = dict(
                 model=model,
                 max_tokens=16384,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": content_blocks}],
-                extra_headers={"anthropic-beta": "context-1m-2025-08-07"},
-            ))
+            )
+            if extra_headers:
+                kwargs["extra_headers"] = extra_headers
+            response = claude_limiter.call(lambda: client.messages.create(**kwargs))
             text_parts = [
                 getattr(b, "text", "") or ""
                 for b in response.content

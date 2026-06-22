@@ -894,6 +894,18 @@ def research_value(
         f"{q_actuals_block}"
     )
 
+    # Cost-Optimierung: Web-Search ausschalten wenn Per-Q-Aggregation mit
+    # mindestens einem Q-Actuals-Anker laeuft. Claude leitet dann die Q-Schaetzung
+    # via Run-Rate/Trend aus den Pflicht-Anker-Werten ab, ohne externe Suche —
+    # spart $5-15/1000 Calls (Anthropic-Tool-Pricing). Greift NICHT bei Q1-Call
+    # ohne Anker, FY-Call ohne Q-Actuals oder historischen Backtests.
+    use_web_search = not (
+        is_per_q_aggregation
+        and q_actuals
+        and any(v is not None for v in q_actuals.values())
+    )
+    tools_arg = [WEB_SEARCH_TOOL] if use_web_search else []
+
     def _do_call(messages: list[dict]) -> str:
         # Explizites Retry-Backoff bei 429/529/Overloaded — Anthropic-API hat
         # bei Lastspitzen oft 1-2 transiente Rate-Limit-Antworten, die wir mit
@@ -902,13 +914,15 @@ def research_value(
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                response = claude_limiter.call(lambda: client.messages.create(
+                kwargs = dict(
                     model="claude-sonnet-4-6",
                     max_tokens=2048,
                     system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
-                    tools=[WEB_SEARCH_TOOL],
                     messages=messages,
-                ))
+                )
+                if tools_arg:
+                    kwargs["tools"] = tools_arg
+                response = claude_limiter.call(lambda: client.messages.create(**kwargs))
                 return _collect_text(response)
             except Exception as e:
                 msg = str(e).lower()

@@ -536,8 +536,14 @@ def _process_one_key(
         # Adjusted/Non-GAAP via Dual-Web-Research nachholen — strukturell, weil
         # XBRL keine Standard-Tags fuer Non-GAAP hat. Kosten: 1 Web-Call pro
         # Key pro Refresh, nur fuer adjustable-Keys, nur fuer FY-Mode.
+        # Standardmaessig DEAKTIVIERT (Kostenoptimierung) — Aktivierung via
+        # Env-Flag ADJUSTED_AUTOFETCH=true wenn Adjusted-Werte fuer historische
+        # FY in der Tabelle gebraucht werden.
+        import os
+        _adjusted_autofetch = os.getenv("ADJUSTED_AUTOFETCH", "false").lower() == "true"
         if (
-            result is not None
+            _adjusted_autofetch
+            and result is not None
             and isinstance(result.value, Decimal)
             and is_us_company(company)
             and key in {"net_income", "ebitda", "fcf"}
