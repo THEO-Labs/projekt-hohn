@@ -842,7 +842,13 @@ def research_value(
         for q in ("Q1", "Q2", "Q3", "Q4"):
             v = q_actuals.get(q)
             if v is not None:
-                actuals_lines.append(f"  {q} FY{period_year} actual = {float(v):,.0f} {currency}")
+                # Doppel-Format: Base-Units + Mrd-Notation. Verhindert dass Claude
+                # die ersten Ziffern als Tausender-Wert fehlinterpretiert
+                # (z.B. '4,423,000,000 USD' als '4423 USD' liest).
+                actuals_lines.append(
+                    f"  {q} FY{period_year} actual = {float(v):,.0f} {currency} "
+                    f"(= {float(v) / 1e9:.3f} Mrd {currency})"
+                )
         if actuals_lines:
             if period_type == "FY":
                 instruction = (
@@ -874,26 +880,6 @@ def research_value(
                 + "\n\n" + instruction
             )
 
-    user_prompt = (
-        f"Unternehmen: {company_name} ({ticker}, {currency})\n"
-        f"Gesuchte Kennzahl: {value_label}\n"
-        f"Zeitraum: {period_str}\n\n"
-        f"WAEHRUNG-PFLICHT: Liefere den Wert in {currency} (Original-Reporting-"
-        f"Währung der Firma). KEINE Umrechnung in USD/EUR/anderes Currency. "
-        f"Wenn die Quelle in einer anderen Währung berichtet, rechne KORREKT um "
-        f"in {currency} und nenne den verwendeten Kurs in BEGRUENDUNG.\n\n"
-        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert für {period_str}.{historical_constraint} "
-        f"{not_found_clause}\n\n"
-        f"Nutze das Web-Search-Tool um die IR-Seite des Unternehmens, "
-        f"Annual-Report-PDFs und SEC-Filings aktiv zu durchsuchen. "
-        f"Verlasse dich NICHT nur auf dein Gedächtnis."
-        f"{forward_block}"
-        f"{hint_block}"
-        f"{anchor_block}"
-        f"{definition_anchor_block}"
-        f"{q_actuals_block}"
-    )
-
     # Cost-Optimierung: Web-Search ausschalten wenn Per-Q-Aggregation mit
     # mindestens einem Q-Actuals-Anker laeuft. Claude leitet dann die Q-Schaetzung
     # via Run-Rate/Trend aus den Pflicht-Anker-Werten ab, ohne externe Suche —
@@ -905,6 +891,42 @@ def research_value(
         and any(v is not None for v in q_actuals.values())
     )
     tools_arg = [WEB_SEARCH_TOOL] if use_web_search else []
+
+    # Wenn KEIN Web-Search-Tool: Claude darf NICHT versuchen zu searchen
+    # (sonst halluziniert er das Tool-Format -> Parse-Fehler -> Retry).
+    # Stattdessen direkt aus Q-Actuals/Anker ableiten.
+    if use_web_search:
+        search_instruction = (
+            "Nutze das Web-Search-Tool um die IR-Seite des Unternehmens, "
+            "Annual-Report-PDFs und SEC-Filings aktiv zu durchsuchen. "
+            "Verlasse dich NICHT nur auf dein Gedächtnis."
+        )
+    else:
+        search_instruction = (
+            "WICHTIG: Dir steht in diesem Call KEIN Web-Search-Tool zur "
+            "Verfuegung — versuche NICHT 'web_search' aufzurufen, sonst ist "
+            "deine Antwort ungueltig. Leite den Wert direkt aus den unten "
+            "gelisteten PFLICHT-ANKERN (Q-Actuals, FY-Vorjahresanker) ab. "
+            "Antworte SOFORT mit dem WERT:-Pattern."
+        )
+
+    user_prompt = (
+        f"Unternehmen: {company_name} ({ticker}, {currency})\n"
+        f"Gesuchte Kennzahl: {value_label}\n"
+        f"Zeitraum: {period_str}\n\n"
+        f"WAEHRUNG-PFLICHT: Liefere den Wert in {currency} (Original-Reporting-"
+        f"Währung der Firma). KEINE Umrechnung in USD/EUR/anderes Currency. "
+        f"Wenn die Quelle in einer anderen Währung berichtet, rechne KORREKT um "
+        f"in {currency} und nenne den verwendeten Kurs in BEGRUENDUNG.\n\n"
+        f"Wichtig: Liefere AUSSCHLIESSLICH den Wert für {period_str}.{historical_constraint} "
+        f"{not_found_clause}\n\n"
+        f"{search_instruction}"
+        f"{forward_block}"
+        f"{hint_block}"
+        f"{anchor_block}"
+        f"{definition_anchor_block}"
+        f"{q_actuals_block}"
+    )
 
     def _do_call(messages: list[dict]) -> str:
         # Explizites Retry-Backoff bei 429/529/Overloaded — Anthropic-API hat
