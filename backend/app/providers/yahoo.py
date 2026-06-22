@@ -228,6 +228,34 @@ class YahooFinanceProvider:
         yf_key = INFO_KEY_MAP.get(key)
         if yf_key is None:
             return None
+        # Shares-Outstanding-Korrektur fuer Dual-Class-/BDR-Strukturen (z.B. Nu Holdings:
+        # Yahoo-Info-Feld 'sharesOutstanding' enthaelt nur eine Klasse, 'marketCap' nutzt
+        # aber die echten Total-Shares aller Klassen. Wir leiten daher Shares aus
+        # marketCap/currentPrice ab wenn beide verfuegbar — das ist konsistent mit dem
+        # MCap-Reporting des Providers und vermeidet ~25% MCap_calc-Unterschaetzung.
+        if key == "shares_outstanding":
+            mcap_raw = info.get("marketCap")
+            price_raw = info.get("currentPrice") or info.get("regularMarketPrice")
+            mcap = self._to_decimal(mcap_raw) if mcap_raw is not None else None
+            price = self._to_decimal(price_raw) if price_raw is not None else None
+            shares_raw = info.get("sharesOutstanding")
+            shares_field = self._to_decimal(shares_raw) if shares_raw is not None else None
+            if mcap is not None and price is not None and price > 0:
+                implied = mcap / price
+                # Nur ersetzen wenn MCap-implied deutlich von info[sharesOutstanding] abweicht.
+                # 5% Toleranz deckt normale Rundung/Snapshot-Skew ab.
+                if shares_field is None or shares_field <= 0 or (
+                    abs(implied - shares_field) / shares_field > Decimal("0.05")
+                ):
+                    sanity = self._sanity_check("shares_outstanding", implied)
+                    if sanity is not None:
+                        currency = info.get("currency") if "shares_outstanding" in CURRENCY_KEYS else None
+                        return ProviderResult(
+                            value=sanity,
+                            source_name=f"{self.name} (Shares = MCap / Price, Dual-Class-korrigiert)",
+                            source_link=source_link,
+                            currency=currency,
+                        )
         raw = info.get(yf_key)
         if raw is None:
             return None
