@@ -454,7 +454,29 @@ def _post_extraction_web_fallback(
 
 def _run_extraction_job(doc_id: UUID, company_id: UUID) -> None:
     """Background job: pull doc + company from DB, run Claude PDF extraction,
-    persist values + status. Uses its own DB session."""
+    persist values + status. Uses its own DB session.
+
+    Per Default DEAKTIVIERT (PDF-Extraction-Pipeline-Sunset, EDGAR/Web sind
+    primary). Re-Aktivierung via Env-Flag PDF_EXTRACTION_ENABLED=true wenn
+    fuer Edge-Cases noch gebraucht.
+    """
+    import os
+    if os.getenv("PDF_EXTRACTION_ENABLED", "false").lower() != "true":
+        db = SessionLocal()
+        try:
+            doc = db.query(IRDocument).filter(IRDocument.id == doc_id).one_or_none()
+            if doc is not None:
+                doc.extraction_status = ExtractionStatus.SUCCESS
+                doc.extraction_error = (
+                    "PDF-Auto-Extraktion deaktiviert (Pipeline-Sunset). "
+                    "Werte werden via EDGAR/Web/ESEF aus Provider-Chain bezogen. "
+                    "PDF bleibt als Audit-Archive verfuegbar."
+                )[:500]
+                db.commit()
+                logger.info("PDF-Extraction skipped (disabled by flag) doc=%s", doc_id)
+        finally:
+            db.close()
+        return
     db = SessionLocal()
     try:
         doc = db.query(IRDocument).filter(IRDocument.id == doc_id).one_or_none()
