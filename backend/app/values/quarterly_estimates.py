@@ -229,6 +229,36 @@ def _estimate_single_quarter(
     if v is None:
         return None, None, None, None, None, None
 
+    # Skalierungs-Sanity-Reject (Billion-vs-Trillion-Bug):
+    # Wenn Claude einen Q-Wert > 10x FY-1-Aggregat liefert (= 2.5x FY-Total in
+    # einem einzelnen Q), ist das fast immer ein Unit-Misinterpretation-Bug.
+    # Beispiel Alphabet FY2026 EBITDA Q2: Claude lieferte $41.5T (= 276x FY-1
+    # EBITDA $150B). Sollte gerejected werden.
+    if prev_fy_val is not None and prev_fy_val != 0:
+        ratio = abs(v) / abs(prev_fy_val)
+        if ratio > Decimal("10"):
+            logger.warning(
+                "Q-Estimate Skalierungs-Reject %s/%s/%s/FY%s: v=%.0f > 10x "
+                "prev_fy_val=%.0f (ratio=%.1fx, vermutlich Unit-Bug Billion vs Trillion)",
+                company.ticker, key, quarter, period_year,
+                float(v), float(prev_fy_val), float(ratio),
+            )
+            return None, None, None, None, None, None
+    elif q_actuals_for_prompt:
+        # Fallback ohne prev_fy_val: gegen die anderen Q-Actuals checken
+        max_known = max(
+            (abs(qv) for qv in q_actuals_for_prompt.values() if qv is not None),
+            default=None,
+        )
+        if max_known is not None and max_known > 0 and abs(v) > Decimal("50") * max_known:
+            logger.warning(
+                "Q-Estimate Skalierungs-Reject %s/%s/%s/FY%s: v=%.0f > 50x "
+                "max_q_actual=%.0f (vermutlich Unit-Bug Billion vs Trillion)",
+                company.ticker, key, quarter, period_year,
+                float(v), float(max_known),
+            )
+            return None, None, None, None, None, None
+
     # Auto-Korrektur Kumulativ-Bug (Per-Q-Aggregation): Claude muss bei q_actuals-
     # Calls neben WERT auch KONTEXT_FY_TOTAL_FALLS_BEKANNT liefern. Wenn WERT
     # praktisch identisch zum FY-Total ist (Toleranz 2%), hat das Modell den

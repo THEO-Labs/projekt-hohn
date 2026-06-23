@@ -393,7 +393,18 @@ ZAHLENFORMAT — strikt:
 - Prozente direkt als Wert.  RICHTIG: 4.38 %.  FALSCH: 0.0438.
 - EINHEIT enthaelt NUR Währung / "%" / "keine" — NIE "Mio"/"Mrd".
 - Punkt als Dezimaltrenner.
-- Keine erfundenen URLs."""
+- Keine erfundenen URLs.
+
+UNIT-SANITY-CHECK (Pflicht):
+- US-"billion" = 1,000,000,000 = 9 Nullen = Milliarde (DE).
+- US-"trillion" = 1,000,000,000,000 = 12 Nullen = Billion (DE) — NICHT verwechseln.
+- Bei deutschen/europaeischen Quellen ist "Mrd" = Milliarde = 9 Nullen,
+  "Bio" / "Billion" = 12 Nullen.
+- Bevor du den WERT schreibst, pruefe: ist die Groessenordnung plausibel
+  gegenueber den Pflicht-Ankern (Vorjahr, Q-Actuals)? Eine einzelne
+  Quartals-Schaetzung kann NIE 100x groesser sein als der gesamte FY-1-Wert.
+  Wenn deine Zahl mehr als 10 Stellen vor dem Komma hat, ist sie fast
+  immer falsch — du hast versehentlich "trillion" statt "billion" geschrieben."""
 
 
 def extract_research_value(text: str) -> Decimal | None:
