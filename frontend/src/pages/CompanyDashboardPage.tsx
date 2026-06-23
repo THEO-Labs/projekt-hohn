@@ -870,12 +870,12 @@ export function CompanyDashboardPage() {
         return def?.label_de ?? r.value_key;
       });
     if (manualKeys.length > 0) {
-      const ok = confirm(
-        `${c.name}: ${manualKeys.length} manuell ueberschriebene Werte werden beim Refresh wieder ueberschrieben:\n\n` +
-        manualKeys.map((k) => `  • ${k}`).join("\n") +
-        `\n\nFortfahren?`
+      // Info, kein Block: Manual-Overrides sind hard-locked und werden vom
+      // Refresh NIE ueberschrieben (Backend prueft manually_overridden=true).
+      console.info(
+        `${c.name}: ${manualKeys.length} manuelle Overrides bleiben beim Refresh erhalten:`,
+        manualKeys,
       );
-      if (!ok) return;
     }
     setRefreshStatuses((prev) => new Map(prev).set(c.id, { company_id: c.id, total: apiKeys.length, completed: 0, current_key: null, status: "running" as const }));
     try {
@@ -2328,8 +2328,8 @@ export function CompanyDashboardPage() {
                       );
                       await loadAllValues();
                       toast.success(isForecastValue
-                        ? "Forecast-Wert manuell überschrieben (wird beim nächsten 'Werte berechnen' wieder ersetzt)"
-                        : "Wert überschrieben (wird beim nächsten 'Werte berechnen' wieder ersetzt)");
+                        ? "Forecast-Wert manuell überschrieben (bleibt bei zukünftigen Refreshes erhalten)"
+                        : "Wert überschrieben (bleibt bei zukünftigen Refreshes erhalten)");
                       setTooltipEdit(null);
                       setTooltip(null);
                     } catch (e) {
@@ -2362,7 +2362,7 @@ export function CompanyDashboardPage() {
                       {isEditHere && tooltipEdit && (
                         <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
                           <p className="mb-1 text-[10px] text-amber-700">
-                            Achtung: manueller Wert wird beim nächsten "Werte berechnen" wieder überschrieben.
+                            Hinweis: manuelle Werte sind gelockt und bleiben bei zukünftigen "Werte berechnen" erhalten.
                           </p>
                           <input
                             autoFocus
