@@ -674,6 +674,7 @@ def research_value(
     value_key: str | None = None,
     prev_fy_val: Decimal | None = None,
     q_actuals: dict[str, Decimal] | None = None,
+    q_pattern_prev_fy: dict[str, Decimal] | None = None,
 ) -> tuple[Decimal | None, str | None, str | None, str | None, str | None]:
     """Web-Recherche für eine einzelne Kennzahl.
     Returns (value, source_name, source_url, user_prompt, assistant_response).
@@ -683,6 +684,11 @@ def research_value(
     q_actuals (optional): bereits in DB gespeicherte Q-Actuals (aus 10-Q-PDFs)
     fuer das target FY. Werden als PFLICHT-Anker in den Prompt injiziert
     damit Claude die Q-Aufschluesselung nicht falsch herleitet.
+
+    q_pattern_prev_fy (optional): Q1-Q4 Actuals des Vorjahres. Werden als
+    Saisonalitaets-Anker injiziert (z.B. MSFT Q4 = staerkstes Quartal).
+    Verhindert dass Claude den laufenden FY-Trend linear extrapoliert und
+    saisonale Peaks/Talwerte uebersieht.
     """
     is_forward = _is_forward_year(period_year)
     is_quarter = period_type in ("Q1", "Q2", "Q3", "Q4")
@@ -831,6 +837,41 @@ def research_value(
                 "Definition du nutzt und warum sie mit dem Anker konsistent ist."
             )
 
+    # Saisonalitaets-Anker: Q-Verteilung des Vorjahres als Prozent.
+    # Bei Per-Q-Calls (is_per_q_aggregation) injiziert um zu verhindern dass
+    # Claude den laufenden Q-Trend linear extrapoliert und z.B. Q4-Saisonalitaet
+    # (MSFT Year-End, Retail Holiday, AVGO Custom-XPU-Ramp) ignoriert.
+    seasonality_block = ""
+    if q_pattern_prev_fy and is_per_q_aggregation and period_year is not None:
+        prev_year = period_year - 1
+        valid = {q: v for q, v in q_pattern_prev_fy.items() if v is not None and v != 0}
+        if len(valid) >= 3:
+            total = sum(abs(v) for v in valid.values())
+            if total > 0:
+                lines = []
+                strongest_q = max(valid.items(), key=lambda kv: abs(kv[1]))[0]
+                for q in ("Q1", "Q2", "Q3", "Q4"):
+                    v = valid.get(q)
+                    if v is None:
+                        lines.append(f"  {q} FY{prev_year}: nicht in DB")
+                        continue
+                    pct = abs(v) / total * 100
+                    marker = " ← STAERKSTES Q" if q == strongest_q else ""
+                    lines.append(
+                        f"  {q} FY{prev_year}: {float(v):,.0f} {currency} "
+                        f"(= {pct:.1f}% des FY{prev_year}-Totals){marker}"
+                    )
+                seasonality_block = (
+                    f"\n\nQ-PATTERN FY{prev_year} (Saisonalitaets-Anker):\n"
+                    + "\n".join(lines)
+                    + f"\n\nREGEL: Deine {period_type}-Schaetzung muss dieses Saisonalitaets-"
+                    f"Pattern beruecksichtigen. Wenn FY{prev_year} {period_type} prozentual "
+                    f"stark/schwach war, sollte FY{period_year} {period_type} aehnlich "
+                    f"positioniert sein (skaliert mit dem laufenden Wachstumstrend). "
+                    f"NICHT einfach den Trend Q1->Q2->Q3 des laufenden Jahres linear "
+                    f"fortschreiben — das ignoriert Saisonalitaet."
+                )
+
     # Q-Actuals-Anker-Block: bereits in DB gespeicherte Q-Actuals aus 10-Q-PDFs
     # werden als PFLICHT-Anker injiziert. Verhindert dass Claude die Q-Aufschluesselung
     # selbst aus Web-Recherche herleitet und dabei widersprechende Werte liefert.
@@ -925,6 +966,7 @@ def research_value(
         f"{hint_block}"
         f"{anchor_block}"
         f"{definition_anchor_block}"
+        f"{seasonality_block}"
         f"{q_actuals_block}"
     )
 

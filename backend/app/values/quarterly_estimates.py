@@ -189,12 +189,38 @@ def _estimate_single_quarter(
 
     q_actuals_for_prompt = {q: v for q, v in known_q_values.items() if q != quarter}
 
+    # Saisonalitaets-Anker: Q1-Q4-Verteilung des Vorjahres aus DB.
+    # Wird in Claude-Prompt injiziert damit Q-Saisonalitaet (z.B. MSFT-Q4 = staerkstes,
+    # AVGO-Q4 = staerkstes, Retail-Q4 = Holiday-Peak) nicht ignoriert wird.
+    # Greift nur fuer summable Keys (NI/EBITDA/FCF/SBC/Buyback/Dividends).
+    q_pattern_prev_fy: dict[str, Decimal] | None = None
+    if key in SUMMABLE_QUARTERLY_KEYS:
+        prev_fy = period_year - 1
+        prev_q_rows = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company.id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
+                CompanyValue.period_year == prev_fy,
+                CompanyValue.is_forecast.is_(False),
+            )
+            .all()
+        )
+        if len(prev_q_rows) >= 3:
+            q_pattern_prev_fy = {
+                r.period_type: r.numeric_value
+                for r in prev_q_rows
+                if r.numeric_value is not None
+            }
+
     try:
         v, s, u, _p, content = research_value(
             company.name, company.ticker, label, company.currency,
             period_type=quarter, period_year=period_year, value_key=key,
             prev_fy_val=prev_fy_val,
             q_actuals=q_actuals_for_prompt or None,
+            q_pattern_prev_fy=q_pattern_prev_fy,
         )
     except Exception as e:
         logger.warning("Q-Estimate Claude-Call failed %s/%s/%s/FY%s: %s",
