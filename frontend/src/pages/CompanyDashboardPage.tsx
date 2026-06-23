@@ -2147,6 +2147,39 @@ export function CompanyDashboardPage() {
                                   })()}
                                 </tbody>
                               </table>
+                              {(() => {
+                                // FY-vs-Q-Sum-Diskrepanz-Hinweis: wenn FY-Anker (Management-
+                                // Guidance / PDF-Lock) deutlich von der Q-Estimate-Summe abweicht.
+                                if (!isSummable) return null;
+                                const fyVal = cv.numeric_value != null
+                                  ? (typeof cv.numeric_value === "string" ? parseFloat(cv.numeric_value) : cv.numeric_value)
+                                  : null;
+                                if (fyVal == null) return null;
+                                const values = qRowsArr.map(({ row }) => row?.numeric_value != null
+                                  ? (typeof row.numeric_value === "string" ? parseFloat(row.numeric_value) : row.numeric_value)
+                                  : null);
+                                const validVals = values.filter((v): v is number => v != null);
+                                if (validVals.length < 4) return null;
+                                const qSum = validVals.reduce((a, b) => a + b, 0);
+                                if (Math.abs(fyVal) < 1) return null;
+                                const diffPct = ((qSum - fyVal) / Math.abs(fyVal)) * 100;
+                                if (Math.abs(diffPct) < 1) return null;
+                                const fyIsLocked = cv.from_ir_pdf === true;
+                                const fyLabel = fyIsLocked ? "FY-Anker (Management-Guidance, gelockt)" : "FY-Anker";
+                                return (
+                                  <div className="border-t border-amber-300/60 bg-amber-50/60 px-2 py-1.5 text-[10px] text-amber-900">
+                                    <span className="font-semibold">⚠ Q-Sum-Diskrepanz:</span> {fyLabel}{" "}
+                                    <span className="font-mono">{_formatShortMoney(fyVal, valCurrency)}</span>
+                                    {" · Σ Q-Estimates "}
+                                    <span className="font-mono">{_formatShortMoney(qSum, valCurrency)}</span>
+                                    {" · Δ "}
+                                    <span className="font-semibold">{diffPct > 0 ? "+" : ""}{diffPct.toFixed(1)}%</span>
+                                    <div className="mt-0.5 text-[9px] opacity-80">
+                                      Ratios in der Tabelle nutzen den FY-Anker. Q-Estimates sind Claudes Per-Q-Sicht.
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                               <div className="border-t border-border/40 bg-muted/20 px-2 py-1.5 text-[10px] text-muted-foreground">
                                 <span className="font-semibold">Legende:</span> Actual = aus 10-Q/PDF · Estimate = Claude-Q-Schätzung · Manual = User-Override
                               </div>
