@@ -436,6 +436,121 @@ def _try_edgar_q_actuals(
                     company.ticker, key, q, target_fy, float(v))
 
 
+def _ensure_prev_fy_q_actuals(
+    db: Session,
+    company: "Company",
+    key: str,
+    prev_fy: int,
+) -> None:
+    """Stellt sicher dass FY-1 Q-Actuals (Q1-Q4) in DB sind, fuer Saisonalitaets-
+    Anker in Per-Q-Claude-Calls. Bei US-Filern: EDGAR-XBRL fuer Q1-Q3, Q4
+    implizit aus FY-Total minus Sigma(Q1-Q3). Bei non-US: skip — Saisonalitaets-
+    Anker greift erst wenn User Vorjahres-Q-Daten via Manual oder PDF eingeflegt
+    hat (oder ESEF-Q kommt in Zukunft).
+
+    No-op wenn alle 4 Q schon da sind oder kein FY-Total fuer prev_fy."""
+    if key not in SUMMABLE_QUARTERLY_KEYS:
+        return
+    from app.calculations.lock import is_us_company
+    if not is_us_company(company):
+        return
+    if key not in EDGAR_QUARTERLY_SUPPORTED:
+        return
+
+    # Bestand pruefen
+    existing = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
+            CompanyValue.period_year == prev_fy,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .all()
+    )
+    existing_qs = {r.period_type: r.numeric_value for r in existing}
+    if len(existing_qs) >= 4:
+        return  # Saisonalitaets-Datenbasis komplett
+
+    currency = company.currency if key in CURRENCY_KEYS else None
+    fy_end_month = getattr(company, "fiscal_year_end_month", None)
+    fy_end_day = getattr(company, "fiscal_year_end_day", None)
+    if not fy_end_month or not fy_end_day:
+        return
+
+    # Q1-Q3 via EDGAR-Backfill
+    provider = _get_edgar_provider()
+    new_q_values: dict[str, Decimal] = dict(existing_qs)
+    for q in ("Q1", "Q2", "Q3"):
+        if q in new_q_values:
+            continue
+        try:
+            res = provider.fetch_quarterly(
+                company.ticker, key, prev_fy, q,
+                fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+            )
+        except Exception as exc:
+            logger.warning("EDGAR FY-1 backfill %s/%s/%s/FY%s exception: %s",
+                           company.ticker, key, q, prev_fy, exc)
+            continue
+        if res is None or res.value is None:
+            continue
+        v = Decimal(str(res.value))
+        if key in {"buyback_volume", "dividends"} and v < 0:
+            v = abs(v)
+        _upsert_q_actual_from_provider(
+            db, company.id, key, prev_fy, q,
+            value=v,
+            source_name=f"{res.source_name} (FY-1 Backfill fuer Saisonalitaets-Anker)",
+            source_link=res.source_link,
+            currency=currency,
+        )
+        new_q_values[q] = v
+        logger.info("EDGAR FY-1 backfill %s/%s/%s/FY%s = %.0f via XBRL",
+                    company.ticker, key, q, prev_fy, float(v))
+
+    # Q4 implizit aus FY-Total minus Sigma(Q1-Q3) — falls FY-Total + alle 3 Q da
+    if "Q4" in new_q_values:
+        return
+    if not all(q in new_q_values for q in ("Q1", "Q2", "Q3")):
+        return
+    fy_total_row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == prev_fy,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .order_by(CompanyValue.fetched_at.desc())
+        .first()
+    )
+    if fy_total_row is None or fy_total_row.numeric_value is None:
+        return
+    fy_total = fy_total_row.numeric_value
+    q123_sum = sum(new_q_values[q] for q in ("Q1", "Q2", "Q3"))
+    q4_implied = fy_total - q123_sum
+    # Plausibility: Q4 sollte gleiches Vorzeichen wie FY-Total haben
+    # und vom Betrag her im Range der anderen Q liegen.
+    if (fy_total > 0 and q4_implied <= 0) or (fy_total < 0 and q4_implied >= 0):
+        logger.warning("FY-1 Q4-Implied implausibel %s/%s/FY%s: fy=%s q123=%s q4_impl=%s",
+                       company.ticker, key, prev_fy, fy_total, q123_sum, q4_implied)
+        return
+    _upsert_q_actual_from_provider(
+        db, company.id, key, prev_fy, "Q4",
+        value=q4_implied,
+        source_name=f"Implied Q4 = FY{prev_fy}-Total ({float(fy_total):,.0f}) minus Sigma(Q1-Q3)",
+        source_link=None,
+        currency=currency,
+    )
+    logger.info("FY-1 Q4-implied backfill %s/%s/FY%s = %.0f",
+                company.ticker, key, prev_fy, float(q4_implied))
+
+
 def estimate_fy_via_quarterly_sum(
     db: Session,
     company: "Company",
@@ -457,6 +572,10 @@ def estimate_fy_via_quarterly_sum(
     """
     if key not in QUARTERLY_ESTIMATE_KEYS:
         return None
+
+    # FY-1 Q-Datenbasis sicherstellen (Saisonalitaets-Anker fuer Per-Q-Claude-Calls).
+    # No-op wenn nicht-US oder Q-Werte schon komplett da.
+    _ensure_prev_fy_q_actuals(db, company, key, target_fy - 1)
 
     company_id = company.id
     currency = company.currency if key in CURRENCY_KEYS else None
