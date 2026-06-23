@@ -22,7 +22,6 @@ class IRDocumentOut(BaseModel):
     extraction_error: str | None
     extraction_results: dict | None = None
     notes: str | None
-    queue_position: int | None = None
 
 
 class IRDocumentUpdate(BaseModel):

@@ -1,3 +1,31 @@
+"""Company-Values API: Werte-Refresh + Manual-Override + Calculations.
+
+Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
+
+  STAMMDATEN (immer Live-Snapshot)
+    - stock_price / market_cap / shares_outstanding -> Yahoo-Provider
+    - market_cap_calc = stock_price * shares (in calculation_engine)
+
+  FY-BACKTESTS (abgeschlossene Geschaeftsjahre)
+    Provider-Chain in _try_providers (EDGAR > ESEF > Yahoo):
+      - US-Filer (ISIN US...): EDGAR-XBRL liefert FY-Werte aus 10-K/20-F
+      - EU-Filer (NL/FR/ES/IT/SE/...): ESEF-XBRL via filings.xbrl.org
+      - Fallback: Yahoo (Macrotrends-Snippets) + Claude-Web-Recherche
+    DE-Filer (Munich Re, Allianz, ...) sind NICHT in ESEF -> Claude-Web only.
+
+  FY-ESTIMATES (laufendes FY, period_year >= current_year)
+    Per-Q-Aggregation in quarterly_estimates.estimate_fy_via_quarterly_sum:
+      1. Q-Actual aus DB (alt-PDF oder Manual-Override) uebernehmen
+      2. EDGAR-Q-XBRL Fallback (US-Filer, Q1/Q2/Q3 -- Q4 nie verfuegbar)
+      3. Claude-Q-Call mit Pflicht-Ankern (Q-Actuals + prev_fy_val)
+      4. FY = Sigma Q1-Q4 (summable) oder Q4-Endstand (point-in-time: net_debt)
+
+  CALCULATED FELDER (FCF-Yield, EV/EBITDA, Hohn-Return, ...)
+    calculation_engine.calculate_fy nach Werte-Refresh.
+
+  ADJUSTED-WERTE (NI/EBITDA/FCF non-GAAP)
+    Default OFF (Cost-Optimierung). Env-Flag ADJUSTED_AUTOFETCH=true.
+"""
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -697,7 +725,7 @@ def _process_one_key(
     # Sign normalisation last-mile: every persistence path (PDF, EDGAR, Yahoo,
     # Claude-research, factor-estimate) goes through here, so applying abs()
     # here covers ALL sources at once instead of patching each provider.
-    from app.ir_documents.extraction import ALWAYS_POSITIVE_KEYS
+    from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
     if numeric_value is not None and key in ALWAYS_POSITIVE_KEYS and numeric_value < 0:
         logger.info("Sign-normalising %s/%s/%s: %s -> %s (source=%s)",
                     ticker, key, effective_period_year, numeric_value, abs(numeric_value),

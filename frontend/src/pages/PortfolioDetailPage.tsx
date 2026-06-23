@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ChevronLeft, Plus, Building2, Trash2 } from "lucide-react";
-import { AnnualReportYearGrid } from "@/components/AnnualReportYearGrid";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -299,7 +298,6 @@ export function PortfolioDetailPage() {
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
                 </div>
-                <AnnualReportYearGrid companyId={c.id} companyName={c.name} />
               </div>
             ))}
           </div>
