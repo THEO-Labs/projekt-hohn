@@ -28,6 +28,9 @@ USER_AGENT = "ProjektHohn/1.0 (mailto:till@theolabs.xyz)"
 
 # IFRS-Taxonomy-Mapping unserer value_keys auf ESEF-Concepts.
 # Mehrere Concepts pro Key fuer Fallback (Filer nutzen unterschiedliche Tags).
+# Concept-Patterns: mit Namespace (z.B. 'ifrs-full:X') = exact match;
+# ohne Namespace (z.B. 'X') = suffix-match (deckt firm-extensions wie
+# 'airbus:X', 'siemens:X' etc. ab).
 CONCEPT_MAP: dict[str, list[str]] = {
     "net_income": [
         "ifrs-full:ProfitLoss",
@@ -36,13 +39,18 @@ CONCEPT_MAP: dict[str, list[str]] = {
     "sbc": [
         "ifrs-full:ExpenseFromShareBasedPaymentTransactionsWithEmployees",
         "ifrs-full:IncreaseDecreaseThroughExerciseOfOptionsShareBasedPaymentArrangement",
+        "IncreaseDecreaseThroughSharebasedPaymentTransactions",
+        "AdjustmentsForSharebasedPayments",
     ],
     "buyback_volume": [
         "ifrs-full:PaymentsForRepurchaseOfTreasuryShares",
         "ifrs-full:PaymentsToAcquireOrRedeemEntitysShares",
+        "IncreaseDecreaseThroughTreasuryShareTransactions",
+        "ChangeInTreasuryShares",
     ],
     "dividends": [
         "ifrs-full:DividendsPaidClassifiedAsFinancingActivities",
+        "ifrs-full:DividendsPaidToEquityHoldersOfParentClassifiedAsFinancingActivities",
         "ifrs-full:DividendsPaid",
     ],
     "cash_and_equivalents": [
@@ -51,6 +59,7 @@ CONCEPT_MAP: dict[str, list[str]] = {
     "long_term_debt": [
         "ifrs-full:NoncurrentBorrowings",
         "ifrs-full:NoncurrentInterestbearingLoansAndBorrowings",
+        "NoncurrentFinancialLiabilities",
     ],
     "lease_liabilities": [
         "ifrs-full:NoncurrentLeaseLiabilities",
@@ -61,18 +70,26 @@ CONCEPT_MAP: dict[str, list[str]] = {
 EBITDA_EBIT_CONCEPTS = [
     "ifrs-full:ProfitLossFromOperatingActivities",
     "ifrs-full:OperatingProfit",
+    "ProfitLossBeforeFinancialResultAndIncomeTaxes",
+    "ProfitLossBeforeTax",
+    "OperatingIncome",
 ]
 EBITDA_DA_CONCEPTS = [
     "ifrs-full:DepreciationAndAmortisationExpense",
+    "ifrs-full:AdjustmentsForDepreciationAndAmortisationExpense",
     "ifrs-full:DepreciationAmortisationAndImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss",
+    "DepreciationAndAmortisationExpense",
 ]
 
 FCF_OCF_CONCEPTS = [
     "ifrs-full:CashFlowsFromUsedInOperatingActivities",
+    "CashFlowsFromUsedInOperatingActivities",
 ]
 FCF_CAPEX_CONCEPTS = [
     "ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
     "ifrs-full:PurchaseOfPropertyPlantAndEquipment",
+    "PurchasesOfIntangibleAssetsPropertyPlantAndEquipmentInvestmentProperty",
+    "PurchaseOfPropertyPlantAndEquipment",
 ]
 
 
@@ -211,6 +228,16 @@ class ESEFProvider:
             logger.warning("ESEF JSON parse failed %s: %s", full_url, e)
             return None
 
+    @staticmethod
+    def _concept_matches(actual: str, pattern: str) -> bool:
+        """Pattern-Match: 'ns:X' = exact match, 'X' = suffix match
+        (deckt firm-extensions wie 'airbus:X' ab)."""
+        if ":" in pattern:
+            return actual == pattern
+        if ":" in actual:
+            return actual.split(":", 1)[1] == pattern
+        return actual == pattern
+
     def _find_fact_for_period(
         self,
         facts: dict,
@@ -224,7 +251,7 @@ class ESEFProvider:
         for concept in concepts:
             for _fid, fact in facts.items():
                 dims = fact.get("dimensions") or {}
-                if dims.get("concept") != concept:
+                if not self._concept_matches(dims.get("concept", ""), concept):
                     continue
                 period = dims.get("period") or ""
                 # Period-Format: "2024-01-01T00:00:00/2025-01-01T00:00:00"
