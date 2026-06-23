@@ -420,16 +420,26 @@ def _try_web_guidance(
     )
 
 
-def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day):
+def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day, isin: str | None = None):
     for provider in get_providers(key):
         try:
-            try:
-                result = provider.fetch(
-                    ticker, key, payload.period_type, payload.period_year,
-                    fy_end_month=fy_end_month, fy_end_day=fy_end_day,
-                )
-            except TypeError:
-                result = provider.fetch(ticker, key, payload.period_type, payload.period_year)
+            # Cascading fallback fuer unterschiedliche fetch-Signaturen:
+            # 1) Full (mit isin) — ESEFProvider
+            # 2) FY-Anker (fy_end_month/day) — EdgarProvider
+            # 3) Minimal — YahooProvider
+            result = None
+            for kwargs in (
+                {"fy_end_month": fy_end_month, "fy_end_day": fy_end_day, "isin": isin},
+                {"fy_end_month": fy_end_month, "fy_end_day": fy_end_day},
+                {},
+            ):
+                try:
+                    result = provider.fetch(
+                        ticker, key, payload.period_type, payload.period_year, **kwargs,
+                    )
+                    break
+                except TypeError:
+                    continue
             if result is not None:
                 return result
         except Exception as e:
@@ -526,11 +536,16 @@ def _process_one_key(
     #      is_running_fy=True (Estimate-Mode) explizit ueberspringen.
     #   2. Web-Recherche (Claude-Recherche) als universeller Fallback fuer
     #      FY-Werte ohne Provider-Quelle (Non-US, oder Estimate-Mode).
-    if is_stammdaten or (is_us_company(company) and not is_running_fy):
+    # Provider-Chain (EDGAR > ESEF > Yahoo): bei Stammdaten IMMER,
+    # bei FY-Backtests fuer US-Filer (EDGAR) UND EU-Filer (ESEF).
+    # Bei is_running_fy=True (Estimate-Mode) Provider-Chain skippen — die liefern
+    # keine Forecasts, das macht die Web-Recherche/Per-Q-Pipeline.
+    if is_stammdaten or not is_running_fy:
         result = _try_providers(
             ticker, key, payload,
             getattr(company, "fiscal_year_end_month", None),
             getattr(company, "fiscal_year_end_day", None),
+            isin=getattr(company, "isin", None),
         )
         # US-Filer + adjustable-Key (NI/EBITDA/FCF): EDGAR liefert nur Reported.
         # Adjusted/Non-GAAP via Dual-Web-Research nachholen — strukturell, weil
