@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 
 import type { Cell } from "@/pages/companyDetailMocks";
-import { formatAbsolute } from "@/lib/format";
+import { formatAbsolute, formatRelative } from "@/lib/format";
 
 type Props = {
   cell: Cell;
@@ -11,25 +11,47 @@ type Props = {
   anchorRect: DOMRect | null;
 };
 
-function methodLabel(method: string | null | undefined): { text: string; color: string } {
+function methodBadge(method: string | null | undefined): { text: string; dot: string; text_cls: string } {
   switch (method) {
     case "provider":
-      return { text: "Actual (Provider)", color: "bg-slate-100 text-slate-800 ring-slate-200" };
+      return { text: "Actual", dot: "bg-foreground", text_cls: "text-foreground" };
     case "pdf":
-      return { text: "Actual (PDF)", color: "bg-slate-100 text-slate-800 ring-slate-200" };
+      return { text: "Actual · PDF", dot: "bg-foreground", text_cls: "text-foreground" };
     case "manual":
-      return { text: "Manual override", color: "bg-amber-100 text-amber-800 ring-amber-200" };
+      return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
     case "web_guidance":
-      return { text: "Estimate (Web Research)", color: "bg-sky-100 text-sky-800 ring-sky-200" };
+      return { text: "Estimate", dot: "bg-sky-500", text_cls: "text-sky-700" };
     case "calculated":
-      return { text: "Calculated", color: "bg-violet-100 text-violet-800 ring-violet-200" };
+      return { text: "Calculated", dot: "bg-violet-500", text_cls: "text-violet-700" };
     default:
-      return { text: "Unknown source", color: "bg-muted text-muted-foreground ring-border" };
+      return { text: "—", dot: "bg-muted-foreground/40", text_cls: "text-muted-foreground" };
   }
+}
+
+// Try to trim a long backend source_name into (headline, details[]).
+// Backend produces strings like:
+//   "SEC EDGAR 10-Q (Q3 FY2026, standalone)"
+//   "Per-Q-Aggregation (Summe Q1-Q4) FY2026: 43,470 USD = Q1: SEC ... | Q2: SEC ... | Q3: Claude ... | Q4: Claude ..."
+// We want a short first-line label and (optionally) the per-quarter breakdown as small lines.
+function parseSource(raw: string | null | undefined): { head: string; parts: string[] } {
+  if (!raw) return { head: "", parts: [] };
+  const eq = raw.indexOf("=");
+  if (eq === -1) return { head: raw.trim(), parts: [] };
+  const headRaw = raw.slice(0, eq).trim();
+  const rest = raw.slice(eq + 1).trim();
+  const parts = rest
+    .split("|")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  // If head still contains the raw number after ":", drop it: "Per-Q-Aggregation (…) FY2026: 43,470 USD"
+  const colon = headRaw.lastIndexOf(":");
+  const head = colon > 0 ? headRaw.slice(0, colon).trim() : headRaw;
+  return { head, parts };
 }
 
 export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -46,12 +68,13 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
     };
   }, [onClose]);
 
+  const meta = methodBadge(cell.primary_method);
+  const { head, parts } = useMemo(() => parseSource(cell.source_name), [cell.source_name]);
+
   if (!anchorRect) return null;
-  // position: fixed is viewport-relative — no scroll offset needed.
-  const popoverWidth = 320;
-  const popoverHeight = 260; // rough max
+  const popoverWidth = 300;
+  const popoverHeight = expanded ? 320 : 200;
   let top = anchorRect.bottom + 6;
-  // Flip above the cell if not enough space below.
   if (top + popoverHeight > window.innerHeight - 8) {
     top = Math.max(8, anchorRect.top - popoverHeight - 6);
   }
@@ -60,73 +83,93 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
     window.innerWidth - popoverWidth - 8,
   );
 
-  const meta = methodLabel(cell.primary_method);
-
   return (
     <div
       ref={ref}
       style={{ top, left, width: popoverWidth }}
-      className="fixed z-50 rounded-xl border border-border/70 bg-popover p-3 text-[12px] text-foreground shadow-xl ring-1 ring-black/5"
+      className="fixed z-50 overflow-hidden rounded-xl border border-border/70 bg-popover text-foreground shadow-xl ring-1 ring-black/5"
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-[11px] font-medium text-muted-foreground">{cell.period_label ?? "Value"}</div>
-          <div className="mt-0.5 text-[15px] font-semibold tabular-nums">{displayValue}</div>
+      {/* Header row: method dot + label + period, close on right */}
+      <div className="flex items-center justify-between gap-2 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} />
+          <span className={`text-[10.5px] font-semibold uppercase tracking-wider ${meta.text_cls}`}>
+            {meta.text}
+          </span>
+          {cell.manually_overridden && (
+            <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-amber-800">
+              Override
+            </span>
+          )}
+          <span className="text-[10.5px] text-muted-foreground/70">·</span>
+          <span className="truncate text-[11px] text-muted-foreground">{cell.period_label ?? ""}</span>
         </div>
         <button
           onClick={onClose}
-          className="rounded p-1 text-muted-foreground hover:bg-muted"
+          className="rounded p-0.5 text-muted-foreground/70 hover:bg-muted hover:text-foreground"
           aria-label="Close"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-3 w-3" />
         </button>
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-1">
-        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ${meta.color}`}>
-          {meta.text}
-        </span>
-        {cell.manually_overridden && (
-          <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 ring-1 ring-amber-200">
-            Overridden
-          </span>
-        )}
+      {/* Big value */}
+      <div className="border-b border-border/40 px-3 pb-2.5">
+        <div className="text-[18px] font-semibold tabular-nums leading-none">{displayValue}</div>
       </div>
 
-      {cell.formula && (
-        <div className="mt-2 rounded-lg bg-muted/50 px-2 py-1.5">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Formula</div>
-          <div className="mt-0.5 font-mono text-[11.5px] text-foreground">{cell.formula}</div>
-        </div>
-      )}
-
-      {cell.source_name && (
-        <div className="mt-2">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Source</div>
-          <div className="mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-snug">
-            {cell.source_name}
+      <div className="px-3 py-2 text-[11.5px] leading-snug space-y-1.5">
+        {cell.formula && (
+          <div className="flex gap-1.5">
+            <span className="shrink-0 font-mono text-muted-foreground">=</span>
+            <span className="font-mono text-foreground">{cell.formula}</span>
           </div>
-        </div>
-      )}
+        )}
 
-      {cell.source_link && (
-        <a
-          href={cell.source_link}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
-        >
-          <ExternalLink className="h-3 w-3" />
-          Open source
-        </a>
-      )}
+        {head && (
+          <div className="text-foreground">{head}</div>
+        )}
 
-      {cell.fetched_at && (
-        <div className="mt-2 text-[10.5px] text-muted-foreground">
-          Fetched {formatAbsolute(cell.fetched_at)}
+        {parts.length > 0 && (
+          <div>
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="text-[10.5px] font-medium text-muted-foreground hover:text-foreground"
+            >
+              {expanded ? "Hide breakdown" : `Show breakdown (${parts.length})`}
+            </button>
+            {expanded && (
+              <ul className="mt-1 space-y-0.5 rounded-md bg-muted/40 px-2 py-1.5">
+                {parts.map((p, i) => (
+                  <li key={i} className="font-mono text-[10.5px] leading-snug text-muted-foreground">
+                    {p}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1 text-[10.5px] text-muted-foreground">
+          {cell.source_link ? (
+            <a
+              href={cell.source_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Open source
+            </a>
+          ) : (
+            <span />
+          )}
+          {cell.fetched_at && (
+            <span title={formatAbsolute(cell.fetched_at)}>{formatRelative(cell.fetched_at)}</span>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -138,6 +181,5 @@ export function cellColorClass(cell: Cell | undefined): string {
   if (m === "web_guidance") return "text-sky-700";
   if (m === "calculated") return "text-violet-700";
   if (m === "manual") return "text-amber-700";
-  // provider / pdf / null(actual) => default foreground
   return "text-foreground";
 }
