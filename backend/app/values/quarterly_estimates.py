@@ -537,12 +537,19 @@ def _ensure_prev_fy_q_actuals(
     if not fy_end_month or not fy_end_day:
         return
 
-    # Q1-Q3 via EDGAR-Backfill
+    # Q1-Q3 via EDGAR-Backfill, mit Claude-Fallback wenn EDGAR nichts liefert
+    # (typisch bei OCF/CapEx die als YTD-cumulative statt Q-standalone
+    # gefiled werden, oder bei EPS wo Alphabet ein anderes XBRL-Concept
+    # nutzt als unser CONCEPT_MAP).
     provider = _get_edgar_provider()
     new_q_values: dict[str, Decimal] = dict(existing_qs)
     for q in ("Q1", "Q2", "Q3"):
         if q in new_q_values:
             continue
+        v: Decimal | None = None
+        src_name: str | None = None
+        src_link: str | None = None
+        primary: str = "provider"
         try:
             res = provider.fetch_quarterly(
                 company.ticker, key, prev_fy, q,
@@ -551,22 +558,48 @@ def _ensure_prev_fy_q_actuals(
         except Exception as exc:
             logger.warning("EDGAR FY-1 backfill %s/%s/%s/FY%s exception: %s",
                            company.ticker, key, q, prev_fy, exc)
+            res = None
+        if res is not None and res.value is not None:
+            v = Decimal(str(res.value))
+            src_name = f"{res.source_name} (FY-1 Backfill fuer Saisonalitaets-Anker)"
+            src_link = res.source_link
+        else:
+            # Claude-Fallback fuer Vorjahres-Q: is_forecast=False, weil das
+            # historische Actuals sind die Claude aus dem 10-Q/8-K herausliest.
+            v_c, src_c, url_c = _claude_fetch_historical_q(company, key, prev_fy, q)
+            if v_c is not None:
+                v = v_c
+                src_name = f"Claude Historical Q: {src_c} (FY-1 Backfill)" if src_c else "Claude Historical Q (FY-1 Backfill)"
+                src_link = url_c
+                primary = "web_guidance"
+        if v is None:
             continue
-        if res is None or res.value is None:
-            continue
-        v = Decimal(str(res.value))
         if key in {"buyback_volume", "dividends"} and v < 0:
             v = abs(v)
         _upsert_q_actual_from_provider(
             db, company.id, key, prev_fy, q,
             value=v,
-            source_name=f"{res.source_name} (FY-1 Backfill fuer Saisonalitaets-Anker)",
-            source_link=res.source_link,
+            source_name=src_name or "FY-1 Backfill",
+            source_link=src_link,
             currency=currency,
         )
+        # Override primary_method for Claude-sourced actuals.
+        if primary == "web_guidance":
+            row = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company.id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type == q,
+                    CompanyValue.period_year == prev_fy,
+                )
+                .one_or_none()
+            )
+            if row:
+                row.primary_method = "web_guidance"
         new_q_values[q] = v
-        logger.info("EDGAR FY-1 backfill %s/%s/%s/FY%s = %.0f via XBRL",
-                    company.ticker, key, q, prev_fy, float(v))
+        logger.info("FY-1 backfill %s/%s/%s/FY%s = %.0f (%s)",
+                    company.ticker, key, q, prev_fy, float(v), primary)
 
     # Q4 implizit aus FY-Total minus Sigma(Q1-Q3) — falls FY-Total + alle 3 Q da
     if "Q4" in new_q_values:
@@ -599,9 +632,23 @@ def _ensure_prev_fy_q_actuals(
             logger.warning("EDGAR FY-1 fetch %s/%s/FY%s exception: %s",
                            company.ticker, key, prev_fy, exc)
             fy_res = None
-        if fy_res is None or fy_res.value is None:
+        fy_val: Decimal | None = None
+        fy_src_name: str | None = None
+        fy_src_link: str | None = None
+        fy_method: str = "provider"
+        if fy_res is not None and fy_res.value is not None:
+            fy_val = Decimal(str(fy_res.value))
+            fy_src_name = fy_res.source_name or "SEC EDGAR (FY-1 Backfill)"
+            fy_src_link = fy_res.source_link
+        else:
+            v_c, s_c, u_c = _claude_fetch_historical_fy(company, key, prev_fy)
+            if v_c is not None:
+                fy_val = v_c
+                fy_src_name = f"Claude Historical FY: {s_c}" if s_c else "Claude Historical FY (FY-1 Backfill)"
+                fy_src_link = u_c
+                fy_method = "web_guidance"
+        if fy_val is None:
             return
-        fy_val = Decimal(str(fy_res.value))
         if key in {"buyback_volume", "dividends"} and fy_val < 0:
             fy_val = abs(fy_val)
         now = datetime.now(timezone.utc)
@@ -612,12 +659,12 @@ def _ensure_prev_fy_q_actuals(
             period_type="FY",
             period_year=prev_fy,
             numeric_value=fy_val,
-            source_name=(fy_res.source_name or "SEC EDGAR (FY-1 Backfill)")[:4000],
-            source_link=fy_res.source_link,
+            source_name=(fy_src_name or "FY-1 Backfill")[:4000],
+            source_link=fy_src_link,
             currency=currency,
             fetched_at=now,
             is_forecast=False,
-            primary_method="provider",
+            primary_method=fy_method,
         )
         db.add(new_fy)
         try:
@@ -627,8 +674,8 @@ def _ensure_prev_fy_q_actuals(
                            company.ticker, key, prev_fy, str(ie)[:120])
             db.rollback()
             return
-        logger.info("EDGAR FY-1 FY-Row backfill %s/%s/FY%s = %.0f",
-                    company.ticker, key, prev_fy, float(fy_val))
+        logger.info("FY-1 FY-Row backfill %s/%s/FY%s = %.0f (%s)",
+                    company.ticker, key, prev_fy, float(fy_val), fy_method)
         fy_total = fy_val
     else:
         fy_total = fy_total_row.numeric_value
@@ -654,6 +701,70 @@ def _ensure_prev_fy_q_actuals(
 BALANCE_SHEET_FY_KEYS = frozenset({
     "cash_and_equivalents", "st_investments", "st_debt", "lt_debt", "net_debt",
 })
+
+
+def _claude_fetch_historical_q(
+    company: "Company",
+    key: str,
+    year: int,
+    quarter: str,
+) -> tuple[Decimal | None, str | None, str | None]:
+    """Ruft Claude fuer einen VERGANGENEN Standalone-Q-Wert auf. Verwendet
+    wenn EDGAR-Q-Fetch nichts liefert (typisch bei OCF/CapEx die als YTD
+    statt Standalone gefiled sind, oder EPS mit anderem XBRL-Concept).
+    is_forward=False -> Claude soll den Wert aus dem 10-Q/8-K rausziehen,
+    nicht schaetzen. Returns (value, source_name, source_link)."""
+    from app.llm.claude import research_value
+    from app.values.models import ValueDefinition
+    from app.db import SessionLocal
+    _db = SessionLocal()
+    try:
+        vd = _db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+        if vd is None:
+            return None, None, None
+        label = f"{vd.label_en} ({vd.label_de})"
+    finally:
+        _db.close()
+    try:
+        v, s, u, _p, _c = research_value(
+            company.name, company.ticker, label, company.currency,
+            period_type=quarter, period_year=year, value_key=key,
+        )
+    except Exception as exc:
+        logger.warning("Claude historical Q %s/%s/%s/FY%s exception: %s",
+                       company.ticker, key, quarter, year, exc)
+        return None, None, None
+    return v, s, u
+
+
+def _claude_fetch_historical_fy(
+    company: "Company",
+    key: str,
+    year: int,
+) -> tuple[Decimal | None, str | None, str | None]:
+    """Ruft Claude fuer einen VERGANGENEN FY-Wert auf (fuer FY-Backfill wenn
+    EDGAR nichts liefert). Returns (value, source_name, source_link)."""
+    from app.llm.claude import research_value
+    from app.values.models import ValueDefinition
+    from app.db import SessionLocal
+    _db = SessionLocal()
+    try:
+        vd = _db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+        if vd is None:
+            return None, None, None
+        label = f"{vd.label_en} ({vd.label_de})"
+    finally:
+        _db.close()
+    try:
+        v, s, u, _p, _c = research_value(
+            company.name, company.ticker, label, company.currency,
+            period_type="FY", period_year=year, value_key=key,
+        )
+    except Exception as exc:
+        logger.warning("Claude historical FY %s/%s/FY%s exception: %s",
+                       company.ticker, key, year, exc)
+        return None, None, None
+    return v, s, u
 
 
 def _ensure_prev_fy_balance_sheet(
@@ -702,6 +813,10 @@ def _ensure_prev_fy_balance_sheet(
     now = datetime.now(timezone.utc)
     for key in missing:
         currency = company.currency if key in CURRENCY_KEYS else None
+        v: Decimal | None = None
+        src_name: str | None = None
+        src_link: str | None = None
+        method = "provider"
         try:
             res = provider.fetch(
                 company.ticker, key,
@@ -711,10 +826,21 @@ def _ensure_prev_fy_balance_sheet(
         except Exception as exc:
             logger.warning("EDGAR FY-1 BS-fetch %s/%s/FY%s exception: %s",
                            company.ticker, key, prev_fy, exc)
+            res = None
+        if res is not None and res.value is not None:
+            v = Decimal(str(res.value))
+            src_name = res.source_name or "SEC EDGAR (FY-1 BS Backfill)"
+            src_link = res.source_link
+        else:
+            # Claude-Fallback: BS-Snapshot am FY-End aus dem letzten 10-K holen
+            v_c, s_c, u_c = _claude_fetch_historical_fy(company, key, prev_fy)
+            if v_c is not None:
+                v = v_c
+                src_name = f"Claude Historical BS: {s_c}" if s_c else "Claude Historical BS (FY-1)"
+                src_link = u_c
+                method = "web_guidance"
+        if v is None:
             continue
-        if res is None or res.value is None:
-            continue
-        v = Decimal(str(res.value))
         cv = CompanyValue(
             id=uuid4(),
             company_id=company.id,
@@ -722,18 +848,18 @@ def _ensure_prev_fy_balance_sheet(
             period_type="FY",
             period_year=prev_fy,
             numeric_value=v,
-            source_name=(res.source_name or f"SEC EDGAR (FY-1 BS Backfill)")[:4000],
-            source_link=res.source_link,
+            source_name=src_name[:4000] if src_name else "FY-1 BS Backfill",
+            source_link=src_link,
             currency=currency,
             fetched_at=now,
             is_forecast=False,
-            primary_method="provider",
+            primary_method=method,
         )
         db.add(cv)
         try:
             db.flush()
-            logger.info("EDGAR FY-1 BS backfill %s/%s/FY%s = %.0f",
-                        company.ticker, key, prev_fy, float(v))
+            logger.info("FY-1 BS backfill %s/%s/FY%s = %.0f (%s)",
+                        company.ticker, key, prev_fy, float(v), method)
         except IntegrityError as ie:
             logger.warning("FY-1 BS upsert %s/%s/FY%s IntegrityError: %s",
                            company.ticker, key, prev_fy, str(ie)[:120])
