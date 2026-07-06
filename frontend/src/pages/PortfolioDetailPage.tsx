@@ -1,44 +1,67 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ChevronLeft, Plus, Building2, Trash2 } from "lucide-react";
+import { Building2, ChevronLeft, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { CompanyCard } from "@/components/CompanyCard";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import {
   createCompany,
-  deleteCompany,
   listCompanies,
   lookupCompany,
-  updateCompany,
   type Company,
 } from "@/api/companies";
+import type { ValueDefinition } from "@/api/values";
+import {
+  loadCompanyCard,
+  getDashboardDefinitions,
+  type CompanyCardData,
+} from "@/api/dashboard";
 import { t } from "@/lib/i18n";
 
 export function PortfolioDetailPage() {
   const { pid: id } = useParams<{ pid: string }>();
   const { user, logout } = useAuth();
-  const [companies, setCompanies] = useState<Company[]>([]);
+
+  const [loading, setLoading] = useState(true);
+  const [cards, setCards] = useState<CompanyCardData[]>([]);
+  const [definitions, setDefinitions] = useState<ValueDefinition[]>([]);
+
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: "", ticker: "", isin: "", currency: "EUR" });
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookedUp, setLookedUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [editingFy, setEditingFy] = useState<{ companyId: string; month: string; day: string } | null>(null);
 
-  const refresh = () => {
-    if (id) listCompanies(id).then(setCompanies);
+  const loadAll = async () => {
+    if (!id) return;
+    setLoading(true);
+    try {
+      const [companies, defs] = await Promise.all([
+        listCompanies(id),
+        getDashboardDefinitions().catch(() => [] as ValueDefinition[]),
+      ]);
+      setDefinitions(defs);
+      const cardData = await Promise.all(companies.map((c) => loadCompanyCard(c)));
+      setCards(cardData);
+    } catch (err) {
+      console.error("Portfolio load failed", err);
+      toast.error("Failed to load portfolio");
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    refresh();
+    loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
-
 
   const handleLookup = async () => {
     const q = lookupQuery.trim();
@@ -49,7 +72,6 @@ export function PortfolioDetailPage() {
       const result = isIsin
         ? await lookupCompany({ isin: q })
         : await lookupCompany({ ticker: q });
-
       if (!result.name && !result.ticker && !result.isin && !result.currency) {
         toast.info(t.lookupNotFound);
       } else {
@@ -73,7 +95,7 @@ export function PortfolioDetailPage() {
     if (!id || !lookedUp || submitting) return;
     setSubmitting(true);
     try {
-      await createCompany(id, {
+      const created = await createCompany(id, {
         name: form.name,
         ticker: form.ticker,
         currency: form.currency,
@@ -83,25 +105,26 @@ export function PortfolioDetailPage() {
       setLookupQuery("");
       setLookedUp(false);
       setOpen(false);
-      refresh();
+      const card = await loadCompanyCard(created);
+      setCards((prev) => [...prev, card]);
+      toast.success(`${created.ticker} added`);
     } finally {
       setSubmitting(false);
     }
   };
 
-  const [deleting, setDeleting] = useState<string | null>(null);
-
-  const remove = async (cid: string) => {
-    if (deleting) return;
-    if (!window.confirm("Firma wirklich löschen?")) return;
-    setDeleting(cid);
-    try {
-      await deleteCompany(cid);
-      refresh();
-    } finally {
-      setDeleting(null);
+  const onCardChanged = (companyId: string) => (updated: CompanyCardData | null) => {
+    if (updated == null) {
+      setCards((prev) => prev.filter((c) => c.company.id !== companyId));
+    } else {
+      setCards((prev) => prev.map((c) => (c.company.id === companyId ? updated : c)));
     }
   };
+
+  const orderedCards = useMemo(
+    () => [...cards].sort((a, b) => a.company.name.localeCompare(b.company.name, "de")),
+    [cards],
+  );
 
   if (!user) return null;
 
@@ -109,29 +132,25 @@ export function PortfolioDetailPage() {
     <div className="min-h-screen bg-background">
       <AppHeader email={user.email} onLogout={logout} />
       <main className="mx-auto max-w-6xl px-6 py-10">
-        {/* Breadcrumb back nav */}
         <div className="mb-6">
           <Link
-            to={`/portfolios/${id}`}
+            to="/"
             className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
-            {t.dashboard}
+            {t.portfolios}
           </Link>
         </div>
 
-        {/* Page header */}
         <div className="mb-8 flex items-end justify-between">
           <div>
             <h2 className="text-3xl font-semibold tracking-tight text-foreground">{t.companies}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Unternehmen in diesem Portfolio verwalten.
+              {cards.length === 1 ? "1 company" : `${cards.length} companies`} in this portfolio.
             </p>
           </div>
-          <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); } }}>
-            <DialogTrigger render={
-              <Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20 transition-all hover:shadow-primary/30" />
-            }>
+          <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); setLookedUp(false); } }}>
+            <DialogTrigger render={<Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20" />}>
               <Plus className="h-4 w-4" />
               {t.newCompany}
             </DialogTrigger>
@@ -141,21 +160,16 @@ export function PortfolioDetailPage() {
               </DialogHeader>
               <form onSubmit={submit} className="space-y-4">
                 <div className="space-y-1.5">
-                  <Label className="text-sm text-muted-foreground">ISIN eingeben</Label>
+                  <Label className="text-sm text-muted-foreground">Enter ISIN or ticker</Label>
                   <div className="flex gap-2">
                     <Input
                       value={lookupQuery}
                       onChange={(e) => setLookupQuery(e.target.value.toUpperCase())}
-                      placeholder="z.B. US92826C8394"
+                      placeholder="e.g. US02079K3059 or GOOGL"
                       className="font-mono"
                       onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleLookup(); } }}
                     />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={handleLookup}
-                      disabled={lookupLoading || !lookupQuery.trim()}
-                    >
+                    <Button type="button" variant="secondary" onClick={handleLookup} disabled={lookupLoading || !lookupQuery.trim()}>
                       {lookupLoading ? "..." : t.lookup}
                     </Button>
                   </div>
@@ -164,29 +178,23 @@ export function PortfolioDetailPage() {
                 {lookedUp && (
                   <div className="space-y-3">
                     <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
-                      <p className="text-xs font-medium text-green-800">Firma gefunden</p>
+                      <p className="text-xs font-medium text-green-800">Company found</p>
                     </div>
                     <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Name</span>
-                        <span className="font-medium text-foreground">{form.name}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Ticker</span>
-                        <span className="font-mono font-medium text-foreground">{form.ticker}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">ISIN</span>
-                        <span className="font-mono font-medium text-foreground">{form.isin}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Currency</span>
-                        <span className="font-mono font-medium text-foreground">{form.currency}</span>
-                      </div>
+                      {[
+                        ["Name", form.name],
+                        ["Ticker", form.ticker],
+                        ["ISIN", form.isin],
+                        ["Currency", form.currency],
+                      ].map(([k, v]) => (
+                        <div key={k} className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">{k}</span>
+                          <span className="font-mono font-medium text-foreground">{v}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
-
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" onClick={() => setOpen(false)}>{t.cancel}</Button>
                   <Button type="submit" disabled={!lookedUp || submitting}>{t.save}</Button>
@@ -196,109 +204,30 @@ export function PortfolioDetailPage() {
           </Dialog>
         </div>
 
-        {companies.length === 0 ? (
+        {loading ? (
+          <div className="flex items-center justify-center py-24 text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading portfolio…
+          </div>
+        ) : orderedCards.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 bg-card/30 px-8 py-20 text-center">
             <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-muted/60">
               <Building2 className="h-6 w-6 text-muted-foreground" />
             </div>
-            <p className="mb-1 text-sm font-medium text-foreground">Noch keine Firmen</p>
+            <p className="mb-1 text-sm font-medium text-foreground">No companies yet</p>
             <p className="text-xs text-muted-foreground">
-              Füge die erste Firma mit dem Button oben rechts hinzu.
+              Add your first company using the button in the top right.
             </p>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
-            {companies.map((c, i) => (
-              <div key={c.id} className={`px-5 py-4 transition-colors ${i > 0 ? "border-t border-border/40" : ""}`}>
-                <div className="group flex items-start justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted/60">
-                    <Building2 className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <div>
-                    <span className="font-medium text-foreground">{c.name}</span>
-                    <div className="mt-0.5 flex items-center gap-2">
-                      <span className="tabular rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-primary">
-                        {c.ticker}
-                      </span>
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-                        {c.currency}
-                      </span>
-                      {editingFy?.companyId === c.id ? (
-                        <span className="flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
-                          <span>FY-Ende:</span>
-                          <input
-                            type="number"
-                            min="1"
-                            max="31"
-                            value={editingFy.day}
-                            onChange={(e) => setEditingFy({ ...editingFy, day: e.target.value })}
-                            className="w-10 rounded border border-blue-200 bg-white px-1 text-center font-mono"
-                            placeholder="DD"
-                          />
-                          <span>.</span>
-                          <input
-                            type="number"
-                            min="1"
-                            max="12"
-                            value={editingFy.month}
-                            onChange={(e) => setEditingFy({ ...editingFy, month: e.target.value })}
-                            className="w-10 rounded border border-blue-200 bg-white px-1 text-center font-mono"
-                            placeholder="MM"
-                          />
-                          <button
-                            onClick={async () => {
-                              const month = parseInt(editingFy.month);
-                              const day = parseInt(editingFy.day);
-                              if (!month || month < 1 || month > 12 || !day || day < 1 || day > 31) {
-                                toast.error("Ungültiges Datum (Monat 1-12, Tag 1-31)");
-                                return;
-                              }
-                              try {
-                                await updateCompany(c.id, { fiscal_year_end_month: month, fiscal_year_end_day: day });
-                                setEditingFy(null);
-                                refresh();
-                                toast.success("FY-Ende aktualisiert");
-                              } catch {
-                                toast.error("Speichern fehlgeschlagen");
-                              }
-                            }}
-                            className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-blue-700"
-                          >✓</button>
-                          <button
-                            onClick={() => setEditingFy(null)}
-                            className="rounded px-1 text-blue-700/60 hover:text-blue-900"
-                          >✕</button>
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => setEditingFy({
-                            companyId: c.id,
-                            month: c.fiscal_year_end_month ? String(c.fiscal_year_end_month).padStart(2, "0") : "",
-                            day: c.fiscal_year_end_day ? String(c.fiscal_year_end_day).padStart(2, "0") : "",
-                          })}
-                          className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 transition-colors hover:bg-blue-100"
-                          title="Fiscal Year End — Klick zum Editieren"
-                        >
-                          FY-Ende: {c.fiscal_year_end_month && c.fiscal_year_end_day
-                            ? `${String(c.fiscal_year_end_day).padStart(2, "0")}.${String(c.fiscal_year_end_month).padStart(2, "0")}.`
-                            : "auto"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => remove(c.id)}
-                  disabled={deleting === c.id}
-                  className="h-8 w-8 p-0 text-muted-foreground opacity-0 transition-all group-hover:opacity-100 hover:text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-                </div>
-              </div>
+          <div className="grid grid-cols-1 gap-4">
+            {orderedCards.map((c) => (
+              <CompanyCard
+                key={c.company.id}
+                portfolioId={id!}
+                data={c}
+                definitions={definitions}
+                onChanged={onCardChanged(c.company.id)}
+              />
             ))}
           </div>
         )}
@@ -306,3 +235,6 @@ export function PortfolioDetailPage() {
     </div>
   );
 }
+
+// Legacy: some existing imports still reference the old Company type re-export.
+export type { Company };
