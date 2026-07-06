@@ -1682,6 +1682,122 @@ def _fy_year_has_data(db: Session, company_id: UUID, year: int) -> bool:
     )
 
 
+def _refresh_fy_from_quarters(
+    db: Session,
+    company_id: UUID,
+    value_key: str,
+    year: int,
+) -> None:
+    """Re-derive the FY row of a quarterly-estimate key from its 4 Q rows.
+    Called after any Q-level write (manual override, provider ingest) to keep
+    the FY value in sync with the sum of its parts.
+
+    For SUMMABLE keys: FY = Q1 + Q2 + Q3 + Q4 (all must be present).
+    For POINT_IN_TIME keys: FY = Q4 (Bilanzstichtag).
+    No-op if the key is not a QUARTERLY_ESTIMATE_KEY or if the required Q
+    rows are missing.
+    """
+    from app.values.quarterly_estimates import (
+        QUARTERLY_ESTIMATE_KEYS,
+        SUMMABLE_QUARTERLY_KEYS,
+        POINT_IN_TIME_QUARTERLY_KEYS,
+    )
+    if value_key not in QUARTERLY_ESTIMATE_KEYS:
+        return
+
+    q_rows = {
+        r.period_type: r
+        for r in db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
+            CompanyValue.period_year == year,
+        )
+        .all()
+    }
+    if not q_rows:
+        return
+
+    fy_value: Decimal | None = None
+    fy_adj: Decimal | None = None
+    fy_source_parts: list[str] = []
+    fy_latest_ts: datetime | None = None
+    method_summary = "provider"
+
+    if value_key in SUMMABLE_QUARTERLY_KEYS:
+        if not all(q in q_rows and q_rows[q].numeric_value is not None for q in ("Q1", "Q2", "Q3", "Q4")):
+            return
+        fy_value = sum((q_rows[q].numeric_value for q in ("Q1", "Q2", "Q3", "Q4")), Decimal("0"))
+        if all(q_rows[q].numeric_value_adjusted is not None for q in ("Q1", "Q2", "Q3", "Q4")):
+            fy_adj = sum((q_rows[q].numeric_value_adjusted for q in ("Q1", "Q2", "Q3", "Q4")), Decimal("0"))
+        methods: set[str] = set()
+        for q in ("Q1", "Q2", "Q3", "Q4"):
+            r = q_rows[q]
+            methods.add(r.primary_method or "unknown")
+            fy_source_parts.append(f"{q}: {r.primary_method or 'unknown'}")
+            if r.fetched_at and (fy_latest_ts is None or r.fetched_at > fy_latest_ts):
+                fy_latest_ts = r.fetched_at
+        method_summary = "manual" if "manual" in methods else (
+            "provider" if methods <= {"provider", "pdf"} else "calculated"
+        )
+    elif value_key in POINT_IN_TIME_QUARTERLY_KEYS:
+        q4 = q_rows.get("Q4")
+        if q4 is None or q4.numeric_value is None:
+            return
+        fy_value = q4.numeric_value
+        fy_adj = q4.numeric_value_adjusted
+        fy_source_parts.append(f"Q4 snapshot ({q4.primary_method or 'unknown'})")
+        fy_latest_ts = q4.fetched_at
+        method_summary = q4.primary_method or "calculated"
+
+    if fy_value is None:
+        return
+
+    company = db.query(Company).filter(Company.id == company_id).one_or_none()
+    currency = company.currency if company and value_key in CURRENCY_KEYS else None
+
+    existing_fy = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == year,
+        )
+        .first()
+    )
+    source_name = ("Derived Annual = Q1+Q2+Q3+Q4 | " + " | ".join(fy_source_parts))[:4000]
+    if existing_fy:
+        # Do not override a manually_overridden FY row (user chose to lock it).
+        if existing_fy.manually_overridden:
+            return
+        existing_fy.numeric_value = fy_value
+        existing_fy.numeric_value_adjusted = fy_adj
+        existing_fy.source_name = source_name
+        existing_fy.fetched_at = fy_latest_ts or datetime.now(timezone.utc)
+        existing_fy.primary_method = method_summary
+        if currency and not existing_fy.currency:
+            existing_fy.currency = currency
+    else:
+        db.add(
+            CompanyValue(
+                id=uuid4(),
+                company_id=company_id,
+                value_key=value_key,
+                period_type="FY",
+                period_year=year,
+                numeric_value=fy_value,
+                numeric_value_adjusted=fy_adj,
+                source_name=source_name,
+                fetched_at=fy_latest_ts or datetime.now(timezone.utc),
+                primary_method=method_summary,
+                is_forecast=True,
+                currency=currency,
+            )
+        )
+
+
 def _recalc_after_override(
     db: Session,
     company_id: UUID,
@@ -1691,6 +1807,15 @@ def _recalc_after_override(
     trigger_label: str,
 ) -> None:
     affected: list[tuple[str, int | None]] = [(period_type, period_year)]
+
+    # Iteration 3: If a Q row was overridden, re-derive the FY row from Q rows
+    # before running metric calcs — so downstream metrics see the fresh FY.
+    if (
+        period_type in ("Q1", "Q2", "Q3", "Q4")
+        and period_year is not None
+    ):
+        _refresh_fy_from_quarters(db, company_id, value_key, period_year)
+        affected.append(("FY", period_year))
 
     if value_key == "market_cap":
         for year in _existing_fy_years(db, company_id):
@@ -1703,6 +1828,7 @@ def _recalc_after_override(
     ):
         affected.append(("FY", period_year + 1))
 
+    # Iteration 4: recalculate all derived metrics for every affected FY.
     for pt, py in affected:
         _run_and_persist_calculations(db, company_id, pt, py)
 
