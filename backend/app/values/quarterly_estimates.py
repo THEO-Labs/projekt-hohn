@@ -157,6 +157,7 @@ def _upsert_q_estimate(
                 existing.fetched_at = now
                 existing.from_ir_pdf = False
                 existing.is_forecast = True
+                existing.primary_method = "web_guidance"
                 return existing
             cv = CompanyValue(
                 id=uuid4(),
@@ -173,6 +174,7 @@ def _upsert_q_estimate(
                 currency=currency,
                 fetched_at=now,
                 is_forecast=True,
+                primary_method="web_guidance",
             )
             db.add(cv)
             db.flush()
@@ -399,6 +401,9 @@ def _upsert_q_actual_from_provider(
     if existing_forecast and existing_forecast.from_ir_pdf and existing_forecast.numeric_value is not None:
         return existing_forecast
     now = datetime.now(timezone.utc)
+    # Q4-Implied vs echter Provider-Fetch: erkennen wir am source_name.
+    is_implied_q4 = source_name.startswith("Implied Q4")
+    method = "calculated" if is_implied_q4 else "provider"
     try:
         with db.begin_nested():
             if existing_forecast:
@@ -409,6 +414,7 @@ def _upsert_q_actual_from_provider(
                 existing_forecast.fetched_at = now
                 existing_forecast.is_forecast = False
                 existing_forecast.from_ir_pdf = False
+                existing_forecast.primary_method = method
                 return existing_forecast
             cv = CompanyValue(
                 id=uuid4(),
@@ -422,6 +428,7 @@ def _upsert_q_actual_from_provider(
                 currency=currency,
                 fetched_at=now,
                 is_forecast=False,
+                primary_method=method,
             )
             db.add(cv)
             db.flush()
@@ -579,9 +586,51 @@ def _ensure_prev_fy_q_actuals(
         .order_by(CompanyValue.fetched_at.desc())
         .first()
     )
+    # Falls kein FY-Total in DB: aus EDGAR 10-K holen. Notwendig fuer die
+    # neuen Keys (revenue, ocf, capex, eps_diluted) die noch nie ein FY hatten.
     if fy_total_row is None or fy_total_row.numeric_value is None:
-        return
-    fy_total = fy_total_row.numeric_value
+        try:
+            fy_res = provider.fetch(
+                company.ticker, key, prev_fy,
+                fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+            )
+        except Exception as exc:
+            logger.warning("EDGAR FY-1 fetch %s/%s/FY%s exception: %s",
+                           company.ticker, key, prev_fy, exc)
+            fy_res = None
+        if fy_res is None or fy_res.value is None:
+            return
+        fy_val = Decimal(str(fy_res.value))
+        if key in {"buyback_volume", "dividends"} and fy_val < 0:
+            fy_val = abs(fy_val)
+        now = datetime.now(timezone.utc)
+        new_fy = CompanyValue(
+            id=uuid4(),
+            company_id=company.id,
+            value_key=key,
+            period_type="FY",
+            period_year=prev_fy,
+            numeric_value=fy_val,
+            source_name=(fy_res.source_name or "SEC EDGAR (FY-1 Backfill)")[:4000],
+            source_link=fy_res.source_link,
+            currency=currency,
+            fetched_at=now,
+            is_forecast=False,
+            primary_method="provider",
+        )
+        db.add(new_fy)
+        try:
+            db.flush()
+        except IntegrityError as ie:
+            logger.warning("FY-1 FY-Row upsert %s/%s/FY%s IntegrityError: %s",
+                           company.ticker, key, prev_fy, str(ie)[:120])
+            db.rollback()
+            return
+        logger.info("EDGAR FY-1 FY-Row backfill %s/%s/FY%s = %.0f",
+                    company.ticker, key, prev_fy, float(fy_val))
+        fy_total = fy_val
+    else:
+        fy_total = fy_total_row.numeric_value
     q123_sum = sum(new_q_values[q] for q in ("Q1", "Q2", "Q3"))
     q4_implied = fy_total - q123_sum
     # Plausibility: Q4 sollte gleiches Vorzeichen wie FY-Total haben
