@@ -47,11 +47,16 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
   }, [onClose]);
 
   if (!anchorRect) return null;
-  const top = anchorRect.bottom + window.scrollY + 6;
-  // Position: try to align right edge of the popover with the right edge of the cell.
+  // position: fixed is viewport-relative — no scroll offset needed.
   const popoverWidth = 320;
+  const popoverHeight = 260; // rough max
+  let top = anchorRect.bottom + 6;
+  // Flip above the cell if not enough space below.
+  if (top + popoverHeight > window.innerHeight - 8) {
+    top = Math.max(8, anchorRect.top - popoverHeight - 6);
+  }
   const left = Math.min(
-    Math.max(anchorRect.right + window.scrollX - popoverWidth, 8),
+    Math.max(anchorRect.right - popoverWidth, 8),
     window.innerWidth - popoverWidth - 8,
   );
 
