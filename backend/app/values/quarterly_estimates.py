@@ -591,7 +591,8 @@ def _ensure_prev_fy_q_actuals(
     if fy_total_row is None or fy_total_row.numeric_value is None:
         try:
             fy_res = provider.fetch(
-                company.ticker, key, prev_fy,
+                company.ticker, key,
+                period_type="FY", period_year=prev_fy,
                 fy_end_month=fy_end_month, fy_end_day=fy_end_day,
             )
         except Exception as exc:
@@ -703,7 +704,8 @@ def _ensure_prev_fy_balance_sheet(
         currency = company.currency if key in CURRENCY_KEYS else None
         try:
             res = provider.fetch(
-                company.ticker, key, prev_fy,
+                company.ticker, key,
+                period_type="FY", period_year=prev_fy,
                 fy_end_month=fy_end_month, fy_end_day=fy_end_day,
             )
         except Exception as exc:
