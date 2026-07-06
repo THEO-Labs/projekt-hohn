@@ -206,17 +206,88 @@ def _load_rows(
     return out
 
 
+def _derive_annual(
+    key: str,
+    q1: CompanyValue | None,
+    q2: CompanyValue | None,
+    q3: CompanyValue | None,
+    q4: CompanyValue | None,
+    fy_row: CompanyValue | None,
+) -> ValueRef:
+    """Annual value is derived from the Q rows at serve-time (single source of
+    truth = the Q rows). For SUMMABLE keys we sum Q1..Q4; for POINT_IN_TIME we
+    take Q4. FY-row is used only as a fallback when Q rows are missing (mostly
+    historical years that were backfilled at FY-granularity).
+    """
+    is_summable = key in SUMMABLE_QUARTERLY_KEYS
+    q_rows = [q1, q2, q3, q4]
+
+    # Case 1 — SUMMABLE and all 4 Q present: sum them.
+    if is_summable and all(r is not None and r.numeric_value is not None for r in q_rows):
+        total = sum((r.numeric_value for r in q_rows if r is not None and r.numeric_value is not None), Decimal("0"))
+        total_adj: Decimal | None
+        if all(r is not None and r.numeric_value_adjusted is not None for r in q_rows):
+            total_adj = sum(
+                (r.numeric_value_adjusted for r in q_rows if r is not None and r.numeric_value_adjusted is not None),
+                Decimal("0"),
+            )
+        else:
+            total_adj = None
+        # Build a compact source description that names the per-quarter origins.
+        parts: list[str] = []
+        latest_fetched: datetime | None = None
+        methods: set[str] = set()
+        for q_label, r in zip(("Q1", "Q2", "Q3", "Q4"), q_rows):
+            if r is None:
+                continue
+            method = r.primary_method or "unknown"
+            methods.add(method)
+            parts.append(f"{q_label}: {method}")
+            if r.fetched_at and (latest_fetched is None or r.fetched_at > latest_fetched):
+                latest_fetched = r.fetched_at
+        method_summary = "actual" if methods == {"provider"} or methods <= {"provider", "pdf", "manual"} else "mixed"
+        return ValueRef(
+            value=total,
+            adjusted=total_adj,
+            source_name=f"Derived Annual = Q1+Q2+Q3+Q4 | " + " | ".join(parts),
+            source_link=None,
+            fetched_at=latest_fetched,
+            manually_overridden=False,
+            primary_method="calculated" if method_summary == "mixed" else "provider",
+        )
+
+    # Case 2 — POINT_IN_TIME and Q4 present: use Q4 as the fiscal-year-end snapshot.
+    if not is_summable and q4 is not None and q4.numeric_value is not None:
+        return ValueRef(
+            value=q4.numeric_value,
+            adjusted=q4.numeric_value_adjusted,
+            source_name=f"Derived Annual = Q4 snapshot | Q4: {q4.primary_method or 'unknown'}",
+            source_link=q4.source_link,
+            fetched_at=q4.fetched_at,
+            manually_overridden=bool(q4.manually_overridden),
+            primary_method="calculated",
+        )
+
+    # Case 3 — fallback to whatever FY row we have.
+    return _to_ref(fy_row)
+
+
 def _build_quarterly_row(
     rows: dict[tuple[str, str, int | None], CompanyValue],
     key: str,
     year: int | None,
 ) -> QuarterlyRow:
+    q1 = rows.get((key, "Q1", year))
+    q2 = rows.get((key, "Q2", year))
+    q3 = rows.get((key, "Q3", year))
+    q4 = rows.get((key, "Q4", year))
+    fy = rows.get((key, "FY", year))
     return QuarterlyRow(
-        q1=_to_ref(rows.get((key, "Q1", year))),
-        q2=_to_ref(rows.get((key, "Q2", year))),
-        q3=_to_ref(rows.get((key, "Q3", year))),
-        q4=_to_ref(rows.get((key, "Q4", year))),
-        annual=_to_ref(rows.get((key, "FY", year))),
+        q1=_to_ref(q1),
+        q2=_to_ref(q2),
+        q3=_to_ref(q3),
+        q4=_to_ref(q4),
+        annual=_derive_annual(key, q1, q2, q3, q4, fy),
     )
 
 
