@@ -120,6 +120,44 @@ def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
     return value
 
 
+QUARTER_MODE_HEADER = """*** PER-QUARTALS-MODUS AKTIV ***
+
+Diese Anfrage ist eine STANDALONE-QUARTALSANFRAGE — nicht FY-Total.
+
+Was das konkret bedeutet fuer diesen Call:
+- Du schaetzt EINEN einzelnen Quartalswert (Q1, Q2, Q3 oder Q4).
+- KEIN YTD (Year-to-Date), KEIN FY-Total.
+- Der Annual-Wert wird von unserem System als Summe der 4 Q-Werte
+  aggregiert — du berechnest das NICHT.
+
+Folgende Sektionen des System-Prompts sind fuer diesen Call NICHT anwendbar
+und du sollst sie NICHT befolgen:
+- E. Konsens-Anchoring-Pflicht (Konsens ist FY-Level; fuer Standalone-Q
+  ist Analysten-Konsens meist nicht separat quotiert)
+- F. Quartals-Aufschluesselungs-Pflicht (irrelevant — du lieferst EIN Q, nicht 4)
+- H. Forward-Q4-Methodik mit FY-Anchoring-Vergleich
+
+Weiterhin voll gueltig:
+- 0. Ground-Truth-Prinzip (Provider-Werte im q_actuals-Block sind FIX)
+- Absolute Grundregel (immer eine Zahl liefern)
+- A. Sektor-Pflicht (Bank/Versicherer-Equivalent-Konzepte)
+- C. Konsistenz Output/Begruendung
+- D. Quellen-URL-Pflicht bei Datumsangaben
+- G. EBITDA GAAP-Adj-Bruecke bei ebitda-Werten
+- Antwort-Format, Zahlenformat, Unit-Sanity-Check
+
+Deine Datenquellen fuer ein Standalone-Q:
+1. Q-Actuals-Anker im User-Prompt (wenn vorhanden) — GROUND TRUTH.
+2. Run-Rate der bereits gelieferten Q (sequentielles Wachstum).
+3. Saisonalitaets-Pattern des Vorjahres (im User-Prompt injiziert).
+4. Management-Guidance fuer das spezifische Quartal (Earnings-Call-Transcript
+   des vorherigen Q, Investor-Day-Slides).
+5. Deine Experten-Einschaetzung wenn 1-4 nichts liefern.
+
+Fokus auf die einzelne Zahl — kurze, praezise Begruendung reicht.
+"""
+
+
 RESEARCH_PROMPT = """Du bist Senior Equity Research Analyst. Du lieferst IMMER eine
 fundierte Schätzung — auch wenn keine konkrete Quelle findbar ist. Du bist Experte
 und bezahlst dir deine Einschätzungen mit deinem Wissen über das Unternehmen,
@@ -1068,6 +1106,17 @@ def research_value(
         f"{q_actuals_block}"
     )
 
+    # System-Prompt: RESEARCH_PROMPT bleibt der cache-fähige Base-Block.
+    # Bei Per-Quartals-Calls haengen wir den QUARTER_MODE_HEADER als
+    # zweiten, NICHT gecacheten Block dran. So bleibt der Prompt-Cache
+    # fuer alle Calls stabil (spart ~90% der System-Tokens); nur der
+    # kleine Q-Modus-Header ist call-spezifisch.
+    system_blocks: list[dict] = [
+        {"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}
+    ]
+    if is_quarter:
+        system_blocks.append({"type": "text", "text": QUARTER_MODE_HEADER})
+
     def _do_call(messages: list[dict]) -> str:
         # Explizites Retry-Backoff bei 429/529/Overloaded — Anthropic-API hat
         # bei Lastspitzen oft 1-2 transiente Rate-Limit-Antworten, die wir mit
@@ -1079,7 +1128,7 @@ def research_value(
                 kwargs = dict(
                     model="claude-sonnet-4-6",
                     max_tokens=2048,
-                    system=[{"type": "text", "text": RESEARCH_PROMPT, "cache_control": {"type": "ephemeral"}}],
+                    system=system_blocks,
                     messages=messages,
                 )
                 if tools_arg:
