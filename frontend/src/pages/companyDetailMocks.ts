@@ -23,6 +23,12 @@ export type Cell = {
   fetched_at?: string | null;
   primary_method?: string | null;
   manually_overridden?: boolean;
+  // is_forecast is the primary marker for colour coding:
+  //   false -> Actual (already reported), rendered in black
+  //   true  -> Estimate (not yet reported), rendered in blue
+  // Independent of primary_method: a Claude-web-search that pulls a value
+  // from an already-published 10-Q is still an Actual, not an Estimate.
+  is_forecast?: boolean;
   formula?: string | null;
   value_key?: string | null;
   period_label?: string | null;
@@ -217,6 +223,7 @@ function refToCell(
     fetched_at: r?.fetched_at ?? null,
     primary_method: r?.primary_method ?? null,
     manually_overridden: r?.manually_overridden ?? false,
+    is_forecast: r?.is_forecast ?? false,
     formula: FORMULAS[valueKey] ?? null,
     value_key: valueKey,
     period_label: periodLabel,
@@ -362,6 +369,7 @@ export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): B
       fetched_at: ref.fetched_at ?? null,
       primary_method: ref.primary_method ?? null,
       manually_overridden: ref.manually_overridden ?? false,
+      is_forecast: ref.is_forecast ?? false,
       formula: keyHint ? FORMULAS[keyHint] ?? null : null,
       value_key: keyHint ?? null,
       period_label: `${label} FY ${year}`,

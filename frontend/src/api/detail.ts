@@ -8,6 +8,7 @@ export type ValueRef = {
   fetched_at: string | null;
   manually_overridden: boolean;
   primary_method: string | null;
+  is_forecast: boolean;
 };
 
 export type QuarterlyRowRefs = {

@@ -42,6 +42,12 @@ class ValueRef(BaseModel):
     fetched_at: datetime | None = None
     manually_overridden: bool = False
     primary_method: str | None = None
+    # is_forecast is the authoritative marker for "Actual (already reported)"
+    # vs "Estimate (not yet reported)". Used by the frontend for colour coding.
+    # Independent of primary_method: Claude can also fetch actuals from an
+    # already-published 10-Q (is_forecast=false), which should render as
+    # Actual, not Estimate.
+    is_forecast: bool = False
 
 
 class QuarterlyRow(BaseModel):
@@ -162,6 +168,7 @@ def _to_ref(row: CompanyValue | None) -> ValueRef:
         fetched_at=row.fetched_at,
         manually_overridden=bool(row.manually_overridden),
         primary_method=row.primary_method,
+        is_forecast=bool(row.is_forecast),
     )
 
 
@@ -237,6 +244,7 @@ def _derive_annual(
         parts: list[str] = []
         latest_fetched: datetime | None = None
         methods: set[str] = set()
+        any_forecast = False
         for q_label, r in zip(("Q1", "Q2", "Q3", "Q4"), q_rows):
             if r is None:
                 continue
@@ -245,6 +253,8 @@ def _derive_annual(
             parts.append(f"{q_label}: {method}")
             if r.fetched_at and (latest_fetched is None or r.fetched_at > latest_fetched):
                 latest_fetched = r.fetched_at
+            if r.is_forecast:
+                any_forecast = True
         method_summary = "actual" if methods == {"provider"} or methods <= {"provider", "pdf", "manual"} else "mixed"
         return ValueRef(
             value=total,
@@ -254,6 +264,7 @@ def _derive_annual(
             fetched_at=latest_fetched,
             manually_overridden=False,
             primary_method="calculated" if method_summary == "mixed" else "provider",
+            is_forecast=any_forecast,
         )
 
     # Case 2 — POINT_IN_TIME and Q4 present: use Q4 as the fiscal-year-end snapshot.
@@ -266,6 +277,7 @@ def _derive_annual(
             fetched_at=q4.fetched_at,
             manually_overridden=bool(q4.manually_overridden),
             primary_method="calculated",
+            is_forecast=bool(q4.is_forecast),
         )
 
     # Case 3 — fallback to whatever FY row we have.

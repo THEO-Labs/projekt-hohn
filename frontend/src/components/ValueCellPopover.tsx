@@ -11,20 +11,34 @@ type Props = {
   anchorRect: DOMRect | null;
 };
 
-function methodBadge(method: string | null | undefined): { text: string; dot: string; text_cls: string } {
+// The badge follows is_forecast (Actual vs Estimate). primary_method is a
+// secondary tag that tells the user WHERE the value came from (10-Q via
+// provider, 10-Q via Claude web search, manual override, calculated formula).
+function cellBadge(cell: {
+  is_forecast?: boolean;
+  primary_method?: string | null | undefined;
+  manually_overridden?: boolean;
+}): { text: string; dot: string; text_cls: string } {
+  if (cell.manually_overridden || cell.primary_method === "manual") {
+    return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
+  }
+  if (cell.primary_method === "calculated") {
+    return { text: "Calculated", dot: "bg-violet-500", text_cls: "text-violet-700" };
+  }
+  if (cell.is_forecast) {
+    return { text: "Estimate", dot: "bg-sky-500", text_cls: "text-sky-700" };
+  }
+  return { text: "Actual", dot: "bg-foreground", text_cls: "text-foreground" };
+}
+
+function methodOrigin(method: string | null | undefined): string {
   switch (method) {
-    case "provider":
-      return { text: "Actual", dot: "bg-foreground", text_cls: "text-foreground" };
-    case "pdf":
-      return { text: "Actual · PDF", dot: "bg-foreground", text_cls: "text-foreground" };
-    case "manual":
-      return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
-    case "web_guidance":
-      return { text: "Estimate", dot: "bg-sky-500", text_cls: "text-sky-700" };
-    case "calculated":
-      return { text: "Calculated", dot: "bg-violet-500", text_cls: "text-violet-700" };
-    default:
-      return { text: "—", dot: "bg-muted-foreground/40", text_cls: "text-muted-foreground" };
+    case "provider": return "via Provider";
+    case "pdf": return "via PDF";
+    case "web_guidance": return "via Claude Web-Search";
+    case "manual": return "manual";
+    case "calculated": return "computed";
+    default: return "";
   }
 }
 
@@ -68,7 +82,8 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
     };
   }, [onClose]);
 
-  const meta = methodBadge(cell.primary_method);
+  const meta = cellBadge(cell);
+  const origin = methodOrigin(cell.primary_method);
   const { head, parts } = useMemo(() => parseSource(cell.source_name), [cell.source_name]);
 
   if (!anchorRect) return null;
@@ -97,7 +112,12 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
           <span className={`text-[10.5px] font-semibold uppercase tracking-wider ${meta.text_cls}`}>
             {meta.text}
           </span>
-          {cell.manually_overridden && (
+          {origin && (
+            <span className="text-[10.5px] text-muted-foreground">
+              {origin}
+            </span>
+          )}
+          {cell.manually_overridden && meta.text !== "Manual" && (
             <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-amber-800">
               Override
             </span>
@@ -174,12 +194,13 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
   );
 }
 
-// Color-coding for a rendered cell's number, based on its primary_method.
+// Color-coding for a rendered cell's number.
+// Primary marker: is_forecast (Actual vs Estimate). primary_method is only
+// used as a secondary discriminator for calculated/manual overrides.
 export function cellColorClass(cell: Cell | undefined): string {
   if (!cell || cell.value === null) return "text-muted-foreground/60";
-  const m = cell.primary_method;
-  if (m === "web_guidance") return "text-sky-700";
-  if (m === "calculated") return "text-violet-700";
-  if (m === "manual") return "text-amber-700";
+  if (cell.manually_overridden || cell.primary_method === "manual") return "text-amber-700";
+  if (cell.primary_method === "calculated") return "text-violet-700";
+  if (cell.is_forecast) return "text-sky-700";
   return "text-foreground";
 }
