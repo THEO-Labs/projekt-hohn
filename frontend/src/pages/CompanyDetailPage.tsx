@@ -40,6 +40,7 @@ import {
 } from "./companyDetailMocks";
 import { CollapsibleCard } from "@/components/CollapsibleCard";
 import { getCompanyDetail, type CompanyDetailOut } from "@/api/detail";
+import { getFxRates, DISPLAY_CURRENCIES, convertCurrency } from "@/api/fx";
 
 const METRIC_KEYS = [
   "hohn_return_detailed",
@@ -188,6 +189,38 @@ function MetricsBody({
         ))}
       </div>
     </>
+  );
+}
+
+function CurrencySelect({
+  value,
+  nativeCurrency,
+  onChange,
+  fxRates,
+}: {
+  value: string;
+  nativeCurrency: string;
+  onChange: (c: string) => void;
+  fxRates: Record<string, number> | null;
+}) {
+  const options = useMemo(() => {
+    const set = new Set<string>(DISPLAY_CURRENCIES);
+    set.add(nativeCurrency);
+    return Array.from(set);
+  }, [nativeCurrency]);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-7 rounded-lg border border-border bg-background px-2 text-[12px] font-mono text-foreground outline-none transition-colors hover:bg-muted focus:border-primary"
+      title={fxRates ? "Convert display currency" : "Convert display currency (FX rates loading…)"}
+    >
+      {options.map((c) => (
+        <option key={c} value={c}>
+          {c}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -488,6 +521,8 @@ export function CompanyDetailPage() {
   const [fyRows, setFyRows] = useState<CompanyValue[]>([]);
   const [definitions, setDefinitions] = useState<ValueDefinition[]>([]);
   const [detail, setDetail] = useState<CompanyDetailOut | null>(null);
+  const [fxRates, setFxRates] = useState<Record<string, number> | null>(null);
+  const [displayCurrency, setDisplayCurrency] = useState<string | null>(null);
 
   const loadAll = async () => {
     if (!pid || !cid) return;
@@ -501,16 +536,20 @@ export function CompanyDetailPage() {
         return;
       }
       setCompany(c);
-      const [cardData, defs, fy, detailData] = await Promise.all([
+      const [cardData, defs, fy, detailData, fx] = await Promise.all([
         loadCompanyCard(c),
         getDashboardDefinitions().catch(() => [] as ValueDefinition[]),
         getCompanyValues(c.id, "FY").catch(() => [] as CompanyValue[]),
         getCompanyDetail(c.id).catch(() => null),
+        getFxRates().catch(() => null),
       ]);
       setCard(cardData);
       setDefinitions(defs);
       setFyRows(fy);
       setDetail(detailData);
+      if (fx) setFxRates(fx.rates);
+      // Default display currency = company's native currency.
+      setDisplayCurrency((prev) => prev ?? c.currency);
     } catch (err) {
       console.error("CompanyDetail-Load fehlgeschlagen", err);
       toast.error("Failed to load company");
@@ -570,6 +609,9 @@ export function CompanyDetailPage() {
             reload={loadAll}
             setCard={setCard}
             detail={detail}
+            fxRates={fxRates}
+            displayCurrency={displayCurrency ?? company.currency}
+            onCurrencyChange={setDisplayCurrency}
           />
         )}
       </main>
@@ -588,6 +630,9 @@ function CompanyDetailContent({
   reload,
   setCard,
   detail,
+  fxRates,
+  displayCurrency,
+  onCurrencyChange,
 }: {
   company: Company;
   card: CompanyCardData;
@@ -597,18 +642,22 @@ function CompanyDetailContent({
   reload: () => void;
   setCard: (d: CompanyCardData) => void;
   detail: CompanyDetailOut | null;
+  fxRates: Record<string, number> | null;
+  displayCurrency: string;
+  onCurrencyChange: (c: string) => void;
 }) {
   const OVERVIEW_ID = "overview-values";
   const METRICS_ID = "overview-metrics";
   const BS_ID = "balance-sheet";
 
+  const fxCtx = useMemo(() => ({ displayCurrency, rates: fxRates }), [displayCurrency, fxRates]);
   const quarterlySections: QuarterlySection[] = useMemo(
-    () => (detail ? detailToQuarterlySections(detail) : QUARTERLY_SECTIONS),
-    [detail],
+    () => (detail ? detailToQuarterlySections(detail, fxCtx) : QUARTERLY_SECTIONS),
+    [detail, fxCtx],
   );
   const balanceSheet: BalanceSheetSection = useMemo(
-    () => (detail ? detailToBalanceSheet(detail) : BALANCE_SHEET),
-    [detail],
+    () => (detail ? detailToBalanceSheet(detail, fxCtx) : BALANCE_SHEET),
+    [detail, fxCtx],
   );
 
   const navItems = useMemo(() => {
@@ -652,7 +701,13 @@ function CompanyDetailContent({
             </span>
           }
           right={
-            <div onClick={(e) => e.stopPropagation()}>
+            <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-2">
+              <CurrencySelect
+                value={displayCurrency}
+                nativeCurrency={company.currency}
+                onChange={onCurrencyChange}
+                fxRates={fxRates}
+              />
               <RefreshActions
                 company={company}
                 fyEstimateYear={fyYear}
@@ -665,10 +720,10 @@ function CompanyDetailContent({
         >
           <div className="grid grid-cols-1 gap-x-16 gap-y-1 px-6 py-3 md:grid-cols-2">
             <div>
-              <OverviewRow label="Stock price" value={formatShort(card.stock_price?.numeric_value ?? null, company.currency)} ts={card.stock_price?.fetched_at} />
+              <OverviewRow label="Stock price" value={formatShort(convertCurrency(card.stock_price?.numeric_value ?? null, company.currency, displayCurrency, fxRates ?? {}), displayCurrency)} ts={card.stock_price?.fetched_at} />
               <OverviewRow label="Shares outstanding" value={formatShort(card.shares_outstanding?.numeric_value ?? null)} ts={card.shares_outstanding?.fetched_at} />
-              <OverviewRow label="Market Cap" value={formatShort(card.market_cap?.numeric_value ?? null, company.currency)} ts={card.market_cap?.fetched_at} />
-              <OverviewRow label="Enterprise Value" value={formatShort(card.enterprise_value, company.currency)} ts={card.enterprise_value_ts} />
+              <OverviewRow label="Market Cap" value={formatShort(convertCurrency(card.market_cap?.numeric_value ?? null, company.currency, displayCurrency, fxRates ?? {}), displayCurrency)} ts={card.market_cap?.fetched_at} />
+              <OverviewRow label="Enterprise Value" value={formatShort(convertCurrency(card.enterprise_value, company.currency, displayCurrency, fxRates ?? {}), displayCurrency)} ts={card.enterprise_value_ts} />
             </div>
             <div>
               <OverviewRow label="Date" value={new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" })} />

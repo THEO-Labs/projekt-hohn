@@ -4,6 +4,12 @@
 
 import { formatNumber, formatPercent } from "@/lib/format";
 import type { CompanyDetailOut, QuarterlyRowRefs, ValueRef } from "@/api/detail";
+import { convertCurrency } from "@/api/fx";
+
+export type FxContext = {
+  displayCurrency: string;
+  rates: Record<string, number> | null;
+};
 
 export type QuarterlyRow = {
   year: number;
@@ -142,16 +148,29 @@ const toNum = (v: string | null | undefined): number | null => {
 const refToNum = (r: ValueRef | undefined, variant: "gaap" | "adj"): number | null =>
   toNum(variant === "gaap" ? r?.value ?? null : r?.adjusted ?? null);
 
-const buildQRow = (year: number | null, row: QuarterlyRowRefs, variant: "gaap" | "adj"): QuarterlyRow => ({
+const scaled = (v: number | null, factor: number): number | null =>
+  v === null ? null : v / factor;
+
+const buildQRow = (
+  year: number | null,
+  row: QuarterlyRowRefs,
+  variant: "gaap" | "adj",
+  factor: number,
+): QuarterlyRow => ({
   year: year ?? 0,
-  q1: refToNum(row.q1, variant),
-  q2: refToNum(row.q2, variant),
-  q3: refToNum(row.q3, variant),
-  q4: refToNum(row.q4, variant),
-  annual: refToNum(row.annual, variant),
+  q1: scaled(refToNum(row.q1, variant), factor),
+  q2: scaled(refToNum(row.q2, variant), factor),
+  q3: scaled(refToNum(row.q3, variant), factor),
+  q4: scaled(refToNum(row.q4, variant), factor),
+  annual: scaled(refToNum(row.annual, variant), factor),
 });
 
 const currencyUnit = (currency: string): string => `${currency} millions`;
+
+// EPS is monetary but per-share, not in millions.
+const RAW_CURRENCY_KEYS = new Set<string>(["eps_diluted"]);
+const scaleFor = (s: { value_key: string; is_currency: boolean }): number =>
+  s.is_currency && !RAW_CURRENCY_KEYS.has(s.value_key) ? 1_000_000 : 1;
 
 const mapMargin = (
   numerator: QuarterlyRowRefs,
@@ -179,35 +198,58 @@ const MARGIN_NUM_BY_DEN: Record<string, string> = {
   fcf: "revenue",
 };
 
-export function detailToQuarterlySections(detail: CompanyDetailOut): QuarterlySection[] {
+const convertQRow = (row: QuarterlyRow, source: string, fx: FxContext, isCurrency: boolean): QuarterlyRow => {
+  if (!isCurrency || !fx.rates || source === fx.displayCurrency) return row;
+  const conv = (v: number | null) => convertCurrency(v, source, fx.displayCurrency, fx.rates!);
+  return {
+    year: row.year,
+    q1: conv(row.q1),
+    q2: conv(row.q2),
+    q3: conv(row.q3),
+    q4: conv(row.q4),
+    annual: conv(row.annual),
+  };
+};
+
+export function detailToQuarterlySections(detail: CompanyDetailOut, fx: FxContext): QuarterlySection[] {
   const byKey = new Map(detail.quarterly.map((s) => [s.value_key, s]));
   const revenue = byKey.get("revenue");
-  const currency = detail.company.currency;
+  const nativeCurrency = detail.company.currency;
+  const displayCurrency = fx.displayCurrency;
 
   return detail.quarterly.map((s) => {
     const showAnnual = s.value_key !== "net_buyback";
+    const factor = scaleFor(s);
     const extras_gaap: ExtraRow[] = [];
     const extras_adj: ExtraRow[] = [];
     const denKey = MARGIN_NUM_BY_DEN[s.value_key];
     if (denKey && revenue) {
+      // Margin math is a ratio — scale + FX cancels out.
       extras_gaap.push(mapMargin(s.current, revenue.current, "gaap"));
       extras_adj.push(mapMargin(s.current, revenue.current, "adj"));
     }
+    const unit = !s.is_currency
+      ? s.unit ?? undefined
+      : RAW_CURRENCY_KEYS.has(s.value_key)
+        ? displayCurrency
+        : currencyUnit(displayCurrency);
+
+    const isCurrency = s.is_currency;
     return {
       title: s.label_en,
-      unit: s.is_currency ? currencyUnit(currency) : s.unit ?? undefined,
+      unit,
       showAnnual,
       gaap: {
         rows: [
-          buildQRow(s.current_year, s.current, "gaap"),
-          buildQRow(s.prior_year, s.prior, "gaap"),
+          convertQRow(buildQRow(s.current_year, s.current, "gaap", factor), nativeCurrency, fx, isCurrency),
+          convertQRow(buildQRow(s.prior_year, s.prior, "gaap", factor), nativeCurrency, fx, isCurrency),
         ],
         extras: extras_gaap.length > 0 ? extras_gaap : undefined,
       },
       adjusted: {
         rows: [
-          buildQRow(s.current_year, s.current, "adj"),
-          buildQRow(s.prior_year, s.prior, "adj"),
+          convertQRow(buildQRow(s.current_year, s.current, "adj", factor), nativeCurrency, fx, isCurrency),
+          convertQRow(buildQRow(s.prior_year, s.prior, "adj", factor), nativeCurrency, fx, isCurrency),
         ],
         extras: extras_adj.length > 0 ? extras_adj : undefined,
       },
@@ -215,21 +257,32 @@ export function detailToQuarterlySections(detail: CompanyDetailOut): QuarterlySe
   });
 }
 
-export function detailToBalanceSheet(detail: CompanyDetailOut): BalanceSheetSection {
+export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): BalanceSheetSection {
   const cy = detail.balance_sheet.current_year ?? new Date().getFullYear();
   const py = detail.balance_sheet.prior_year ?? new Date().getFullYear() - 1;
+  const nativeCurrency = detail.company.currency;
   const buildGroup = (group: (typeof detail.balance_sheet.groups)[number], variant: "gaap" | "adj"): BSGroup => ({
-    rows: group.rows.map((r) => ({
-      label: r.label,
-      y1: refToNum(r.y1, variant),
-      y2: refToNum(r.y2, variant),
-      format: r.format_hint === "percent" ? asPct2 : asNum0,
-      emphasis: r.emphasis,
-    })),
+    rows: group.rows.map((r) => {
+      const isPct = r.format_hint === "percent";
+      const factor = isPct ? 1 : 1_000_000;
+      let y1 = scaled(refToNum(r.y1, variant), factor);
+      let y2 = scaled(refToNum(r.y2, variant), factor);
+      if (!isPct && fx.rates && nativeCurrency !== fx.displayCurrency) {
+        y1 = convertCurrency(y1, nativeCurrency, fx.displayCurrency, fx.rates);
+        y2 = convertCurrency(y2, nativeCurrency, fx.displayCurrency, fx.rates);
+      }
+      return {
+        label: r.label,
+        y1,
+        y2,
+        format: isPct ? asPct2 : asNum0,
+        emphasis: r.emphasis,
+      };
+    }),
   });
   return {
     title: "Balance Sheet",
-    unit: `${detail.company.currency} millions`,
+    unit: `${fx.displayCurrency} millions`,
     currentYear: cy,
     priorYear: py,
     gaap: { groups: detail.balance_sheet.groups.map((g) => buildGroup(g, "gaap")) },
