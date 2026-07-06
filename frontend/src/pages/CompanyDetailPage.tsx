@@ -41,6 +41,9 @@ import {
 import { CollapsibleCard } from "@/components/CollapsibleCard";
 import { getCompanyDetail, type CompanyDetailOut } from "@/api/detail";
 import { getFxRates, DISPLAY_CURRENCIES, convertCurrency } from "@/api/fx";
+import { ValueCellPopover, cellColorClass } from "@/components/ValueCellPopover";
+import type { Cell } from "./companyDetailMocks";
+import { FORMULAS } from "./companyDetailMocks";
 
 const METRIC_KEYS = [
   "hohn_return_detailed",
@@ -118,9 +121,68 @@ const SECTIONS: { title: string; rows: MetricRowSpec[] }[] = [
   },
 ];
 
-function MetricValue({ value, format, tone }: { value: number | null; format: (v: number | null) => string; tone?: (v: number | null) => string }) {
-  const cls = tone ? tone(value) : value == null ? "text-muted-foreground/70" : "text-foreground";
-  return <span className={`text-[13px] font-semibold tabular-nums ${cls}`}>{format(value)}</span>;
+function MetricValue({
+  value,
+  format,
+  tone,
+  cell,
+  onOpen,
+}: {
+  value: number | null;
+  format: (v: number | null) => string;
+  tone?: (v: number | null) => string;
+  cell?: Cell;
+  onOpen?: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
+}) {
+  const label = format(value);
+  const toneCls = tone ? tone(value) : cell ? cellColorClass(cell) : value == null ? "text-muted-foreground/70" : "text-foreground";
+  const clickable = !!cell && !!onOpen && value !== null;
+  const clickCls = clickable ? "cursor-pointer rounded px-1 -mx-1 transition-colors hover:bg-muted/50" : "";
+  return (
+    <span
+      className={`text-[13px] font-semibold tabular-nums ${toneCls} ${clickCls}`}
+      onClick={
+        clickable
+          ? (e) => {
+              e.stopPropagation();
+              onOpen!(cell!, label, (e.currentTarget as HTMLElement).getBoundingClientRect());
+            }
+          : undefined
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
+function cvToMetricCell(
+  cv: CompanyValue | undefined,
+  variant: "gaap" | "adjusted",
+  valueKey: string,
+  periodLabel: string,
+): Cell {
+  const raw = variant === "gaap" ? cv?.numeric_value : cv?.numeric_value_adjusted;
+  const value = raw != null && raw !== undefined ? Number(raw) : null;
+  return {
+    value,
+    source_name: cv?.source_name ?? null,
+    source_link: cv?.source_link ?? null,
+    fetched_at: cv?.fetched_at ?? null,
+    primary_method: cv?.primary_method ?? "calculated",
+    manually_overridden: cv?.manually_overridden ?? false,
+    formula: FORMULAS[valueKey] ?? null,
+    value_key: valueKey,
+    period_label: periodLabel,
+  };
+}
+
+function computedMetricCell(value: number | null, formula: string, periodLabel: string): Cell {
+  return {
+    value,
+    primary_method: "calculated",
+    formula,
+    period_label: periodLabel,
+  };
 }
 
 // Shared column split for ALL detail-page cards:
@@ -133,8 +195,12 @@ const HALF_LEFT_INNER = "grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-
 
 function MetricsBody({
   rowsByKey,
+  fyYear,
+  onOpenCell,
 }: {
   rowsByKey: Record<string, CompanyValue | undefined>;
+  fyYear: number | null;
+  onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   return (
     <>
@@ -161,26 +227,37 @@ function MetricsBody({
               {section.title}
             </div>
             {section.rows.map((r) => {
-              const gaap = r.computed
+              const gaapVal = r.computed
                 ? r.computed(rowsByKey, "gaap")
                 : r.key
                   ? pickValue(rowsByKey[r.key], "gaap")
                   : null;
-              const adj = r.computed
+              const adjVal = r.computed
                 ? r.computed(rowsByKey, "adjusted")
                 : r.key
                   ? pickValue(rowsByKey[r.key], "adjusted")
                   : null;
+              const periodLabel = `${r.label} FY ${fyYear ?? "?"}`;
+              const gaapCell: Cell = r.computed
+                ? computedMetricCell(gaapVal, r.label === "PEG" ? "PE Ratio / NI Growth" : "", periodLabel)
+                : r.key
+                  ? cvToMetricCell(rowsByKey[r.key], "gaap", r.key, periodLabel)
+                  : { value: gaapVal, period_label: periodLabel };
+              const adjCell: Cell = r.computed
+                ? computedMetricCell(adjVal, r.label === "PEG" ? "PE Ratio / NI Growth" : "", periodLabel)
+                : r.key
+                  ? cvToMetricCell(rowsByKey[r.key], "adjusted", r.key, periodLabel)
+                  : { value: adjVal, period_label: periodLabel };
               return (
                 <div key={r.label} className={`${HALVES} items-center py-[3px]`}>
                   <div className={HALF_LEFT_INNER}>
                     <div className="text-[12.5px] text-muted-foreground">{r.label}</div>
                     <div className="text-right">
-                      <MetricValue value={gaap} format={r.format} tone={r.tone} />
+                      <MetricValue value={gaapVal} format={r.format} tone={r.tone} cell={gaapCell} onOpen={onOpenCell} />
                     </div>
                   </div>
                   <div className="text-right">
-                    <MetricValue value={adj} format={r.format} tone={r.tone} />
+                    <MetricValue value={adjVal} format={r.format} tone={r.tone} cell={adjCell} onOpen={onOpenCell} />
                   </div>
                 </div>
               );
@@ -231,37 +308,73 @@ function UnitInfo({ unit }: { unit?: string }) {
 
 // -- Quarterly / Annual dual-block card -----------------------------------
 
+type ActiveCell = { cell: Cell; displayValue: string; anchor: DOMRect } | null;
+
 function pctChange(now: number | null, prev: number | null): number | null {
   if (now == null || prev == null || prev === 0) return null;
   return ((now - prev) / prev) * 100;
+}
+
+function ClickableCell({
+  cell,
+  fmt,
+  onOpen,
+  className = "",
+}: {
+  cell: Cell;
+  fmt: (v: number | null) => string;
+  onOpen: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
+  className?: string;
+}) {
+  const label = fmt(cell.value);
+  const hasMeta =
+    cell.value !== null &&
+    (cell.source_name || cell.source_link || cell.formula || cell.primary_method);
+  const clickable = hasMeta;
+  return (
+    <td
+      className={`px-1.5 py-[3px] text-right tabular-nums text-[12px] ${cellColorClass(cell)} ${
+        clickable ? "cursor-pointer transition-colors hover:bg-muted/50" : ""
+      } ${className}`}
+      onClick={
+        clickable
+          ? (e) => {
+              e.stopPropagation();
+              onOpen(cell, label, (e.currentTarget as HTMLElement).getBoundingClientRect());
+            }
+          : undefined
+      }
+    >
+      {label}
+    </td>
+  );
 }
 
 function QuarterlyBlock({
   data,
   variant,
   showAnnual = true,
-  isMock,
+  onOpenCell,
 }: {
   data: QuarterlyBlockData;
   variant: "gaap" | "adjusted";
   showAnnual?: boolean;
-  isMock?: boolean;
+  onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   const [current, prior] = data.rows;
-  const changes = current && prior
-    ? {
-        q1: pctChange(current.q1, prior.q1),
-        q2: pctChange(current.q2, prior.q2),
-        q3: pctChange(current.q3, prior.q3),
-        q4: pctChange(current.q4, prior.q4),
-        annual: pctChange(current.annual, prior.annual),
-      }
-    : null;
+  const changes: Cell[] | null =
+    current && prior
+      ? (["q1", "q2", "q3", "q4", "annual"] as const).map((q) => {
+          const c = pctChange(current[q].value, prior[q].value);
+          return {
+            value: c,
+            formula: "(current − prior) / prior × 100",
+            primary_method: "calculated",
+            period_label: `Δ ${q.toUpperCase()} ${current.year} vs ${prior.year}`,
+          };
+        })
+      : null;
 
-  const numCls = isMock ? "text-rose-600" : "text-foreground";
-  const chgCls = isMock ? "text-rose-500" : "text-muted-foreground";
-
-  const cell = "px-1.5 py-[3px] text-right tabular-nums text-[12px]";
   const head = "px-1.5 py-1 text-[10px] font-semibold tracking-wide uppercase text-muted-foreground text-right";
 
   const dotCls = variant === "gaap" ? "bg-sky-500" : "bg-emerald-500";
@@ -269,14 +382,13 @@ function QuarterlyBlock({
   const labelCls = variant === "gaap" ? "text-sky-700" : "text-emerald-700";
 
   const defaultFmt = (v: number | null) => formatNumber(v, 0);
+  const pctFmt = (v: number | null) => formatPercent(v, 1);
 
   return (
     <div className="min-w-0">
       <div className="mb-1.5 flex items-center gap-1.5">
         <span className={`h-2 w-2 rounded-full ${dotCls}`} />
-        <div className={`text-[10px] font-semibold tracking-wider uppercase ${labelCls}`}>
-          {label}
-        </div>
+        <div className={`text-[10px] font-semibold tracking-wider uppercase ${labelCls}`}>{label}</div>
       </div>
       <table className="w-full">
         <thead>
@@ -293,24 +405,24 @@ function QuarterlyBlock({
           {data.rows.map((r) => (
             <tr key={r.year} className="border-t border-border/40">
               <td className="px-1.5 py-[3px] text-left text-[12px] font-medium text-muted-foreground">{r.year}</td>
-              <td className={`${cell} ${numCls}`}>{defaultFmt(r.q1)}</td>
-              <td className={`${cell} ${numCls}`}>{defaultFmt(r.q2)}</td>
-              <td className={`${cell} ${numCls}`}>{defaultFmt(r.q3)}</td>
-              <td className={`${cell} ${numCls}`}>{defaultFmt(r.q4)}</td>
+              <ClickableCell cell={r.q1} fmt={defaultFmt} onOpen={onOpenCell} />
+              <ClickableCell cell={r.q2} fmt={defaultFmt} onOpen={onOpenCell} />
+              <ClickableCell cell={r.q3} fmt={defaultFmt} onOpen={onOpenCell} />
+              <ClickableCell cell={r.q4} fmt={defaultFmt} onOpen={onOpenCell} />
               {showAnnual && (
-                <td className={`${cell} ${numCls} border-l border-border/40 font-semibold`}>{defaultFmt(r.annual)}</td>
+                <ClickableCell cell={r.annual} fmt={defaultFmt} onOpen={onOpenCell} className="border-l border-border/40 font-semibold" />
               )}
             </tr>
           ))}
           {changes && (
             <tr className="border-t border-border/40">
               <td className="px-1.5 py-[3px] text-left text-[12px] font-medium text-muted-foreground">Δ %</td>
-              <td className={`${cell} ${chgCls}`}>{formatPercent(changes.q1, 1)}</td>
-              <td className={`${cell} ${chgCls}`}>{formatPercent(changes.q2, 1)}</td>
-              <td className={`${cell} ${chgCls}`}>{formatPercent(changes.q3, 1)}</td>
-              <td className={`${cell} ${chgCls}`}>{formatPercent(changes.q4, 1)}</td>
+              <ClickableCell cell={changes[0]} fmt={pctFmt} onOpen={onOpenCell} />
+              <ClickableCell cell={changes[1]} fmt={pctFmt} onOpen={onOpenCell} />
+              <ClickableCell cell={changes[2]} fmt={pctFmt} onOpen={onOpenCell} />
+              <ClickableCell cell={changes[3]} fmt={pctFmt} onOpen={onOpenCell} />
               {showAnnual && (
-                <td className={`${cell} ${chgCls} border-l border-border/40 font-semibold`}>{formatPercent(changes.annual, 1)}</td>
+                <ClickableCell cell={changes[4]} fmt={pctFmt} onOpen={onOpenCell} className="border-l border-border/40 font-semibold" />
               )}
             </tr>
           )}
@@ -319,12 +431,12 @@ function QuarterlyBlock({
             return (
               <tr key={x.label} className="border-t border-border/40">
                 <td className="px-1.5 py-[3px] text-left text-[12px] font-medium text-muted-foreground">{x.label}</td>
-                <td className={`${cell} ${chgCls}`}>{fmt(x.q1)}</td>
-                <td className={`${cell} ${chgCls}`}>{fmt(x.q2)}</td>
-                <td className={`${cell} ${chgCls}`}>{fmt(x.q3)}</td>
-                <td className={`${cell} ${chgCls}`}>{fmt(x.q4)}</td>
+                <ClickableCell cell={x.q1} fmt={fmt} onOpen={onOpenCell} />
+                <ClickableCell cell={x.q2} fmt={fmt} onOpen={onOpenCell} />
+                <ClickableCell cell={x.q3} fmt={fmt} onOpen={onOpenCell} />
+                <ClickableCell cell={x.q4} fmt={fmt} onOpen={onOpenCell} />
                 {showAnnual && (
-                  <td className={`${cell} ${chgCls} border-l border-border/40 font-semibold`}>{fmt(x.annual)}</td>
+                  <ClickableCell cell={x.annual} fmt={fmt} onOpen={onOpenCell} className="border-l border-border/40 font-semibold" />
                 )}
               </tr>
             );
@@ -338,18 +450,18 @@ function QuarterlyBlock({
 function QuarterlyDualBody({
   gaap,
   adjusted,
-  isMock,
   showAnnual = true,
+  onOpenCell,
 }: {
   gaap: QuarterlyBlockData;
   adjusted: QuarterlyBlockData;
-  isMock?: boolean;
   showAnnual?: boolean;
+  onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   return (
     <div className={`${HALVES} px-6 py-3`}>
-      <QuarterlyBlock data={gaap} variant="gaap" isMock={isMock} showAnnual={showAnnual} />
-      <QuarterlyBlock data={adjusted} variant="adjusted" isMock={isMock} showAnnual={showAnnual} />
+      <QuarterlyBlock data={gaap} variant="gaap" showAnnual={showAnnual} onOpenCell={onOpenCell} />
+      <QuarterlyBlock data={adjusted} variant="adjusted" showAnnual={showAnnual} onOpenCell={onOpenCell} />
     </div>
   );
 }
@@ -361,16 +473,14 @@ function BalanceSheetBlock({
   variant,
   currentYear,
   priorYear,
-  isMock,
+  onOpenCell,
 }: {
   data: BSData;
   variant: "gaap" | "adjusted";
   currentYear: number;
   priorYear: number;
-  isMock?: boolean;
+  onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
-  const numCls = isMock ? "text-rose-600" : "text-foreground";
-  const cell = "px-1.5 py-[3px] text-right tabular-nums text-[12px]";
   const head = "px-1.5 py-1 text-[10px] font-semibold tracking-wide uppercase text-muted-foreground text-right";
 
   const dotCls = variant === "gaap" ? "bg-sky-500" : "bg-emerald-500";
@@ -408,8 +518,8 @@ function BalanceSheetBlock({
                 return (
                   <tr key={r.label} className={border}>
                     <td className={`px-1.5 py-[3px] text-left text-[12px] font-medium text-muted-foreground ${emph}`}>{r.label}</td>
-                    <td className={`${cell} ${numCls} ${emph}`}>{fmt(r.y1)}</td>
-                    <td className={`${cell} ${numCls} ${emph}`}>{fmt(r.y2)}</td>
+                    <ClickableCell cell={r.y1} fmt={fmt} onOpen={onOpenCell} className={emph} />
+                    <ClickableCell cell={r.y2} fmt={fmt} onOpen={onOpenCell} className={emph} />
                   </tr>
                 );
               })}
@@ -421,11 +531,17 @@ function BalanceSheetBlock({
   );
 }
 
-function BalanceSheetBody({ sec, isMock }: { sec: BalanceSheetSection; isMock?: boolean }) {
+function BalanceSheetBody({
+  sec,
+  onOpenCell,
+}: {
+  sec: BalanceSheetSection;
+  onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
+}) {
   return (
     <div className={`${HALVES} px-6 py-3`}>
-      <BalanceSheetBlock data={sec.gaap} variant="gaap" currentYear={sec.currentYear} priorYear={sec.priorYear} isMock={isMock} />
-      <BalanceSheetBlock data={sec.adjusted} variant="adjusted" currentYear={sec.currentYear} priorYear={sec.priorYear} isMock={isMock} />
+      <BalanceSheetBlock data={sec.gaap} variant="gaap" currentYear={sec.currentYear} priorYear={sec.priorYear} onOpenCell={onOpenCell} />
+      <BalanceSheetBlock data={sec.adjusted} variant="adjusted" currentYear={sec.currentYear} priorYear={sec.priorYear} onOpenCell={onOpenCell} />
     </div>
   );
 }
@@ -660,6 +776,12 @@ function CompanyDetailContent({
     [detail, fxCtx],
   );
 
+  const [activeCell, setActiveCell] = useState<ActiveCell>(null);
+  const openCell = (cell: Cell, displayValue: string, anchor: DOMRect) => {
+    setActiveCell({ cell, displayValue, anchor });
+  };
+  const closeCell = () => setActiveCell(null);
+
   const navItems = useMemo(() => {
     return [
       { id: OVERVIEW_ID, title: "Overview" },
@@ -734,7 +856,7 @@ function CompanyDetailContent({
         </CollapsibleCard>
 
         <CollapsibleCard id={METRICS_ID} title="Overview metrics">
-          <MetricsBody rowsByKey={rowsByKey} />
+          <MetricsBody rowsByKey={rowsByKey} fyYear={fyYear} onOpenCell={openCell} />
         </CollapsibleCard>
 
         {quarterlySections.map((s) => (
@@ -748,6 +870,7 @@ function CompanyDetailContent({
               gaap={s.gaap}
               adjusted={s.adjusted}
               showAnnual={s.showAnnual}
+              onOpenCell={openCell}
             />
           </CollapsibleCard>
         ))}
@@ -757,8 +880,17 @@ function CompanyDetailContent({
           title="Balance Sheet"
           right={<UnitInfo unit={balanceSheet.unit} />}
         >
-          <BalanceSheetBody sec={balanceSheet} />
+          <BalanceSheetBody sec={balanceSheet} onOpenCell={openCell} />
         </CollapsibleCard>
+
+        {activeCell && (
+          <ValueCellPopover
+            cell={activeCell.cell}
+            displayValue={activeCell.displayValue}
+            anchorRect={activeCell.anchor}
+            onClose={closeCell}
+          />
+        )}
 
         <div className="flex items-center justify-end gap-2 pt-2 text-[11px] text-muted-foreground">
           <span>Estimates last updated:</span>
