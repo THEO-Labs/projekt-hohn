@@ -618,6 +618,57 @@ KEY_RESEARCH_HINTS: dict[str, str] = {
         "NICHT die Adjusted/Pro-Forma-Variante. Bei Banken/Versicherern: nicht "
         "anwendbar — Equivalent: Operating Income / Pre-Tax Profit."
     ),
+    "revenue": (
+        "Total Revenue / Umsatz (GAAP) fuer die Periode. Income Statement → "
+        "oberste Zeile 'Revenue' oder 'Net Sales' oder 'Total Revenues'. Keine "
+        "TTM-Werte. Bei Segmentierung: Consolidated-Zeile, nicht Einzel-Segment. "
+        "Bei Banken/Versicherern Equivalent: Net Interest Income + Fee Income "
+        "bzw. Gross Premiums Written."
+    ),
+    "eps_diluted": (
+        "Diluted Earnings Per Share (EPS, verwaessert) in Firmen-Waehrung pro "
+        "Aktie. Income Statement → 'Diluted EPS' Zeile. NICHT 'Basic EPS' nehmen. "
+        "Kann negativ sein bei Verlust. Fuer Quartals-Werte: standalone Q-Wert "
+        "aus dem 10-Q / Zwischenbericht, NICHT YTD-EPS. Bei Adjusted-Recherche "
+        "gilt: Adjusted Diluted EPS ist eine Non-GAAP-Kennzahl die Firmen "
+        "typischerweise separat ausweisen."
+    ),
+    "operating_cash_flow": (
+        "Net Cash Provided by Operating Activities (Operativer Cashflow). Cash "
+        "Flow Statement → Zeile ganz am Ende des Operating-Sections, VOR den "
+        "Investing- und Financing-Sections. Kann negativ sein wenn NI stark "
+        "negativ. Bei Quartals-Werte: standalone Q-CF, NICHT YTD-CF."
+    ),
+    "capex": (
+        "Capital Expenditures (Investitionen in Property, Plant & Equipment). "
+        "Cash Flow Statement → Investing-Section → 'Purchases of Property, "
+        "Plant & Equipment' oder 'Capital Expenditures'. Firmen reporten das "
+        "haeufig als NEGATIVE Zahl (Cash-Outflow) — Vorzeichen wie im Bericht "
+        "uebernehmen. Bei Quartals-Werte: standalone Q-CapEx, NICHT YTD."
+    ),
+    "cash_and_equivalents": (
+        "Cash and Cash Equivalents zum Bilanzstichtag. Balance Sheet → oberste "
+        "Zeile 'Cash and Cash Equivalents'. Immer POSITIV. Nicht mit 'Cash + "
+        "Marketable Securities' vermischen — nur der Cash-Teil."
+    ),
+    "st_investments": (
+        "Short-Term Investments / Marketable Securities Current. Balance Sheet "
+        "→ unter 'Cash and Equivalents', typischerweise 'Short-Term Investments' "
+        "oder 'Marketable Securities'. Immer POSITIV. Wenn nicht separat "
+        "ausgewiesen: 0 (nicht null)."
+    ),
+    "st_debt": (
+        "Short-Term Debt / Current Portion of Long-Term Debt. Balance Sheet → "
+        "Current Liabilities → 'Short-term borrowings' + 'Current portion of "
+        "long-term debt' + 'Commercial paper'. Immer POSITIV. Bei US-Filern "
+        "oft als 'Debt current' zusammengefasst."
+    ),
+    "lt_debt": (
+        "Long-Term Debt (Noncurrent). Balance Sheet → Non-Current Liabilities → "
+        "'Long-term debt' oder 'Long-term borrowings' — OHNE Current Portion "
+        "(die ist in st_debt). Immer POSITIV. Includes Notes Payable, Bonds, "
+        "Term Loans mit >1 Jahr Restlaufzeit."
+    ),
 }
 
 

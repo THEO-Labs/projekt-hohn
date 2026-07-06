@@ -24,6 +24,24 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "NetIncomeLoss",
         "ProfitLoss",
     ],
+    "revenue": [
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+    ],
+    "eps_diluted": [
+        "EarningsPerShareDiluted",
+        "IncomeLossFromContinuingOperationsPerDilutedShare",
+    ],
+    "operating_cash_flow": [
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByOperatingActivities",
+    ],
+    "capex": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+    ],
     "sbc": [
         "ShareBasedCompensation",
         "AllocatedShareBasedCompensationExpense",
@@ -41,6 +59,22 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "CashAndCashEquivalentsAtCarryingValue",
         "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
     ],
+    "st_investments": [
+        "MarketableSecuritiesCurrent",
+        "ShortTermInvestments",
+        "AvailableForSaleSecuritiesCurrent",
+    ],
+    "st_debt": [
+        "ShortTermBorrowings",
+        "DebtCurrent",
+        "LongTermDebtCurrent",
+        "CommercialPaper",
+    ],
+    "lt_debt": [
+        "LongTermDebtNoncurrent",
+        "LongTermDebt",
+    ],
+    # Legacy keys (nicht mehr im Catalog, aber Code kann darauf referenzieren):
     "marketable_securities_st": [
         "MarketableSecuritiesCurrent",
         "ShortTermInvestments",

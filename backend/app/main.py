@@ -66,6 +66,9 @@ def create_app() -> FastAPI:
     app.include_router(catalog_router)
     app.include_router(values_router)
 
+    from app.values.detail_page import detail_router
+    app.include_router(detail_router)
+
     from app.ir_documents.routes import router as ir_documents_router
     app.include_router(ir_documents_router)
 

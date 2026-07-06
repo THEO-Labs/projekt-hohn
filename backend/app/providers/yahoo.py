@@ -19,11 +19,25 @@ INFO_KEY_MAP = {
 
 FINANCIALS_ROWS = {
     "net_income": ["Net Income", "Net Income Common Stockholders"],
+    "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
+    "eps_diluted": ["Diluted EPS", "Basic EPS"],
     "ebitda": ["EBITDA", "Normalized EBITDA"],
 }
 
 BALANCE_SHEET_ROWS = {
     "cash_and_equivalents": ["Cash And Cash Equivalents", "Cash Financial"],
+    "st_investments": ["Other Short Term Investments", "Short Term Investments"],
+    "st_debt": [
+        "Current Debt",
+        "Short Term Debt",
+        "Commercial Paper",
+        "Current Debt And Capital Lease Obligation",
+    ],
+    "lt_debt": [
+        "Long Term Debt",
+        "Long Term Debt And Capital Lease Obligation",
+    ],
+    # Legacy keys (nicht mehr im Catalog):
     "marketable_securities_st": ["Other Short Term Investments", "Short Term Investments"],
     "marketable_securities_lt": [
         "Available For Sale Securities",
@@ -43,6 +57,8 @@ BALANCE_SHEET_ROWS = {
 
 CASHFLOW_ROWS = {
     "fcf": ["Free Cash Flow"],
+    "operating_cash_flow": ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"],
+    "capex": ["Capital Expenditure", "Purchase Of PPE"],
     "sbc": ["Stock Based Compensation", "Share Based Compensation"],
     "buyback_volume": ["Repurchase Of Capital Stock", "Common Stock Repurchase", "Repurchase Of Common Stock"],
     "dividends": ["Cash Dividends Paid", "Common Stock Dividend Paid"],
@@ -54,9 +70,16 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "shares_outstanding": (0, 1e15),
     "sbc": (0, 1e15),
     "net_income": (-1e15, 1e15),
+    "revenue": (0, 1e16),
+    "eps_diluted": (-1000, 1000),
+    "operating_cash_flow": (-1e15, 1e15),
+    "capex": (-1e15, 1e15),
     "fcf": (-1e15, 1e15),
     "ebitda": (-2e15, 1e16),
     "cash_and_equivalents": (0, 1e15),
+    "st_investments": (0, 1e15),
+    "st_debt": (0, 1e15),
+    "lt_debt": (0, 1e15),
     "marketable_securities_st": (0, 1e15),
     "marketable_securities_lt": (0, 1e15),
     "long_term_debt": (0, 1e15),

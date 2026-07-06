@@ -17,15 +17,26 @@ SEED_VALUES = [
 
     # FCF
     {"key": "fcf", "label_de": "Free Cash Flow", "label_en": "Free Cash Flow", "category": "FCF", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 31},
+    {"key": "operating_cash_flow", "label_de": "Operativer Cashflow", "label_en": "Operating Cash Flow", "category": "FCF", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 32},
+    {"key": "capex", "label_de": "CapEx", "label_en": "CapEx", "category": "FCF", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 33},
+    {"key": "ocf_margin", "label_de": "OCF-Marge", "label_en": "OCF Margin", "category": "FCF", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 34},
+    {"key": "fcf_margin", "label_de": "FCF-Marge", "label_en": "FCF Margin", "category": "FCF", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 35},
 
     # NI GROWTH
     {"key": "ni_growth", "label_de": "NI-Wachstum", "label_en": "NI Growth", "category": "NI_GROWTH", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 40},
     {"key": "net_income", "label_de": "Nettogewinn", "label_en": "Net Income", "category": "NI_GROWTH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 41},
+    {"key": "revenue", "label_de": "Umsatz", "label_en": "Revenue", "category": "NI_GROWTH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 42},
+    {"key": "eps_diluted", "label_de": "EPS (verwaessert)", "label_en": "EPS (Diluted)", "category": "NI_GROWTH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 43},
+    {"key": "ni_margin", "label_de": "Netto-Marge", "label_en": "NI Margin", "category": "NI_GROWTH", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 44},
 
-    # DEBT (Net-Debt-fokussiert — keine Sub-Komponenten mehr)
+    # DEBT / CASH (Sub-Komponenten fuer Balance-Sheet-Aufloesung)
     {"key": "net_debt_change_pct", "label_de": "ΔNet Debt / Market Cap", "label_en": "ΔNet Debt / Market Cap", "category": "DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 50},
     {"key": "net_debt_change", "label_de": "ΔNet Debt", "label_en": "ΔNet Debt", "category": "DEBT", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 51},
     {"key": "net_debt", "label_de": "Net Debt", "label_en": "Net Debt", "category": "DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 52},
+    {"key": "cash_and_equivalents", "label_de": "Cash", "label_en": "Cash & Equivalents", "category": "CASH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 53},
+    {"key": "st_investments", "label_de": "Kurzfr. Anlagen", "label_en": "ST Investments", "category": "CASH", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 54},
+    {"key": "st_debt", "label_de": "Kurzfr. Schulden", "label_en": "ST Debt", "category": "DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 55},
+    {"key": "lt_debt", "label_de": "Langfr. Schulden", "label_en": "LT Debt", "category": "DEBT", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 56},
 
     # DIVIDENDS
     {"key": "dividend_yield", "label_de": "Dividendenrendite", "label_en": "Dividend Yield", "category": "DIVIDENDS", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 60},
@@ -42,4 +53,5 @@ SEED_VALUES = [
     {"key": "ev_ebitda", "label_de": "EV / EBITDA", "label_en": "EV / EBITDA", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 82},
     {"key": "fcf_yield", "label_de": "FCF-Rendite", "label_en": "FCF Yield", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": "%", "sort_order": 83},
     {"key": "ebitda", "label_de": "EBITDA", "label_en": "EBITDA", "category": "VALUATION", "source_type": "API", "data_type": "NUMERIC", "unit": None, "sort_order": 84},
+    {"key": "ps_ratio", "label_de": "KUV", "label_en": "PS Ratio", "category": "VALUATION", "source_type": "CALCULATED", "data_type": "NUMERIC", "unit": None, "sort_order": 85},
 ]

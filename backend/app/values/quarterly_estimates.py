@@ -39,18 +39,33 @@ logger = logging.getLogger(__name__)
 
 # Keys die per Quartal estimated werden (statt FY-monolith).
 # Shares Outstanding ist KEIN Estimate-Wert — bleibt Live-Snapshot.
+# Balance-Sheet-Keys (cash_and_equivalents, st_investments, st_debt, lt_debt)
+# sind bewusst NICHT hier: sie sind instant-facts (period_days=0), EDGAR-Q-
+# Standalone-Search kann sie nicht matchen, und Q1-Q3-Werte werden im UI eh
+# nicht angezeigt. Sie laufen durch den Fallback-Pfad in _try_web_guidance
+# als Single-FY-Call (period_type="FY") → 1 Call statt 4.
+# net_debt bleibt drin weil bestehende Nutzung + FY-1-Backfill davon abhaengt.
 QUARTERLY_ESTIMATE_KEYS = frozenset({
-    "net_income", "ebitda", "fcf", "sbc",
-    "buyback_volume", "dividends", "net_debt",
+    # Income Statement
+    "net_income", "revenue", "ebitda", "eps_diluted",
+    # Cashflow
+    "fcf", "operating_cash_flow", "capex", "sbc",
+    "buyback_volume", "dividends",
+    # Balance Sheet (point-in-time — bleibt fuer historische Kompatibilitaet)
+    "net_debt",
 })
 
-# Cumulative: FY = Sigma Q1+Q2+Q3+Q4 (Income/Cashflow-Werte)
+# Cumulative: FY = Sigma Q1+Q2+Q3+Q4 (Income/Cashflow-Werte).
+# eps_diluted ist per-Q reported und Annual != exakt Sigma(Q) wegen
+# Weighted-Average-Diluted-Shares (Buybacks veraendern Denominator);
+# fuer die Detail-Page ist die Sigma-Approximation akzeptabel.
 SUMMABLE_QUARTERLY_KEYS = frozenset({
-    "net_income", "ebitda", "fcf", "sbc",
+    "net_income", "revenue", "ebitda", "eps_diluted",
+    "fcf", "operating_cash_flow", "capex", "sbc",
     "buyback_volume", "dividends",
 })
 
-# Point-in-Time: FY = Q4-Endstand (Bilanz-Snapshot)
+# Point-in-Time: FY = Q4-Endstand (Bilanz-Snapshot). Aktuell nur net_debt.
 POINT_IN_TIME_QUARTERLY_KEYS = frozenset({"net_debt"})
 
 QUARTERS: tuple[str, str, str, str] = ("Q1", "Q2", "Q3", "Q4")

@@ -11,6 +11,13 @@ ALWAYS_POSITIVE_KEYS = frozenset({
     "sbc",
     # balance sheet items (always positive when shown)
     "shares_outstanding",
-    # NOTE: net_debt absichtlich NICHT hier — kann legitim negativ sein
-    # (Net Cash Position bei cash-rich Firmen wie Apple oder Allianz).
+    "revenue",
+    "cash_and_equivalents",
+    "st_investments",
+    "st_debt",
+    "lt_debt",
+    # NOTE: net_debt, operating_cash_flow, capex, eps_diluted absichtlich NICHT
+    # hier — koennen legitim negativ sein (Net Cash Position, Cash-Outflow-Q,
+    # EPS-Verlust). CapEx wird typischerweise negativ als Cash-Outflow
+    # gespeichert; wir schreiben roh wie im Bericht.
 })

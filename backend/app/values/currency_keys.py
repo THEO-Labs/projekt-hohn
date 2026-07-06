@@ -11,4 +11,13 @@ CURRENCY_KEYS = frozenset({
     "net_income",
     "dividends",
     "ebitda",
+    # Detail-page additions:
+    "revenue",
+    "eps_diluted",
+    "operating_cash_flow",
+    "capex",
+    "cash_and_equivalents",
+    "st_investments",
+    "st_debt",
+    "lt_debt",
 })
