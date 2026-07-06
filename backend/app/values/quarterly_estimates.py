@@ -332,10 +332,15 @@ def _estimate_single_quarter(
     return v, src_name, u, adj_val, adj_note, adj_src
 
 
-# Keys die der EDGAR-Q-Fallback unterstuetzt (Income-Statement-Standalone-Q).
-# Net Debt fehlt bewusst: Q-Bilanz braucht 5-Komponenten-Aggregation, separate Iteration.
+# Keys die der EDGAR-Q-Fallback unterstuetzt (Income-Statement + Cashflow
+# Standalone-Q). Balance-Sheet-Keys (net_debt, cash_and_equivalents, st_debt,
+# lt_debt, st_investments) fehlen bewusst: die sind instant-facts und werden
+# separat als Q4-Snapshot behandelt.
 EDGAR_QUARTERLY_SUPPORTED = frozenset({
+    # Original 6 (Q-Standalone via period-length filter)
     "net_income", "ebitda", "fcf", "sbc", "buyback_volume", "dividends",
+    # Detail-Page additions
+    "revenue", "eps_diluted", "operating_cash_flow", "capex",
 })
 
 # Provider-Singleton damit ticker->CIK Map und Facts-Cache reuse zwischen Calls.
