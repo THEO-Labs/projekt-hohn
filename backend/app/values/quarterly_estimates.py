@@ -650,6 +650,94 @@ def _ensure_prev_fy_q_actuals(
                 company.ticker, key, prev_fy, float(q4_implied))
 
 
+BALANCE_SHEET_FY_KEYS = frozenset({
+    "cash_and_equivalents", "st_investments", "st_debt", "lt_debt", "net_debt",
+})
+
+
+def _ensure_prev_fy_balance_sheet(
+    db: Session,
+    company: "Company",
+    prev_fy: int,
+) -> None:
+    """Backfill Balance-Sheet-Snapshot fuer prev_fy aus EDGAR-10-K.
+
+    Balance-Sheet-Keys (cash_and_equivalents, st_investments, st_debt, lt_debt,
+    net_debt) sind instant-facts und werden nicht per Q gefetched. Ohne dieses
+    Backfill fehlt jeder historische Balance-Sheet-Snapshot (der User sieht
+    Bilanz-Zeile 2025 komplett leer). Idempotent.
+
+    No-op wenn:
+      - Kompanie nicht US-Filer
+      - Alle 5 Keys schon fuer prev_fy in DB
+      - Kein Fiscal-Year-End gesetzt
+    """
+    from app.calculations.lock import is_us_company
+    if not is_us_company(company):
+        return
+    fy_end_month = getattr(company, "fiscal_year_end_month", None)
+    fy_end_day = getattr(company, "fiscal_year_end_day", None)
+    if not fy_end_month or not fy_end_day:
+        return
+
+    existing_keys = {
+        r.value_key
+        for r in db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key.in_(BALANCE_SHEET_FY_KEYS),
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == prev_fy,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .all()
+    }
+    missing = BALANCE_SHEET_FY_KEYS - existing_keys
+    if not missing:
+        return
+
+    provider = _get_edgar_provider()
+    now = datetime.now(timezone.utc)
+    for key in missing:
+        currency = company.currency if key in CURRENCY_KEYS else None
+        try:
+            res = provider.fetch(
+                company.ticker, key, prev_fy,
+                fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+            )
+        except Exception as exc:
+            logger.warning("EDGAR FY-1 BS-fetch %s/%s/FY%s exception: %s",
+                           company.ticker, key, prev_fy, exc)
+            continue
+        if res is None or res.value is None:
+            continue
+        v = Decimal(str(res.value))
+        cv = CompanyValue(
+            id=uuid4(),
+            company_id=company.id,
+            value_key=key,
+            period_type="FY",
+            period_year=prev_fy,
+            numeric_value=v,
+            source_name=(res.source_name or f"SEC EDGAR (FY-1 BS Backfill)")[:4000],
+            source_link=res.source_link,
+            currency=currency,
+            fetched_at=now,
+            is_forecast=False,
+            primary_method="provider",
+        )
+        db.add(cv)
+        try:
+            db.flush()
+            logger.info("EDGAR FY-1 BS backfill %s/%s/FY%s = %.0f",
+                        company.ticker, key, prev_fy, float(v))
+        except IntegrityError as ie:
+            logger.warning("FY-1 BS upsert %s/%s/FY%s IntegrityError: %s",
+                           company.ticker, key, prev_fy, str(ie)[:120])
+            db.rollback()
+
+
 def estimate_fy_via_quarterly_sum(
     db: Session,
     company: "Company",
@@ -675,6 +763,10 @@ def estimate_fy_via_quarterly_sum(
     # FY-1 Q-Datenbasis sicherstellen (Saisonalitaets-Anker fuer Per-Q-Claude-Calls).
     # No-op wenn nicht-US oder Q-Werte schon komplett da.
     _ensure_prev_fy_q_actuals(db, company, key, target_fy - 1)
+    # FY-1 Balance-Sheet-Snapshot sicherstellen (aus EDGAR-10-K instant facts).
+    # Balance-Sheet keys sind nicht in QUARTERLY_ESTIMATE_KEYS -> bekaemen sonst
+    # nie einen historischen Backfill. Idempotent, no-op wenn schon da.
+    _ensure_prev_fy_balance_sheet(db, company, target_fy - 1)
 
     company_id = company.id
     currency = company.currency if key in CURRENCY_KEYS else None
