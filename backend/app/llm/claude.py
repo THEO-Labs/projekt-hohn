@@ -125,6 +125,36 @@ fundierte Schätzung — auch wenn keine konkrete Quelle findbar ist. Du bist Ex
 und bezahlst dir deine Einschätzungen mit deinem Wissen über das Unternehmen,
 seinen Sektor, vergleichbare Firmen und historische Pattern.
 
+0. GROUND-TRUTH-PRINZIP (HÖCHSTE PRIORITÄT — geht ALLEN anderen Regeln vor):
+
+   Unser System arbeitet mit einer klaren Datenhierarchie:
+
+   (a) PRIMÄRQUELLEN-DATEN (Provider) sind AUTORITATIV.
+       Wir extrahieren Q-Actuals und historische FY-Werte direkt aus SEC EDGAR
+       10-Q/10-K XBRL, ESEF (EU-Filer via filings.xbrl.org), Yahoo Financials
+       oder verifizierten IR-PDFs. Wenn wir dir solche Werte im Prompt als
+       "PFLICHT-ANKER" oder "GIVEN"-Datenblock geben, sind das UNSERE
+       Ground-Truth-Werte. Deine Aufgabe ist NICHT sie zu verifizieren, zu
+       challengen oder gar zu ersetzen — sie sind FIX.
+
+   (b) DEINE WEB-RECHERCHE fokussiert AUSSCHLIESSLICH auf die Lücken.
+       Typische Lücken: (i) zukünftige Q4-Schätzung im laufenden FY, (ii)
+       Non-GAAP-Adjustments die Provider nicht liefert, (iii) Konsens-Ranges
+       für Estimates, (iv) Werte für die kein Provider-Coverage existiert
+       (z.B. EU-Filer ohne 10-Q).
+
+   (c) BEI KONFLIKT: PROVIDER GEWINNT IMMER.
+       Wenn deine Web-Recherche einen Wert findet der einem Provider-Wert
+       im Prompt widerspricht, IST DEIN WEB-WERT FALSCH — nutze den Provider-
+       Wert. Häufigster Fall: Aggregatoren wie stockanalysis.com oder
+       macrotrends.com haben Rundungen/Restatements, unsere XBRL-Extraktion
+       nicht. Wir vertrauen dem Original-Filing, nicht dem Aggregator.
+
+   (d) NIE mit "keine Quelle" antworten wenn wir Provider-Werte geliefert
+       haben. Wenn wir dir Q1-Q3 als Actuals gegeben haben und du nur Q4
+       schätzen musst, ist deine Antwort IMMER lieferbar — extrapoliere aus
+       Run-Rate/Saisonalität/Konsens, aber ANTWORTE.
+
 ABSOLUTE GRUNDREGEL:
 WERT ist IMMER eine plausible Zahl — entweder aus konkreter Quelle oder als
 Experten-Einschätzung. Es gibt KEINE Antwort wo du keine Zahl lieferst.
@@ -955,18 +985,24 @@ def research_value(
         if actuals_lines:
             if period_type == "FY":
                 instruction = (
-                    "Nutze sie EXAKT in der Quartals-Aufschluesselung. Leite die Werte "
-                    "NICHT aus Web-Recherche oder Arithmetik ab — die Web-Werte oder "
-                    "deine Ableitungen wuerden den verifizierten 10-Q-Werten widersprechen. "
-                    "Schaetze NUR das/die fehlende(n) Quartal(e).\n"
+                    "REGEL (Ground-Truth): Diese Quartale sind FIX. Uebernimm sie EXAKT "
+                    "in die Quartals-Aufschluesselung, ohne Rundung oder Restatement. "
+                    "Aggregator-Websites (macrotrends, stockanalysis, simplywallst) "
+                    "haben oft leicht abweichende Werte durch Rundungen oder alte "
+                    "Restatements — die sind IRRELEVANT, unsere XBRL-Extraktion aus "
+                    "dem Original-10-Q ist autoritativ.\n"
+                    "Deine EINZIGE Aufgabe hier: das/die fehlende(n) Quartal(e) schaetzen "
+                    "(typischerweise Q4 im laufenden FY).\n"
                     "FY-Total = Summe (Q1 + Q2 + Q3 + Q4). Konsistenz-Pflicht: WERT = FY-Total."
                 )
             else:
                 instruction = (
                     f"Du schaetzt JETZT NUR {period_type} FY{period_year} STANDALONE — "
                     f"NUR das einzelne Quartal, KEIN FY-Total, KEIN YTD-Kumulativ. "
-                    "Die anderen Quartale oben sind VERIFIZIERTE Actuals und liefern "
-                    "Run-Rate-Trend/Margin/Saisonalitaet fuer deine Schaetzung.\n"
+                    "Die anderen Quartale oben sind GROUND-TRUTH aus unserem Provider "
+                    "(SEC EDGAR 10-Q XBRL bzw. Yahoo Financials) und geliefern "
+                    "Run-Rate-Trend/Margin/Saisonalitaet fuer deine Schaetzung — "
+                    "sie sind FIX, nicht zu challengen.\n"
                     "Begruende deine Zahl konkret aus dem Q-Trend (z.B. 'Q1->Q2->Q3 "
                     f"zeigt +X% sequentielles Wachstum, daher {period_type}e ≈ Q3 × (1+X%)').\n\n"
                     "STRUKTURIERTE ANTWORT-PFLICHT (Konsistenz-Check):\n"
@@ -978,7 +1014,7 @@ def research_value(
                     f"WERT = KONTEXT_FY_TOTAL minus Summe der oben gelisteten Q-Actuals."
                 )
             q_actuals_block = (
-                f"\n\nPFLICHT-ANKER QUARTALS-ACTUALS (aus unserer 10-Q-Extraktion, autoritativ):\n"
+                f"\n\nGROUND-TRUTH: QUARTALS-ACTUALS aus Provider (SEC EDGAR XBRL / Yahoo, autoritativ):\n"
                 + "\n".join(actuals_lines)
                 + "\n\n" + instruction
             )
