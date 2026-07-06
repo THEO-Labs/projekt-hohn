@@ -39,6 +39,8 @@ PATTERN_TO_METHOD = [
     ("'%Claude-Q-Estimate%'", "'web_guidance'"),
     ("'%KI-Einsch%'", "'web_guidance'"),
     ("'Approximation%'", "'web_guidance'"),
+    ("'Calculated'", "'calculated'"),
+    ("'Implied Q4%'", "'calculated'"),
     ("'%Derived Annual%'", "'calculated'"),
     ("'Per-Q-Aggregation%'", "'calculated'"),
 ]
