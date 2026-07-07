@@ -32,6 +32,11 @@ FY_CALC_KEYS = {
     "actual_return",
     "pe_ratio",
     "ev_ebitda",
+    # Detail-page additions:
+    "ni_margin",
+    "ocf_margin",
+    "fcf_margin",
+    "ps_ratio",
 } | HOHN_KEYS
 
 CALCULATED_KEYS = STAMMDATEN_CALC_KEYS | FY_CALC_KEYS
@@ -128,6 +133,19 @@ def calculate_fy(
         ev = market_cap + (net_debt if net_debt is not None else Decimal("0"))
         results["ev_ebitda"] = ev / ebitda
 
+    # Margins + PS Ratio (aus revenue). Reported.
+    revenue = current.get("revenue")
+    ocf = current.get("operating_cash_flow")
+    if revenue is not None and revenue > 0:
+        if ni_for_pe is not None:
+            results["ni_margin"] = ni_for_pe / revenue * Decimal("100")
+        if ocf is not None:
+            results["ocf_margin"] = ocf / revenue * Decimal("100")
+        if fcf is not None:
+            results["fcf_margin"] = fcf / revenue * Decimal("100")
+        if market_cap is not None:
+            results["ps_ratio"] = market_cap / revenue
+
     # VALUATION-Multiples Adjusted: nur persistieren wenn echter Adjusted-Input
     # da ist (sonst bleibt numeric_value_adjusted=NULL und Frontend zeigt korrekt
     # 'kein Adj'-Fallback-Marker).
@@ -142,6 +160,22 @@ def calculate_fy(
     if market_cap is not None and ebitda_adj_raw is not None and ebitda_adj_raw > 0:
         ev = market_cap + (net_debt if net_debt is not None else Decimal("0"))
         results_adjusted["ev_ebitda"] = ev / ebitda_adj_raw
+
+    # Margins + PS Ratio Adjusted. Nutzen Adjusted-Revenue wenn vorhanden
+    # (Organic/Constant-Currency), sonst Fallback auf Reported.
+    revenue_adj_raw = ca.get("revenue")
+    ocf_adj_raw = ca.get("operating_cash_flow")
+    revenue_adj_eff = revenue_adj_raw if revenue_adj_raw is not None else revenue
+    if revenue_adj_eff is not None and revenue_adj_eff > 0:
+        if ni_adj_raw is not None:
+            results_adjusted["ni_margin"] = ni_adj_raw / revenue_adj_eff * Decimal("100")
+        if ocf_adj_raw is not None:
+            results_adjusted["ocf_margin"] = ocf_adj_raw / revenue_adj_eff * Decimal("100")
+        if fcf_adj_raw is not None:
+            results_adjusted["fcf_margin"] = fcf_adj_raw / revenue_adj_eff * Decimal("100")
+        if market_cap is not None and revenue_adj_raw is not None:
+            # Nur setzen wenn revenue_adj_raw echt vorhanden — sonst identisch mit ps_ratio Reported.
+            results_adjusted["ps_ratio"] = market_cap / revenue_adj_raw
     # Fuer NI-Growth + Hohn-Rendite-Adj brauchen wir Fallback (sonst kaskadieren
     # Forecast-Years die nur Adj-Prev haben aber kein Adj-Current ins Leere).
     ni_adj = ni_adj_raw if ni_adj_raw is not None else ni_for_pe
@@ -250,16 +284,20 @@ def calculate_fy(
             total_d_adj += -val if sign == "-" else val
         results_adjusted["hohn_return_detailed"] = total_d_adj
 
-    # H-PEG analog zur PEG-Ratio (P/E / Growth): H-Return (detailed) / NI-Growth.
-    # < 1 = guenstig bewertet relativ zum Wachstum, > 1 = teuer.
-    # Nur sinnvoll bei positivem Wachstum — bei ni_growth <= 0 bleibt NULL.
+    # H-PEG = PE Ratio / H-Return (detailed, in %). Analog zum klassischen
+    # PEG = PE / Growth. Nur sinnvoll bei positivem H-Return. In der Kunden-
+    # Excel steht "= PE / H-Return / 100" weil dort H-Return als Dezimal
+    # (0.15) gespeichert ist; bei uns ist H-Return als %-Wert (15.0), also
+    # entfaellt der /100-Teiler.
     h_return_d = results.get("hohn_return_detailed")
-    if h_return_d is not None and ni_growth is not None and ni_growth > 0:
-        results["h_peg"] = h_return_d / ni_growth
+    pe_ratio = results.get("pe_ratio")
+    if h_return_d is not None and pe_ratio is not None and h_return_d > 0:
+        results["h_peg"] = pe_ratio / h_return_d
     h_return_d_adj = results_adjusted.get("hohn_return_detailed")
-    ni_growth_for_peg_adj = ni_growth_adj if ni_growth_adj is not None else ni_growth
-    if h_return_d_adj is not None and ni_growth_for_peg_adj is not None and ni_growth_for_peg_adj > 0:
-        results_adjusted["h_peg"] = h_return_d_adj / ni_growth_for_peg_adj
+    pe_ratio_adj = results_adjusted.get("pe_ratio")
+    pe_for_peg_adj = pe_ratio_adj if pe_ratio_adj is not None else pe_ratio
+    if h_return_d_adj is not None and pe_for_peg_adj is not None and h_return_d_adj > 0:
+        results_adjusted["h_peg"] = pe_for_peg_adj / h_return_d_adj
 
     return results, results_adjusted
 

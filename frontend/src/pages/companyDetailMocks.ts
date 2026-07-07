@@ -23,15 +23,14 @@ export type Cell = {
   fetched_at?: string | null;
   primary_method?: string | null;
   manually_overridden?: boolean;
-  // is_forecast is the primary marker for colour coding:
-  //   false -> Actual (already reported), rendered in black
-  //   true  -> Estimate (not yet reported), rendered in blue
-  // Independent of primary_method: a Claude-web-search that pulls a value
-  // from an already-published 10-Q is still an Actual, not an Estimate.
   is_forecast?: boolean;
   formula?: string | null;
   value_key?: string | null;
   period_label?: string | null;
+  // Marks an adjusted-column cell that fell back to the GAAP value because
+  // no separate Non-GAAP figure was reported. Rendered in muted colour with
+  // "≈" prefix to signal "same as GAAP".
+  is_gaap_fallback?: boolean;
 };
 
 export const emptyCell = (): Cell => ({ value: null });
@@ -168,9 +167,9 @@ export const BALANCE_SHEET: BalanceSheetSection = {
 
 export const FORMULAS: Record<string, string> = {
   // Overview / valuation metrics
-  hohn_return_detailed: "Dividend Yield + NI Growth + Net Buyback / MCap + ΔNet Debt / MCap",
-  hohn_return_simple: "FCF Yield + NI Growth - SBC / MCap + ΔNet Debt / MCap",
-  h_peg: "H-Return Detailed / NI Growth",
+  hohn_return_detailed: "Dividend Yield + NI Growth + Net Buyback Yield + ΔNet Debt Yield",
+  hohn_return_simple: "FCF Yield + NI Growth − SBC Yield + ΔNet Debt Yield",
+  h_peg: "PE Ratio / H-Return Detailed",
   dividend_yield: "Dividends / Market Cap × 100",
   ni_growth: "(NI[Y] - NI[Y-1]) / |NI[Y-1]| × 100",
   net_buyback: "Buyback Volume - SBC",
@@ -201,6 +200,19 @@ const toNum = (v: string | null | undefined): number | null => {
 const refValue = (r: ValueRef | undefined, variant: "gaap" | "adj"): number | null =>
   toNum(variant === "gaap" ? r?.value ?? null : r?.adjusted ?? null);
 
+// For the adjusted column: if the company doesn't report a separate Non-GAAP
+// figure, just copy the GAAP value silently (no "≈" marker, same color).
+// Rationale: Excel-style — Non-GAAP = GAAP when no adjustments exist.
+const refValueWithFallback = (
+  r: ValueRef | undefined,
+  variant: "gaap" | "adj",
+): { value: number | null; is_gaap_fallback: boolean } => {
+  if (variant === "gaap") return { value: refValue(r, "gaap"), is_gaap_fallback: false };
+  const adj = refValue(r, "adj");
+  if (adj !== null) return { value: adj, is_gaap_fallback: false };
+  return { value: refValue(r, "gaap"), is_gaap_fallback: false };
+};
+
 function refToCell(
   r: ValueRef | undefined,
   variant: "gaap" | "adj",
@@ -211,7 +223,8 @@ function refToCell(
   valueKey: string,
   periodLabel: string,
 ): Cell {
-  let value = refValue(r, variant);
+  const { value: raw, is_gaap_fallback } = refValueWithFallback(r, variant);
+  let value = raw;
   if (value !== null) value = value / scaleFactor;
   if (isCurrency && value !== null && fx.rates && nativeCurrency !== fx.displayCurrency) {
     value = convertCurrency(value, nativeCurrency, fx.displayCurrency, fx.rates);
@@ -227,6 +240,7 @@ function refToCell(
     formula: FORMULAS[valueKey] ?? null,
     value_key: valueKey,
     period_label: periodLabel,
+    is_gaap_fallback,
   };
 }
 
@@ -357,7 +371,8 @@ export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): B
     year: number,
     keyHint: string | null,
   ): Cell => {
-    let value = refValue(ref, variant);
+    const { value: raw, is_gaap_fallback } = refValueWithFallback(ref, variant);
+    let value = raw;
     if (value !== null && !isPct) value = value / 1_000_000;
     if (!isPct && value !== null && fx.rates && nativeCurrency !== fx.displayCurrency) {
       value = convertCurrency(value, nativeCurrency, fx.displayCurrency, fx.rates);
@@ -373,6 +388,7 @@ export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): B
       formula: keyHint ? FORMULAS[keyHint] ?? null : null,
       value_key: keyHint ?? null,
       period_label: `${label} FY ${year}`,
+      is_gaap_fallback,
     };
   };
 

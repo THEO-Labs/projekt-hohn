@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { CompanyCardData } from "@/api/dashboard";
 import { loadCompanyCard, refreshCompanyDaily, refreshCompanyFull } from "@/api/dashboard";
 import type { ValueDefinition } from "@/api/values";
+import { getRefreshStatus } from "@/api/values";
 import { formatAbsolute, formatRelative } from "@/lib/format";
 
 function ageBucket(iso: string | null | undefined) {
@@ -88,7 +89,14 @@ export function RefreshActions({
 }: RefreshProps) {
   const [daily, setDaily] = useState(false);
   const [full, setFull] = useState(false);
+  const [progress, setProgress] = useState<{
+    completed: number;
+    total: number;
+    phaseLabel: string | null;
+  } | null>(null);
   const busy = daily || full;
+  const pollTimer = useRef<number | null>(null);
+  const lastSeenFinishedAt = useRef<string | null>(null);
 
   const reload = async () => {
     try {
@@ -98,6 +106,60 @@ export function RefreshActions({
       console.error("Reload failed", err);
     }
   };
+
+  // Backend-Progress-Polling: liest /refresh-status alle 2 Sekunden. Wenn
+  // beim Component-Mount schon ein Job laeuft (weil User Seite refresht hat),
+  // greift der Spinner sofort wieder. Wenn Job fertig -> Reload + Toast.
+  const poll = async () => {
+    try {
+      const s = await getRefreshStatus(company.id);
+      if (s.status === "running") {
+        setFull(true);
+        const label =
+          s.phase_label ||
+          (s.phase === "prev_year_inputs"
+            ? "Prev-year backfill"
+            : s.phase === "calculating"
+              ? "Calculations"
+              : s.current_key || "Fetching");
+        setProgress({
+          completed: s.completed || 0,
+          total: s.total || 0,
+          phaseLabel: label,
+        });
+      } else if (s.status === "done" || s.status === "failed" || s.status === "idle") {
+        // Nur reload+toast wenn wir vorher einen "running" gesehen haben und
+        // dieser Job seit letztem Poll neu-fertig ist (finished_at aendert sich).
+        const wasRunning = full;
+        setFull(false);
+        setProgress(null);
+        if (wasRunning && s.finished_at && s.finished_at !== lastSeenFinishedAt.current) {
+          lastSeenFinishedAt.current = s.finished_at;
+          await reload();
+          if (s.status === "failed") {
+            toast.error(`${company.ticker}: Full recompute failed`);
+          } else {
+            toast.success(`${company.ticker}: Full recompute finished`);
+          }
+        }
+      }
+    } catch {
+      // Silent — Backend evtl. gerade nicht erreichbar
+    }
+  };
+
+  useEffect(() => {
+    // Initial Poll beim Mount — greift auf laufende Jobs zurueck (z.B. wenn
+    // User Seite waehrend Recompute refresht).
+    poll();
+    pollTimer.current = window.setInterval(poll, 2000);
+    return () => {
+      if (pollTimer.current !== null) {
+        window.clearInterval(pollTimer.current);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [company.id]);
 
   const doDaily = async () => {
     if (busy) return;
@@ -115,24 +177,25 @@ export function RefreshActions({
 
   const doFull = async () => {
     if (busy) return;
-    if (!fyEstimateYear) {
-      toast.error(`${company.ticker}: No FY estimate year yet — create it in the detail view first.`);
-      return;
-    }
+    const targetYear = fyEstimateYear ?? new Date().getFullYear();
     setFull(true);
     try {
-      await refreshCompanyFull(company.id, fyEstimateYear, definitions);
-      await reload();
-      toast.success(`${company.ticker}: Full recompute finished`);
+      // Kein await reload/toast hier — der Poller uebernimmt das sobald Backend
+      // status=done meldet. Verhindert Duplikate wenn Response kommt und Poller
+      // gleichzeitig triggert.
+      await refreshCompanyFull(company.id, targetYear, definitions);
     } catch {
-      toast.error(`${company.ticker}: Full recompute failed`);
-    } finally {
       setFull(false);
+      toast.error(`${company.ticker}: Full recompute failed`);
     }
   };
 
   const compact = variant === "compact";
   const heightCls = compact ? "h-7" : "h-8";
+
+  const progressText = progress && progress.total > 0
+    ? `${progress.completed}/${progress.total}${progress.phaseLabel ? ` · ${progress.phaseLabel}` : ""}`
+    : null;
 
   return (
     <div className="flex items-center gap-1.5">
@@ -144,6 +207,11 @@ export function RefreshActions({
         {full ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
         {compact ? "Full" : "Full recompute"}
       </Button>
+      {progressText && (
+        <span className="text-[11px] text-muted-foreground tabular-nums" title={progressText}>
+          {progressText}
+        </span>
+      )}
     </div>
   );
 }

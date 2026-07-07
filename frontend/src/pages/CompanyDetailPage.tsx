@@ -73,7 +73,10 @@ const num = (v: number | null) => formatNumber(v, 2);
 
 function pickValue(row: CompanyValue | undefined, variant: Variant): number | null {
   if (!row) return null;
-  const raw = variant === "gaap" ? row.numeric_value : row.numeric_value_adjusted;
+  // For adjusted: silent fallback to GAAP when no separate Non-GAAP is reported
+  // (Excel convention: Non-GAAP == GAAP when no adjustments exist).
+  let raw = variant === "gaap" ? row.numeric_value : row.numeric_value_adjusted;
+  if (variant === "adjusted" && raw == null) raw = row.numeric_value;
   if (raw == null) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
@@ -134,13 +137,15 @@ function MetricValue({
   cell?: Cell;
   onOpen?: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
-  const label = format(value);
+  const rawLabel = format(value);
+  const label = cell?.is_gaap_fallback && value !== null ? `≈ ${rawLabel}` : rawLabel;
   const toneCls = tone ? tone(value) : cell ? cellColorClass(cell) : value == null ? "text-muted-foreground/70" : "text-foreground";
   const clickable = !!cell && !!onOpen && value !== null;
   const clickCls = clickable ? "cursor-pointer rounded px-1 -mx-1 transition-colors hover:bg-muted/50" : "";
   return (
     <span
       className={`text-[13px] font-semibold tabular-nums ${toneCls} ${clickCls}`}
+      title={cell?.is_gaap_fallback ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert" : undefined}
       onClick={
         clickable
           ? (e) => {
@@ -161,7 +166,11 @@ function cvToMetricCell(
   valueKey: string,
   periodLabel: string,
 ): Cell {
-  const raw = variant === "gaap" ? cv?.numeric_value : cv?.numeric_value_adjusted;
+  // For adjusted column: fall back to GAAP when no separate Non-GAAP is reported.
+  let raw = variant === "gaap" ? cv?.numeric_value : cv?.numeric_value_adjusted;
+  if (variant === "adjusted" && (raw == null || raw === undefined)) {
+    raw = cv?.numeric_value;
+  }
   const value = raw != null && raw !== undefined ? Number(raw) : null;
   return {
     value,
@@ -326,10 +335,11 @@ function ClickableCell({
   onOpen: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
   className?: string;
 }) {
-  const label = fmt(cell.value);
+  const rawLabel = fmt(cell.value);
+  const label = cell.is_gaap_fallback && cell.value !== null ? `≈ ${rawLabel}` : rawLabel;
   const hasMeta =
     cell.value !== null &&
-    (cell.source_name || cell.source_link || cell.formula || cell.primary_method);
+    (cell.source_name || cell.source_link || cell.formula || cell.primary_method || cell.is_gaap_fallback);
   const clickable = hasMeta;
   return (
     <td
@@ -344,6 +354,7 @@ function ClickableCell({
             }
           : undefined
       }
+      title={cell.is_gaap_fallback ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert" : undefined}
     >
       {label}
     </td>

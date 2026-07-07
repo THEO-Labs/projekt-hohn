@@ -199,6 +199,7 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
 // used as a secondary discriminator for calculated/manual overrides.
 export function cellColorClass(cell: Cell | undefined): string {
   if (!cell || cell.value === null) return "text-muted-foreground/60";
+  if (cell.is_gaap_fallback) return "text-muted-foreground/70";
   if (cell.manually_overridden || cell.primary_method === "manual") return "text-amber-700";
   if (cell.primary_method === "calculated") return "text-violet-700";
   if (cell.is_forecast) return "text-sky-700";

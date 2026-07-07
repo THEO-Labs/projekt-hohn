@@ -97,6 +97,24 @@ def create_company(
             data.get("ticker"), suggested, data.get("currency"),
         )
         data["currency"] = suggested
+    # Auto-detect fiscal_year_end from Yahoo when the user didn't specify.
+    # Without this a US-listed non-December filer (Visa=Sep, Microsoft=Jun,
+    # Broadcom=Oct, Apple=Sep) silently degrades: _q_end_date returns None,
+    # EDGAR-Q-Backfill is skipped, all Q values come from Claude estimates
+    # instead of 10-Q actuals.
+    if not data.get("fiscal_year_end_month") or not data.get("fiscal_year_end_day"):
+        try:
+            from app.providers.yahoo import YahooFinanceProvider
+            detected = YahooFinanceProvider().detect_fiscal_year_end(data.get("ticker", ""))
+        except Exception as exc:
+            logger.warning("FY-End auto-detect failed for %s: %s", data.get("ticker"), exc)
+            detected = None
+        if detected:
+            data["fiscal_year_end_month"], data["fiscal_year_end_day"] = detected
+            logger.info(
+                "FY-End auto-detected for %s: %02d/%02d",
+                data.get("ticker"), detected[0], detected[1],
+            )
     company = Company(portfolio_id=portfolio_id, **data)
     db.add(company)
     db.commit()
