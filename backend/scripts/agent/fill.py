@@ -178,10 +178,18 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        company = db.query(Company).filter(Company.ticker == ticker).one_or_none()
-        if company is None:
+        # Falls Ticker in mehreren Portfolios existiert, bevorzuge das DAX-Portfolio
+        DAX_PORTFOLIO_ID = "b3a10032-c646-4036-97eb-ee72331ae423"
+        companies = db.query(Company).filter(Company.ticker == ticker).all()
+        if not companies:
             print(f"Company {ticker} nicht in DB.")
             return 1
+        if len(companies) > 1:
+            dax_match = [c for c in companies if str(c.portfolio_id) == DAX_PORTFOLIO_ID]
+            company = dax_match[0] if dax_match else companies[0]
+            print(f"Note: {ticker} existiert {len(companies)}x — nehme portfolio_id={company.portfolio_id}")
+        else:
+            company = companies[0]
         cid = company.id
         print(f"Fill {ticker} ({company.name}), fiscal_year_end_month={company.fiscal_year_end_month}")
 
