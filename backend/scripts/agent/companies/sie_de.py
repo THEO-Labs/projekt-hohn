@@ -1,0 +1,57 @@
+"""Siemens AG Data-Modul.
+
+Fiscal Year End: Sept 30. FY2025 = Oct 2024 - Sept 2025.
+Q1 FY2025 endete Dec 31 2024, Q2: Mar 31 2025, Q3: Jun 30 2025, Q4: Sep 30 2025.
+
+Siemens berichtet IFRS. Non-IFRS = "EPS pre PPA" (Purchase Price Allocation).
+Q1 FY2025 hatte Sondereffekt: 2.1B Gain aus Innomotics-Sale.
+
+Zeit-limitiert: nur Basis-Werte (Revenue, NI, EPS, FCF). CapEx nicht in Quarterly
+gezeigt — Siemens gibt es nur in Annual Report als "additions to fixed assets".
+"""
+from __future__ import annotations
+
+TICKER = "SIE.DE"
+COMPANY_NAME = "Siemens AG"
+FISCAL_YEAR_END_MONTH = 9
+CURRENCY = "EUR"
+
+Q_DATA = [
+    ("Q1", 2025, "Siemens Q1 FY2025 Earnings Release (Feb 13 2025)", {
+        "revenue": (18_400, 18_400),
+        "net_income": (3_900, 3_900),  # inkl. 2.1B Innomotics-Gain
+        "fcf": (1_600, 1_600),
+    }),
+    ("Q2", 2025, "Siemens Q2 FY2025 Earnings Release (May 8 2025)", {
+        "revenue": (19_800, 19_800),
+        "net_income": (2_400, 2_400),
+        "fcf": (1_000, 1_000),
+    }),
+    ("Q3", 2025, "Siemens Q3 FY2025 Earnings Release (Aug 7 2025)", {
+        "revenue": (19_400, 19_400),
+        "net_income": (2_200, 2_200),
+        "fcf": (2_900, 2_900),
+    }),
+    ("Q4", 2025, "Siemens Q4 FY2025 Earnings Release (Nov 13 2025)", {
+        "revenue": (21_400, 21_400),
+        "net_income": (1_800, 1_800),
+        "fcf": (5_300, 5_300),
+    }),
+    ("FY", 2025, "Siemens FY2025 Annual (Nov 13 2025)", {
+        "revenue": (78_900, 78_900),
+        "net_income": (10_400, 10_400),
+        "fcf": (10_800, 10_800),
+    }),
+    # FY2026 Q1 (Oct-Dec 2025) — TODO: released Feb 2026
+    # FY2026 Q2 (Jan-Mar 2026) — TODO: released May 2026
+]
+
+EPS_DATA = [
+    ("Q1", 2025, ("4.71", "4.86"), "Siemens Q1 FY2025"),
+    ("Q2", 2025, ("2.86", "3.00"), "Siemens Q2 FY2025"),
+    ("Q3", 2025, ("2.61", "2.78"), "Siemens Q3 FY2025"),
+    ("Q4", 2025, ("2.07", "2.31"), "Siemens Q4 FY2025 (pre-PPA aus FY-Diff)"),
+    ("FY", 2025, ("12.25", "12.95"), "Siemens FY2025"),
+]
+
+BS_DATA = {}  # TODO Annual Report
