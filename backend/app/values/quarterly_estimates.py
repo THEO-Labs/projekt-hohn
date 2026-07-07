@@ -143,6 +143,11 @@ def _upsert_q_estimate(
     # (Future: Challenge-Mechanismus analog _try_web_guidance bei Divergenz.)
     if existing and existing.from_ir_pdf and existing.numeric_value is not None:
         return existing
+    # CapEx Sign-Normalisierung — siehe _upsert_q_actual_from_provider.
+    if key == "capex" and value is not None:
+        value = abs(value)
+    if key == "capex" and value_adjusted is not None:
+        value_adjusted = abs(value_adjusted)
     now = datetime.now(timezone.utc)
     try:
         with db.begin_nested():
@@ -246,6 +251,23 @@ def _estimate_single_quarter(
     if v is None:
         return None, None, None, None, None, None
 
+    # 0-Value Reject: Fuer Metriken die immer positiv sein muessen (Revenue,
+    # NI, EBITDA, OCF, FCF, EPS) ist v=0 fast immer ein Extraction-Fehler
+    # (Claude fand nix und lieferte "0" statt zu schaetzen). Zurueckweisen
+    # damit Fallback-Chain greift. Ausnahme: buyback_volume und sbc koennen
+    # legitim 0 sein (Firma hat kein Programm).
+    _NEVER_ZERO_KEYS = frozenset({
+        "revenue", "net_income", "ebitda", "eps_diluted",
+        "operating_cash_flow", "fcf", "capex", "dividends",
+    })
+    if v == 0 and key in _NEVER_ZERO_KEYS:
+        logger.warning(
+            "Q-Estimate 0-Value Reject %s/%s/%s/FY%s: Claude lieferte 0 fuer "
+            "non-zero-Metrik. Wahrscheinlich Extraction-Fehler.",
+            company.ticker, key, quarter, period_year,
+        )
+        return None, None, None, None, None, None
+
     # Skalierungs-Sanity-Reject (Billion-vs-Trillion-Bug):
     # Wenn Claude einen Q-Wert > 10x FY-1-Aggregat liefert (= 2.5x FY-Total in
     # einem einzelnen Q), ist das fast immer ein Unit-Misinterpretation-Bug.
@@ -320,10 +342,85 @@ def _estimate_single_quarter(
         except Exception as exc:
             logger.debug("Q-Estimate kontext-fy-total parse skipped: %s", exc)
 
+    # YTD-Auto-Detection: Claude ignoriert teilweise die YTD-Warning im Prompt
+    # (haeufig bei SBC / FCF / Dividends) und liefert den kumulativen Betrag aus
+    # dem 10-Q (Six/Nine Months Ended). Zwei Trigger:
+    #   Trigger 1 (Text): content enthaelt YTD-Marker + v >= 1.35 x prior_sum
+    #   Trigger 2 (Value): v >= 1.7 x prior_sum UND standalone_impl/prior_avg
+    #     im engen Range [0.6, 1.6] (mathematisch sehr klarer YTD-Fall auch
+    #     ohne Text-Marker im content).
+    if (
+        key in SUMMABLE_QUARTERLY_KEYS
+        and q_actuals_for_prompt
+        and quarter in ("Q2", "Q3", "Q4")
+    ):
+        content_lower = (content or "").lower()
+        ytd_markers = (
+            "six months ended", "nine months ended",
+            "three months ended and", "six-month period", "nine-month period",
+            "first six months", "first nine months",
+            "6 months ended", "9 months ended",
+            "for the six months", "for the nine months",
+            "half-year", "half year", "first half",
+            "year to date", "year-to-date", " ytd",
+            "cumulative", "cumulative for the",
+            "kumulativ", "sechs monate", "neun monate",
+        )
+        matched = [m for m in ytd_markers if m in content_lower]
+
+        prior_quarters = {"Q2": ("Q1",), "Q3": ("Q1", "Q2"), "Q4": ("Q1", "Q2", "Q3")}[quarter]
+        all_prior_known = all(q in q_actuals_for_prompt for q in prior_quarters)
+        if all_prior_known:
+            prior_sum = sum(
+                (q_actuals_for_prompt[q] for q in prior_quarters),
+                Decimal("0"),
+            )
+            if prior_sum != 0 and v != 0 and (v > 0) == (prior_sum > 0):
+                ratio_to_prior = abs(v) / abs(prior_sum)
+                standalone_impl = v - prior_sum
+                is_same_sign = standalone_impl != 0 and (standalone_impl > 0) == (v > 0)
+                prior_avg = abs(prior_sum) / Decimal(len(prior_quarters))
+                ratio_to_avg = (
+                    abs(standalone_impl) / prior_avg if (is_same_sign and prior_avg > 0) else Decimal("0")
+                )
+
+                # Trigger 1: Text-Marker + moderater Value-Ratio
+                trigger_text = matched and ratio_to_prior >= Decimal("1.35")
+                # Trigger 2: sehr klarer Value-Fall auch ohne Text-Marker.
+                # ratio_to_prior >= 1.7 (echt YTD ist typisch ~2.0x fuer Q2,
+                # ~1.5x fuer Q3) UND standalone im engen Plausi-Range um
+                # prior_avg — sonst False-Positive Gefahr (z.B. Wachstums-Q).
+                trigger_value = (
+                    ratio_to_prior >= Decimal("1.7")
+                    and Decimal("0.6") <= ratio_to_avg <= Decimal("1.6")
+                )
+
+                if (trigger_text or trigger_value) and is_same_sign:
+                    if Decimal("0.3") <= ratio_to_avg <= Decimal("3.0"):
+                        reason = "TEXT+" if trigger_text else ""
+                        reason += "VALUE" if trigger_value else ""
+                        marker_txt = ",".join(matched)[:60] if matched else "(no text marker)"
+                        logger.warning(
+                            "Q-Estimate YTD-Auto-Detect %s/%s/%s/FY%s [%s]: v=%.0f "
+                            "-> Standalone=%.0f (prior_sum=%.0f, ratio_to_prior=%.2f, "
+                            "ratio_to_avg=%.2f, marker=%s)",
+                            company.ticker, key, quarter, period_year, reason,
+                            float(v), float(standalone_impl), float(prior_sum),
+                            float(ratio_to_prior), float(ratio_to_avg), marker_txt,
+                        )
+                        correction_note += (
+                            f" [YTD-KORRIGIERT via {reason}: v_orig={float(v):,.0f}, "
+                            f"standalone={float(standalone_impl):,.0f}]"
+                        )
+                        v = standalone_impl
+
     adj_val: Decimal | None = None
     adj_src: str | None = None
     adj_note: str | None = None
-    if content and key in {"net_income", "ebitda", "fcf"}:
+    if content and key in {
+        "net_income", "ebitda", "fcf",
+        "revenue", "eps_diluted", "operating_cash_flow", "capex",
+    }:
         adj_val, adj_src, adj_note = extract_research_value_adjusted(content)
 
     raw_src = (s or "KI-Einschätzung")[:3800]
@@ -383,7 +480,28 @@ def _upsert_q_actual_from_provider(
         )
         .first()
     )
+    # "calculated" (implied Q4) darf ueberschrieben werden — nach einem
+    # Q1-Q3-Refetch muss der Sigma-Rest neu berechnet werden. Echte Actuals
+    # (provider/pdf/manual) bleiben unantastbar.
+    is_implied_q4_incoming = source_name.startswith("Implied Q4")
     if existing_actual is not None:
+        can_overwrite = (
+            is_implied_q4_incoming
+            and existing_actual.primary_method == "calculated"
+            and not getattr(existing_actual, "manually_overridden", False)
+        )
+        if not can_overwrite:
+            return existing_actual
+        now = datetime.now(timezone.utc)
+        value_updated = abs(value) if key == "capex" and value is not None else value
+        existing_actual.numeric_value = value_updated
+        existing_actual.source_name = source_name[:4000]
+        existing_actual.source_link = source_link
+        existing_actual.currency = currency
+        existing_actual.fetched_at = now
+        existing_actual.primary_method = "calculated"
+        logger.info("Q4-Implied recomputed %s/%s/%s/FY%s = %.0f",
+                    company_id, key, quarter, period_year, float(value_updated))
         return existing_actual
     existing_forecast = (
         db.query(CompanyValue)
@@ -400,6 +518,12 @@ def _upsert_q_actual_from_provider(
         return existing_forecast
     if existing_forecast and existing_forecast.from_ir_pdf and existing_forecast.numeric_value is not None:
         return existing_forecast
+    # CapEx Sign-Normalisierung: EDGAR liefert PaymentsToAcquirePropertyPlantAndEquipment
+    # als positiven Betrag (Cash-Outflow), 10-Q Filings zeigen es aber in Klammern.
+    # Wir speichern IMMER als positiven Absolutwert damit Frontend und
+    # Downstream-Berechnungen (fcf = ocf - capex) konsistent sind.
+    if key == "capex" and value is not None:
+        value = abs(value)
     now = datetime.now(timezone.utc)
     # Q4-Implied vs echter Provider-Fetch: erkennen wir am source_name.
     is_implied_q4 = source_name.startswith("Implied Q4")
@@ -528,8 +652,15 @@ def _ensure_prev_fy_q_actuals(
         .all()
     )
     existing_qs = {r.period_type: r.numeric_value for r in existing}
-    if len(existing_qs) >= 4:
-        return  # Saisonalitaets-Datenbasis komplett
+    # Merken welche existierenden Q4 als "calculated" (implied) markiert sind —
+    # die muessen wir nach Q1-Q3-Refetch potentiell neu berechnen. Wenn Q4
+    # provider/pdf/manual: skip (echte Actual).
+    q4_existing_calculated = any(
+        r.period_type == "Q4" and r.primary_method == "calculated"
+        for r in existing
+    )
+    if len(existing_qs) >= 4 and not q4_existing_calculated:
+        return  # Alle 4 Q sind Real-Actuals -> nichts zu tun
 
     currency = company.currency if key in CURRENCY_KEYS else None
     fy_end_month = getattr(company, "fiscal_year_end_month", None)
@@ -601,11 +732,13 @@ def _ensure_prev_fy_q_actuals(
         logger.info("FY-1 backfill %s/%s/%s/FY%s = %.0f (%s)",
                     company.ticker, key, q, prev_fy, float(v), primary)
 
-    # Q4 implizit aus FY-Total minus Sigma(Q1-Q3) — falls FY-Total + alle 3 Q da
-    if "Q4" in new_q_values:
-        return
+    # Q4 implizit aus FY-Total minus Sigma(Q1-Q3) — falls FY-Total + alle 3 Q da.
+    # Wenn Q4 bereits als "calculated" (implied) existiert, muss er nach Q1-Q3-
+    # Refetch neu berechnet werden — sonst bleibt der Sigma-Rest inkonsistent.
     if not all(q in new_q_values for q in ("Q1", "Q2", "Q3")):
         return
+    if "Q4" in new_q_values and not q4_existing_calculated:
+        return  # Q4 ist echter Actual (provider/pdf/manual) -> nie ueberschreiben
     fy_total_row = (
         db.query(CompanyValue)
         .filter(
@@ -703,6 +836,99 @@ BALANCE_SHEET_FY_KEYS = frozenset({
 })
 
 
+ADJUSTED_RELEVANT_KEYS = frozenset({
+    "net_income", "ebitda", "fcf",
+    "revenue", "eps_diluted", "operating_cash_flow", "capex",
+})
+
+
+def _ensure_q_adjusted(
+    db: Session,
+    company: "Company",
+    key: str,
+    year: int,
+    quarter: str,
+) -> None:
+    """Fills numeric_value_adjusted on an existing Q row when EDGAR gave us
+    GAAP-only. Runs a focused Claude call that ONLY researches the Non-GAAP
+    version. No-op if adjusted is already set, or if key isn't
+    adjusted-relevant, or if no Q row exists.
+    """
+    if key not in ADJUSTED_RELEVANT_KEYS:
+        return
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == quarter,
+            CompanyValue.period_year == year,
+        )
+        .one_or_none()
+    )
+    if row is None or row.numeric_value_adjusted is not None:
+        return
+    if row.numeric_value is None:
+        return
+    # Dedizierter Adj-only Prompt (Fix E): kompakter Prompt der explizit nur
+    # nach der Non-GAAP-Variante fragt. Der frueher genutzte research_value
+    # mit q_actuals={quarter: gaap} hat Claude oft verwirrt (GAAP-Wert war
+    # bereits injiziert -> Claude interpretierte "nichts mehr zu suchen").
+    from app.llm.claude import research_adjusted_only
+    from app.values.models import ValueDefinition
+
+    vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
+    if vd is None:
+        return
+    label = f"{vd.label_en} ({vd.label_de})"
+    # Sibling-Anker: bereits gefundene Adj-Werte anderer Q dieser Firma+Metrik.
+    # Erhoeht Trefferquote bei Q4 Forecast oder historischen Q ohne dediziertes
+    # 8-K weil Claude die typische Adjustment-Groesse sieht.
+    sibling_rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type.in_(("Q1", "Q2", "Q3", "Q4")),
+            CompanyValue.period_year.in_((year, year - 1)),
+            CompanyValue.numeric_value_adjusted.isnot(None),
+        )
+        .order_by(CompanyValue.period_year.desc(), CompanyValue.period_type)
+        .all()
+    )
+    sibling_adj = {
+        f"{r.period_type} FY{r.period_year}": r.numeric_value_adjusted
+        for r in sibling_rows
+        if not (r.period_type == quarter and r.period_year == year)
+    }
+    try:
+        adj_val, adj_note, adj_src, err = research_adjusted_only(
+            company.name, company.ticker, label, key,
+            company.currency or "USD",
+            period_type=quarter, period_year=year,
+            gaap_value=row.numeric_value,
+            sibling_adj=sibling_adj or None,
+        )
+    except Exception as exc:
+        logger.warning("Adj-only fetch %s/%s/%s/FY%s failed: %s",
+                       company.ticker, key, quarter, year, exc)
+        return
+    if err:
+        logger.info("Adj-only skip %s/%s/%s/FY%s: %s",
+                    company.ticker, key, quarter, year, err)
+        return
+    if adj_val is None:
+        return
+    row.numeric_value_adjusted = adj_val
+    if adj_note:
+        row.adjustments_note = adj_note[:4000]
+    if adj_src:
+        row.adjustments_source = adj_src[:2048]
+    logger.info("Adj-only backfill %s/%s/%s/FY%s = %.3f (bridge=%s)",
+                company.ticker, key, quarter, year, float(adj_val),
+                (adj_note or "")[:80])
+
+
 def _claude_fetch_historical_q(
     company: "Company",
     key: str,
@@ -713,7 +939,12 @@ def _claude_fetch_historical_q(
     wenn EDGAR-Q-Fetch nichts liefert (typisch bei OCF/CapEx die als YTD
     statt Standalone gefiled sind, oder EPS mit anderem XBRL-Concept).
     is_forward=False -> Claude soll den Wert aus dem 10-Q/8-K rausziehen,
-    nicht schaetzen. Returns (value, source_name, source_link)."""
+    nicht schaetzen. Returns (value, source_name, source_link).
+
+    YTD-Auto-Detect (Fix B): Wenn Claude YTD statt Standalone liefert (haeufig
+    fuer SBC/FCF/Dividends wo 10-Q Text 'Six Months Ended' formuliert), wird
+    v mathematisch korrigiert via v - Sigma(vorherige Q aus DB).
+    """
     from app.llm.claude import research_value
     from app.values.models import ValueDefinition
     from app.db import SessionLocal
@@ -723,17 +954,81 @@ def _claude_fetch_historical_q(
         if vd is None:
             return None, None, None
         label = f"{vd.label_en} ({vd.label_de})"
+        # Vorherige Q-Actuals fuer YTD-Detect + q_actuals-Injection in den Prompt
+        prior_quarters = {"Q1": (), "Q2": ("Q1",), "Q3": ("Q1", "Q2"), "Q4": ("Q1", "Q2", "Q3")}[quarter]
+        prior_actuals: dict[str, Decimal] = {}
+        if prior_quarters:
+            rows = (
+                _db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company.id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type.in_(prior_quarters),
+                    CompanyValue.period_year == year,
+                    CompanyValue.is_forecast.is_(False),
+                    CompanyValue.numeric_value.isnot(None),
+                )
+                .all()
+            )
+            prior_actuals = {r.period_type: r.numeric_value for r in rows}
     finally:
         _db.close()
     try:
-        v, s, u, _p, _c = research_value(
+        v, s, u, _p, content = research_value(
             company.name, company.ticker, label, company.currency,
             period_type=quarter, period_year=year, value_key=key,
+            q_actuals=prior_actuals or None,
         )
     except Exception as exc:
         logger.warning("Claude historical Q %s/%s/%s/FY%s exception: %s",
                        company.ticker, key, quarter, year, exc)
         return None, None, None
+    if v is None:
+        return None, s, u
+    # YTD-Auto-Detect (Text + Value-Fallback)
+    if (
+        key in SUMMABLE_QUARTERLY_KEYS
+        and prior_actuals
+        and len(prior_actuals) == len(prior_quarters)
+    ):
+        content_lower = (content or "").lower()
+        ytd_markers = (
+            "six months ended", "nine months ended",
+            "three months ended and", "six-month period", "nine-month period",
+            "first six months", "first nine months",
+            "6 months ended", "9 months ended",
+            "for the six months", "for the nine months",
+            "half-year", "half year", "first half",
+            "year to date", "year-to-date", " ytd",
+            "cumulative", "cumulative for the",
+            "kumulativ", "sechs monate", "neun monate",
+        )
+        matched = [m for m in ytd_markers if m in content_lower]
+        prior_sum = sum(prior_actuals.values(), Decimal("0"))
+        if prior_sum != 0 and v != 0 and (v > 0) == (prior_sum > 0):
+            ratio_to_prior = abs(v) / abs(prior_sum)
+            standalone_impl = v - prior_sum
+            is_same_sign = standalone_impl != 0 and (standalone_impl > 0) == (v > 0)
+            prior_avg = abs(prior_sum) / Decimal(len(prior_quarters))
+            ratio_to_avg = (
+                abs(standalone_impl) / prior_avg if (is_same_sign and prior_avg > 0) else Decimal("0")
+            )
+            trigger_text = matched and ratio_to_prior >= Decimal("1.35")
+            trigger_value = (
+                ratio_to_prior >= Decimal("1.7")
+                and Decimal("0.6") <= ratio_to_avg <= Decimal("1.6")
+            )
+            if (trigger_text or trigger_value) and is_same_sign and Decimal("0.3") <= ratio_to_avg <= Decimal("3.0"):
+                reason = ("TEXT+" if trigger_text else "") + ("VALUE" if trigger_value else "")
+                logger.warning(
+                    "Historical-Q YTD-Auto-Detect %s/%s/%s/FY%s [%s]: v=%.0f "
+                    "-> Standalone=%.0f (prior_sum=%.0f, ratio_to_prior=%.2f)",
+                    company.ticker, key, quarter, year, reason,
+                    float(v), float(standalone_impl), float(prior_sum),
+                    float(ratio_to_prior),
+                )
+                s = f"{s or ''} [YTD-KORRIGIERT via {reason}: v_orig={float(v):,.0f} -> standalone={float(standalone_impl):,.0f}]"
+                v = standalone_impl
     return v, s, u
 
 
@@ -792,8 +1087,8 @@ def _ensure_prev_fy_balance_sheet(
     if not fy_end_month or not fy_end_day:
         return
 
-    existing_keys = {
-        r.value_key
+    existing_rows = {
+        r.value_key: r
         for r in db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company.id,
@@ -805,13 +1100,21 @@ def _ensure_prev_fy_balance_sheet(
         )
         .all()
     }
-    missing = BALANCE_SHEET_FY_KEYS - existing_keys
-    if not missing:
+    # Neue Keys die noch gar nicht existieren
+    missing = BALANCE_SHEET_FY_KEYS - set(existing_rows.keys())
+    # Fix C: Existing web_guidance-Rows opportunistisch versuchen aus EDGAR
+    # nachzuziehen (z.B. wenn Concept-Map erweitert wurde). Manual-Overrides
+    # oder provider-Rows werden nie ueberschrieben.
+    stale = {
+        k for k, r in existing_rows.items()
+        if r.primary_method == "web_guidance" and not getattr(r, "manually_overridden", False)
+    }
+    if not missing and not stale:
         return
 
     provider = _get_edgar_provider()
     now = datetime.now(timezone.utc)
-    for key in missing:
+    for key in missing | stale:
         currency = company.currency if key in CURRENCY_KEYS else None
         v: Decimal | None = None
         src_name: str | None = None
@@ -831,8 +1134,9 @@ def _ensure_prev_fy_balance_sheet(
             v = Decimal(str(res.value))
             src_name = res.source_name or "SEC EDGAR (FY-1 BS Backfill)"
             src_link = res.source_link
-        else:
-            # Claude-Fallback: BS-Snapshot am FY-End aus dem letzten 10-K holen
+        elif key in missing:
+            # Claude-Fallback nur fuer wirklich fehlende Keys — nicht fuer stale
+            # web_guidance-Rows (die haben schon einen Claude-Wert).
             v_c, s_c, u_c = _claude_fetch_historical_fy(company, key, prev_fy)
             if v_c is not None:
                 v = v_c
@@ -840,6 +1144,18 @@ def _ensure_prev_fy_balance_sheet(
                 src_link = u_c
                 method = "web_guidance"
         if v is None:
+            continue
+        # Stale-Row Upgrade: existing web_guidance -> provider durch update
+        if key in stale:
+            row = existing_rows[key]
+            row.numeric_value = v
+            row.source_name = (src_name or "SEC EDGAR (BS-Refetch)")[:4000]
+            row.source_link = src_link
+            row.currency = currency
+            row.fetched_at = now
+            row.primary_method = method
+            logger.info("FY-1 BS refetch %s/%s/FY%s = %.0f (web_guidance -> %s)",
+                        company.ticker, key, prev_fy, float(v), method)
             continue
         cv = CompanyValue(
             id=uuid4(),
@@ -895,6 +1211,13 @@ def estimate_fy_via_quarterly_sum(
     # Balance-Sheet keys sind nicht in QUARTERLY_ESTIMATE_KEYS -> bekaemen sonst
     # nie einen historischen Backfill. Idempotent, no-op wenn schon da.
     _ensure_prev_fy_balance_sheet(db, company, target_fy - 1)
+    # FY-1 Q-Actuals Non-GAAP-Backfill (Fix 2). Ohne diesen Call bleibt die
+    # Adjusted-Spalte fuer alle historischen Actuals leer weil _ensure_q_adjusted
+    # in dem Q-Loop unten nur fuer target_fy laeuft. Idempotent (No-op wenn
+    # numeric_value_adjusted schon gesetzt).
+    if key in ADJUSTED_RELEVANT_KEYS:
+        for q in QUARTERS:
+            _ensure_q_adjusted(db, company, key, target_fy - 1, q)
 
     company_id = company.id
     currency = company.currency if key in CURRENCY_KEYS else None
@@ -932,6 +1255,16 @@ def estimate_fy_via_quarterly_sum(
         q_values=q_values, q_sources=q_sources, q_origin=q_origin,
         currency=currency,
     )
+
+    # Non-GAAP-Backfill fuer Q-Actuals aus EDGAR/PDF: EDGAR-XBRL liefert nur
+    # GAAP-Werte, PDF-Extract oft auch nur GAAP. Ohne diesen Call bleibt die
+    # Non-GAAP-Spalte im UI leer fuer alle bereits reporteten Quartale. Nur
+    # aufgerufen fuer Keys mit Adjusted-Pendant (net_income, ebitda, fcf,
+    # revenue, eps_diluted, operating_cash_flow, capex).
+    if key in ADJUSTED_RELEVANT_KEYS:
+        for q in QUARTERS:
+            if q in q_values:
+                _ensure_q_adjusted(db, company, key, target_fy, q)
 
     for q in QUARTERS:
         if q in q_values:

@@ -66,7 +66,10 @@ def research_value_dual(
     q_actuals (optional): bereits in DB gespeicherte Q-Actuals fuer das
     target FY (z.B. {"Q1": 25663000000, "Q2": 5882000000, "Q3": 15803000000}).
     Werden als PFLICHT-Anker in den Prompt injiziert."""
-    adjusted_relevant = value_key in {"net_income", "ebitda", "fcf"}
+    adjusted_relevant = value_key in {
+        "net_income", "ebitda", "fcf",
+        "revenue", "eps_diluted", "operating_cash_flow", "capex",
+    }
 
     try:
         v, s, u, _p, c = research_value_claude(

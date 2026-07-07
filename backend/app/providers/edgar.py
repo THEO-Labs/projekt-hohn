@@ -33,6 +33,12 @@ CONCEPT_MAP: dict[str, list[str]] = {
     "eps_diluted": [
         "EarningsPerShareDiluted",
         "IncomeLossFromContinuingOperationsPerDilutedShare",
+        "NetIncomeLossPerOutstandingLimitedPartnershipAndGeneralPartnershipUnitDiluted",
+        # Fallback: Basic EPS if Diluted not reported (rare — small caps only).
+        # Firms like Visa report EPS via a company-specific taxonomy prefix
+        # (v:...) that our us-gaap-only scan can't reach; in that case Claude
+        # falls back and researches from the 10-Q text directly.
+        "EarningsPerShareBasic",
     ],
     "operating_cash_flow": [
         "NetCashProvidedByUsedInOperatingActivities",
@@ -63,6 +69,11 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "MarketableSecuritiesCurrent",
         "ShortTermInvestments",
         "AvailableForSaleSecuritiesCurrent",
+        "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+        "HeldToMaturitySecuritiesCurrent",
+        "TradingSecurities",
+        "InvestmentsCurrent",
+        "OtherShortTermInvestments",
     ],
     "st_debt": [
         "ShortTermBorrowings",
@@ -479,6 +490,58 @@ class EdgarProvider:
                     value=Decimal(str(latest["val"])),
                     source_name=f"SEC EDGAR ({latest.get('form', '?')}, {latest.get('end', '')})",
                     source_link=self._filing_link(cik, latest.get("accn")),
+                )
+            return None
+
+        # ST-Debt Sum-Handling: PM u.a. reporten ShortTermBorrowings separat von
+        # Current Portion of Long-Term Debt. Fallback-Chain nimmt nur den ersten
+        # Match und liefert damit einen Teilwert (z.B. 168M statt Total 3.7B).
+        # Wenn DebtCurrent (Total-Concept) NICHT existiert, summieren wir die
+        # Einzelbestandteile.
+        if key == "st_debt":
+            dc_val, dc_cur, dc_accn = self._find_value(
+                facts, ["DebtCurrent"], period_year, fy_end_month, fy_end_day
+            )
+            if dc_val is not None:
+                return ProviderResult(
+                    value=dc_val,
+                    source_name=f"SEC EDGAR 10-K DebtCurrent (FY{period_year})",
+                    source_link=self._filing_link(cik, dc_accn),
+                    currency=dc_cur if key in CURRENCY_KEYS else None,
+                )
+            components = [
+                "ShortTermBorrowings",
+                "LongTermDebtCurrent",
+                "CommercialPaper",
+                # PM u.a. reporten Current Portion of LT Debt unter alternativen
+                # XBRL-Concepts — hier alle Aliase die keine Overlap-Gefahr haben
+                "LongTermDebtAndCapitalLeaseObligationsCurrent",
+                "NotesPayableCurrent",
+                "OtherShortTermBorrowings",
+                "SecuredDebtCurrent",
+                "UnsecuredDebtCurrent",
+            ]
+            total = Decimal("0")
+            found_any = False
+            last_cur: str | None = None
+            last_accn: str | None = None
+            parts: list[str] = []
+            for concept in components:
+                v, cur_c, accn_c = self._find_value(
+                    facts, [concept], period_year, fy_end_month, fy_end_day
+                )
+                if v is not None:
+                    total += v
+                    found_any = True
+                    last_cur = cur_c
+                    last_accn = accn_c
+                    parts.append(f"{concept}={float(v)/1e6:,.0f}M")
+            if found_any:
+                return ProviderResult(
+                    value=total,
+                    source_name=f"SEC EDGAR 10-K ST-Debt Sum ({' + '.join(parts)}, FY{period_year})",
+                    source_link=self._filing_link(cik, last_accn),
+                    currency=last_cur if key in CURRENCY_KEYS else None,
                 )
             return None
 

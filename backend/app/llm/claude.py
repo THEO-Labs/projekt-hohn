@@ -122,20 +122,98 @@ def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
 
 QUARTER_MODE_HEADER = """*** PER-QUARTALS-MODUS AKTIV ***
 
-Diese Anfrage ist eine STANDALONE-QUARTALSANFRAGE — nicht FY-Total.
+Diese Anfrage ist eine STANDALONE-QUARTALSANFRAGE — nicht FY-Total, nicht YTD.
 
-Was das konkret bedeutet fuer diesen Call:
-- Du schaetzt EINEN einzelnen Quartalswert (Q1, Q2, Q3 oder Q4).
-- KEIN YTD (Year-to-Date), KEIN FY-Total.
-- Der Annual-Wert wird von unserem System als Summe der 4 Q-Werte
-  aggregiert — du berechnest das NICHT.
+⚠️⚠️⚠️ ABSOLUT KRITISCH — YTD vs STANDALONE ⚠️⚠️⚠️
+Viele US-Filer reporten im 10-Q Cash-Flow-Statement + Balance-Sheet-Notes
+CUMULATIVE / YTD, NICHT Standalone-Q. Beispiele:
+- Visa's 10-Q Q2: "Six Months Ended March 31" -> das ist Q1+Q2, NICHT Q2 allein
+- Alphabet's 10-Q Q3: "Nine Months Ended September 30" -> das ist Q1+Q2+Q3
+- SBC, Buyback, Dividends, OCF, CapEx sind fast IMMER YTD im 10-Q
 
-Folgende Sektionen des System-Prompts sind fuer diesen Call NICHT anwendbar
-und du sollst sie NICHT befolgen:
-- E. Konsens-Anchoring-Pflicht (Konsens ist FY-Level; fuer Standalone-Q
-  ist Analysten-Konsens meist nicht separat quotiert)
-- F. Quartals-Aufschluesselungs-Pflicht (irrelevant — du lieferst EIN Q, nicht 4)
-- H. Forward-Q4-Methodik mit FY-Anchoring-Vergleich
+REGEL — Du MUSST Standalone berechnen wenn nur YTD verfuegbar:
+  Q2_standalone = (Six Months Ended) − Q1_standalone
+  Q3_standalone = (Nine Months Ended) − (Six Months Ended)
+  Q4_standalone = FY_10K − (Nine Months Ended)
+
+SANITY-CHECK am Ende deiner Recherche:
+- Wenn dein Wert > 1.6 × Vorjahres-gleiches-Q -> WAHRSCHEINLICH YTD-Fehler.
+  Beispiel: Kunde Q2 2025 Standalone typisch 4.7 Mrd. Wenn du 10.2 Mrd
+  lieferst = 2.2x zu hoch = YTD-Verwechselung.
+- Wenn deine Q_new + Q1_actual + Q2_actual ≈ FY-Konsens -> STANDALONE ✓
+- Wenn dein einzelnes Q ≈ 50% des FY -> YTD-Fehler (Halbjahres-Wert)
+
+Nenne in QUELLE explizit welchen Zeitraum du gelesen hast:
+  "10-Q Cash Flow Statement, Six Months Ended 2025-03-31: $10.168B"
+  "Standalone Q2 = 10.168 − 5.396 (Q1 aus q_actuals) = 4.772B"
+
+═════════════════════════════════════════════════════════════════════════
+
+FUER FORWARD-Q (Q im laufenden FY das NOCH NICHT gefiled ist):
+Du sollst NICHT nur aus Vorjahres-Vergleich extrapolieren. Recherchiere
+QUALITATIV:
+
+1. **Management-Guidance** — Analyst-Day/Earnings-Call vom vorherigen Q.
+   Was hat CFO gesagt zu Revenue-Growth / Margen / CapEx-Plan fuer dieses
+   spezifische Quartal? Zitiere: "CFO-Guidance im Q1-Call: 'Q2 revenue
+   growth expected in low double-digits'"
+
+2. **Analysten-Konsens** — Bloomberg / Refinitiv / Yahoo Finance Analyst
+   Estimates fuer das spezifische Q. Anzahl Analysten + Range + Median.
+   NICHT nur den Konsens-FY-Total durch 4 teilen — die haben Q-Aufteilung.
+
+3. **SPECIAL-EVENTS / SONDERFAKTOREN — SUCHE IN NEWS UND ANKUENDIGUNGEN**:
+   Das ist der wichtigste Punkt — hier kommen die grossen Abweichungen her,
+   die simple Extrapolation nie trifft. Beispiele die du IMMER suchen musst:
+
+   a) **Accelerated / Special Buyback Programs** — ASR-Announcements, Board-
+      Approvals fuer neue Buyback-Autorisierungen, oversized Q-Buybacks weil
+      ASR-Settlement in dem Q faellt.
+      Suche: "[ticker] accelerated share repurchase", "[ticker] special buyback"
+      Beispiel: Visa Q2 FY2026 hatte $7.9B Buyback (statt run-rate ~4B) wegen
+      ASR-Settlement — das findet man in 8-K vom Q1-Filing.
+
+   b) **Guidance-Revisions (Up/Down)** — Pre-Announcement, Mid-Q-Update,
+      Fireside-Chat, Sell-Side-Konferenz-Aussagen zwischen den Q-Reports.
+      Suche: "[ticker] raises guidance", "[ticker] cuts guidance", "[ticker] preliminary"
+
+   c) **M&A / Divestitures** — closing dates, Deal-Impact auf Revenue/OpEx
+      im spezifischen Q. Suche: "[ticker] acquisition closes", "[ticker] divestiture"
+
+   d) **Regulatory / Litigation** — Settlements, Fines, MDL-Provisions, Tax-
+      Assessments die im Q auflaufen. Suche: "[ticker] settlement", "[ticker] litigation reserve"
+
+   e) **One-Time Items** — Restructuring-Charges, Impairments, Gains-on-Sale,
+      Insurance-Recoveries, JV-Deconsolidations. Suche: "[ticker] restructuring",
+      "[ticker] impairment"
+
+   f) **FX / Macro Events** — bei Multinationals konkrete FX-Bewegungen im Q,
+      Sanction-Impacts, Working-Capital-Verschiebungen zwischen Q.
+
+   g) **Peer-Vergleich** — was hat Konkurrent oder Segment-Peer in seinem Q
+      berichtet (Vorlauf-Signal 4-6 Wochen vor eigenem Report)?
+
+   Wenn du keine Special-Events findest, schreibe explizit "keine Special-
+   Events identifiziert — Q entspricht run-rate". Aber IMMER erst suchen.
+
+4. **Erst ZULETZT** als Sanity-Check: Vorjahres-gleiches-Q × Wachstumsrate.
+   Das ist ein Fallback, keine Prime-Quelle.
+
+Wenn du nur "Vorjahresquartal + 5%" schreibst OHNE Special-Events zu
+recherchieren, ist deine Antwort MINDERWERTIG. Zeig dass du aktiv nach
+Ankuendigungen / Press-Releases / 8-K-Filings zwischen den Berichten
+gesucht hast.
+
+═════════════════════════════════════════════════════════════════════════
+
+FUER HISTORISCHE Q (Q im vergangenen FY das schon gefiled ist):
+Aus 10-Q Cash-Flow-Statement / Income-Statement DIREKT lesen. Nutze
+YTD-Subtraktions-Regel oben. QUELLE zitiert dann konkret die Filing-Sektion:
+  "10-Q Filing v-20250331.htm, Cash Flow Statement, Line 'Cash and cash
+   equivalents from operating activities' Six Months = 10.168B, minus Q1
+   = 4.772B Standalone Q2"
+
+═════════════════════════════════════════════════════════════════════════
 
 Weiterhin voll gueltig:
 - 0. Ground-Truth-Prinzip (Provider-Werte im q_actuals-Block sind FIX)
@@ -146,15 +224,11 @@ Weiterhin voll gueltig:
 - G. EBITDA GAAP-Adj-Bruecke bei ebitda-Werten
 - Antwort-Format, Zahlenformat, Unit-Sanity-Check
 
-Deine Datenquellen fuer ein Standalone-Q:
-1. Q-Actuals-Anker im User-Prompt (wenn vorhanden) — GROUND TRUTH.
-2. Run-Rate der bereits gelieferten Q (sequentielles Wachstum).
-3. Saisonalitaets-Pattern des Vorjahres (im User-Prompt injiziert).
-4. Management-Guidance fuer das spezifische Quartal (Earnings-Call-Transcript
-   des vorherigen Q, Investor-Day-Slides).
-5. Deine Experten-Einschaetzung wenn 1-4 nichts liefern.
+Sektion F (Quartals-Aufschluesselungs-Pflicht) irrelevant fuer Q-Call.
+Sektion H (Forward-Q4-FY-Anchoring) irrelevant.
 
-Fokus auf die einzelne Zahl — kurze, praezise Begruendung reicht.
+Fokus: die einzelne Zahl, mit klarer YTD-vs-Standalone-Rechnung wenn
+noetig, und (bei Forward-Q) qualitativer Recherche statt Extrapolation.
 """
 
 
@@ -408,19 +482,41 @@ QUELLE_URL: https://www.broadcom.com/company/news/financial-releases
 ZEITRAUM: FY2026e
 KONFIDENZ: mittel
 
-GAAP/NON-GAAP-PFLICHT (nur fuer net_income, ebitda, fcf):
-Wenn der gesuchte Wert net_income, ebitda oder fcf ist, MUSST du zusaetzlich
-die Adjusted/Non-GAAP/Underlying-Variante liefern, falls vorhanden. Format:
+GAAP/NON-GAAP-PFLICHT (fuer net_income, ebitda, fcf, revenue, eps_diluted,
+operating_cash_flow, capex):
+Wenn der gesuchte Wert einer der oben genannten Keys ist, MUSST du zusaetzlich
+die Adjusted/Non-GAAP/Underlying-Variante liefern, falls die Firma sie in
+ihrer Non-GAAP-Reconciliation ausweist. Format:
 
-  WERT_ADJUSTED: 20500000000           (Non-GAAP Net Income, in Base-Units)
+  WERT_ADJUSTED: 20500000000           (Non-GAAP-Wert, in Base-Units)
   QUELLE_ADJUSTED: Visa Q4 2024 Earnings Release S.3
   ADJUSTMENTS: Litigation Reserve +500M, Contingent Consideration +300M
+
+Typische Adjusted-Definitionen pro Key:
+  * net_income        Adjusted / Non-GAAP / Underlying Net Income
+                      (excl. SBC, restructuring, litigation, impairment,
+                       amortization of acquisition intangibles teilweise)
+  * ebitda            Adjusted EBITDA (excl. SBC + One-Time-Items)
+  * fcf               Adjusted FCF (excl. Legal-Settlements, tax refunds,
+                      one-off working-capital)
+  * revenue           Organic / Constant-Currency Revenue (excl. FX headwind,
+                      excl. divestitures, excl. acquisitions)
+  * eps_diluted       Adjusted / Non-GAAP Diluted EPS
+                      (Adjusted-NI / Diluted-Shares, wenn Firma reported)
+  * operating_cash_flow  Adjusted OCF (selten separat — meist gleich GAAP,
+                         Ausnahme: Firmen die Legal-Settlements rausrechnen)
+  * capex             Growth-CapEx vs Maintenance-CapEx (selten offen
+                      publiziert — dann WERT_ADJUSTED: keine)
 
 Wenn die Firma KEINEN Adjusted-Wert reportet (z.B. reine GAAP-Reporting ohne
 non-GAAP Reconciliation), liefere:
 
   WERT_ADJUSTED: keine
   ADJUSTMENTS: Firma reportet keine Adjusted/Non-GAAP-Variante.
+
+WICHTIG: "keine" ist eine GUELTIGE Antwort — besser als geraten. Aber pruefe
+ehrlich: die meisten grossen US-Filer (S&P500) reporten Adjusted-Werte fuer
+NI/EBITDA/EPS. Aggregatoren wie stockanalysis.com fuehren beide Varianten.
 
 ⚠️ ABSOLUT KRITISCHE FALLE — EPS×Aktien-Konversion bei net_income:
 Wenn du einen EPS-Konsens-Wert findest (Yahoo Finance Analyst Estimates,
@@ -1267,3 +1363,143 @@ def research_value(
     except Exception as e:
         logger.warning("Claude research failed for %s/%s: %s", ticker, value_label, e)
         return None, None, None, user_prompt, None
+
+
+# ---------------------------------------------------------------------------
+# Dedizierter Non-GAAP-Only Fetch (Fix E)
+# ---------------------------------------------------------------------------
+# research_value() liefert bei _ensure_q_adjusted haeufig keinen Non-GAAP-Wert
+# weil das GAAP-Q via q_actuals injiziert wird und Claude das als "Wert schon
+# bekannt" interpretiert. Diese Funktion nutzt einen minimalen Prompt der
+# explizit NUR nach der Adjusted-Version fragt.
+# ---------------------------------------------------------------------------
+
+import re as _re_adj
+
+_ADJ_VALUE_RE = _re_adj.compile(r"ADJUSTED_VALUE\s*=\s*([\-\+]?[\d.,]+|NO_ADJUSTMENT)", _re_adj.IGNORECASE)
+_ADJ_BRIDGE_RE = _re_adj.compile(r"BRIDGE\s*=\s*([^\n]+)", _re_adj.IGNORECASE)
+_ADJ_SOURCE_RE = _re_adj.compile(r"SOURCE\s*=\s*(https?://\S+)", _re_adj.IGNORECASE)
+
+
+def research_adjusted_only(
+    company_name: str,
+    ticker: str,
+    value_label: str,
+    value_key: str,
+    currency: str,
+    period_type: str,
+    period_year: int,
+    gaap_value: "Decimal",
+    sibling_adj: dict[str, "Decimal"] | None = None,
+) -> tuple["Decimal | None", str | None, str | None, str | None]:
+    """Dedizierter Adj-only Prompt. Returns (adj_value_in_base_units, note, source_url, error).
+
+    Fuer EPS: gaap_value ist raw $ (z.B. 3.03), adj_value ebenso raw.
+    Fuer Currency-Keys: gaap_value ist base units (5853000000), Prompt zeigt millions,
+    Return-Wert wird zurueck auf base units skaliert.
+
+    sibling_adj: bereits bekannte Adj-Werte anderer Quartale (Q1-Q3 wenn wir Q4 fetchen).
+    Gibt Claude Anhaltspunkt was der Non-GAAP-Bridge dieser Firma ausmacht.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    is_eps = value_key in {"eps_diluted", "eps_basic"}
+    if is_eps:
+        gaap_display = f"{float(gaap_value):.4f} {currency}"
+        gaap_scale = "raw (per share, in {})".format(currency)
+    else:
+        gaap_display = f"{float(gaap_value)/1_000_000:,.1f} million {currency}"
+        gaap_scale = "millions of {}".format(currency)
+
+    # Sibling-Anker: wenn wir andere Q dieser Firma+Metrik schon kennen, zeigen
+    # wir Claude die typische Adjustment-Groesse. Erhoeht Trefferquote fuer
+    # Forecast-Q4 oder historische Q ohne dediziertes 8-K.
+    sibling_block = ""
+    if sibling_adj:
+        lines = []
+        for q, val in sibling_adj.items():
+            if is_eps:
+                lines.append(f"  {q}: Non-GAAP = {float(val):.4f} {currency}")
+            else:
+                lines.append(f"  {q}: Non-GAAP = {float(val)/1_000_000:,.1f} million {currency}")
+        sibling_block = (
+            f"\nAlready-known Non-GAAP values from other quarters of this same "
+            f"metric for {company_name} (use these as consistency anchor):\n"
+            + "\n".join(lines) + "\n"
+        )
+
+    prompt = (
+        f"You are researching the ADJUSTED / Non-GAAP version of ONE specific "
+        f"financial metric for one company and one quarter.\n\n"
+        f"Company: {company_name} ({ticker})\n"
+        f"Metric: {value_label}\n"
+        f"Period: {period_type} FY{period_year}\n"
+        f"GAAP value already known: {gaap_display}\n"
+        f"{sibling_block}\n"
+        f"TASK: Find the company's own Adjusted / Non-GAAP version of THIS metric "
+        f"for THIS quarter, as reported in the {period_type} FY{period_year} "
+        f"earnings release (8-K) or investor presentation.\n\n"
+        f"Companies often report Non-GAAP versions labeled:\n"
+        f"  - Net Income -> 'Adjusted Net Income' or 'Non-GAAP Net Income'\n"
+        f"  - EPS -> 'Non-GAAP Diluted EPS' or 'Adjusted EPS'\n"
+        f"  - EBITDA -> 'Adjusted EBITDA'\n"
+        f"  - Revenue -> usually GAAP = Non-GAAP\n"
+        f"  - Cash-Flow metrics (OCF/CapEx/FCF) -> usually GAAP = Non-GAAP\n\n"
+        f"If the company does NOT report a separate Non-GAAP version for this "
+        f"metric (i.e. Non-GAAP == GAAP), respond with ADJUSTED_VALUE=NO_ADJUSTMENT.\n\n"
+        f"If the specific quarter's 8-K is not published yet (future quarter), "
+        f"you MAY estimate based on: (a) the sibling Non-GAAP values above showing "
+        f"the typical adjustment pattern, (b) management guidance for adjusted "
+        f"metrics for the fiscal year, (c) analyst consensus for Non-GAAP.\n"
+        f"Prefer web-search over estimation whenever possible.\n\n"
+        f"Output format (strict, one value per line, no preamble):\n"
+        f"ADJUSTED_VALUE=<number in {gaap_scale} OR NO_ADJUSTMENT>\n"
+        f"BRIDGE=<one line: GAAP -> adjustments -> Non-GAAP>\n"
+        f"SOURCE=<direct URL to 8-K or earnings release>\n"
+    )
+
+    try:
+        client = get_client()
+    except Exception as e:
+        return None, None, None, f"client init failed: {e}"
+
+    try:
+        response = claude_limiter.call(lambda: client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            system=[{"type": "text", "text": (
+                "You are a financial research assistant. Return ONLY the requested "
+                "format. Never invent values. Use web-search."
+            )}],
+            messages=[{"role": "user", "content": prompt}],
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
+        ))
+        content = _collect_text(response)
+    except Exception as e:
+        return None, None, None, f"api call failed: {e}"
+
+    m_val = _ADJ_VALUE_RE.search(content)
+    if not m_val:
+        return None, None, None, "no ADJUSTED_VALUE in response"
+    raw = m_val.group(1).strip()
+    if raw.upper() == "NO_ADJUSTMENT":
+        return gaap_value, "Non-GAAP == GAAP (no separate adjustment reported)", None, None
+
+    try:
+        num = Decimal(raw.replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None, None, None, f"parse failed: {raw!r}"
+
+    # Skalen-Ruecktransform
+    if is_eps:
+        adj_final = num
+    else:
+        # Prompt hat Wert in Millionen erfragt -> zurueck zu base units
+        # Aber Claude schreibt manchmal '6,124' oder '6124' (both = 6.124 Mio)
+        adj_final = num * Decimal("1000000")
+
+    m_bridge = _ADJ_BRIDGE_RE.search(content)
+    m_source = _ADJ_SOURCE_RE.search(content)
+    note = m_bridge.group(1).strip()[:400] if m_bridge else None
+    source = m_source.group(1).strip()[:512] if m_source else None
+    return adj_final, note, source, None

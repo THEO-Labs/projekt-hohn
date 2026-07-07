@@ -383,18 +383,47 @@ def get_company_detail(
             ref=_to_ref(row),
         ))
 
-    # 3) Quarterly sections
+    # 3) Quarterly sections. net_buyback braucht buyback_volume + sbc als Inputs.
     quarterly_rows = _load_rows(
         db, company_id,
-        keys=QUARTERLY_DISPLAY_KEYS,
+        keys=QUARTERLY_DISPLAY_KEYS + ["buyback_volume", "sbc"],
         period_types=["Q1", "Q2", "Q3", "Q4", "FY"],
         period_years=[current_year, prior_year] if current_year is not None else [],
     )
+
+    def _derived_net_buyback_row(year: int | None) -> QuarterlyRow:
+        """net_buyback = buyback_volume - sbc, pro Quartal."""
+        def cell_for(q: str) -> ValueRef:
+            bv = quarterly_rows.get(("buyback_volume", q, year))
+            s = quarterly_rows.get(("sbc", q, year))
+            if bv is None or s is None or bv.numeric_value is None or s.numeric_value is None:
+                return ValueRef()
+            bv_adj = bv.numeric_value_adjusted if bv.numeric_value_adjusted is not None else bv.numeric_value
+            s_adj = s.numeric_value_adjusted if s.numeric_value_adjusted is not None else s.numeric_value
+            return ValueRef(
+                value=bv.numeric_value - s.numeric_value,
+                adjusted=bv_adj - s_adj if bv_adj is not None and s_adj is not None else None,
+                source_name=f"Derived: Buyback Volume ({bv.primary_method or '?'}) − SBC ({s.primary_method or '?'})",
+                fetched_at=max(x for x in (bv.fetched_at, s.fetched_at) if x is not None) if any((bv.fetched_at, s.fetched_at)) else None,
+                primary_method="calculated",
+                is_forecast=bool(bv.is_forecast or s.is_forecast),
+            )
+        return QuarterlyRow(
+            q1=cell_for("Q1"), q2=cell_for("Q2"), q3=cell_for("Q3"), q4=cell_for("Q4"),
+            annual=cell_for("FY"),
+        )
+
     quarterly: list[QuarterlySection] = []
     for key in QUARTERLY_DISPLAY_KEYS:
         d = defs.get(key)
         if d is None:
             continue
+        if key == "net_buyback":
+            current_row = _derived_net_buyback_row(current_year)
+            prior_row = _derived_net_buyback_row(prior_year)
+        else:
+            current_row = _build_quarterly_row(quarterly_rows, key, current_year)
+            prior_row = _build_quarterly_row(quarterly_rows, key, prior_year)
         quarterly.append(QuarterlySection(
             value_key=key,
             label_en=d.label_en,
@@ -404,8 +433,8 @@ def get_company_detail(
             unit=d.unit,
             current_year=current_year,
             prior_year=prior_year,
-            current=_build_quarterly_row(quarterly_rows, key, current_year),
-            prior=_build_quarterly_row(quarterly_rows, key, prior_year),
+            current=current_row,
+            prior=prior_row,
         ))
 
     # 4) Balance sheet — POINT_IN_TIME keys (net_debt, cash_and_equivalents, …).
@@ -430,6 +459,34 @@ def get_company_detail(
     stdebt_c, stdebt_p = _bs_pair("st_debt")
     ltdebt_c, ltdebt_p = _bs_pair("lt_debt")
     nd_c, nd_p = _bs_pair("net_debt")
+
+    # Recompute net_debt from components (st_debt + lt_debt - cash - st_investments)
+    # whenever all four components are provider-actuals — that always beats
+    # a separately-fetched web_guidance estimate of net_debt.
+    def _derived_net_debt(cash: ValueRef, sti: ValueRef, std: ValueRef, ltd: ValueRef) -> ValueRef | None:
+        if not all(
+            r is not None and r.value is not None and r.primary_method in ("provider", "pdf", "manual")
+            for r in (cash, sti, std, ltd)
+        ):
+            return None
+        derived = (std.value + ltd.value) - (cash.value + sti.value)
+        return ValueRef(
+            value=derived,
+            source_name="Derived Net Debt = ST Debt + LT Debt − Cash − ST Investments",
+            fetched_at=max(
+                (r.fetched_at for r in (cash, sti, std, ltd) if r.fetched_at is not None),
+                default=None,
+            ),
+            primary_method="calculated",
+            is_forecast=False,
+        )
+
+    nd_c_derived = _derived_net_debt(cash_c, sti_c, stdebt_c, ltdebt_c)
+    if nd_c_derived is not None:
+        nd_c = nd_c_derived
+    nd_p_derived = _derived_net_debt(cash_p, sti_p, stdebt_p, ltdebt_p)
+    if nd_p_derived is not None:
+        nd_p = nd_p_derived
 
     def _sum(vals: list[Decimal | None]) -> Decimal | None:
         nums = [v for v in vals if v is not None]
