@@ -35,9 +35,22 @@ Q_DATA = [
         "net_income": (484, 484),
     }),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "adidas Q2 2026 Consensus (Rev 6.45B via MarketBeat)", {
+        "revenue": (6_450, 6_450),
+        "ebitda": (580, 580),  # ~9% margin (FY guidance 2.3B / 4)
+        "net_income": (400, 400),  # ~1.6B FY, 25% Q2 weight
+    }),
+]
+
 EPS_DATA = [
     ("Q3", 2025, ("2.57", "2.57"), "adidas Q3 2025 continuing"),
     ("FY", 2025, ("7.51", "7.51"), "adidas FY 2025"),
     ("Q1", 2026, ("2.70", "2.70"), "adidas Q1 2026"),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("2.25", "2.25"), "adidas Q2 2026 est (NI 400M / 178M shares)"),
 ]
 BS_DATA = {}

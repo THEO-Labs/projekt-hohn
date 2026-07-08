@@ -22,4 +22,16 @@ EPS_DATA = [
     ("FY", 2025, ("13.77", "13.77"), "Volkswagen FY 2025 (NI 6.9B / 501M shares Basic)"),
     ("Q1", 2026, ("2.55", "2.55"), "Volkswagen Q1 2026"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "VW Q2 2026 Est (Q1 base + slight Rev growth)", {
+        "revenue": (78_000, 78_000),
+        "ebitda": (2_800, 2_800),
+        "net_income": (1_400, 1_400),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("2.79", "2.79"), "VW Q2 2026 Est"),
+]
 BS_DATA = {}

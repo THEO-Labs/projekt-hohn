@@ -14,3 +14,14 @@ Q_DATA = [
 ]
 EPS_DATA = [("FY", 2025, ("4.25", "4.25"), "Beiersdorf FY 2025")]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Beiersdorf Q2 2026 est (Q1 base + seasonal)", {
+        "revenue": (2500, 2500),
+        "ebitda": (520, 520),
+        "net_income": (320, 320),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.42", "1.42"), "Beiersdorf Q2 2026 est (Q1 base + seasonal)"),
+]

@@ -26,4 +26,16 @@ EPS_DATA = [
     ("FY", 2025, ("5.53", "5.53"), "Mercedes-Benz FY 2025 EPS (~$6.04 * 0.916)"),
     ("Q1", 2026, ("1.34", "1.49"), "Mercedes-Benz Q1 2026 Basic (NI/Shares) / Adjusted"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Mercedes Q2 2026 Est (Q1 Trend flat, US Tariff Headwinds)", {
+        "revenue": (33_000, 33_000),
+        "ebitda": (2_100, 2_100),
+        "net_income": (1_500, 1_500),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.40", "1.55"), "Mercedes Q2 2026 Est Basic / Adjusted"),
+]
 BS_DATA = {}

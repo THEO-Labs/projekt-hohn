@@ -24,9 +24,20 @@ Q_DATA = [
     }),
 ]
 
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "BMW Q2 2026 Consensus (Rev 33.16B, EPS 2.14 via Yahoo)", {
+        "revenue": (33_160, 33_160),
+        "net_income": (1_334, 1_334),  # 2.14 EPS * 623M shares
+    }),
+]
+
 EPS_DATA = [
     ("FY", 2025, ("11.89", "11.89"), "BMW FY 2025 Ordinary Share EPS"),
     ("Q1", 2026, ("2.68", "2.68"), "BMW Q1 2026"),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("2.14", "2.14"), "BMW Q2 2026 Consensus"),
 ]
 
 BS_DATA = {}

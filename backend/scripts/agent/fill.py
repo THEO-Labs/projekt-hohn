@@ -35,6 +35,7 @@ def _upsert_row(
     db, company_id, key, period_type, period_year,
     gaap_mio_or_raw, adj_mio_or_raw,
     source_ref, is_currency=True, force_update=False,
+    as_estimate=False,
 ):
     existing = (
         db.query(CompanyValue)
@@ -70,18 +71,21 @@ def _upsert_row(
     adj_final = adj_base if (adj_base is not None and adj_base != gaap_base) else None
 
     now = datetime.now(timezone.utc)
-    source_name = f"Agent-Research: {source_ref}"[:4000]
+    prefix = "Agent-Consensus-Estimate: " if as_estimate else "Agent-Research: "
+    source_name = f"{prefix}{source_ref}"[:4000]
     currency = "USD" if is_currency else None
+    method_name = "web_guidance" if as_estimate else "manual"
+    is_forecast_flag = as_estimate
 
     if existing:
         existing.numeric_value = gaap_base
         existing.numeric_value_adjusted = adj_final
         existing.source_name = source_name
         existing.fetched_at = now
-        existing.is_forecast = False
-        existing.primary_method = "manual"
+        existing.is_forecast = is_forecast_flag
+        existing.primary_method = method_name
         existing.currency = currency
-        print(f"UPD   {key}/{period_type}/{period_year} = {gaap_mio_or_raw} / adj={adj_mio_or_raw}")
+        print(f"UPD   {key}/{period_type}/{period_year} = {gaap_mio_or_raw} / adj={adj_mio_or_raw}{' [EST]' if as_estimate else ''}")
     else:
         cv = CompanyValue(
             id=uuid4(),
@@ -94,11 +98,11 @@ def _upsert_row(
             source_name=source_name,
             currency=currency,
             fetched_at=now,
-            is_forecast=False,
-            primary_method="manual",
+            is_forecast=is_forecast_flag,
+            primary_method=method_name,
         )
         db.add(cv)
-        print(f"INS   {key}/{period_type}/{period_year} = {gaap_mio_or_raw} / adj={adj_mio_or_raw}")
+        print(f"INS   {key}/{period_type}/{period_year} = {gaap_mio_or_raw} / adj={adj_mio_or_raw}{' [EST]' if as_estimate else ''}")
 
 
 def _sanity_check(module) -> list[str]:
@@ -199,15 +203,21 @@ def main() -> int:
         for pt, py, src, data in module.Q_DATA:
             for key, (gaap, adj) in data.items():
                 _upsert_row(db, cid, key, pt, py, gaap, adj, src, is_currency=True, force_update=args.force_update)
-
         # EPS
         for pt, py, (gaap, adj), src in module.EPS_DATA:
             _upsert_row(db, cid, "eps_diluted", pt, py, gaap, adj, src, is_currency=False, force_update=args.force_update)
-
         # Balance Sheet FY-Snapshots
         for year, bs in module.BS_DATA.items():
             for key, (val, src) in bs.items():
                 _upsert_row(db, cid, key, "FY", year, val, val, src, is_currency=True, force_update=args.force_update)
+        # Estimates (Consensus / Guidance-based)
+        for pt, py, src, data in getattr(module, "Q_DATA_ESTIMATE", []):
+            for key, (gaap, adj) in data.items():
+                _upsert_row(db, cid, key, pt, py, gaap, adj, src,
+                            is_currency=True, force_update=args.force_update, as_estimate=True)
+        for pt, py, (gaap, adj), src in getattr(module, "EPS_DATA_ESTIMATE", []):
+            _upsert_row(db, cid, "eps_diluted", pt, py, gaap, adj, src,
+                        is_currency=False, force_update=args.force_update, as_estimate=True)
 
         if args.dry_run:
             print("DRY-RUN — rollback")

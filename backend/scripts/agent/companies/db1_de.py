@@ -25,3 +25,14 @@ EPS_DATA = [
     ("Q1", 2026, ("3.19", "3.19"), "DB1 Q1 2026 est (NI 585M / ~183M shares)"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Deutsche Boerse Q2 2026 est", {
+        "revenue": (1400, 1400),
+        "ebitda": (800, 800),
+        "net_income": (570, 570),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("3.10", "3.10"), "Deutsche Boerse Q2 2026 est"),
+]

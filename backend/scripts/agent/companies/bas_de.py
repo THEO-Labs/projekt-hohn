@@ -30,4 +30,16 @@ EPS_DATA = [
     ("Q3", 2025, ("0.19", "0.19"), "BASF Q3 2025"),
     ("Q1", 2026, ("1.06", "1.06"), "BASF Q1 2026"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "BASF Q2 2026 Est (FY 6.2-7.0B EBITDA Guidance, Q2 similar to Q1)", {
+        "revenue": (15_800, 15_800),  # ~Q2 2025 level
+        "ebitda": (1_650, 1_650),  # ~6.6B / 4
+        "net_income": (400, 400),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.45", "0.45"), "BASF Q2 2026 Est"),
+]
 BS_DATA = {}

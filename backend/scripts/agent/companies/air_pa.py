@@ -31,3 +31,14 @@ EPS_DATA = [
     ("Q1", 2026, ("0.74", "0.33"), "Airbus Q1 2026 Reported / Adjusted"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Airbus Q2 2026 est (Deliveries pickup)", {
+        "revenue": (18000, 18000),
+        "ebitda": (1200, 1200),
+        "net_income": (900, 900),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.12", "1.12"), "Airbus Q2 2026 est (Deliveries pickup)"),
+]

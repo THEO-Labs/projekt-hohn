@@ -43,10 +43,21 @@ Q_DATA = [
     }),
 ]
 
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "DBK Q2 2026 Consensus ($9.85B Rev, $1.15 EPS via Meyka/Investing.com)", {
+        "revenue": (9_020, 9_020),  # $9.85B * 0.916 EUR/USD
+        "net_income": (2_180, 2_180),  # EPS $1.15 * 2075M shares * 0.916
+    }),
+]
+
 EPS_DATA = [
     ("Q4", 2025, ("0.76", "0.76"), "Deutsche Bank Q4 2025"),
     ("FY", 2025, ("3.09", "3.09"), "Deutsche Bank FY 2025"),
     ("Q1", 2026, ("1.06", "1.06"), "Deutsche Bank Q1 2026 Diluted EUR"),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.05", "1.05"), "DBK Q2 2026 Consensus (~$1.15 * 0.916)"),
 ]
 
 BS_DATA = {}

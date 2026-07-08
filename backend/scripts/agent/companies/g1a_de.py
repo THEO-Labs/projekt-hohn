@@ -14,3 +14,14 @@ EPS_DATA = [
     ("Q1", 2026, ("0.64", "0.64"), "GEA Group Q1 2026"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "GEA Q2 2026 est", {
+        "revenue": (1400, 1400),
+        "ebitda": (230, 230),
+        "net_income": (110, 110),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.70", "0.70"), "GEA Q2 2026 est"),
+]

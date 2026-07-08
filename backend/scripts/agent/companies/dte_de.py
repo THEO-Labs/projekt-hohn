@@ -64,4 +64,16 @@ EPS_DATA = [
     ("Q1", 2026, ("0.54", "0.54"), "DT Q1 2026 Adjusted"),
 ]
 
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "DTE Q2 2026 Est (FY Guidance 47.5B EBITDA-AL, 2.20 EPS)", {
+        "revenue": (30_200, 30_200),  # ~119.9B / 4 -> Q2 similar to Q1
+        "ebitda": (11_800, 11_800),  # 47.5B / 4 + margin uplift
+        "fcf": (5_100, 5_100),  # ~19.8B / 4
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.56", "0.56"), "DTE Q2 2026 Est (FY 2.20 / 4)"),
+]
+
 BS_DATA = {}

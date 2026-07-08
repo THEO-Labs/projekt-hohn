@@ -25,3 +25,14 @@ EPS_DATA = [
     ("Q1", 2026, ("1.00", "1.00"), "Continental Q1 2026 (NI 200M / ~200M shares)"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Continental Q2 2026 est", {
+        "revenue": (4400, 4400),
+        "ebitda": (520, 520),
+        "net_income": (210, 210),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.05", "1.05"), "Continental Q2 2026 est"),
+]

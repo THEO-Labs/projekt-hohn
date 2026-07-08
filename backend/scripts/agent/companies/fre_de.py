@@ -16,3 +16,14 @@ EPS_DATA = [
     ("Q1", 2026, ("0.82", "0.82"), "Fresenius Q1 2026 Core EPS"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Fresenius Q2 2026 est", {
+        "revenue": (5800, 5800),
+        "ebitda": (690, 690),
+        "net_income": (470, 470),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.84", "0.84"), "Fresenius Q2 2026 est"),
+]

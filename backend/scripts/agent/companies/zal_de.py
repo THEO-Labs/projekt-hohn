@@ -19,3 +19,14 @@ EPS_DATA = [
     ("Q1", 2026, ("0.14", "0.14"), "Zalando Q1 2026"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Zalando Q2 2026 est", {
+        "revenue": (3300, 3300),
+        "ebitda": (200, 200),
+        "net_income": (90, 90),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.34", "0.34"), "Zalando Q2 2026 est"),
+]

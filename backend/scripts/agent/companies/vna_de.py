@@ -16,4 +16,15 @@ EPS_DATA = [
     ("FY", 2025, ("4.33", "1.85"), "Vonovia FY 2025 GAAP / Adjusted"),
     ("Q1", 2026, ("0.25", "0.39"), "Vonovia Q1 2026 GAAP / Adjusted"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Vonovia Q2 2026 Est (Q1 base + FY guidance)", {
+        "revenue": (1_460, 1_460),
+        "ebitda": (720, 720),
+        "net_income": (200, 200),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.24", "0.37"), "Vonovia Q2 2026 Est GAAP / Adj"),
+]
 BS_DATA = {}

@@ -14,3 +14,14 @@ Q_DATA = [
 ]
 EPS_DATA = [("FY", 2025, ("5.33", "5.33"), "Henkel FY 2025 Adjusted preferred share EPS")]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Henkel Q2 2026 est", {
+        "revenue": (4950, 4950),
+        "ebitda": (750, 750),
+        "net_income": (500, 500),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.15", "1.15"), "Henkel Q2 2026 est"),
+]

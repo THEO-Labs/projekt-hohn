@@ -21,4 +21,15 @@ EPS_DATA = [
     ("FY", 2025, ("18.14", "20.99"), "MTU FY 2025 Basic (NI/Shares) / Reported"),
     ("Q1", 2026, ("4.30", "4.30"), "MTU Q1 2026 (NI 229M / 53.3M shares)"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "MTU Q2 2026 Est (Q1 Trend continue)", {
+        "revenue": (2_300, 2_300),
+        "ebitda": (340, 340),
+        "net_income": (240, 240),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("4.50", "4.50"), "MTU Q2 2026 Est"),
+]
 BS_DATA = {}

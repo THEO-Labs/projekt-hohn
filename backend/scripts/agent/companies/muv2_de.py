@@ -47,4 +47,15 @@ EPS_DATA = [
     ("Q1", 2026, ("13.00", "13.00"), "Munich Re Q1 2026 est (NI 1.714B / ~132M shares)"),
 ]
 
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Munich Re Q2 2026 Est (FY 6.3B Guidance, Q2 ~1.5-1.7B)", {
+        "revenue": (15_000, 15_000),
+        "net_income": (1_600, 1_600),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("12.10", "12.10"), "Munich Re Q2 2026 Est"),
+]
+
 BS_DATA = {}

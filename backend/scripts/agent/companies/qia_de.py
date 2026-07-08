@@ -14,3 +14,14 @@ EPS_DATA = [
     ("Q1", 2026, ("0.33", "0.54"), "Qiagen Q1 2026 Reported / Adjusted USD"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Qiagen Q2 2026 est USD", {
+        "revenue": (510, 510),
+        "ebitda": (140, 140),
+        "net_income": (76, 76),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.34", "0.34"), "Qiagen Q2 2026 est USD"),
+]

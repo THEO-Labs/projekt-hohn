@@ -50,4 +50,15 @@ EPS_DATA = [
     ("Q1", 2026, ("9.96", "9.96"), "Allianz Q1 2026 Core EPS"),
 ]
 
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Allianz Q2 2026 Est (FY 17.4B Op-Profit Guidance / 4)", {
+        "net_income": (3_100, 3_100),  # Q2 est ~2.8-3.2B
+        "ebitda": (4_500, 4_500),  # Q2 est similar to Q1
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("8.20", "8.20"), "Allianz Q2 2026 Est"),
+]
+
 BS_DATA = {}

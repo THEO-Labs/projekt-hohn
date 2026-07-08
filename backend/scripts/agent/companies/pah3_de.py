@@ -20,3 +20,14 @@ EPS_DATA = [
     ("FY", 2025, ("9.17", "9.17"), "Porsche SE FY 2025 (TTM ~NI 2.749B / 305M shares)"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Porsche SE Q2 2026 est (Beteiligungsergebnis)", {
+        "revenue": (0, 0),
+        "ebitda": (0, 0),
+        "net_income": (500, 500),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.60", "1.60"), "Porsche SE Q2 2026 est (Beteiligungsergebnis)"),
+]

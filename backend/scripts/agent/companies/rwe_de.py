@@ -15,4 +15,14 @@ EPS_DATA = [
     ("FY", 2025, ("2.48", "2.48"), "RWE FY 2025 Adjusted EPS"),
     ("Q1", 2026, ("0.85", "0.85"), "RWE Q1 2026 Adjusted EPS"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "RWE Q2 2026 Est (FY 5.5B mid EBITDA / 4)", {
+        "ebitda": (1_200, 1_200),
+        "net_income": (400, 400),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.55", "0.55"), "RWE Q2 2026 Est"),
+]
 BS_DATA = {}

@@ -24,4 +24,16 @@ EPS_DATA = [
     ("FY", 2025, ("-3.68", "4.91"), "Bayer FY 2025 GAAP est / Core"),
     ("Q1", 2026, ("2.71", "2.71"), "Bayer Q1 2026 Core EPS"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Bayer Q2 2026 Est (FY Guidance 45-47B Rev, 9.6-10.1B EBITDA, 4.30-4.80 Core EPS)", {
+        "revenue": (11_400, 11_400),  # ~46B / 4
+        "ebitda": (2_450, 2_450),  # ~9.85B / 4
+        "net_income": (1_100, 1_100),  # Estimated (Q2 seasonal weak)
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.10", "1.10"), "Bayer Q2 2026 Est (FY 4.55 mid / 4)"),
+]
 BS_DATA = {}

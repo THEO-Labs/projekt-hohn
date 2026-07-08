@@ -18,4 +18,14 @@ Q_DATA = [
 EPS_DATA = [
     ("Q1", 2026, ("5.89", "5.89"), "Hannover Re Q1 2026"),
 ]
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Hannover Re Q2 2026 Est (FY 2.7B NI Guidance)", {
+        "revenue": (6_400, 6_400),
+        "net_income": (680, 680),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("5.65", "5.65"), "Hannover Re Q2 2026 Est"),
+]
 BS_DATA = {}

@@ -92,3 +92,14 @@ BS_DATA = {
     # Bekannt: Net Liquidity = 3.38B (implicit Cash - Debt).
     # Manual Fill spaeter aus dem Annual Report.
 }
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "SAP Q2 2026 est (deceleration acknowledged)", {
+        "revenue": (9700, 9700),
+        "ebitda": (2700, 2700),
+        "net_income": (1970, 1970),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("1.68", "1.68"), "SAP Q2 2026 est (deceleration acknowledged)"),
+]

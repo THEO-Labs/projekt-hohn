@@ -10,3 +10,14 @@ Q_DATA = [
 ]
 EPS_DATA = [("FY", 2025, ("1.78", "3.67"), "Symrise FY 2025 GAAP / Adjusted")]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Symrise Q2 2026 est", {
+        "revenue": (1260, 1260),
+        "ebitda": (275, 275),
+        "net_income": (130, 130),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.92", "0.92"), "Symrise Q2 2026 est"),
+]

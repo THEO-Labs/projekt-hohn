@@ -52,6 +52,10 @@ Q_DATA = [
         "ebitda": (1_500, 1_500),  # EBIT
         "net_income": (812, 812),  # Attributable to DP shareholders
     }),
+    ("Q2", 2026, "DHL Q2 2026 Preliminary (Jul 7 2026 pre-release, full Aug 5)", {
+        "revenue": (22_440, 22_440),  # +10% YoY (Q2 2025 20.400 * 1.10)
+        "ebitda": (1_850, 1_850),  # EBIT reported (+29% YoY)
+    }),
 ]
 
 EPS_DATA = [

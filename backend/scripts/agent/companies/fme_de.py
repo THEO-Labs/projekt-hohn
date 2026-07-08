@@ -16,3 +16,14 @@ EPS_DATA = [
     ("Q1", 2026, ("0.43", "0.91"), "FMC Q1 2026 Basic / Excl-Special"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "FMC Q2 2026 est", {
+        "revenue": (4650, 4650),
+        "ebitda": (300, 300),
+        "net_income": (130, 130),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("0.44", "0.44"), "FMC Q2 2026 est"),
+]

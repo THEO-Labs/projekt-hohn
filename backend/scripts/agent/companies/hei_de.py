@@ -20,3 +20,14 @@ EPS_DATA = [
     ("Q1", 2026, ("1.27", "1.27"), "Heidelberg Materials Q1 2026"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q2", 2026, "Heidelberg Q2 2026 est (seasonal peak)", {
+        "revenue": (5800, 5800),
+        "ebitda": (1400, 1400),
+        "net_income": (630, 630),
+    }),
+]
+EPS_DATA_ESTIMATE = [
+    ("Q2", 2026, ("4.03", "4.03"), "Heidelberg Q2 2026 est (seasonal peak)"),
+]
