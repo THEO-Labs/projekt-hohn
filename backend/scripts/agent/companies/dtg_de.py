@@ -9,6 +9,14 @@ Q_DATA = [
         "net_income": (2_000, 2_000),
         "fcf": (1_800, 1_800),  # FCF Industrial
     }),
+    ("Q1", 2026, "Daimler Truck Q1 2026 (May 6 2026)", {
+        "revenue": (9_100, 9_100),  # Industrial Business
+        "ebitda": (498, 498),  # Adjusted Group EBIT
+        "net_income": (160, 160),  # ~$175M * 0.916
+    }),
 ]
-EPS_DATA = [("FY", 2025, ("2.56", "2.56"), "Daimler Truck FY 2025")]
+EPS_DATA = [
+    ("FY", 2025, ("2.56", "2.56"), "Daimler Truck FY 2025"),
+    ("Q1", 2026, ("0.18", "0.18"), "Daimler Truck Q1 2026"),
+]
 BS_DATA = {}

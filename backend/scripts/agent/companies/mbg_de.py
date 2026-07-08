@@ -16,6 +16,14 @@ Q_DATA = [
         "net_income": (5_328, 5_328),  # NI FY 2025 (~$5.817B * 0.916)
         "fcf": (5_400, 5_400),  # FCF Industrial
     }),
+    ("Q1", 2026, "Mercedes-Benz Q1 2026 (Apr 30 2026)", {
+        "revenue": (31_600, 31_600),
+        "ebitda": (1_900, 1_900),  # Group EBIT
+        "net_income": (1_430, 1_430),
+    }),
 ]
-EPS_DATA = [("FY", 2025, ("5.53", "5.53"), "Mercedes-Benz FY 2025 EPS (~$6.04 * 0.916)")]
+EPS_DATA = [
+    ("FY", 2025, ("5.53", "5.53"), "Mercedes-Benz FY 2025 EPS (~$6.04 * 0.916)"),
+    ("Q1", 2026, ("0.49", "0.49"), "Mercedes-Benz Q1 2026"),
+]
 BS_DATA = {}

@@ -9,11 +9,16 @@ TICKER = "MTX.DE"; COMPANY_NAME = "MTU Aero Engines AG"; FISCAL_YEAR_END_MONTH =
 
 Q_DATA = [
     ("FY", 2025, "MTU FY 2025 (Feb 24 2026)", {
-        "revenue": (8_700, 8_700),  # Adjusted revenue
-        "ebitda": (1_350, 1_350),  # Adjusted EBIT
-        "net_income": (968, 968),  # Adjusted NI
-        "fcf": (378, 378),
+        "revenue": (8_700, 8_700), "ebitda": (1_350, 1_350), "net_income": (968, 968), "fcf": (378, 378),
+    }),
+    ("Q1", 2026, "MTU Q1 2026 (Apr 30 2026)", {
+        "revenue": (2_200, 2_200),  # Adjusted revenue
+        "ebitda": (320, 320),  # Adjusted EBIT
+        "net_income": (229, 229),  # Adjusted NI
     }),
 ]
-EPS_DATA = [("FY", 2025, ("18.14", "20.99"), "MTU FY 2025 Basic (NI/Shares) / Reported")]
+EPS_DATA = [
+    ("FY", 2025, ("18.14", "20.99"), "MTU FY 2025 Basic (NI/Shares) / Reported"),
+    ("Q1", 2026, ("4.30", "4.30"), "MTU Q1 2026 (NI 229M / 53.3M shares)"),
+]
 BS_DATA = {}

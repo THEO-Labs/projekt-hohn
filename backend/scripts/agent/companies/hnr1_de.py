@@ -10,6 +10,12 @@ Q_DATA = [
         "net_income": (2_640, 2_640),  # Group NI
         "ebitda": (3_500, 3_500),  # Operating profit (EBIT)
     }),
+    ("Q1", 2026, "Hannover Re Q1 2026 (May 2026)", {
+        "revenue": (6_500, 6_500),
+        "net_income": (711, 711),  # Group NI (+47.9% YoY)
+    }),
 ]
-EPS_DATA = []
+EPS_DATA = [
+    ("Q1", 2026, ("5.89", "5.89"), "Hannover Re Q1 2026"),
+]
 BS_DATA = {}

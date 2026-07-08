@@ -10,8 +10,13 @@ TICKER = "PAH3.DE"; COMPANY_NAME = "Porsche Automobil Holding SE"; FISCAL_YEAR_E
 
 Q_DATA = [
     ("FY", 2025, "Porsche SE FY 2025 Annual Report (Mar 2026)", {
-        "net_income": (2_749, 2_749),  # ~$2.999B * 0.916 EUR/USD
+        "net_income": (2_749, 2_749),
+    }),
+    ("Q1", 2026, "Porsche SE Q1 2026 (Apr 30 2026)", {
+        "net_income": (-900, 400),  # Reported / Adjusted (Impairment -1.3B VW + 39M Porsche AG)
     }),
 ]
-EPS_DATA = [("FY", 2025, ("9.17", "9.17"), "Porsche SE FY 2025 (TTM ~NI 2.749B / 305M shares)")]
+EPS_DATA = [
+    ("FY", 2025, ("9.17", "9.17"), "Porsche SE FY 2025 (TTM ~NI 2.749B / 305M shares)"),
+]
 BS_DATA = {}

@@ -37,11 +37,16 @@ Q_DATA = [
         "revenue": (32_000, 32_000),
         "net_income": (6_375, 6_375),  # EPS 3.09 * ~2.06B shares
     }),
+    ("Q1", 2026, "Deutsche Bank Q1 2026 (Apr 2026)", {
+        "revenue": (8_700, 8_700),
+        "net_income": (2_200, 2_200),
+    }),
 ]
 
 EPS_DATA = [
     ("Q4", 2025, ("0.76", "0.76"), "Deutsche Bank Q4 2025"),
     ("FY", 2025, ("3.09", "3.09"), "Deutsche Bank FY 2025"),
+    ("Q1", 2026, ("1.06", "1.06"), "Deutsche Bank Q1 2026 Diluted EUR"),
 ]
 
 BS_DATA = {}

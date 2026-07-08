@@ -19,9 +19,15 @@ Q_DATA = [
         "net_income": (1_600, 1_600),
         "ebitda": (6_600, 6_600),  # EBITDA before spec items
     }),
+    ("Q1", 2026, "BASF Q1 2026 (Apr 30 2026)", {
+        "revenue": (16_020, 16_020),
+        "ebitda": (2_356, 2_186),  # EBITDA before spec / EBITDA with special items
+        "net_income": (927, 927),
+    }),
 ]
 EPS_DATA = [
     ("Q1", 2025, ("0.91", "0.91"), "BASF Q1 2025"),
     ("Q3", 2025, ("0.19", "0.19"), "BASF Q3 2025"),
+    ("Q1", 2026, ("1.06", "1.06"), "BASF Q1 2026"),
 ]
 BS_DATA = {}

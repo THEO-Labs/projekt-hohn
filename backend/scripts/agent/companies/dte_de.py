@@ -41,6 +41,11 @@ Q_DATA = [
         "ebitda": (10_630, 10_630),
         "fcf": (4_030, 4_030),
     }),
+    ("Q1", 2026, "DT Q1 2026 (May 15 2026)", {
+        "revenue": (29_900, 29_900),
+        "ebitda": (11_500, 11_500),  # Adj EBITDA AL
+        "fcf": (5_687, 5_687),  # FCF AL
+    }),
     ("FY", 2025, "DT FY 2025 (Feb 26 2026)", {
         "revenue": (119_120, 119_120),  # Sum Q1-Q4 (= 119.1B official)
         "net_income": (9_700, 9_700),
@@ -55,6 +60,7 @@ EPS_DATA = [
     ("Q3", 2025, ("0.55", "0.55"), "DT Q3 2025 Adjusted"),
     ("Q4", 2025, ("0.44", "0.44"), "DT Q4 2025 Adjusted"),
     ("FY", 2025, ("2.00", "1.97"), "DT FY 2025 Adjusted (recurring 1.97 relevant fuer Div)"),
+    ("Q1", 2026, ("0.54", "0.54"), "DT Q1 2026 Adjusted"),
 ]
 
 BS_DATA = {}

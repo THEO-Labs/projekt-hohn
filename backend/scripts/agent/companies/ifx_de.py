@@ -11,6 +11,13 @@ Q_DATA = [
         "revenue": (14_662, 14_662),
         "ebitda": (2_560, 2_560),  # Segment Result
     }),
+    ("Q2", 2026, "Infineon Q2 FY2026 (May 2026, Jan-Mar 2026)", {
+        "revenue": (3_812, 3_812),
+        "ebitda": (653, 653),  # Segment Result
+    }),
 ]
-EPS_DATA = [("FY", 2025, ("1.39", "1.39"), "Infineon FY 2025 Adjusted EPS")]
+EPS_DATA = [
+    ("FY", 2025, ("1.39", "1.39"), "Infineon FY 2025 Adjusted EPS"),
+    ("Q2", 2026, ("0.31", "0.31"), "Infineon Q2 FY2026 (~$0.34 * 0.916)"),
+]
 BS_DATA = {}

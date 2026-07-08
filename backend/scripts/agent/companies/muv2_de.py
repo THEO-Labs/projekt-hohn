@@ -35,10 +35,16 @@ Q_DATA = [
         "revenue": (60_400, 60_400),
         "net_income": (6_121, 6_121),
     }),
+    ("Q1", 2026, "Munich Re Q1 2026 (May 12 2026)", {
+        "revenue": (15_018, 15_018),
+        "net_income": (1_714, 1_714),
+        "ebitda": (2_230, 2_230),  # Operating result
+    }),
 ]
 
 EPS_DATA = [
     ("FY", 2025, ("47.15", "47.15"), "Munich Re FY 2025"),
+    ("Q1", 2026, ("13.00", "13.00"), "Munich Re Q1 2026 est (NI 1.714B / ~132M shares)"),
 ]
 
 BS_DATA = {}

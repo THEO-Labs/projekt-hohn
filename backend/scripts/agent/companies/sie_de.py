@@ -42,8 +42,11 @@ Q_DATA = [
         "net_income": (10_400, 10_400),
         "fcf": (10_800, 10_800),
     }),
-    # FY2026 Q1 (Oct-Dec 2025) — TODO: released Feb 2026
-    # FY2026 Q2 (Jan-Mar 2026) — TODO: released May 2026
+    ("Q1", 2026, "Siemens Q1 FY2026 Earnings Release (Feb 2026)", {
+        "revenue": (19_100, 19_100),
+        "net_income": (2_200, 2_200),
+        "fcf": (700, 700),  # Group FCF
+    }),
 ]
 
 EPS_DATA = [
@@ -52,6 +55,7 @@ EPS_DATA = [
     ("Q3", 2025, ("2.61", "2.78"), "Siemens Q3 FY2025"),
     ("Q4", 2025, ("2.07", "2.31"), "Siemens Q4 FY2025 (pre-PPA aus FY-Diff)"),
     ("FY", 2025, ("12.25", "12.95"), "Siemens FY2025"),
+    ("Q1", 2026, ("2.60", "2.80"), "Siemens Q1 FY2026 Basic / Pre-PPA"),
 ]
 
 BS_DATA = {}  # TODO Annual Report

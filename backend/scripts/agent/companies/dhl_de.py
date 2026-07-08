@@ -47,6 +47,11 @@ Q_DATA = [
         "ebitda": (6_100, 6_100),
         "fcf": (3_200, 3_200),
     }),
+    ("Q1", 2026, "DHL Q1 2026 (Apr 30 2026)", {
+        "revenue": (20_400, 20_400),
+        "ebitda": (1_500, 1_500),  # EBIT
+        "net_income": (812, 812),  # Attributable to DP shareholders
+    }),
 ]
 
 EPS_DATA = [
@@ -55,6 +60,7 @@ EPS_DATA = [
     ("Q3", 2025, ("0.75", "0.75"), "DHL Q3 2025"),
     ("Q4", 2025, ("0.94", "0.94"), "DHL Q4 2025 (FY 3.09 - Sigma Q1-Q3)"),
     ("FY", 2025, ("3.09", "3.09"), "DHL FY 2025"),
+    ("Q1", 2026, ("0.73", "0.72"), "DHL Q1 2026 Basic / Diluted"),
 ]
 
 BS_DATA = {}

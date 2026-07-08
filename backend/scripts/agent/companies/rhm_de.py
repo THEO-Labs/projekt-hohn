@@ -17,6 +17,14 @@ Q_DATA = [
         "ebitda": (1_840, 1_840),  # Operating result
         "net_income": (696, 696),
     }),
+    ("Q1", 2026, "Rheinmetall Q1 2026 (May 7 2026)", {
+        "revenue": (1_938, 1_938),
+        "ebitda": (224, 224),  # Operating result
+        "net_income": (111, 111),
+    }),
 ]
-EPS_DATA = [("Q1", 2025, ("1.91", "1.91"), "Rheinmetall Q1 2025 Diluted continuing")]
+EPS_DATA = [
+    ("Q1", 2025, ("1.91", "1.91"), "Rheinmetall Q1 2025 Diluted continuing"),
+    ("Q1", 2026, ("2.18", "2.18"), "Rheinmetall Q1 2026 Diluted continuing"),
+]
 BS_DATA = {}

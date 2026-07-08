@@ -38,11 +38,16 @@ Q_DATA = [
         "net_income": (11_100, 11_100),  # Shareholders' core net income
         "ebitda": (17_400, 17_400),  # Operating profit
     }),
+    ("Q1", 2026, "Allianz Q1 2026 (May 13 2026)", {
+        "net_income": (3_800, 3_800),  # Shareholders' core NI (+48.4% YoY)
+        "ebitda": (4_500, 4_500),  # Operating profit
+    }),
 ]
 
 EPS_DATA = [
     ("Q1", 2025, ("6.61", "6.61"), "Allianz Q1 2025"),
     ("Q2", 2025, ("7.38", "7.38"), "Allianz Q2 2025 (Q2 standalone = 6M 13.99 - Q1 6.61)"),
+    ("Q1", 2026, ("9.96", "9.96"), "Allianz Q1 2026 Core EPS"),
 ]
 
 BS_DATA = {}

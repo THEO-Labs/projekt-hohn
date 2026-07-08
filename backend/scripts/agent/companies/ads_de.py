@@ -29,9 +29,15 @@ Q_DATA = [
         "ebitda": (2_056, 2_056),  # Operating profit
         "net_income": (1_377, 1_377),
     }),
+    ("Q1", 2026, "adidas Q1 2026 (Apr 2026)", {
+        "revenue": (6_600, 6_600),
+        "ebitda": (705, 705),  # Operating profit
+        "net_income": (484, 484),
+    }),
 ]
 EPS_DATA = [
     ("Q3", 2025, ("2.57", "2.57"), "adidas Q3 2025 continuing"),
     ("FY", 2025, ("7.51", "7.51"), "adidas FY 2025"),
+    ("Q1", 2026, ("2.70", "2.70"), "adidas Q1 2026"),
 ]
 BS_DATA = {}

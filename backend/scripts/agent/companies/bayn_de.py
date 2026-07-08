@@ -14,8 +14,14 @@ Q_DATA = [
         "net_income": (-3_620, -3_620),  # GAAP loss due to litigation
         "ebitda": (9_669, 9_669),  # EBITDA before Special Items (Core)
     }),
+    ("Q1", 2026, "Bayer Q1 2026 (May 2026)", {
+        "revenue": (13_405, 13_405),
+        "net_income": (2_763, 2_763),
+        "ebitda": (4_453, 4_453),  # EBITDA before Special Items
+    }),
 ]
 EPS_DATA = [
     ("FY", 2025, ("-3.68", "4.91"), "Bayer FY 2025 GAAP est / Core"),
+    ("Q1", 2026, ("2.71", "2.71"), "Bayer Q1 2026 Core EPS"),
 ]
 BS_DATA = {}
