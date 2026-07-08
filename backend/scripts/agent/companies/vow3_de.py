@@ -1,13 +1,15 @@
 """Volkswagen AG. FY End Dec 31. Automotive.
 
-FIX 2026-07-08: EPS Q4 3.39 + FY ergaenzt (aus USD 1.5 * 0.916 = 1.37; Q4 EPS klarer).
-Volkswagen hat komplexe Aktienstruktur (VZ + ST); wir speichern preferred (VZ = VOW3).
+VW hat komplexe Aktienstruktur (VOW = Ordinary, VOW3 = Preferred).
+Total outstanding: ~295M ordinary + ~206M preferred = ~501M.
+
+FIX 2026-07-08: EPS 13.90 ist NI/Total-Shares Basic. Preferred EPS meist leicht hoeher.
+Q4 2025 EPS 3.39 aus Investing.com (Consensus verfehlt).
 """
 from __future__ import annotations
 TICKER = "VOW3.DE"; COMPANY_NAME = "Volkswagen AG"; FISCAL_YEAR_END_MONTH = 12; CURRENCY = "EUR"
 
 Q_DATA = [
-    ("Q4", 2025, "Volkswagen Q4 2025", {}),
     ("FY", 2025, "Volkswagen FY 2025 (Mar 10 2026)", {
         "revenue": (321_900, 321_900),
         "net_income": (6_900, 6_900),
@@ -16,6 +18,6 @@ Q_DATA = [
 ]
 EPS_DATA = [
     ("Q4", 2025, ("3.39", "3.39"), "Volkswagen Q4 2025 EPS"),
-    ("FY", 2025, ("13.90", "13.90"), "Volkswagen FY 2025 (NI 6.9B / ~496M shares outstanding)"),
+    ("FY", 2025, ("13.77", "13.77"), "Volkswagen FY 2025 (NI 6.9B / 501M shares Basic)"),
 ]
 BS_DATA = {}
