@@ -9,7 +9,7 @@ Q_DATA = [
         "revenue": (20_500, 20_500), "ebitda": (3_026, 3_026), "net_income": (2_058, 2_058),
     }),
     ("Q1", 2026, "Henkel Q1 2026 (May 7 2026)", {
-        "revenue": (4_950, 4_950),
+        "revenue": (4_952, 4_952),
     }),
 ]
 EPS_DATA = [("FY", 2025, ("5.33", "5.33"), "Henkel FY 2025 Adjusted preferred share EPS")]

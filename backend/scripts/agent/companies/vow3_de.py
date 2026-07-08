@@ -14,6 +14,7 @@ Q_DATA = [
     ("Q1", 2026, "Volkswagen Q1 2026 (Apr 30 2026)", {
         "revenue": (75_700, 75_700),
         "ebitda": (2_500, 2_500),  # Operating result
+        "net_income": (1_278, 1_278),  # ~EPS 2.55 * 501M shares
     }),
 ]
 EPS_DATA = [

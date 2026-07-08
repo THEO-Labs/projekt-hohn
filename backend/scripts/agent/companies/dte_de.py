@@ -45,6 +45,7 @@ Q_DATA = [
         "revenue": (29_900, 29_900),
         "ebitda": (11_500, 11_500),  # Adj EBITDA AL
         "fcf": (5_687, 5_687),  # FCF AL
+        "net_income": (2_000, 2_600),  # Reported / Adjusted
     }),
     ("FY", 2025, "DT FY 2025 (Feb 26 2026)", {
         "revenue": (119_120, 119_120),  # Sum Q1-Q4 (= 119.1B official)

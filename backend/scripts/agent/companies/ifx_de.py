@@ -14,6 +14,7 @@ Q_DATA = [
     ("Q2", 2026, "Infineon Q2 FY2026 (May 2026, Jan-Mar 2026)", {
         "revenue": (3_812, 3_812),
         "ebitda": (653, 653),  # Segment Result
+        "net_income": (403, 403),  # ~EPS 0.31 * 1300M shares
     }),
 ]
 EPS_DATA = [

@@ -12,6 +12,7 @@ Q_DATA = [
     ("Q1", 2026, "Heidelberg Materials Q1 2026 (May 2026)", {
         "revenue": (4_540, 4_540),
         "ebitda": (484, 484),
+        "net_income": (198, 198),  # ~EPS 1.27 * 156M shares
     }),
 ]
 EPS_DATA = [

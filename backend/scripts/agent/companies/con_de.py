@@ -17,7 +17,11 @@ Q_DATA = [
     ("Q1", 2026, "Continental Q1 2026 (May 2026)", {
         "revenue": (4_400, 4_400),
         "ebitda": (522, 522),  # Adjusted EBIT (11.9% margin)
+        "net_income": (200, 200),  # attributable to shareholders (+194% YoY from 68M)
     }),
 ]
-EPS_DATA = [("FY", 2025, ("0.22", "5.50"), "Continental FY 2025 GAAP / Adjusted")]
+EPS_DATA = [
+    ("FY", 2025, ("0.22", "5.50"), "Continental FY 2025 GAAP / Adjusted"),
+    ("Q1", 2026, ("1.00", "1.00"), "Continental Q1 2026 (NI 200M / ~200M shares)"),
+]
 BS_DATA = {}

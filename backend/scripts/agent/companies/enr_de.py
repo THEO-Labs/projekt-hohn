@@ -8,5 +8,8 @@ Q_DATA = [
         "fcf": (2_900, 2_900),
     }),
 ]
-EPS_DATA = [("FY", 2025, ("1.63", "1.63"), "Siemens Energy FY 2025")]
+EPS_DATA = [
+    ("FY", 2025, ("1.63", "1.63"), "Siemens Energy FY 2025"),
+    ("Q1", 2026, ("0.94", "0.94"), "Siemens Energy Q1 FY2026 (~$1.03 * 0.916)"),
+]
 BS_DATA = {}

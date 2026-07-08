@@ -5,6 +5,7 @@ Q_DATA = [
     }),
     ("Q1", 2026, "Symrise Q1 2026 (Apr 2026)", {
         "revenue": (1_249, 1_249),
+        "ebitda": (272, 272),  # est ~21.8% adj EBITDA margin (mid guidance)
     }),
 ]
 EPS_DATA = [("FY", 2025, ("1.78", "3.67"), "Symrise FY 2025 GAAP / Adjusted")]

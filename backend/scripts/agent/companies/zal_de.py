@@ -10,8 +10,12 @@ Q_DATA = [
     }),
     ("Q1", 2026, "Zalando Q1 2026 (May 2026)", {
         "revenue": (3_000, 3_000),
-        "ebitda": (65, 65),  # Adjusted EBIT
+        "ebitda": (-80, 65),  # GAAP EBIT -79.7M (Loss) / Adjusted EBIT 65M
+        "net_income": (-37, -37),  # Loss (EPS 0.14 negative)
     }),
 ]
-EPS_DATA = [("FY", 2025, ("0.52", "0.52"), "Zalando FY 2025 Basic (TTM Sep 2025)")]
+EPS_DATA = [
+    ("FY", 2025, ("0.52", "0.52"), "Zalando FY 2025 Basic (TTM Sep 2025)"),
+    ("Q1", 2026, ("0.14", "0.14"), "Zalando Q1 2026"),
+]
 BS_DATA = {}

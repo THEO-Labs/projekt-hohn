@@ -24,6 +24,6 @@ Q_DATA = [
 ]
 EPS_DATA = [
     ("FY", 2025, ("5.53", "5.53"), "Mercedes-Benz FY 2025 EPS (~$6.04 * 0.916)"),
-    ("Q1", 2026, ("0.49", "0.49"), "Mercedes-Benz Q1 2026"),
+    ("Q1", 2026, ("1.34", "1.49"), "Mercedes-Benz Q1 2026 Basic (NI/Shares) / Adjusted"),
 ]
 BS_DATA = {}

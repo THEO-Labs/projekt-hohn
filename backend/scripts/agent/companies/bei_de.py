@@ -9,6 +9,7 @@ Q_DATA = [
     }),
     ("Q1", 2026, "Beiersdorf Q1 2026 (Apr 21 2026)", {
         "revenue": (2_484, 2_484),
+        "ebitda": (523, 523),  # EBIT (Operating income)
     }),
 ]
 EPS_DATA = [("FY", 2025, ("4.25", "4.25"), "Beiersdorf FY 2025")]

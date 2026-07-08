@@ -13,6 +13,7 @@ Q_DATA = [
     ("Q1", 2026, "Merck KGaA Q1 2026 (May 13 2026)", {
         "revenue": (5_100, 5_100),
         "ebitda": (1_530, 1_530),  # EBITDA Pre
+        "net_income": (918, 918),  # ~EPS Pre 2.11 * 435M shares
     }),
 ]
 EPS_DATA = [

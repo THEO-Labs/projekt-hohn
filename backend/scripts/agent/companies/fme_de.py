@@ -8,6 +8,7 @@ Q_DATA = [
     ("Q1", 2026, "FMC Q1 2026 (May 2026)", {
         "revenue": (4_610, 4_610),
         "ebitda": (286, 467),  # Op Income reported / excl special
+        "net_income": (126, 267),  # ~EPS 0.43 / 0.91 * 293M shares
     }),
 ]
 EPS_DATA = [

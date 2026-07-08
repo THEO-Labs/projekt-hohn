@@ -8,6 +8,7 @@ Q_DATA = [
         "net_income": (3_000, 3_000),  # Adjusted Net Income
     }),
     ("Q1", 2026, "E.ON Q1 2026 (May 7 2026)", {
+        "revenue": (21_800, 21_800),
         "ebitda": (3_300, 3_300),  # Adjusted EBITDA
         "net_income": (1_340, 1_340),  # Adjusted NI
     }),

@@ -14,7 +14,7 @@ Q_DATA = [
     }),
     ("Q1", 2026, "Deutsche Boerse Q1 2026", {
         "revenue": (1_434, 1_434),  # Net rev without treasury
-        "ebitda": (1_007, 803),  # EBITDA incl treasury / excl treasury
+        "ebitda": (803, 1_007),  # GAAP: EBITDA excl treasury 803 / Adj: EBITDA incl treasury 1007
         "net_income": (585, 585),
     }),
 ]

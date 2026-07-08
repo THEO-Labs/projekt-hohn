@@ -6,6 +6,7 @@ Q_DATA = [
     ("Q1", 2026, "Qiagen Q1 2026 (May 6 2026)", {
         "revenue": (492, 492),  # USD
         "ebitda": (135, 135),  # Adj Op Income (27.4% margin * 492)
+        "net_income": (74, 122),  # ~EPS 0.33/0.54 * 225M USD
     }),
 ]
 EPS_DATA = [
