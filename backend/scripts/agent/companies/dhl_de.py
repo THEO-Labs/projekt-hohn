@@ -70,3 +70,15 @@ EPS_DATA = [
 ]
 
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q3", 2026, "DHL Q3 2026 est (guidance raised, seasonal < Q2 peak)", {
+        "revenue": (21800, 21800),
+        "ebitda": (1600, 1600),
+        "net_income": (900, 900),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q3", 2026, ("0.81", "0.81"), "DHL Q3 2026 est (guidance raised, seasonal < Q2 peak)"),
+]

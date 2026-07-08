@@ -21,8 +21,13 @@ Q_DATA_ESTIMATE = [
         "revenue": (3_100, 3_100),
         "net_income": (870, 870),  # ~3.4B/4
     }),
+    ("Q3", 2026, "Commerzbank Q3 2026 Est (FY 3.4B NI guidance / saisonal schwaecher)", {
+        "revenue": (3_050, 3_050),
+        "net_income": (830, 830),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.76", "0.76"), "Commerzbank Q2 2026 Est"),
+    ("Q3", 2026, ("0.73", "0.73"), "Commerzbank Q3 2026 Est"),
 ]
 BS_DATA = {}

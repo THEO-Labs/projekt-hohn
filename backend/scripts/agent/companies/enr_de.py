@@ -19,3 +19,15 @@ EPS_DATA = [
     ("Q2", 2026, ("0.89", "0.89"), "Siemens Energy Q2 FY2026"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q3", 2026, "Siemens Energy Q3 FY2026 est (Apr-Jun 2026, Orders record)", {
+        "revenue": (10800, 10800),
+        "ebitda": (1200, 1200),
+        "net_income": (900, 900),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q3", 2026, ("0.95", "0.95"), "Siemens Energy Q3 FY2026 est (Apr-Jun 2026, Orders record)"),
+]

@@ -24,8 +24,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2_300, 2_300),
         "net_income": (630, 630),
     }),
+    ("Q3", 2026, "E.ON Q3 2026 est (Sommer schwaechster Q)", {
+        "revenue": (17500, 17500),
+        "ebitda": (2100, 2100),
+        "net_income": (550, 550),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.24", "0.24"), "E.ON Q2 2026 Est"),
+    ("Q3", 2026, ("0.21", "0.21"), "E.ON Q3 2026 est (Sommer schwaechster Q)"),
 ]
 BS_DATA = {}

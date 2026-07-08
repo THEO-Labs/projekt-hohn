@@ -22,8 +22,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1_200, 1_200),
         "net_income": (400, 400),
     }),
+    ("Q3", 2026, "RWE Q3 2026 est (Wind weniger Q3 vs Q1-Winter)", {
+        "revenue": (7000, 7000),
+        "ebitda": (1100, 1100),
+        "net_income": (350, 350),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.55", "0.55"), "RWE Q2 2026 Est"),
+    ("Q3", 2026, ("0.48", "0.48"), "RWE Q3 2026 est (Wind weniger Q3 vs Q1-Winter)"),
 ]
 BS_DATA = {}

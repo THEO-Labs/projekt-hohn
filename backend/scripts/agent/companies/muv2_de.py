@@ -53,10 +53,16 @@ Q_DATA_ESTIMATE = [
         "net_income": (1_600, 1_600),
         "ebitda": (2_100, 2_100),  # Operating profit est (Q1 2026 was 2230)
     }),
+    ("Q3", 2026, "Munich Re Q3 2026 est (Cat-Saison neutral)", {
+        "revenue": (14500, 14500),
+        "ebitda": (2000, 2000),
+        "net_income": (1500, 1500),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("12.10", "12.10"), "Munich Re Q2 2026 Est"),
+    ("Q3", 2026, ("11.40", "11.40"), "Munich Re Q3 2026 est (Cat-Saison neutral)"),
 ]
 
 BS_DATA = {}

@@ -56,10 +56,16 @@ Q_DATA_ESTIMATE = [
         "net_income": (3_100, 3_100),
         "ebitda": (4_500, 4_500),
     }),
+    ("Q3", 2026, "Allianz Q3 2026 est (solide, Insurance im Trend)", {
+        "revenue": (45000, 45000),
+        "ebitda": (4400, 4400),
+        "net_income": (3000, 3000),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("8.20", "8.20"), "Allianz Q2 2026 Est"),
+    ("Q3", 2026, ("7.90", "7.90"), "Allianz Q3 2026 est (solide, Insurance im Trend)"),
 ]
 
 BS_DATA = {}

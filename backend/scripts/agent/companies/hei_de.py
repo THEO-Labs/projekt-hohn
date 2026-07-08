@@ -27,7 +27,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1400, 1400),
         "net_income": (630, 630),
     }),
+    ("Q3", 2026, "Heidelberg Q3 2026 est (seasonal peak Bau)", {
+        "revenue": (6200, 6200),
+        "ebitda": (1550, 1550),
+        "net_income": (720, 720),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("4.03", "4.03"), "Heidelberg Q2 2026 est (seasonal peak)"),
+    ("Q3", 2026, ("4.62", "4.62"), "Heidelberg Q3 2026 est (seasonal peak Bau)"),
 ]

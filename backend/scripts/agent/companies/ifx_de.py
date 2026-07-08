@@ -22,3 +22,15 @@ EPS_DATA = [
     ("Q2", 2026, ("0.31", "0.31"), "Infineon Q2 FY2026 (~$0.34 * 0.916)"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q3", 2026, "Infineon Q3 FY2026 est (Apr-Jun 2026, AI acceleration)", {
+        "revenue": (3900, 3900),
+        "ebitda": (700, 700),
+        "net_income": (430, 430),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q3", 2026, ("0.33", "0.33"), "Infineon Q3 FY2026 est (Apr-Jun 2026, AI acceleration)"),
+]

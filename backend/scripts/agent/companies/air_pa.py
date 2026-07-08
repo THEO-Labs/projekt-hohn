@@ -38,7 +38,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1200, 1200),
         "net_income": (900, 900),
     }),
+    ("Q3", 2026, "Airbus Q3 2026 est (deliveries continue pickup)", {
+        "revenue": (19500, 19500),
+        "ebitda": (1600, 1600),
+        "net_income": (1200, 1200),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.12", "1.12"), "Airbus Q2 2026 est (Deliveries pickup)"),
+    ("Q3", 2026, ("1.50", "1.50"), "Airbus Q3 2026 est (deliveries continue pickup)"),
 ]

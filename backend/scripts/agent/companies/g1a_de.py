@@ -21,7 +21,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (230, 230),
         "net_income": (110, 110),
     }),
+    ("Q3", 2026, "GEA Q3 2026 est", {
+        "revenue": (1450, 1450),
+        "ebitda": (240, 240),
+        "net_income": (115, 115),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.70", "0.70"), "GEA Q2 2026 est"),
+    ("Q3", 2026, ("0.73", "0.73"), "GEA Q3 2026 est"),
 ]

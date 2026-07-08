@@ -21,7 +21,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (300, 300),
         "net_income": (100, 100),
     }),
+    ("Q3", 2026, "Brenntag Q3 2026 est", {
+        "revenue": (3700, 3700),
+        "ebitda": (310, 310),
+        "net_income": (105, 105),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.69", "0.69"), "Brenntag Q2 2026 est"),
+    ("Q3", 2026, ("0.72", "0.72"), "Brenntag Q3 2026 est"),
 ]

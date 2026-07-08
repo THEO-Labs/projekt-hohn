@@ -71,10 +71,16 @@ Q_DATA_ESTIMATE = [
         "net_income": (2_800, 2_800),  # ~EPS 0.56 * 4980M shares
         "fcf": (5_100, 5_100),
     }),
+    ("Q3", 2026, "DT Q3 2026 est (Guidance raised)", {
+        "revenue": (30500, 30500),
+        "ebitda": (12000, 12000),
+        "net_income": (2850, 2850),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.56", "0.56"), "DTE Q2 2026 Est (FY 2.20 / 4)"),
+    ("Q3", 2026, ("0.57", "0.57"), "DT Q3 2026 est (Guidance raised)"),
 ]
 
 BS_DATA = {}

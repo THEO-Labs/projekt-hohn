@@ -37,9 +37,15 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1_650, 1_650),  # ~6.6B / 4
         "net_income": (400, 400),
     }),
+    ("Q3", 2026, "BASF Q3 2026 est (Chemicals-Cycle weak recovery)", {
+        "revenue": (14500, 14500),
+        "ebitda": (1500, 1500),
+        "net_income": (300, 300),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.45", "0.45"), "BASF Q2 2026 Est"),
+    ("Q3", 2026, ("0.35", "0.35"), "BASF Q3 2026 est (Chemicals-Cycle weak recovery)"),
 ]
 BS_DATA = {}

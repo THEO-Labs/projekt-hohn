@@ -66,3 +66,15 @@ EPS_DATA = [
 ]
 
 BS_DATA = {}  # TODO Annual Report
+
+Q_DATA_ESTIMATE = [
+    ("Q3", 2026, "Siemens Q3 FY2026 est (Apr-Jun 2026)", {
+        "revenue": (20000, 20000),
+        "ebitda": (3100, 3100),
+        "net_income": (2300, 2300),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q3", 2026, ("2.70", "2.70"), "Siemens Q3 FY2026 est (Apr-Jun 2026)"),
+]

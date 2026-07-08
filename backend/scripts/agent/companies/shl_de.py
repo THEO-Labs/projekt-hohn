@@ -37,3 +37,15 @@ EPS_DATA = [
     ("Q2", 2026, ("0.45", "0.53"), "Siemens Healthineers Q2 FY2026 Basic / Adjusted"),
 ]
 BS_DATA = {}
+
+Q_DATA_ESTIMATE = [
+    ("Q3", 2026, "SHL Q3 FY2026 est (Apr-Jun 2026)", {
+        "revenue": (5800, 5800),
+        "ebitda": (950, 950),
+        "net_income": (550, 550),
+    }),
+]
+
+EPS_DATA_ESTIMATE = [
+    ("Q3", 2026, ("0.48", "0.48"), "SHL Q3 FY2026 est (Apr-Jun 2026)"),
+]

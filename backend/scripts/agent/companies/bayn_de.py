@@ -31,9 +31,15 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2_450, 2_450),  # ~9.85B / 4
         "net_income": (1_100, 1_100),  # Estimated (Q2 seasonal weak)
     }),
+    ("Q3", 2026, "Bayer Q3 2026 est (Crop Science schwaecher Q3, Roundup Settlement gut)", {
+        "revenue": (10500, 10500),
+        "ebitda": (2100, 2100),
+        "net_income": (800, 800),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.10", "1.10"), "Bayer Q2 2026 Est (FY 4.55 mid / 4)"),
+    ("Q3", 2026, ("0.85", "0.85"), "Bayer Q3 2026 est (Crop Science schwaecher Q3, Roundup Settlement gut)"),
 ]
 BS_DATA = {}

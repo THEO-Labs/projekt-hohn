@@ -22,7 +22,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (112, 112),
         "net_income": (72, 72),
     }),
+    ("Q3", 2026, "Scout24 Q3 2026 est", {
+        "revenue": (192, 192),
+        "ebitda": (118, 118),
+        "net_income": (76, 76),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.01", "1.01"), "Scout24 Q2 2026 est"),
+    ("Q3", 2026, ("1.07", "1.07"), "Scout24 Q3 2026 est"),
 ]

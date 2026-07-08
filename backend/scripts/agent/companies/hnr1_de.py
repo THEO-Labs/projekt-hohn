@@ -25,8 +25,14 @@ Q_DATA_ESTIMATE = [
         "net_income": (680, 680),
         "ebitda": (900, 900),  # Op Profit (EBIT) est
     }),
+    ("Q3", 2026, "Hannover Re Q3 2026 est (Cat-Belastung)", {
+        "revenue": (6400, 6400),
+        "ebitda": (850, 850),
+        "net_income": (650, 650),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("5.65", "5.65"), "Hannover Re Q2 2026 Est"),
+    ("Q3", 2026, ("5.40", "5.40"), "Hannover Re Q3 2026 est (Cat-Belastung)"),
 ]
 BS_DATA = {}

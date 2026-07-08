@@ -26,7 +26,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (200, 200),
         "net_income": (90, 90),
     }),
+    ("Q3", 2026, "Zalando Q3 2026 est", {
+        "revenue": (3200, 3200),
+        "ebitda": (250, 250),
+        "net_income": (120, 120),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.34", "0.34"), "Zalando Q2 2026 est"),
+    ("Q3", 2026, ("0.45", "0.45"), "Zalando Q3 2026 est"),
 ]

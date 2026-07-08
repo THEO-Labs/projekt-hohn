@@ -42,6 +42,11 @@ Q_DATA_ESTIMATE = [
         "ebitda": (580, 580),  # ~9% margin (FY guidance 2.3B / 4)
         "net_income": (400, 400),  # ~1.6B FY, 25% Q2 weight
     }),
+    ("Q3", 2026, "adidas Q3 2026 est (back-to-school + gross margin improve H2)", {
+        "revenue": (6800, 6800),
+        "ebitda": (620, 620),
+        "net_income": (430, 430),
+    }),
 ]
 
 EPS_DATA = [
@@ -52,5 +57,6 @@ EPS_DATA = [
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("2.25", "2.25"), "adidas Q2 2026 est (NI 400M / 178M shares)"),
+    ("Q3", 2026, ("2.40", "2.40"), "adidas Q3 2026 est (back-to-school + gross margin improve H2)"),
 ]
 BS_DATA = {}

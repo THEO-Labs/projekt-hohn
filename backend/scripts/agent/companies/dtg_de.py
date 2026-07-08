@@ -26,8 +26,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (750, 750),
         "net_income": (350, 350),
     }),
+    ("Q3", 2026, "Daimler Truck Q3 2026 est (Order-Momentum)", {
+        "revenue": (11000, 11000),
+        "ebitda": (800, 800),
+        "net_income": (380, 380),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.43", "0.43"), "Daimler Truck Q2 2026 Est"),
+    ("Q3", 2026, ("0.47", "0.47"), "Daimler Truck Q3 2026 est (Order-Momentum)"),
 ]
 BS_DATA = {}

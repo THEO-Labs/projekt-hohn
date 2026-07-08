@@ -33,9 +33,15 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2_100, 2_100),
         "net_income": (1_500, 1_500),
     }),
+    ("Q3", 2026, "Mercedes Q3 2026 est (Cars ROS 3.5% mid-guidance)", {
+        "revenue": (32500, 32500),
+        "ebitda": (1700, 1700),
+        "net_income": (1300, 1300),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.40", "1.55"), "Mercedes Q2 2026 Est Basic / Adjusted"),
+    ("Q3", 2026, ("1.22", "1.22"), "Mercedes Q3 2026 est (Cars ROS 3.5% mid-guidance)"),
 ]
 BS_DATA = {}

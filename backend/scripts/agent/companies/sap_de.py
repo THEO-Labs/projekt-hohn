@@ -99,7 +99,13 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2700, 2700),
         "net_income": (1970, 1970),
     }),
+    ("Q3", 2026, "SAP Q3 2026 est (H2 acceleration guidance)", {
+        "revenue": (9900, 9900),
+        "ebitda": (2800, 2800),
+        "net_income": (2000, 2000),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.68", "1.68"), "SAP Q2 2026 est (deceleration acknowledged)"),
+    ("Q3", 2026, ("1.72", "1.72"), "SAP Q3 2026 est (H2 acceleration guidance)"),
 ]
