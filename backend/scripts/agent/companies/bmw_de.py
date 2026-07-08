@@ -35,6 +35,11 @@ Q_DATA_ESTIMATE = [
         "ebitda": (900, 900),  # Group EBT est (schwaechster Q wegen Guidance-Cut)
         "net_income": (700, 700),  # 78% von EBT (Q1 Ratio konsistent)
     }),
+    ("Q4", 2026, "BMW Q4 2026 est (Guidance-Cut Auto Margin 1-3%, aber Q4 saisonal staerker)", {
+        "revenue": (33000, 33000),
+        "ebitda": (1100, 1100),
+        "net_income": (850, 850),
+    }),
 ]
 
 EPS_DATA = [
@@ -45,6 +50,7 @@ EPS_DATA = [
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("2.14", "2.14"), "BMW Q2 2026 Consensus"),
     ("Q3", 2026, ("1.13", "1.13"), "BMW Q3 2026 est (NI 700 / 620M ordinary+preferred shares)"),
+    ("Q4", 2026, ("1.37", "1.37"), "BMW Q4 2026 est (Guidance-Cut Auto Margin 1-3%, aber Q4 saisonal staerker)"),
 ]
 
 BS_DATA = {}

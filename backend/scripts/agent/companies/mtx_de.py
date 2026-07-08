@@ -33,9 +33,15 @@ Q_DATA_ESTIMATE = [
         "ebitda": (350, 350),
         "net_income": (250, 250),
     }),
+    ("Q4", 2026, "MTU Q4 2026 est (Aerospace-Cycle Peak Aftermarket)", {
+        "revenue": (2500, 2500),
+        "ebitda": (400, 400),
+        "net_income": (285, 285),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("4.50", "4.50"), "MTU Q2 2026 Est"),
     ("Q3", 2026, ("4.70", "4.70"), "MTU Q3 2026 est (Aerospace-Cycle solide)"),
+    ("Q4", 2026, ("5.35", "5.35"), "MTU Q4 2026 est (Aerospace-Cycle Peak Aftermarket)"),
 ]
 BS_DATA = {}

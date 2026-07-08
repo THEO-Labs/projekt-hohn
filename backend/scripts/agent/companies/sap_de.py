@@ -104,8 +104,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2800, 2800),
         "net_income": (2000, 2000),
     }),
+    ("Q4", 2026, "SAP Q4 2026 est (Cloud-Peak, FY 25.8-26.2B cloud guidance)", {
+        "revenue": (10400, 10400),
+        "ebitda": (3200, 3200),
+        "net_income": (2400, 2400),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.68", "1.68"), "SAP Q2 2026 est (deceleration acknowledged)"),
     ("Q3", 2026, ("1.72", "1.72"), "SAP Q3 2026 est (H2 acceleration guidance)"),
+    ("Q4", 2026, ("2.06", "2.06"), "SAP Q4 2026 est (Cloud-Peak, FY 25.8-26.2B cloud guidance)"),
 ]

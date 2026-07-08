@@ -40,8 +40,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (400, 400),
         "net_income": (200, 200),
     }),
+    ("Q4", 2026, "Rheinmetall Q4 2026 est (Q4 defence delivery peak)", {
+        "revenue": (4200, 4200),
+        "ebitda": (620, 620),
+        "net_income": (320, 320),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("2.80", "2.80"), "Rheinmetall Q2 2026 est (Defence Wachstum)"),
     ("Q3", 2026, ("3.90", "3.90"), "Rheinmetall Q3 2026 est (Naval orders + defence pickup)"),
+    ("Q4", 2026, ("6.30", "6.30"), "Rheinmetall Q4 2026 est (Q4 defence delivery peak)"),
 ]

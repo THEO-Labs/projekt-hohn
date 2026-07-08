@@ -22,8 +22,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (285, 285),
         "net_income": (140, 140),
     }),
+    ("Q4", 2026, "Symrise Q4 2026 est", {
+        "revenue": (1320, 1320),
+        "ebitda": (305, 305),
+        "net_income": (155, 155),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.92", "0.92"), "Symrise Q2 2026 est"),
     ("Q3", 2026, ("0.99", "0.99"), "Symrise Q3 2026 est"),
+    ("Q4", 2026, ("1.10", "1.10"), "Symrise Q4 2026 est"),
 ]

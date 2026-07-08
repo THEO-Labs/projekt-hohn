@@ -44,8 +44,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (950, 950),
         "net_income": (550, 550),
     }),
+    ("Q4", 2026, "SHL Q4 FY2026 est (Jul-Sep 2026)", {
+        "revenue": (6400, 6400),
+        "ebitda": (1150, 1150),
+        "net_income": (620, 620),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q3", 2026, ("0.48", "0.48"), "SHL Q3 FY2026 est (Apr-Jun 2026)"),
+    ("Q4", 2026, ("0.54", "0.54"), "SHL Q4 FY2026 est (Jul-Sep 2026)"),
 ]

@@ -26,8 +26,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1200, 1200),
         "net_income": (900, 900),
     }),
+    ("Q4", 2026, "Siemens Energy Q4 FY2026 est (Jul-Sep 2026, Orders record)", {
+        "revenue": (11500, 11500),
+        "ebitda": (1400, 1400),
+        "net_income": (1000, 1000),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q3", 2026, ("0.95", "0.95"), "Siemens Energy Q3 FY2026 est (Apr-Jun 2026, Orders record)"),
+    ("Q4", 2026, ("1.05", "1.05"), "Siemens Energy Q4 FY2026 est (Jul-Sep 2026, Orders record)"),
 ]

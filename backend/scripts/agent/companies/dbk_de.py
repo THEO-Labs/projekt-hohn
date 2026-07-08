@@ -52,6 +52,10 @@ Q_DATA_ESTIMATE = [
         "revenue": (7_900, 7_900),
         "net_income": (1_800, 1_800),
     }),
+    ("Q4", 2026, "DBK Q4 2026 est (FY 33B Rev / 6.5B NI - Q1-Q3 = ~1.5B)", {
+        "revenue": (8100, 8100),
+        "net_income": (1500, 1500),
+    }),
 ]
 
 EPS_DATA = [
@@ -63,6 +67,7 @@ EPS_DATA = [
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.05", "1.05"), "DBK Q2 2026 Consensus (~$1.15 * 0.916)"),
     ("Q3", 2026, ("0.87", "0.87"), "DBK Q3 2026 Est"),
+    ("Q4", 2026, ("0.72", "0.72"), "DBK Q4 2026 est (FY 33B Rev / 6.5B NI - Q1-Q3 = ~1.5B)"),
 ]
 
 BS_DATA = {}

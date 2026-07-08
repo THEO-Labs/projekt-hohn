@@ -58,11 +58,17 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2400, 2400),  # Op result
         "net_income": (1800, 1800),  # in Linie mit Q3 2025 Actual 1997M
     }),
+    ("Q4", 2026, "Munich Re Q4 2026 est (FY NI 5.8B guidance)", {
+        "revenue": (15000, 15000),
+        "ebitda": (2500, 2500),
+        "net_income": (1800, 1800),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("12.10", "12.10"), "Munich Re Q2 2026 Est"),
     ("Q3", 2026, ("13.70", "13.70"), "Munich Re Q3 2026 est (NI 1800 / 131M shares)"),
+    ("Q4", 2026, ("13.70", "13.70"), "Munich Re Q4 2026 est (FY NI 5.8B guidance)"),
 ]
 
 BS_DATA = {}

@@ -32,9 +32,15 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1450, 1450),
         "net_income": (830, 830),
     }),
+    ("Q4", 2026, "Merck KGaA Q4 2026 est", {
+        "revenue": (5450, 5450),
+        "ebitda": (1500, 1500),
+        "net_income": (850, 850),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.90", "1.90"), "Merck KGaA Q2 2026 Est"),
     ("Q3", 2026, ("1.90", "1.90"), "Merck KGaA Q3 2026 est"),
+    ("Q4", 2026, ("1.95", "1.95"), "Merck KGaA Q4 2026 est"),
 ]
 BS_DATA = {}

@@ -25,9 +25,14 @@ Q_DATA_ESTIMATE = [
         "revenue": (3_050, 3_050),
         "net_income": (830, 830),
     }),
+    ("Q4", 2026, "Commerzbank Q4 2026 est (FY NI 3.4B guidance)", {
+        "revenue": (3100, 3100),
+        "net_income": (800, 800),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.76", "0.76"), "Commerzbank Q2 2026 Est"),
     ("Q3", 2026, ("0.73", "0.73"), "Commerzbank Q3 2026 Est"),
+    ("Q4", 2026, ("0.70", "0.70"), "Commerzbank Q4 2026 est (FY NI 3.4B guidance)"),
 ]
 BS_DATA = {}

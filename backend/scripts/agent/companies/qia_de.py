@@ -26,8 +26,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (145, 145),
         "net_income": (79, 79),
     }),
+    ("Q4", 2026, "Qiagen Q4 2026 est USD", {
+        "revenue": (560, 560),
+        "ebitda": (165, 165),
+        "net_income": (90, 90),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.34", "0.34"), "Qiagen Q2 2026 est USD"),
     ("Q3", 2026, ("0.35", "0.35"), "Qiagen Q3 2026 est USD"),
+    ("Q4", 2026, ("0.40", "0.40"), "Qiagen Q4 2026 est USD"),
 ]

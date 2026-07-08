@@ -73,8 +73,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (3100, 3100),
         "net_income": (2300, 2300),
     }),
+    ("Q4", 2026, "Siemens Q4 FY2026 est (Jul-Sep 2026, FY-Ende)", {
+        "revenue": (21500, 21500),
+        "ebitda": (3400, 3400),
+        "net_income": (2500, 2500),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q3", 2026, ("2.70", "2.70"), "Siemens Q3 FY2026 est (Apr-Jun 2026)"),
+    ("Q4", 2026, ("2.94", "2.94"), "Siemens Q4 FY2026 est (Jul-Sep 2026, FY-Ende)"),
 ]

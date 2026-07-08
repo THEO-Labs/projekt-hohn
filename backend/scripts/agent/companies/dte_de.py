@@ -76,11 +76,17 @@ Q_DATA_ESTIMATE = [
         "ebitda": (12000, 12000),
         "net_income": (2850, 2850),
     }),
+    ("Q4", 2026, "DT Q4 2026 est (Winter-Peak, Guidance raised)", {
+        "revenue": (32000, 32000),
+        "ebitda": (12500, 12500),
+        "net_income": (3100, 3100),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.56", "0.56"), "DTE Q2 2026 Est (FY 2.20 / 4)"),
     ("Q3", 2026, ("0.57", "0.57"), "DT Q3 2026 est (Guidance raised)"),
+    ("Q4", 2026, ("0.62", "0.62"), "DT Q4 2026 est (Winter-Peak, Guidance raised)"),
 ]
 
 BS_DATA = {}

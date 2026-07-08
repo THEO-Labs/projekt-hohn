@@ -26,8 +26,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (530, 530),
         "net_income": (330, 330),
     }),
+    ("Q4", 2026, "Beiersdorf Q4 2026 est", {
+        "revenue": (2700, 2700),
+        "ebitda": (550, 550),
+        "net_income": (350, 350),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.42", "1.42"), "Beiersdorf Q2 2026 est (Q1 base + seasonal)"),
     ("Q3", 2026, ("1.46", "1.46"), "Beiersdorf Q3 2026 est"),
+    ("Q4", 2026, ("1.55", "1.55"), "Beiersdorf Q4 2026 est"),
 ]

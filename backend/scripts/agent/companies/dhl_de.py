@@ -77,8 +77,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (1600, 1600),
         "net_income": (900, 900),
     }),
+    ("Q4", 2026, "DHL Q4 2026 est (Peak-Season Weihnachten, FY EBIT >6.5B)", {
+        "revenue": (24500, 24500),
+        "ebitda": (2100, 2100),
+        "net_income": (1250, 1250),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q3", 2026, ("0.81", "0.81"), "DHL Q3 2026 est (guidance raised, seasonal < Q2 peak)"),
+    ("Q4", 2026, ("1.13", "1.13"), "DHL Q4 2026 est (Peak-Season Weihnachten, FY EBIT >6.5B)"),
 ]

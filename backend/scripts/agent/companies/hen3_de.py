@@ -26,8 +26,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (780, 780),
         "net_income": (520, 520),
     }),
+    ("Q4", 2026, "Henkel Q4 2026 est (Weihnachten Cosmetics)", {
+        "revenue": (5400, 5400),
+        "ebitda": (850, 850),
+        "net_income": (570, 570),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.15", "1.15"), "Henkel Q2 2026 est"),
     ("Q3", 2026, ("1.20", "1.20"), "Henkel Q3 2026 est"),
+    ("Q4", 2026, ("1.32", "1.32"), "Henkel Q4 2026 est (Weihnachten Cosmetics)"),
 ]

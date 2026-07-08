@@ -29,9 +29,15 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2100, 2100),
         "net_income": (550, 550),
     }),
+    ("Q4", 2026, "E.ON Q4 2026 est (Winter-Peak Heizung)", {
+        "revenue": (22000, 22000),
+        "ebitda": (3200, 3200),
+        "net_income": (900, 900),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("0.24", "0.24"), "E.ON Q2 2026 Est"),
     ("Q3", 2026, ("0.21", "0.21"), "E.ON Q3 2026 est (Sommer schwaechster Q)"),
+    ("Q4", 2026, ("0.34", "0.34"), "E.ON Q4 2026 est (Winter-Peak Heizung)"),
 ]
 BS_DATA = {}

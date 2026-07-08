@@ -30,8 +30,12 @@ Q_DATA_ESTIMATE = [
     ("Q3", 2026, "Porsche SE Q3 2026 est (31.9% x VW NI 1200M + P911 ~15M)", {
         "net_income": (400, 400),
     }),
+    ("Q4", 2026, "Porsche SE Q4 2026 est (VW Beteiligung 32% x VW NI 1400)", {
+        "net_income": (450, 450),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.60", "1.60"), "Porsche SE Q2 2026 est (Beteiligungsergebnis)"),
     ("Q3", 2026, ("1.30", "1.30"), "Porsche SE Q3 2026 est (NI 400 / 306M shares)"),
+    ("Q4", 2026, ("1.47", "1.47"), "Porsche SE Q4 2026 est (VW Beteiligung 32% x VW NI 1400)"),
 ]

@@ -37,8 +37,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (550, 550),
         "net_income": (220, 220),
     }),
+    ("Q4", 2026, "Continental Q4 2026 est (ContiTech-Sale close moeglich)", {
+        "revenue": (4700, 4700),
+        "ebitda": (620, 620),
+        "net_income": (260, 260),
+    }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.05", "1.05"), "Continental Q2 2026 est"),
     ("Q3", 2026, ("1.10", "1.10"), "Continental Q3 2026 est (pre ContiTech-Sale schluss)"),
+    ("Q4", 2026, ("1.30", "1.30"), "Continental Q4 2026 est (ContiTech-Sale close moeglich)"),
 ]

@@ -29,8 +29,14 @@ Q_DATA_ESTIMATE = [
         "ebitda": (700, 700),
         "net_income": (430, 430),
     }),
+    ("Q4", 2026, "Infineon Q4 FY2026 est (Jul-Sep 2026, AI acceleration)", {
+        "revenue": (4100, 4100),
+        "ebitda": (750, 750),
+        "net_income": (470, 470),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q3", 2026, ("0.33", "0.33"), "Infineon Q3 FY2026 est (Apr-Jun 2026, AI acceleration)"),
+    ("Q4", 2026, ("0.36", "0.36"), "Infineon Q4 FY2026 est (Jul-Sep 2026, AI acceleration)"),
 ]

@@ -34,10 +34,16 @@ Q_DATA_ESTIMATE = [
         "ebitda": (2500, 2500),
         "net_income": (1200, 1200),
     }),
+    ("Q4", 2026, "VW Q4 2026 est (Jahresende, ohne Traton-Sondereffekte)", {
+        "revenue": (81000, 81000),
+        "ebitda": (3500, 3500),
+        "net_income": (1800, 1800),
+    }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("2.79", "2.79"), "VW Q2 2026 Est"),
     ("Q3", 2026, ("2.40", "2.40"), "VW Q3 2026 est (Traton schwach, brand VW recovery)"),
+    ("Q4", 2026, ("3.60", "3.60"), "VW Q4 2026 est (Jahresende, ohne Traton-Sondereffekte)"),
 ]
 BS_DATA = {}

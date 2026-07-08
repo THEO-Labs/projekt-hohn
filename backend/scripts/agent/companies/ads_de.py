@@ -47,6 +47,11 @@ Q_DATA_ESTIMATE = [
         "ebitda": (620, 620),
         "net_income": (430, 430),
     }),
+    ("Q4", 2026, "adidas Q4 2026 est (Weihnachtspeak, FY OP ~2.3B)", {
+        "revenue": (7200, 7200),
+        "ebitda": (730, 730),
+        "net_income": (500, 500),
+    }),
 ]
 
 EPS_DATA = [
@@ -58,5 +63,6 @@ EPS_DATA = [
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("2.25", "2.25"), "adidas Q2 2026 est (NI 400M / 178M shares)"),
     ("Q3", 2026, ("2.40", "2.40"), "adidas Q3 2026 est (back-to-school + gross margin improve H2)"),
+    ("Q4", 2026, ("2.79", "2.79"), "adidas Q4 2026 est (Weihnachtspeak, FY OP ~2.3B)"),
 ]
 BS_DATA = {}
