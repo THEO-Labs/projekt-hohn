@@ -51,6 +51,7 @@ Q_DATA_ESTIMATE = [
     ("Q2", 2026, "Munich Re Q2 2026 Est (FY 6.3B Guidance, Q2 ~1.5-1.7B)", {
         "revenue": (15_000, 15_000),
         "net_income": (1_600, 1_600),
+        "ebitda": (2_100, 2_100),  # Operating profit est (Q1 2026 was 2230)
     }),
 ]
 

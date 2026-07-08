@@ -27,6 +27,7 @@ Q_DATA = [
     ("Q2", 2026, "Siemens Healthineers Q2 FY 2026 (May 2026, Jan-Mar 2026)", {
         "revenue": (5_681, 5_681),
         "net_income": (512, 512),
+        "ebitda": (900, 900),  # Adj EBIT est (~15.8% margin)
     }),
 ]
 EPS_DATA = [

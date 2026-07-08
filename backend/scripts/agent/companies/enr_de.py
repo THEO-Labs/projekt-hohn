@@ -10,6 +10,7 @@ Q_DATA = [
     ("Q2", 2026, "Siemens Energy Q2 FY 2026 (May 12 2026)", {
         "revenue": (10_300, 10_300),
         "net_income": (835, 835),
+        "ebitda": (1_100, 1_100),  # Profit before Special Items est (~10.5% margin per FY guidance)
     }),
 ]
 EPS_DATA = [

@@ -52,8 +52,9 @@ EPS_DATA = [
 
 Q_DATA_ESTIMATE = [
     ("Q2", 2026, "Allianz Q2 2026 Est (FY 17.4B Op-Profit Guidance / 4)", {
-        "net_income": (3_100, 3_100),  # Q2 est ~2.8-3.2B
-        "ebitda": (4_500, 4_500),  # Q2 est similar to Q1
+        "revenue": (44_500, 44_500),  # Business Volume ~ Q2 2025 level
+        "net_income": (3_100, 3_100),
+        "ebitda": (4_500, 4_500),
     }),
 ]
 

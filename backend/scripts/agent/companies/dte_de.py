@@ -66,9 +66,10 @@ EPS_DATA = [
 
 Q_DATA_ESTIMATE = [
     ("Q2", 2026, "DTE Q2 2026 Est (FY Guidance 47.5B EBITDA-AL, 2.20 EPS)", {
-        "revenue": (30_200, 30_200),  # ~119.9B / 4 -> Q2 similar to Q1
-        "ebitda": (11_800, 11_800),  # 47.5B / 4 + margin uplift
-        "fcf": (5_100, 5_100),  # ~19.8B / 4
+        "revenue": (30_200, 30_200),
+        "ebitda": (11_800, 11_800),
+        "net_income": (2_800, 2_800),  # ~EPS 0.56 * 4980M shares
+        "fcf": (5_100, 5_100),
     }),
 ]
 

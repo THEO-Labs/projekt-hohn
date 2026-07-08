@@ -51,6 +51,7 @@ Q_DATA = [
         "revenue": (19_800, 19_800),
         "net_income": (2_200, 2_200),
         "fcf": (1_700, 1_700),  # Group FCF
+        "ebitda": (3_000, 3_000),  # Profit Industrial Business (analog Op Profit)
     }),
 ]
 

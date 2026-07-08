@@ -23,6 +23,7 @@ Q_DATA_ESTIMATE = [
     ("Q2", 2026, "Hannover Re Q2 2026 Est (FY 2.7B NI Guidance)", {
         "revenue": (6_400, 6_400),
         "net_income": (680, 680),
+        "ebitda": (900, 900),  # Op Profit (EBIT) est
     }),
 ]
 EPS_DATA_ESTIMATE = [

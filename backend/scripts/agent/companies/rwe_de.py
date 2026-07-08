@@ -18,6 +18,7 @@ EPS_DATA = [
 
 Q_DATA_ESTIMATE = [
     ("Q2", 2026, "RWE Q2 2026 Est (FY 5.5B mid EBITDA / 4)", {
+        "revenue": (7_500, 7_500),  # RWE FY Rev ~30B / 4
         "ebitda": (1_200, 1_200),
         "net_income": (400, 400),
     }),

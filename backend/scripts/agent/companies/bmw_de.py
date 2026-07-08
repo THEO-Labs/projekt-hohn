@@ -27,7 +27,8 @@ Q_DATA = [
 Q_DATA_ESTIMATE = [
     ("Q2", 2026, "BMW Q2 2026 Consensus (Rev 33.16B, EPS 2.14 via Yahoo)", {
         "revenue": (33_160, 33_160),
-        "net_income": (1_334, 1_334),  # 2.14 EPS * 623M shares
+        "ebitda": (1_500, 1_500),  # Group EBT est (~4.5% margin on Rev)
+        "net_income": (1_334, 1_334),
     }),
 ]
 

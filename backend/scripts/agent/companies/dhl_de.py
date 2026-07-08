@@ -55,6 +55,7 @@ Q_DATA = [
     ("Q2", 2026, "DHL Q2 2026 Preliminary (Jul 7 2026 pre-release, full Aug 5)", {
         "revenue": (22_440, 22_440),  # +10% YoY (Q2 2025 20.400 * 1.10)
         "ebitda": (1_850, 1_850),  # EBIT reported (+29% YoY)
+        "net_income": (1_050, 1_050),  # est ~57% of EBIT (Q2 2025: 815/1400 = 58%)
     }),
 ]
 
@@ -65,6 +66,7 @@ EPS_DATA = [
     ("Q4", 2025, ("0.94", "0.94"), "DHL Q4 2025 (FY 3.09 - Sigma Q1-Q3)"),
     ("FY", 2025, ("3.09", "3.09"), "DHL FY 2025"),
     ("Q1", 2026, ("0.73", "0.72"), "DHL Q1 2026 Basic / Diluted"),
+    ("Q2", 2026, ("0.94", "0.94"), "DHL Q2 2026 est (~NI 1050 / 1113M shares)"),
 ]
 
 BS_DATA = {}
