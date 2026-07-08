@@ -24,6 +24,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       IR_DOCS_ROOT: /data/ir-docs
+      HOHN_LOCK_DISABLED: 'true'
     expose:
       - "8000"
     volumes:

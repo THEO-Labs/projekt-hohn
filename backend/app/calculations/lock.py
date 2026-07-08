@@ -1,3 +1,4 @@
+import os
 from datetime import date
 from uuid import UUID
 
@@ -90,10 +91,13 @@ def has_done_annual_report(db: Session, company_id: UUID, period_year: int) -> b
 def is_hohn_locked(db: Session, company: Company, period_year: int) -> bool:
     """Hohn-Rendite is locked when computing it from non-authoritative data
     would be misleading. Rule:
+      - HOHN_LOCK_DISABLED=1 in env → nie gesperrt (Ops-Override)
       - laufende FY (estimate) → nie gesperrt
       - US-Filer (ISIN US...) → nie gesperrt (EDGAR ist autoritativ)
       - sonst historische FY ohne fertig extrahiertem Annual Report → gesperrt
     """
+    if os.getenv("HOHN_LOCK_DISABLED", "").lower() in ("1", "true", "yes"):
+        return False
     if period_year >= date.today().year:
         return False
     if is_us_company(company):
