@@ -53,16 +53,16 @@ Q_DATA_ESTIMATE = [
         "net_income": (1_600, 1_600),
         "ebitda": (2_100, 2_100),  # Operating profit est (Q1 2026 was 2230)
     }),
-    ("Q3", 2026, "Munich Re Q3 2026 est (Cat-Saison neutral)", {
+    ("Q3", 2026, "Munich Re Q3 2026 est (Hurricane-Outlook near-below-avg, vs Q3 2025 1997M)", {
         "revenue": (14500, 14500),
-        "ebitda": (2000, 2000),
-        "net_income": (1500, 1500),
+        "ebitda": (2400, 2400),  # Op result
+        "net_income": (1800, 1800),  # in Linie mit Q3 2025 Actual 1997M
     }),
 ]
 
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("12.10", "12.10"), "Munich Re Q2 2026 Est"),
-    ("Q3", 2026, ("11.40", "11.40"), "Munich Re Q3 2026 est (Cat-Saison neutral)"),
+    ("Q3", 2026, ("13.70", "13.70"), "Munich Re Q3 2026 est (NI 1800 / 131M shares)"),
 ]
 
 BS_DATA = {}

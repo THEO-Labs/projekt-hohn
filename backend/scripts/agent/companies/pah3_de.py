@@ -27,11 +27,11 @@ Q_DATA_ESTIMATE = [
         "ebitda": (0, 0),
         "net_income": (500, 500),
     }),
-    ("Q3", 2026, "Porsche SE Q3 2026 est (Beteiligungsergebnis)", {
-        "net_income": (550, 550),
+    ("Q3", 2026, "Porsche SE Q3 2026 est (31.9% x VW NI 1200M + P911 ~15M)", {
+        "net_income": (400, 400),
     }),
 ]
 EPS_DATA_ESTIMATE = [
     ("Q2", 2026, ("1.60", "1.60"), "Porsche SE Q2 2026 est (Beteiligungsergebnis)"),
-    ("Q3", 2026, ("1.80", "1.80"), "Porsche SE Q3 2026 est (Beteiligungsergebnis)"),
+    ("Q3", 2026, ("1.30", "1.30"), "Porsche SE Q3 2026 est (NI 400 / 306M shares)"),
 ]
