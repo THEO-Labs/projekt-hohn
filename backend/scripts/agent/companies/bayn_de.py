@@ -1,5 +1,6 @@
-"""Bayer AG Data-Modul. FY End Dec 31. Pharma/Crop Science.
-Nur FY + Q3 verlaesslich; Q1/Q2/Q4 einzeln nicht durchgaengig im Web.
+"""Bayer AG. FY End Dec 31. Pharma/Crop Science.
+
+FIX 2026-07-08: FY EBITDA before Special Items ergaenzt.
 """
 from __future__ import annotations
 TICKER = "BAYN.DE"; COMPANY_NAME = "Bayer AG"; FISCAL_YEAR_END_MONTH = 12; CURRENCY = "EUR"
@@ -11,6 +12,7 @@ Q_DATA = [
     ("FY", 2025, "Bayer FY 2025 Annual Report", {
         "revenue": (45_575, 45_575),
         "net_income": (-3_620, -3_620),  # GAAP loss due to litigation
+        "ebitda": (9_669, 9_669),  # EBITDA before Special Items (Core)
     }),
 ]
 EPS_DATA = [

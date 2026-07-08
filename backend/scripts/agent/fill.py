@@ -34,7 +34,7 @@ _NON_CURRENCY_KEYS = {"eps_diluted", "eps_basic"}
 def _upsert_row(
     db, company_id, key, period_type, period_year,
     gaap_mio_or_raw, adj_mio_or_raw,
-    source_ref, is_currency=True,
+    source_ref, is_currency=True, force_update=False,
 ):
     existing = (
         db.query(CompanyValue)
@@ -46,10 +46,10 @@ def _upsert_row(
         )
         .first()
     )
-    if existing and existing.primary_method in ("pdf", "manual"):
+    if existing and existing.primary_method in ("pdf", "manual") and not force_update:
         print(f"SKIP  {key}/{period_type}/{period_year}: existing {existing.primary_method}")
         return
-    if existing and getattr(existing, "manually_overridden", False):
+    if existing and getattr(existing, "manually_overridden", False) and not force_update:
         print(f"SKIP  {key}/{period_type}/{period_year}: manually_overridden")
         return
     if gaap_mio_or_raw is None:
@@ -152,6 +152,8 @@ def main() -> int:
     parser.add_argument("--ticker", required=True, help="Ticker (z.B. AVGO)")
     parser.add_argument("--skip-sanity", action="store_true", help="Sanity-Check ueberspringen")
     parser.add_argument("--dry-run", action="store_true", help="Nur zeigen, nicht commit")
+    parser.add_argument("--force-update", action="store_true",
+                        help="Ueberschreibe existing manual/pdf Rows (Corrections)")
     args = parser.parse_args()
 
     ticker = args.ticker.upper()
@@ -196,16 +198,16 @@ def main() -> int:
         # Currency-Keys (alle ausser EPS)
         for pt, py, src, data in module.Q_DATA:
             for key, (gaap, adj) in data.items():
-                _upsert_row(db, cid, key, pt, py, gaap, adj, src, is_currency=True)
+                _upsert_row(db, cid, key, pt, py, gaap, adj, src, is_currency=True, force_update=args.force_update)
 
         # EPS
         for pt, py, (gaap, adj), src in module.EPS_DATA:
-            _upsert_row(db, cid, "eps_diluted", pt, py, gaap, adj, src, is_currency=False)
+            _upsert_row(db, cid, "eps_diluted", pt, py, gaap, adj, src, is_currency=False, force_update=args.force_update)
 
         # Balance Sheet FY-Snapshots
         for year, bs in module.BS_DATA.items():
             for key, (val, src) in bs.items():
-                _upsert_row(db, cid, key, "FY", year, val, val, src, is_currency=True)
+                _upsert_row(db, cid, key, "FY", year, val, val, src, is_currency=True, force_update=args.force_update)
 
         if args.dry_run:
             print("DRY-RUN — rollback")
