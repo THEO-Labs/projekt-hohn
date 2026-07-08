@@ -7,9 +7,14 @@ Q_DATA = [
         "revenue": (9_700, 9_700),
         "fcf": (2_900, 2_900),
     }),
+    ("Q2", 2026, "Siemens Energy Q2 FY 2026 (May 12 2026)", {
+        "revenue": (10_300, 10_300),
+        "net_income": (835, 835),
+    }),
 ]
 EPS_DATA = [
     ("FY", 2025, ("1.63", "1.63"), "Siemens Energy FY 2025"),
     ("Q1", 2026, ("0.94", "0.94"), "Siemens Energy Q1 FY2026 (~$1.03 * 0.916)"),
+    ("Q2", 2026, ("0.89", "0.89"), "Siemens Energy Q2 FY2026"),
 ]
 BS_DATA = {}

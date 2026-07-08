@@ -24,10 +24,15 @@ Q_DATA = [
         "revenue": (5_400, 5_400),
         "net_income": (456, 456),
     }),
+    ("Q2", 2026, "Siemens Healthineers Q2 FY 2026 (May 2026, Jan-Mar 2026)", {
+        "revenue": (5_681, 5_681),
+        "net_income": (512, 512),
+    }),
 ]
 EPS_DATA = [
     ("Q3", 2025, ("0.49", "0.49"), "Siemens Healthineers Q3 FY2025"),
     ("FY", 2025, ("1.92", "2.35"), "Siemens Healthineers FY2025 Basic / Adjusted"),
     ("Q1", 2026, ("0.40", "0.49"), "Siemens Healthineers Q1 FY2026 Basic / Adjusted"),
+    ("Q2", 2026, ("0.45", "0.53"), "Siemens Healthineers Q2 FY2026 Basic / Adjusted"),
 ]
 BS_DATA = {}
