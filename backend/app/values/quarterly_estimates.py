@@ -652,6 +652,7 @@ def _ensure_prev_fy_q_actuals(
         .all()
     )
     existing_qs = {r.period_type: r.numeric_value for r in existing}
+    existing_by_q = {r.period_type: r for r in existing}
     # Merken welche existierenden Q4 als "calculated" (implied) markiert sind —
     # die muessen wir nach Q1-Q3-Refetch potentiell neu berechnen. Wenn Q4
     # provider/pdf/manual: skip (echte Actual).
@@ -659,6 +660,61 @@ def _ensure_prev_fy_q_actuals(
         r.period_type == "Q4" and r.primary_method == "calculated"
         for r in existing
     )
+    # Stale-YTD-Detection: Wenn ein web_guidance-Actual Q2/Q3 im Verhaeltnis
+    # zu den bekannten Vorquartalen YTD-verdaechtig aussieht (ratio_to_prior
+    # >= 1.7 UND standalone_impl liegt plausibel um prior_avg), loeschen wir
+    # ihn und lassen ihn neu ziehen. Das faengt Faelle wo der erste Fetch
+    # ohne Text-Marker YTD gespeichert hat (SPGI Div/OCF/SBC 2025).
+    stale_ytd_rows: list[CompanyValue] = []
+    q1_val = existing_qs.get("Q1")
+    for q_check in ("Q2", "Q3"):
+        row_check = existing_by_q.get(q_check)
+        if row_check is None:
+            continue
+        if row_check.primary_method not in ("web_guidance",):
+            continue
+        if getattr(row_check, "manually_overridden", False):
+            continue
+        if q_check == "Q2":
+            prior_sum = q1_val
+            prior_count = 1
+        else:
+            q2_val = existing_qs.get("Q2")
+            if q1_val is None or q2_val is None:
+                continue
+            prior_sum = q1_val + q2_val
+            prior_count = 2
+        if prior_sum is None or prior_sum == 0:
+            continue
+        v_row = row_check.numeric_value
+        if v_row is None or (v_row > 0) != (prior_sum > 0):
+            continue
+        ratio_to_prior = abs(v_row) / abs(prior_sum)
+        if ratio_to_prior < Decimal("1.7"):
+            continue
+        standalone_impl = v_row - prior_sum
+        if (standalone_impl > 0) != (v_row > 0):
+            continue
+        prior_avg = abs(prior_sum) / Decimal(prior_count)
+        ratio_to_avg = abs(standalone_impl) / prior_avg if prior_avg > 0 else Decimal("0")
+        if not (Decimal("0.6") <= ratio_to_avg <= Decimal("1.6")):
+            continue
+        stale_ytd_rows.append(row_check)
+    for row_stale in stale_ytd_rows:
+        logger.warning(
+            "Stale-YTD detected %s/%s/%s/FY%s (value=%.0f, ratio_to_prior=%.2f) "
+            "-> delete + refetch",
+            company.ticker, key, row_stale.period_type, prev_fy,
+            float(row_stale.numeric_value or 0),
+            float(abs(row_stale.numeric_value or 0) / abs(prior_sum or 1)),
+        )
+        db.delete(row_stale)
+        existing_qs.pop(row_stale.period_type, None)
+        existing_by_q.pop(row_stale.period_type, None)
+    if stale_ytd_rows:
+        db.flush()
+        # Nach delete: existing-Liste neu laden (fuer downstream-Logik)
+        existing = [r for r in existing if r not in stale_ytd_rows]
     if len(existing_qs) >= 4 and not q4_existing_calculated:
         return  # Alle 4 Q sind Real-Actuals -> nichts zu tun
 
