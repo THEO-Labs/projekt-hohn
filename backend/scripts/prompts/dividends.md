@@ -9,24 +9,27 @@ unit: EUR total (absoluter Cash-Payout, NIEMALS per-share)
 # dividends — Cash-Dividende Total
 
 ## Definition
-**Absolute Cash-Ausschuettung an ALLE Aktionaere** die IM Kalenderjahr {period_year} gezahlt wurde. Das entspricht der Dividende die FUER Geschaeftsjahr {period_year-1} nach Hauptversammlung (typisch Mai) ausgeschuettet wurde.
+**Cash-Ausschuettung an ALLE Aktionaere fuer das Geschaeftsjahr `{period_year}`**. Das ist die Dividende die im Geschaeftsjahr `{period_year}` **verdient** wurde (aus dem NI dieses GJ) und typisch im Mai des Folgejahres nach der HV ausgezahlt wird.
 
-Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Cash-Payout im Kalenderjahr 2025** = Dividende fuer FY 2024, ausgeschuettet nach HV im Mai 2025.
+Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Dividende fuer GJ 2025** = Vorschlag im Annual Report 2025 = Cash-Zahlung Mai 2026 nach HV.
+
+**Konvention konsistent mit allen anderen Metriken**: `period_year` = Geschaeftsjahr der Firma (nicht Kalenderjahr der Cash-Zahlung).
 
 ## Quelle im Report
-1. **Kapitalflussrechnung (Statement of Cash Flows)** → Position "Dividends paid to shareholders" oder "Dividendenzahlungen an Aktionaere" (Cash-Outflow, meist negativ dargestellt — als positiven Absolutbetrag speichern).
-2. **Statement of Changes in Equity** → Position "Dividends" (Reduktion des Eigenkapitals).
-3. **Notes** → oft eine eigene Note "Dividends per share" mit Total-Payout-Angabe.
+1. **Annual Report `{period_year}`** → "Dividendenvorschlag" / "Proposed dividend" fuer GJ `{period_year}`
+2. **Notes** → "Dividends per share" fuer GJ `{period_year}`
+3. **Statement of Changes in Equity** naechstes Jahr → Cash-Bewegung der Auszahlung (Verifikation)
+4. **Kapitalflussrechnung** `{period_year+1}` → "Dividends paid to shareholders" (Verifikation der tatsaechlichen Zahlung)
 
 ## Einheit & Format
 - **Absolute EUR** (fuer QIA.DE: USD)
 - **KEINE** Millionen-Skalierung (nicht `440`, sondern `440000000`)
-- Vorzeichen: **positiv** (Absolutbetrag, auch wenn im CF-Statement negativ)
+- Vorzeichen: **positiv**
 
 ## Sanity-Range (DAX-typisch)
-- Payout-Ratio (Div / Net Income): 20–60% typisch, 60–80% bei stabilen Cash-Cows (DTE, ALV), <20% bei Wachstum (SAP historisch)
+- Payout-Ratio (Div / Net Income): 20–60% typisch, 60–80% bei stabilen Cash-Cows (DTE, ALV), <20% bei Wachstum
 - Dividendrendite (Div / Market Cap): 2–6% DAX-Norm, >8% verdaechtig, >10% fast sicher Fehler
-- Wenn Firma reported Verlust: Div kann trotzdem gezahlt werden (aus Ruecklagen), aber unwahrscheinlich >Payout-Ratio 100% des Vorjahres-NI
+- Bei Verlust-Jahr: Div kann trotzdem gezahlt werden (aus Ruecklagen)
 
 ## Anti-Confusion (typische Fehler)
 
@@ -35,26 +38,30 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Cash-Payout im K
 - RICHTIG: 2,70 EUR/Aktie × 200,18M Aktien = **540.500.000 EUR**
 - **PFLICHT**: immer `per_share × shares_outstanding` rechnen wenn du per-share findest.
 
-**Vorschlag vs. Zahlung**:
-- Div-Vorschlag fuer FY 2025 (im Annual Report 2025 vorgeschlagen) → wird IN 2026 gezahlt → gehoert in `period_year=2026`
-- Div-Zahlung im Mai 2025 (nach HV) → das ist der 2024er Vorschlag → gehoert in `period_year=2025`
-- **Konvention: period_year = Kalenderjahr der Cash-Ausschuettung**.
+**Geschaeftsjahr vs Kalenderjahr der Zahlung** (kritisch):
+- FALSCH: `period_year=2025` mit dem Cash-Payout aus dem Kalenderjahr 2025 (= Div fuer GJ 2024) fuellen.
+- RICHTIG: `period_year=2025` = Div die im GJ 2025 **verdient** wurde (Vorschlag im AR 2025, Cash Mai 2026).
+- Beispiel Continental:
+  - `period_year=2024 FY dividends` = 2,20 EUR × 200,18M = **440.500.000 EUR** (Zahlung Mai 2025)
+  - `period_year=2025 FY dividends` = 2,70 EUR × 200,18M = **540.500.000 EUR** (Zahlung Mai 2026)
 
 **Regular vs Special Dividend**:
 - Sonderdividenden (z.B. aus Spin-offs) sind Teil des Total-Cash-Payout, wenn cash-relevant.
 - Aktien-Dividenden (in-kind) NICHT einbeziehen — nur Cash.
 
-**Dual-Class-Firmen (MRK, PAH3, VOW3)**:
+**Dual-Class-Firmen (MRK, PAH3, VOW3, BMW, HEN3)**:
 - Wenn Preferred und Common existieren: **Total = per_share × total_shares_all_classes**
 - MRK: 434,78M Total (Ordinary + Common)
 - PAH3: 612,50M Total (306,25M Preferred + 306,25M Common)
-- VOW3: 501,3M Total (295,1M Preferred + 206,2M Common)
+- VOW3: 501,30M Total (295,09M Preferred + 206,21M Common)
+- BMW: 656,77M Total (601,99M Common + 54,77M Preferred)
+- HEN3: 437,96M Total (178,16M Preferred + 259,80M Common)
 
 **Continuing vs Discontinued Operations**:
-- Div ist Corporate-Ebene, immer Total (nicht nach Segment splitten).
+- Div ist Corporate-Ebene, immer Total.
 
 ## Cross-References (Konsistenz-Checks)
-1. **Q-Split**: Div wird typisch nur einmal jaehrlich gezahlt (in Q2 nach HV). Also `Q1=0, Q2=FY, Q3=0, Q4=0`. Ausnahmen: QIA (Q3), einige Immobilien-REITs (quartalsweise).
+1. **Q-Split**: Div wird typisch nur einmal jaehrlich gezahlt (in Q2 des Folgejahres nach HV). Fuer `period_year=2025` bedeutet das: Q-Werte alle in `period_year=2026 Q2` sichtbar (Auszahlung), nicht im GJ des Verdienens. Konvention hier: Q-Werte NULL lassen, nur FY-Wert setzen — Q-Split wuerde nur bei Firmen wie QIA (Q3) oder REITs (quartalsweise) Sinn machen.
 2. **dividend_yield = dividends / market_cap × 100**: muss in Sanity-Range fallen (2–6% DAX)
 3. **per_share_check = dividends / shares_outstanding**: sollte plausibel sein (0,5–20 EUR fuer DAX)
 
@@ -64,33 +71,36 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Cash-Payout im K
   "ticker": "CON.DE",
   "period_year": 2025,
   "period_type": "FY",
-  "dividends_eur": 440500000,
-  "per_share_eur": 2.20,
+  "dividends_eur": 540500000,
+  "per_share_eur": 2.70,
   "shares_used": 200178074,
-  "declared_for_fy": 2024,
-  "payment_date": "2025-05-02",
-  "source_url": "https://cdn.continental.com/.../continental_dividendenbekanntmachung_hv_2024.pdf",
-  "source_quote": "€2.20 per eligible share, totaling €440,013,162.60"
+  "for_fiscal_year": 2025,
+  "expected_payment_date": "2026-05-XX",
+  "source_url": "https://www.continental.com/en/investors/shares/dividend/",
+  "source_quote": "Continental Executive Board has proposed increasing the dividend by €0.20 to €2.70 per share for the past fiscal year, with a total distribution to shareholders of approximately €540 million"
 }
 ```
 
-## Referenz-Beispiele (DAX)
-| Ticker | period_year | Correct | Falsches Muster (was NICHT reinschreiben) |
+## Referenz-Beispiele (DAX, verifizierte Werte)
+| Ticker | period_year | Correct | Herleitung |
 |---|---|---|---|
-| CON.DE | 2025 | 440.500.000 EUR (2,20 × 200,18M) | 2.700.000.000 (Verwechslung mit 2,70 EUR/Aktie) |
-| ALV.DE | 2025 | ~6,2 Mrd EUR (15,4 × 400M) | 15,40 (per-share) |
-| DTE.DE | 2025 | ~4,2 Mrd EUR (0,90 × 4.769M shares) | Uebersehen dass DTE viele Aktien hat |
-| SAP.DE | 2025 | ~3,4 Mrd EUR (2,90 × 1.166M) | 2.900.000 (Verwechslung EUR mit Cent) |
-| PAH3.DE | 2025 | ~1,17 Mrd EUR (1,91 × 612,5M **Total**) | 585M (nur Preferred, ignoriert Common) |
+| CON.DE | 2025 | 540.500.000 EUR | 2,70 EUR/Aktie × 200,18M Aktien (Vorschlag im AR 2025, Zahlung 2026) |
+| CON.DE | 2024 | 440.500.000 EUR | 2,20 EUR/Aktie × 200,18M Aktien (Vorschlag im AR 2024, Zahlung 2025) |
+| SAP.DE | 2024 | ~3.320.000.000 EUR | 2,85 EUR × 1.166M Aktien (Zahlung Mai 2025) |
+| ALV.DE | 2024 | ~6.160.000.000 EUR | 15,40 EUR × 400M Aktien (Zahlung Mai 2025) |
+| DTE.DE | 2024 | ~4.292.000.000 EUR | 0,90 EUR × 4.769M Aktien (Zahlung Mai 2025) |
+| PAH3.DE | 2024 | ~1.170.000.000 EUR | 1,91 EUR × 612,50M Aktien inkl. Common (Zahlung Mai 2025) |
+| BAYN.DE | 2024 | ~110.000.000 EUR | 0,11 EUR × 982M Aktien (Sonderkuerzung wegen Verlusten) |
 
 ## Query-Template fuer Agent
 ```
-Fuer {ticker} ({company_name}):
-1. Finde im Annual Report / Statement of Cash Flows die Position "Dividends paid to shareholders"
-   fuer das Kalenderjahr {period_year}.
+Fuer {ticker} ({company_name}) Geschaeftsjahr {period_year}:
+1. Finde im Annual Report {period_year} den Dividendenvorschlag ("proposed dividend" /
+   "Dividendenvorschlag" fuer GJ {period_year}).
 2. Wenn nur per-share Wert verfuegbar: multipliziere mit total shares outstanding
    (bei Dual-Class-Firmen: BEIDE Klassen zusammen).
 3. Gib absolute EUR zurueck (fuer QIA: USD).
 4. Verifiziere: dividends_eur / shares_outstanding sollte plausibel per-share sein (0,5-20 EUR).
-5. Verifiziere: dividends_eur / market_cap sollte 2-6% ergeben (max 10%, sonst Fehler wahrscheinlich).
+5. Verifiziere: dividends_eur / market_cap sollte 2-6% ergeben (max 10%, sonst Fehler).
+6. WICHTIG: period_year=2025 heisst "fuer GJ 2025" (Zahlung 2026), NICHT "gezahlt in 2025".
 ```

@@ -91,7 +91,7 @@ Bei Konzernen mit Minderheiten (VOW3, DBK, RWE): **Net income attributable to sh
 |---|---|---|---|
 | BAYN.DE | 2025 | **-3.620.000.000** (Verlust) | +5.680.000.000 (Adjusted Core EPS × Shares) |
 | ENR.DE | 2024 | **-1.600.000.000** | Positive Adjusted-Zahl |
-| VNA.DE | 2024 | **-965.000.000** | Adjusted-Immobilien-Ergebnis positiv |
+| VNA.DE | 2024 | **~-6.700.000.000** (IFRS Gruppenergebnis nach Immobilien-Abwertungen) | -965M (Adjusted Group FFO) oder positiv (Adjusted Result) |
 | SAP.DE | 2025 | 7.492.000.000 EUR | 7.492 Mio USD (Currency) |
 | PAH3.DE | 2026 | -923.000.000 (Q1) | Positive Beteiligungsergebnis-Schaetzung |
 

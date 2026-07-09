@@ -86,10 +86,12 @@ Negativ = Firma hat mehr Cash als Schulden (Netto-Cash-Position)
 ## Referenz-Beispiele
 | Ticker | period_year | Correct | Falsches Muster |
 |---|---|---|---|
-| SAP.DE | 2025 | **-3.500 Mio** (Netto-Cash) | +3.500 (Vorzeichen falsch) |
-| BAS.DE | 2025 | ~+40 Mrd (Netto-Schuld) | negativ |
-| DTE.DE | 2025 | ~+120 Mrd (Netto-Schuld inkl. T-Mobile US Kredite) | 60 Mrd (nur Konzern DE) |
-| BMW.DE | 2025 | Netto-Cash Automotive ~+40 Mrd, Total-Konzern positiv ~+80 Mrd (FS-Kredite) | Nur Auto |
+| SAP.DE | 2025 | **-3.500 Mio** (Netto-Cash-Position) | +3.500 (Vorzeichen falsch) |
+| BAS.DE | 2025 | **~+40 Mrd** (Netto-Schuld) | negativ (Netto-Cash-Fehler) |
+| DTE.DE | 2025 | **~+133 Mrd** (Netto-Schuld inkl. T-Mobile US Kredite) | +60 Mrd (nur Konzern DE ohne T-Mobile US) |
+| BMW.DE | 2025 | **~-40 Mrd Automotive** (Netto-Cash-Position, Konvention negativ) | +40 Mrd (Vorzeichen falsch — Netto-Cash muss negativ sein) |
+| BMW.DE | 2025 | **~+80 Mrd Total-Konzern** (positive Netto-Schuld inkl. Financial Services) | Nur Automotive (unterschaetzt echte Verschuldung) |
+| VOW3.DE | 2025 | **~+180 Mrd Total-Konzern** (Netto-Schuld inkl. FS) | Nur Automotive Netto-Cash-Position |
 
 ## Query-Template
 ```

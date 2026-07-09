@@ -22,9 +22,10 @@ unit: EUR per share (fuer QIA: USD) — pro Aktie, NIEMALS absolute Total
 
 ## Sanity-Range
 - Typisch 0,10 – 50 EUR/Aktie im DAX
-- MTX: bis 30 EUR/Aktie
+- Hoch-EPS: MTX 15-18 EUR, MUV2 30-40 EUR, RHM 40-70 EUR (nach Boom)
 - SAP: 5-10 EUR/Aktie
 - BEI: 2-5 EUR/Aktie
+- DTE: 0,50-1,50 EUR (viele Aktien, niedriges EPS)
 - Ausserhalb 0,01 – 100 EUR = red flag
 
 ## Anti-Confusion (typische Fehler)
@@ -75,7 +76,7 @@ unit: EUR per share (fuer QIA: USD) — pro Aktie, NIEMALS absolute Total
 |---|---|---|---|---|
 | SAP.DE | 2025 | Q1 | 1.52 EUR | 1520 (in Cent) oder 1520000 (Total × 1000) |
 | BAYN.DE | 2025 | FY | -3.68 EUR (reported) | 5.68 EUR (Core, adjusted) |
-| MTX.DE | 2025 | FY | ~18 EUR | 18000000 (Total durch shares vergessen) |
+| MTX.DE | 2025 | FY | **~15-18 EUR** | 18000000 (Total durch shares vergessen) |
 | ZAL.DE | 2026 | Q1 | -0.33 EUR (Verlust) | positive Adjusted-Zahl |
 
 ## Query-Template fuer Agent

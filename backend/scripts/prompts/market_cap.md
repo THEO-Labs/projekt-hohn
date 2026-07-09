@@ -76,7 +76,7 @@ Fuer SNAPSHOT: aktueller Kurs × aktuelle Total Shares.
 | MRK.DE | 2025 | 58,55 Mrd (134,66 × 434,78M **Total**) | 17,40 Mrd (nur 129,24M Ordinary) |
 | PAH3.DE | 2025 | ~20,2 Mrd (33 × 612,5M Total) | 5,0 Mrd (nur Preferred) |
 | SAP.DE | 2026 | ~163 Mrd (140 × 1,166M) | 163 Mio (Faktor 1000 vergessen) |
-| VOW3.DE | 2025 | ~60 Mrd (Preferred-Kurs × 501,3M Total) | ~35 Mrd (nur Preferred) |
+| VOW3.DE | 2025 | **~46 Mrd** (Preferred-Kurs ~92 EUR × 501,30M Total, Stichtag 31.12.2024) | ~27 Mrd (nur Preferred-Klasse 295M ohne Common) |
 
 ## Query-Template fuer Agent
 ```

@@ -91,7 +91,7 @@ Q ~= FY / 4 (mit Saisonalitaet ±20%). Wenn Q > FY oder Q < 0 = red flag.
 | SAP.DE | 2025 | FY | 36.800 Mio EUR | 36.800 Mio USD (Waehrung) |
 | ALV.DE | 2025 | FY | ~180 Mrd EUR (Insurance Revenue IFRS 17) | 100 Mrd (nur Life ohne P&C) |
 | DTE.DE | 2025 | Q1 | ~29 Mrd EUR (inkl. T-Mobile US in USD-EUR-konvertiert) | 15 Mrd (nur Deutschland) |
-| CON.DE | 2025 | FY | ~35 Mrd EUR (inkl. Aumovio bis 18.09.) | 20 Mrd (nur continuing) |
+| CON.DE | 2025 | FY | **~39,7 Mrd EUR** (Total inkl. Aumovio-Zeit bis 18.09.2025) | 20 Mrd (nur continuing post-Spin-off) |
 
 ## Query-Template fuer Agent
 ```
