@@ -18,13 +18,13 @@ export function formatValue(
     return `${(value / 1_000_000).toFixed(2)}M`;
   }
 
-  return new Intl.NumberFormat("de-DE", {
+  return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,
-    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+    minimumFractionDigits: 2,
   }).format(value);
 }
 
-const NUM_LOCALE = "de-DE";
+const NUM_LOCALE = "en-US";
 
 export function formatNumber(value: number | null | undefined, digits = 2): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -39,9 +39,9 @@ export function formatShort(value: number | null | undefined, currency?: string 
   const abs = Math.abs(value);
   let scaled: number;
   let suffix: string;
-  if (abs >= 1e12) { scaled = value / 1e12; suffix = "Bio"; }
-  else if (abs >= 1e9) { scaled = value / 1e9; suffix = "Mrd"; }
-  else if (abs >= 1e6) { scaled = value / 1e6; suffix = "Mio"; }
+  if (abs >= 1e12) { scaled = value / 1e12; suffix = "T"; }
+  else if (abs >= 1e9) { scaled = value / 1e9; suffix = "B"; }
+  else if (abs >= 1e6) { scaled = value / 1e6; suffix = "M"; }
   else { scaled = value; suffix = ""; }
   const digits = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
   const num = formatNumber(scaled, digits);

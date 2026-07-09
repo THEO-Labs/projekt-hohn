@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Building2, ChevronLeft, Loader2, Plus } from "lucide-react";
+import { Building2, ChevronLeft, Loader2, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -20,6 +20,7 @@ import type { ValueDefinition } from "@/api/values";
 import {
   loadCompanyCard,
   getDashboardDefinitions,
+  refreshCompanyDaily,
   type CompanyCardData,
 } from "@/api/dashboard";
 import { t } from "@/lib/i18n";
@@ -38,6 +39,9 @@ export function PortfolioDetailPage() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookedUp, setLookedUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
 
   const loadAll = async () => {
     if (!id) return;
@@ -62,6 +66,31 @@ export function PortfolioDetailPage() {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  const handleRefreshAllDaily = async () => {
+    if (refreshingAll || cards.length === 0) return;
+    setRefreshingAll(true);
+    setRefreshProgress({ done: 0, total: cards.length });
+    const toastId = toast.loading(`Refreshing daily numbers for ${cards.length} companies…`);
+    let ok = 0;
+    let failed = 0;
+    for (const [i, card] of cards.entries()) {
+      try {
+        await refreshCompanyDaily(card.company.id);
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+      setRefreshProgress({ done: i + 1, total: cards.length });
+      toast.loading(`Refreshing daily numbers (${i + 1}/${cards.length})…`, { id: toastId });
+    }
+    toast.dismiss(toastId);
+    if (failed === 0) toast.success(`Daily numbers refreshed for all ${ok} companies`);
+    else toast.warning(`Daily refresh: ${ok} ok, ${failed} failed`);
+    setRefreshingAll(false);
+    setRefreshProgress(null);
+    await loadAll();
+  };
 
   const handleLookup = async () => {
     const q = lookupQuery.trim();
@@ -149,6 +178,21 @@ export function PortfolioDetailPage() {
               {cards.length === 1 ? "1 company" : `${cards.length} companies`} in this portfolio.
             </p>
           </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={handleRefreshAllDaily}
+              disabled={refreshingAll || cards.length === 0}
+              title="Refresh daily numbers (Stock Price, Market Cap, Shares) for the entire portfolio — fast, no web research"
+              className="flex items-center gap-1.5"
+            >
+              {refreshingAll
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <RefreshCw className="h-4 w-4" />}
+              {refreshingAll && refreshProgress
+                ? `Refreshing ${refreshProgress.done}/${refreshProgress.total}…`
+                : "Refresh daily (all)"}
+            </Button>
           <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); setLookedUp(false); } }}>
             <DialogTrigger render={<Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20" />}>
               <Plus className="h-4 w-4" />
@@ -202,6 +246,7 @@ export function PortfolioDetailPage() {
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         {loading ? (

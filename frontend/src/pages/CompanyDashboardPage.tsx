@@ -1631,7 +1631,7 @@ export function CompanyDashboardPage() {
                               const niNum = niForKey?.numeric_value != null ? parseFloat(String(niForKey.numeric_value)) : null;
                               const isPeNotDefined = d.key === "pe_ratio" && niNum != null && niNum <= 0;
                               const tooltipText = isPeNotDefined
-                                ? `P/E nicht definiert: Net Income ${niNum != null ? `${(niNum/1_000_000).toFixed(0)} Mio` : ""} ist negativ/null (Verlust-Jahr). KGV ist bei Verlusten konzeptionell nicht aussagekräftig.`
+                                ? `P/E not defined: Net Income ${niNum != null ? `${(niNum/1_000_000).toFixed(0)} M` : ""} is negative/null (loss year). P/E is conceptually not meaningful in loss years.`
                                 : hohnPartialBlock
                                 ? `Hohn-Rendite nicht berechenbar — fehlende Komponenten: ${fyPartialMissing.join(", ")}. Klick auf die fehlenden Felder um sie zu fuellen.`
                                 : pdfNullSource
@@ -2268,10 +2268,11 @@ export function CompanyDashboardPage() {
                   </dl>
                 </section>
 
-                {/* Section: Aktionen — fuer FY-Werte (Actuals UND Forecasts) */}
+                {/* Section: Aktionen — fuer FY- und Q-Werte (Actuals UND Forecasts) */}
                 {(() => {
+                  const isQPeriod = typeof cv.period_type === "string" && /^Q[1-4]$/.test(cv.period_type);
                   const isEditableValue = (
-                    cv.period_type === "FY"
+                    (cv.period_type === "FY" || isQPeriod)
                     && cv.period_year != null
                     && def.source_type !== "CALCULATED"
                     && def.source_type !== "QUALITATIVE"
@@ -2324,7 +2325,7 @@ export function CompanyDashboardPage() {
                       await overrideValue(
                         tooltipEdit.companyId, tooltipEdit.key,
                         { numeric_value: num, source_name: "Manuell" },
-                        "FY", cv.period_year ?? undefined,
+                        cv.period_type ?? "FY", cv.period_year ?? undefined,
                       );
                       await loadAllValues();
                       toast.success(isForecastValue

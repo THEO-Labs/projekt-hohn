@@ -27,6 +27,8 @@ export type Cell = {
   formula?: string | null;
   value_key?: string | null;
   period_label?: string | null;
+  period_type?: "FY" | "Q1" | "Q2" | "Q3" | "Q4" | "SNAPSHOT" | null;
+  period_year?: number | null;
   // Marks an adjusted-column cell that fell back to the GAAP value because
   // no separate Non-GAAP figure was reported. Rendered in muted colour with
   // "≈" prefix to signal "same as GAAP".
@@ -222,6 +224,8 @@ function refToCell(
   isCurrency: boolean,
   valueKey: string,
   periodLabel: string,
+  periodType?: "FY" | "Q1" | "Q2" | "Q3" | "Q4" | null,
+  periodYear?: number | null,
 ): Cell {
   const { value: raw, is_gaap_fallback } = refValueWithFallback(r, variant);
   let value = raw;
@@ -240,6 +244,8 @@ function refToCell(
     formula: FORMULAS[valueKey] ?? null,
     value_key: valueKey,
     period_label: periodLabel,
+    period_type: periodType ?? null,
+    period_year: periodYear ?? null,
     is_gaap_fallback,
   };
 }
@@ -256,13 +262,14 @@ const buildQRow = (
 ): QuarterlyRow => {
   const y = year ?? 0;
   const suffix = (q: string) => `${q} ${y}`;
+  const yr = year ?? null;
   return {
     year: y,
-    q1: refToCell(row.q1, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q1")),
-    q2: refToCell(row.q2, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q2")),
-    q3: refToCell(row.q3, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q3")),
-    q4: refToCell(row.q4, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q4")),
-    annual: refToCell(row.annual, variant, factor, fx, nativeCurrency, isCurrency, valueKey, `FY ${y}`),
+    q1: refToCell(row.q1, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q1"), "Q1", yr),
+    q2: refToCell(row.q2, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q2"), "Q2", yr),
+    q3: refToCell(row.q3, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q3"), "Q3", yr),
+    q4: refToCell(row.q4, variant, factor, fx, nativeCurrency, isCurrency, valueKey, suffix("Q4"), "Q4", yr),
+    annual: refToCell(row.annual, variant, factor, fx, nativeCurrency, isCurrency, valueKey, `FY ${y}`, "FY", yr),
   };
 };
 

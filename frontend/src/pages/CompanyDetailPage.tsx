@@ -900,6 +900,8 @@ function CompanyDetailContent({
             displayValue={activeCell.displayValue}
             anchorRect={activeCell.anchor}
             onClose={closeCell}
+            companyId={company?.id}
+            onSaved={() => { reload(); }}
           />
         )}
 

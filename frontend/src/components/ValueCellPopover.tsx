@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, X } from "lucide-react";
+import { ExternalLink, Pencil, X } from "lucide-react";
+import { toast } from "sonner";
 
 import type { Cell } from "@/pages/companyDetailMocks";
 import { formatAbsolute, formatRelative } from "@/lib/format";
+import { overrideValue } from "@/api/values";
 
 type Props = {
   cell: Cell;
   displayValue: string;
   onClose: () => void;
   anchorRect: DOMRect | null;
+  companyId?: string;
+  onSaved?: () => void;
 };
 
 // The badge follows is_forecast (Actual vs Estimate). primary_method is a
@@ -63,9 +67,52 @@ function parseSource(raw: string | null | undefined): { head: string; parts: str
   return { head, parts };
 }
 
-export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Props) {
+export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, companyId, onSaved }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const canEdit = !!(
+    companyId
+    && cell.value_key
+    && cell.period_type
+    && cell.period_year != null
+    && cell.primary_method !== "calculated"
+  );
+
+  const handleStartEdit = () => {
+    setEditValue(cell.value != null ? String(cell.value) : "");
+    setEditing(true);
+  };
+
+  const handleSave = async () => {
+    if (!companyId || !cell.value_key || !cell.period_type || cell.period_year == null) return;
+    const num = parseFloat(editValue.replace(/,/g, "."));
+    if (isNaN(num)) {
+      toast.error("Invalid number");
+      return;
+    }
+    setSaving(true);
+    try {
+      await overrideValue(
+        companyId,
+        cell.value_key,
+        { numeric_value: num, source_name: "Manual" },
+        cell.period_type,
+        cell.period_year ?? undefined,
+      );
+      toast.success(`${cell.period_label ?? "Value"} overridden`);
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      const detail = (e as { message?: string })?.message;
+      toast.error(detail || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -135,8 +182,51 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect }: Pr
       </div>
 
       {/* Big value */}
-      <div className="border-b border-border/40 px-3 pb-2.5">
-        <div className="text-[18px] font-semibold tabular-nums leading-none">{displayValue}</div>
+      <div className="flex items-end justify-between gap-2 border-b border-border/40 px-3 pb-2.5">
+        {editing ? (
+          <input
+            autoFocus
+            type="text"
+            className="w-full rounded border border-primary bg-background px-1.5 py-1 font-mono text-sm text-foreground outline-none"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSave();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            disabled={saving}
+          />
+        ) : (
+          <div className="text-[18px] font-semibold tabular-nums leading-none">{displayValue}</div>
+        )}
+        {canEdit && !editing && (
+          <button
+            onClick={handleStartEdit}
+            className="rounded p-1 text-muted-foreground/70 hover:bg-muted hover:text-foreground"
+            aria-label="Edit value"
+            title="Override this value manually"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        )}
+        {editing && (
+          <div className="flex gap-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="rounded bg-primary px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {saving ? "…" : "Save"}
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              disabled={saving}
+              className="rounded border border-border px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground hover:bg-muted"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="px-3 py-2 text-[11.5px] leading-snug space-y-1.5">
