@@ -86,6 +86,7 @@ class QuarterValue:
     value: Decimal | None
     source_quote: str | None
     source_url: str | None
+    is_estimate: bool = False
 
 
 @dataclass
@@ -172,11 +173,11 @@ def _build_historic_extractor_prompt(
     metric_context = load_metric_prompt(value_key)
 
     schema = """{
-  "q1": {"value": <number in absolute """ + currency + """|null>, "source_quote": <string|null>, "source_url": <string|null>},
-  "q2": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>},
-  "q3": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>},
-  "q4": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>},
-  "fy": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>},
+  "q1": {"value": <number in absolute """ + currency + """|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
+  "q2": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
+  "q3": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
+  "q4": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
+  "fy": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
   "extractor_note_adjusted_vs_reported": <string|null: describe if source only shows Adjusted/Core/Bereinigt>
 }"""
 
@@ -195,13 +196,27 @@ For each value MUST provide:
 - `source_url`: URL of the source document
 
 Availability rules — CRITICAL:
-- If the annual report for FY {year} is NOT YET PUBLISHED (still in-progress fiscal year):
-    * For each quarter that has an interim / earnings report out: extract that value.
-    * For quarters NOT YET reported: set value to null, source_quote to null, source_url to null.
-    * For FY total: set to null UNLESS the company has issued explicit FY guidance —
-      then use that guidance value and note "FY guidance" in the source_quote.
-    * DO NOT extrapolate, DO NOT sum Q1-Q3 to guess Q4, DO NOT estimate.
-- If the annual report IS published: extract all Q1..Q4 + FY from it.
+- Each period has an `is_estimate` boolean. Set carefully:
+    * `is_estimate: false` = value comes from a published company report
+      (interim, quarterly, annual, press release with hard numbers).
+      Source_quote is a sentence from that publication.
+    * `is_estimate: true` = value comes from company FY guidance ranges,
+      analyst consensus (Bloomberg, Refinitiv, MarketScreener), or your
+      own model based on the reported YTD run-rate + prior-year Q pattern.
+      Source_quote must cite the guidance / consensus / model basis.
+- If the annual report for FY {year} is NOT YET PUBLISHED (in-progress fiscal year):
+    * Each already-reported quarter: extract the reported value, `is_estimate: false`.
+    * Each not-yet-reported quarter: PROVIDE a consensus / analyst-estimate /
+      company-guidance-implied value with `is_estimate: true`.
+      If no such estimate is available at all: set value to null.
+    * FY total: use company FY guidance midpoint (`is_estimate: true`),
+      or Q1-YTD scaled to full year based on prior-year seasonality
+      (`is_estimate: true`), or null if none is available.
+    * NEVER halluzinate — every non-null estimate MUST have a real source_quote
+      pointing to a guidance number, consensus figure, or explicit prior-year
+      seasonal pattern that supports the extrapolation.
+- If the annual report IS published: extract all Q1..Q4 + FY from it,
+  `is_estimate: false` throughout.
 
 Consistency: when Q1..Q4 are ALL non-null, Q1 + Q2 + Q3 + Q4 should equal FY within 0.5% for flow metrics.
 
@@ -272,6 +287,7 @@ def _to_qv(raw: dict | None) -> QuarterValue | None:
         value=dec,
         source_quote=raw.get("source_quote"),
         source_url=raw.get("source_url"),
+        is_estimate=bool(raw.get("is_estimate", False)),
     )
 
 
@@ -649,12 +665,15 @@ def apply_to_db(
             + (f" | flags={','.join(result.verdict.flags)}" if result.verdict.flags else "")
         )
 
+        is_estimate = bool(qv.is_estimate) if qv else False
+
         if existing:
             existing.numeric_value = value
             existing.source_name = source_name
             existing.source_link = src_url
             existing.primary_method = verdict_tag
             existing.manually_overridden = True
+            existing.is_forecast = is_estimate
             existing.fetched_at = datetime.now(timezone.utc)
             if currency and not existing.currency:
                 existing.currency = currency
@@ -666,7 +685,7 @@ def apply_to_db(
                 value_key=value_key,
                 period_type=period_type,
                 period_year=year,
-                is_forecast=False,
+                is_forecast=is_estimate,
                 numeric_value=value,
                 currency=currency,
                 source_name=source_name,
