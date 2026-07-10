@@ -483,6 +483,65 @@ def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day, isi
     return None
 
 
+def _process_one_key_via_two_stage(
+    db: Session,
+    key: str,
+    company,
+    company_id: UUID,
+    payload,
+    updated: list,
+) -> bool:
+    """Two-stage extractor + verifier for one key on the FY refresh path.
+
+    Transparent to the caller (Full-Refresh button user): no separate opt-in.
+    Called only for API-source non-STAMMDATEN keys on FY periods.
+    """
+    import os as _os
+    from decimal import Decimal as _Dec
+    from scripts.two_stage_research import (
+        CostTracker,
+        apply_to_db as _apply,
+        choose_mode_for_year,
+        research_two_stage,
+    )
+
+    prev_stmt = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_year == payload.period_year - 1,
+            CompanyValue.period_type == "FY",
+        )
+        .one_or_none()
+    )
+    prev_fy = prev_stmt.numeric_value if prev_stmt else None
+
+    verifier_model = _os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
+    try:
+        mode = choose_mode_for_year(payload.period_year)
+        result = research_two_stage(
+            ticker=company.ticker,
+            company_name=company.name,
+            value_key=key,
+            year=payload.period_year,
+            currency=company.currency,
+            mode=mode,
+            quarter=None,
+            prev_year_fy_hint=prev_fy,
+            verifier_model=verifier_model,
+            cost_tracker=CostTracker(),
+        )
+    except Exception as e:
+        logger.error("two-stage failed for %s / %s: %s", company.ticker, key, e)
+        return False
+
+    written = _apply(db, company_id, key, payload.period_year, result, currency=company.currency)
+    for cv in written:
+        updated.append(cv)
+    return bool(written)
+
+
 def _process_one_key(
     db: Session,
     key: str,
@@ -1095,20 +1154,40 @@ def refresh_company_values(
     else:
         effective_keys = payload.keys
 
+    # Full FY refresh (not stammdaten_only) uses the two-stage extractor +
+    # verifier pipeline transparently: user only sees a slightly longer
+    # progress bar, but every value is challenged by a second LLM against
+    # its own source_quote before being written to the DB.
+    use_two_stage_fy = (
+        not payload.stammdaten_only
+        and payload.period_type == "FY"
+        and payload.period_year is not None
+    )
+
     start_job(company_id, len(effective_keys))
     try:
         for key in effective_keys:
             update_job(company_id, key)
             try:
-                wrote = _process_one_key(
-                    db=db,
-                    key=key,
-                    ticker=ticker,
-                    company=company,
-                    company_id=company_id,
-                    payload=payload,
-                    updated=updated,
-                )
+                if (
+                    use_two_stage_fy
+                    and key not in ALWAYS_CURRENT_KEYS
+                    and key not in CALCULATED_KEYS
+                ):
+                    wrote = _process_one_key_via_two_stage(
+                        db=db, key=key, company=company,
+                        company_id=company_id, payload=payload, updated=updated,
+                    )
+                else:
+                    wrote = _process_one_key(
+                        db=db,
+                        key=key,
+                        ticker=ticker,
+                        company=company,
+                        company_id=company_id,
+                        payload=payload,
+                        updated=updated,
+                    )
                 if wrote:
                     mark_success(company_id)
             except Exception as e:
