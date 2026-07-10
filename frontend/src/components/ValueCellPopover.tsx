@@ -80,6 +80,38 @@ function parseSource(raw: string | null | undefined): { head: string; parts: str
   return { head, parts };
 }
 
+// Parse Two-Stage source_name format:
+//   "Two-Stage <verdict>: <reason> | flags=flag1,flag2"
+// Returns null if the source doesn't look like a two-stage record.
+function parseTwoStageSource(raw: string | null | undefined): {
+  verdict: string;
+  reason: string;
+  flags: string[];
+} | null {
+  if (!raw || !raw.startsWith("Two-Stage")) return null;
+  const flagsIdx = raw.lastIndexOf("| flags=");
+  const flags = flagsIdx >= 0
+    ? raw.slice(flagsIdx + "| flags=".length).split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+  const bodyEnd = flagsIdx >= 0 ? flagsIdx : raw.length;
+  const body = raw.slice("Two-Stage ".length, bodyEnd).trim();
+  const colon = body.indexOf(":");
+  const verdict = colon > 0 ? body.slice(0, colon).trim() : "verified";
+  const reason = colon > 0 ? body.slice(colon + 1).trim() : body;
+  return { verdict, reason, flags };
+}
+
+const FLAG_LABELS: Record<string, string> = {
+  adjusted_not_reported: "Adjusted, not IFRS",
+  per_share_confusion: "Per-share vs total",
+  unit_scale_error: "Unit scale",
+  currency_error: "Currency",
+  continuing_vs_discontinued: "Continuing vs discontinued",
+  qsum_mismatch: "Q-sum ≠ FY",
+  dual_class_confusion: "Dual-class shares",
+  source_quote_does_not_support: "Source quote doesn't support",
+};
+
 export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, companyId, onSaved }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -144,6 +176,7 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
 
   const meta = cellBadge(cell);
   const origin = methodOrigin(cell.primary_method);
+  const twoStage = useMemo(() => parseTwoStageSource(cell.source_name), [cell.source_name]);
   const { head, parts } = useMemo(() => parseSource(cell.source_name), [cell.source_name]);
 
   if (!anchorRect) return null;
@@ -250,7 +283,35 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
           </div>
         )}
 
-        {head && (
+        {twoStage ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50/60 p-2 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">
+                Verifier reasoning
+              </span>
+              <span className="text-[10px] text-emerald-600/70">·</span>
+              <span className="text-[10px] font-medium uppercase text-emerald-700">
+                {twoStage.verdict.replace("two_stage_", "").replace("_", " ")}
+              </span>
+            </div>
+            <div className="text-[11.5px] leading-snug text-emerald-950/90">
+              {twoStage.reason}
+            </div>
+            {twoStage.flags.length > 0 && (
+              <div className="flex flex-wrap gap-1 pt-0.5">
+                {twoStage.flags.map((f) => (
+                  <span
+                    key={f}
+                    className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9.5px] font-medium text-amber-900"
+                    title={f}
+                  >
+                    {FLAG_LABELS[f] ?? f}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : head && (
           <div className="text-foreground">{head}</div>
         )}
 
