@@ -41,12 +41,39 @@ from typing import Iterable, Literal
 from uuid import UUID, uuid4
 
 import anthropic
+import httpx
 
 # Reuse the existing client + rate limiter so we honor the same
 # per-minute budget as the production extractor.
 from app.config import settings
 from app.llm.claude import get_client
 from app.llm.rate_limiter import RateLimiter
+
+
+def _validate_source_url(url: str | None) -> bool:
+    """Conservative existence check for the extractor-provided source_url.
+
+    We only mark a URL as invalid on hard signals: DNS failure,
+    connection refused, or an HTTP 404. Timeouts, 403 anti-bot walls,
+    405 method-not-allowed, and other 4xx/5xx responses get the benefit
+    of the doubt — many IR sites block HEAD from any non-browser UA.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; hohn-verify/1.0)",
+    }
+    try:
+        r = httpx.head(url, timeout=4.0, follow_redirects=True, headers=headers)
+        if r.status_code == 404:
+            return False
+        return True
+    except httpx.ConnectError:
+        return False  # DNS failure / connection refused
+    except (httpx.TimeoutException, httpx.InvalidURL):
+        return True  # timeout is not proof of fabrication
+    except Exception:
+        return True
 
 # Cost estimates per 1M tokens (USD, checked 2026-07)
 _COST_TABLE = {
@@ -397,17 +424,18 @@ def run_extractor(
             ticker, company_name, value_key, year, quarter, currency
         )
 
-    def _call() -> anthropic.types.Message:
+    def _call(extra_instruction: str = "") -> anthropic.types.Message:
+        user_content = prompt + (f"\n\n{extra_instruction}" if extra_instruction else "")
         return client.messages.create(
             model=model,
             max_tokens=8192,
             system=EXTRACTOR_SYSTEM,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": user_content}],
         )
 
-    response = limiter.call(_call)
-
+    # First attempt
+    response = limiter.call(lambda: _call(""))
     text_parts = []
     for block in response.content:
         text = getattr(block, "text", None)
@@ -415,7 +443,26 @@ def run_extractor(
             text_parts.append(text)
     raw_text = "\n".join(text_parts).strip()
 
-    payload = _extract_json(raw_text)
+    # Try to parse; if it fails, retry once with an explicit "valid JSON only"
+    # instruction. This catches the case where the first call ended with prose
+    # after the JSON object, or emitted a truncated payload.
+    try:
+        payload = _extract_json(raw_text)
+    except ValueError:
+        retry_instr = (
+            "IMPORTANT: your previous response could not be parsed as JSON. "
+            "Return ONLY the JSON object matching the schema — no prose, no "
+            "markdown fences, no commentary before or after. Every field must "
+            "be complete; do not truncate."
+        )
+        response = limiter.call(lambda: _call(retry_instr))
+        text_parts = []
+        for block in response.content:
+            text = getattr(block, "text", None)
+            if text:
+                text_parts.append(text)
+        raw_text = "\n".join(text_parts).strip()
+        payload = _extract_json(raw_text)
 
     if mode == "historic":
         return ExtractResult(
@@ -751,6 +798,9 @@ def apply_to_db(
         if qv:
             src_url = qv.source_url
             src_quote = (qv.source_quote or "").strip()[:400]
+        # Drop fabricated URLs — HEAD-check confirms existence.
+        if src_url and not _validate_source_url(src_url):
+            src_url = None
 
         # HARD SKIP: never write a value that has no source_quote and no
         # verifier correction reason backing it. That produces the
@@ -796,12 +846,16 @@ def apply_to_db(
 
         is_estimate = bool(qv.is_estimate) if qv else False
 
+        # FIX: manually_overridden=False so future Refresh full re-runs
+        # can actually update the value. The two-stage_* primary_method
+        # tag is enough to distinguish these rows from provider or manual
+        # writes in the UI.
         if existing:
             existing.numeric_value = value
             existing.source_name = source_name
             existing.source_link = src_url
             existing.primary_method = verdict_tag
-            existing.manually_overridden = True
+            existing.manually_overridden = False
             existing.is_forecast = is_estimate
             existing.fetched_at = datetime.now(timezone.utc)
             if currency and not existing.currency:
@@ -820,7 +874,7 @@ def apply_to_db(
                 source_name=source_name,
                 source_link=src_url,
                 primary_method=verdict_tag,
-                manually_overridden=True,
+                manually_overridden=False,
                 from_ir_pdf=False,
                 fetched_at=datetime.now(timezone.utc),
             )
