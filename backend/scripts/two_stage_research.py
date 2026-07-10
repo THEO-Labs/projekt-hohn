@@ -379,12 +379,23 @@ VERIFIER_SYSTEM = (
     "confusion; continuing vs discontinued operations mixups; currency errors; "
     "unit-scale errors (thousands vs millions vs billions); dual-class share "
     "gotchas; Q-sum vs FY-total inconsistencies. "
-    "Return ONLY a JSON verdict per schema. If the source_quote does NOT "
-    "unambiguously support the extracted number, output verdict='correct' "
-    "with your corrected value AND explain in `reason` exactly which words "
-    "in the source_quote led to your correction. If genuinely uncertain, "
-    "output verdict='insufficient_evidence' with corrections={} rather than "
-    "guessing."
+    "Return ONLY a JSON verdict per schema. \n\n"
+    "REASON FIELD RULES (very important):\n"
+    "  - If verdict='confirm': set reason to an EMPTY string. The user "
+    "does not want to read meta-commentary like 'values reconcile' or "
+    "'source supports the number' — the source_quote itself is already "
+    "shown to the user separately.\n"
+    "  - If verdict='correct': reason MUST explain what specifically in "
+    "the source_quote led you to the corrected value (e.g. 'source_quote "
+    "says 2.70 EUR per share, extractor stored 2.7 billion — corrected by "
+    "multiplying with 200M shares'). Cite the exact words that triggered "
+    "the fix.\n"
+    "  - If verdict='insufficient_evidence': reason MUST state what was "
+    "missing (e.g. 'source_quote does not contain a numeric value for FY' "
+    "or 'guidance range too wide to pin down a midpoint').\n\n"
+    "The user of this system sees your reason field verbatim only when "
+    "you correct or flag; on confirm, only the source_quote is shown. "
+    "Do not chatter."
 )
 
 
@@ -648,7 +659,7 @@ def apply_to_db(
         )
         existing = db.execute(stmt).scalar_one_or_none()
 
-        # Source URL from the corresponding extracted quarter (if any)
+        # Source URL and quote from the corresponding extracted quarter (if any)
         src_url = None
         src_quote = None
         qv = None
@@ -658,12 +669,28 @@ def apply_to_db(
             qv = getattr(result.extract, period_type.lower(), None)
         if qv:
             src_url = qv.source_url
-            src_quote = (qv.source_quote or "")[:200]
+            src_quote = (qv.source_quote or "")[:400]
 
-        source_name = (
-            f"Two-Stage {verdict_tag}: {result.verdict.reason[:400]}"
-            + (f" | flags={','.join(result.verdict.flags)}" if result.verdict.flags else "")
-        )
+        # source_name is what the UI cell popover shows. We surface:
+        #   1) origin: is this a Reported value from a filed report, or an
+        #      Estimate (consensus / guidance / seasonality-extrapolation)?
+        #   2) the extractor's raw source_quote — the actual sentence from
+        #      the report or guidance announcement. This is what the user
+        #      cares about ("where does the number come from?").
+        #   3) if the verifier CORRECTED the extractor, add its reason as
+        #      a secondary note. If it only confirmed, skip the verifier
+        #      chatter — the user doesn't care about "reconciles correctly".
+        origin = "Estimate" if (qv and qv.is_estimate) else "Reported"
+        parts = [f"Two-Stage {verdict_tag}", f"origin={origin}"]
+        if src_quote:
+            parts.append(f"quote={src_quote}")
+        if verdict_tag == "two_stage_verified" and result.verdict.reason:
+            parts.append(f"verifier_correction={result.verdict.reason[:400]}")
+        elif verdict_tag == "two_stage_insufficient" and result.verdict.reason:
+            parts.append(f"verifier_note={result.verdict.reason[:400]}")
+        if result.verdict.flags:
+            parts.append(f"flags={','.join(result.verdict.flags)}")
+        source_name = " | ".join(parts)
 
         is_estimate = bool(qv.is_estimate) if qv else False
 

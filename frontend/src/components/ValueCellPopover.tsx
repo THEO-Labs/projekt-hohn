@@ -81,24 +81,31 @@ function parseSource(raw: string | null | undefined): { head: string; parts: str
 }
 
 // Parse Two-Stage source_name format:
-//   "Two-Stage <verdict>: <reason> | flags=flag1,flag2"
-// Returns null if the source doesn't look like a two-stage record.
+//   "Two-Stage <verdict> | origin=Reported|Estimate | quote=<sentence>
+//    [| verifier_correction=<reason>][| verifier_note=<reason>][| flags=...]"
 function parseTwoStageSource(raw: string | null | undefined): {
   verdict: string;
-  reason: string;
+  origin: "Reported" | "Estimate" | "";
+  quote: string;
+  verifierCorrection: string;
+  verifierNote: string;
   flags: string[];
 } | null {
   if (!raw || !raw.startsWith("Two-Stage")) return null;
-  const flagsIdx = raw.lastIndexOf("| flags=");
-  const flags = flagsIdx >= 0
-    ? raw.slice(flagsIdx + "| flags=".length).split(",").map((s) => s.trim()).filter(Boolean)
-    : [];
-  const bodyEnd = flagsIdx >= 0 ? flagsIdx : raw.length;
-  const body = raw.slice("Two-Stage ".length, bodyEnd).trim();
-  const colon = body.indexOf(":");
-  const verdict = colon > 0 ? body.slice(0, colon).trim() : "verified";
-  const reason = colon > 0 ? body.slice(colon + 1).trim() : body;
-  return { verdict, reason, flags };
+  const pipeParts = raw.split(" | ").map((s) => s.trim());
+  const head = pipeParts.shift() ?? "";
+  const verdict = head.replace("Two-Stage", "").trim();
+  const fieldMap: Record<string, string> = {};
+  for (const p of pipeParts) {
+    const eq = p.indexOf("=");
+    if (eq > 0) fieldMap[p.slice(0, eq).trim()] = p.slice(eq + 1).trim();
+  }
+  const origin = (fieldMap.origin ?? "") as "Reported" | "Estimate" | "";
+  const quote = fieldMap.quote ?? "";
+  const verifierCorrection = fieldMap.verifier_correction ?? "";
+  const verifierNote = fieldMap.verifier_note ?? "";
+  const flags = (fieldMap.flags ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return { verdict, origin, quote, verifierCorrection, verifierNote, flags };
 }
 
 const FLAG_LABELS: Record<string, string> = {
@@ -284,21 +291,56 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
         )}
 
         {twoStage ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50/60 p-2 space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">
-                Verifier reasoning
-              </span>
-              <span className="text-[10px] text-emerald-600/70">·</span>
-              <span className="text-[10px] font-medium uppercase text-emerald-700">
-                {twoStage.verdict.replace("two_stage_", "").replace("_", " ")}
-              </span>
+          <div className="space-y-2">
+            {/* Origin badge + source quote — primary info */}
+            <div className={`rounded-md border p-2 space-y-1.5 ${
+              twoStage.origin === "Estimate"
+                ? "border-sky-200 bg-sky-50/60"
+                : "border-emerald-200 bg-emerald-50/60"
+            }`}>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${
+                  twoStage.origin === "Estimate" ? "text-sky-800" : "text-emerald-800"
+                }`}>
+                  {twoStage.origin === "Estimate" ? "Estimate — basis" : "Source"}
+                </span>
+              </div>
+              {twoStage.quote && (
+                <div className={`text-[11.5px] leading-snug italic ${
+                  twoStage.origin === "Estimate" ? "text-sky-950/90" : "text-emerald-950/90"
+                }`}>
+                  &ldquo;{twoStage.quote}&rdquo;
+                </div>
+              )}
+              {!twoStage.quote && (
+                <div className="text-[11px] italic text-muted-foreground">
+                  No source quote captured.
+                </div>
+              )}
             </div>
-            <div className="text-[11.5px] leading-snug text-emerald-950/90">
-              {twoStage.reason}
-            </div>
+            {/* Verifier correction — only when verifier actually corrected */}
+            {twoStage.verifierCorrection && (
+              <div className="rounded-md border border-amber-200 bg-amber-50/60 p-2 space-y-1">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-amber-800">
+                  Verifier correction
+                </div>
+                <div className="text-[11.5px] leading-snug text-amber-950/90">
+                  {twoStage.verifierCorrection}
+                </div>
+              </div>
+            )}
+            {twoStage.verifierNote && (
+              <div className="rounded-md border border-yellow-200 bg-yellow-50/60 p-2 space-y-1">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-yellow-800">
+                  Verifier note (weak evidence)
+                </div>
+                <div className="text-[11.5px] leading-snug text-yellow-950/90">
+                  {twoStage.verifierNote}
+                </div>
+              </div>
+            )}
             {twoStage.flags.length > 0 && (
-              <div className="flex flex-wrap gap-1 pt-0.5">
+              <div className="flex flex-wrap gap-1">
                 {twoStage.flags.map((f) => (
                   <span
                     key={f}
