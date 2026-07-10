@@ -562,6 +562,12 @@ VERIFIER_SYSTEM = (
     "  - correct: reason cites the exact words in source_quote that "
     "triggered the fix.\n"
     "  - insufficient_evidence: reason states what is missing.\n\n"
+    "LANGUAGE RULE: the reason field MUST be written entirely in English, "
+    "as a single fluent paragraph. Do NOT mix German and English. Do NOT "
+    "paste German quote fragments untranslated — translate them to "
+    "English inline (e.g. write \"the source says '2.70 EUR per share'\" "
+    "even if the German quote said '2,70 EUR je Aktie'). The reader is "
+    "an English-speaking analyst.\n\n"
     "Bias toward 'confirm'. Only downgrade when you have a specific, "
     "citable reason from the source_quote itself."
 )
@@ -869,9 +875,9 @@ def apply_to_db(
         if src_quote:
             parts.append(f"quote={src_quote}")
         if verdict_tag == "two_stage_verified" and result.verdict.reason:
-            parts.append(f"verifier_correction={result.verdict.reason[:400]}")
+            parts.append(f"verifier_correction={result.verdict.reason[:800]}")
         elif verdict_tag == "two_stage_insufficient" and result.verdict.reason:
-            parts.append(f"verifier_note={result.verdict.reason[:400]}")
+            parts.append(f"verifier_note={result.verdict.reason[:800]}")
         if result.verdict.flags:
             parts.append(f"flags={','.join(result.verdict.flags)}")
         source_name = " | ".join(parts)

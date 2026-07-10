@@ -361,7 +361,10 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
                     Adjusted / Non-IFRS
                   </span>
                   <span className="font-mono text-[12.5px] font-semibold tabular-nums text-violet-950">
-                    {cell.adjusted_value.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                    {cell.adjusted_value.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
                   </span>
                 </div>
                 {cell.adjustments_note && (
