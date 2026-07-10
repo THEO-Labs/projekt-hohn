@@ -167,6 +167,41 @@ export const explainValue = (
   });
 };
 
+export type TwoStageVerdict = {
+  value_key: string;
+  period_year: number;
+  verdict: "confirm" | "correct" | "insufficient_evidence" | "error";
+  flags: string[];
+  confidence: number;
+  reason: string;
+  final_values: Record<string, string | null>;
+  error?: string | null;
+};
+
+export type TwoStageRefreshResponse = {
+  results: TwoStageVerdict[];
+  spent_usd: number;
+  calls: number;
+};
+
+export const twoStageRefresh = (
+  companyId: string,
+  keys: string[],
+  periodYear: number,
+  maxCostUsd?: number,
+) =>
+  api<TwoStageRefreshResponse>(
+    `/api/companies/${companyId}/values/two-stage-refresh`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        keys,
+        period_year: periodYear,
+        max_cost_usd: maxCostUsd ?? null,
+      }),
+    },
+  );
+
 export const overrideValue = (
   companyId: string,
   valueKey: string,

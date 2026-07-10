@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Building2, ChevronLeft, Loader2, Plus, RefreshCw } from "lucide-react";
+import { Building2, ChevronLeft, Loader2, Plus, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -16,13 +16,19 @@ import {
   lookupCompany,
   type Company,
 } from "@/api/companies";
-import type { ValueDefinition } from "@/api/values";
+import { twoStageRefresh, type ValueDefinition } from "@/api/values";
 import {
   loadCompanyCard,
   getDashboardDefinitions,
   refreshCompanyDaily,
   type CompanyCardData,
 } from "@/api/dashboard";
+
+const TWO_STAGE_KEYS = [
+  "revenue", "net_income", "ebitda", "fcf", "operating_cash_flow", "capex",
+  "sbc", "buyback_volume", "dividends", "cash_and_equivalents",
+  "st_debt", "lt_debt", "net_debt",
+];
 import { t } from "@/lib/i18n";
 
 export function PortfolioDetailPage() {
@@ -42,6 +48,8 @@ export function PortfolioDetailPage() {
 
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
+  const [verifyingAll, setVerifyingAll] = useState(false);
+  const [verifyProgress, setVerifyProgress] = useState<{ done: number; total: number; cost: number } | null>(null);
 
   const loadAll = async () => {
     if (!id) return;
@@ -66,6 +74,46 @@ export function PortfolioDetailPage() {
     loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  const handleTwoStageRefreshAll = async () => {
+    if (verifyingAll || cards.length === 0) return;
+    const year = new Date().getFullYear() - 1; // Last completed FY
+    if (!window.confirm(
+      `Two-stage verification will run Extractor + Verifier for ${cards.length} companies × ${TWO_STAGE_KEYS.length} keys for FY ${year}. ` +
+      `Estimated cost ~$${(cards.length * TWO_STAGE_KEYS.length * 0.11).toFixed(0)}. Continue?`
+    )) return;
+    setVerifyingAll(true);
+    setVerifyProgress({ done: 0, total: cards.length, cost: 0 });
+    const toastId = toast.loading(`Two-stage verification for ${cards.length} companies…`);
+    let ok = 0, corrected = 0, insufficient = 0, failed = 0;
+    let totalSpent = 0;
+    for (const [i, card] of cards.entries()) {
+      try {
+        const res = await twoStageRefresh(card.company.id, TWO_STAGE_KEYS, year, 5.0);
+        totalSpent += res.spent_usd;
+        for (const r of res.results) {
+          if (r.verdict === "confirm") ok += 1;
+          else if (r.verdict === "correct") corrected += 1;
+          else if (r.verdict === "insufficient_evidence") insufficient += 1;
+          else failed += 1;
+        }
+      } catch {
+        failed += TWO_STAGE_KEYS.length;
+      }
+      setVerifyProgress({ done: i + 1, total: cards.length, cost: totalSpent });
+      toast.loading(
+        `Verifying (${i + 1}/${cards.length}) · spent $${totalSpent.toFixed(2)}`,
+        { id: toastId },
+      );
+    }
+    toast.dismiss(toastId);
+    toast.success(
+      `Two-stage done: ${ok} confirmed, ${corrected} corrected, ${insufficient} insufficient, ${failed} failed · $${totalSpent.toFixed(2)}`,
+    );
+    setVerifyingAll(false);
+    setVerifyProgress(null);
+    await loadAll();
+  };
 
   const handleRefreshAllDaily = async () => {
     if (refreshingAll || cards.length === 0) return;
@@ -182,7 +230,7 @@ export function PortfolioDetailPage() {
             <Button
               variant="outline"
               onClick={handleRefreshAllDaily}
-              disabled={refreshingAll || cards.length === 0}
+              disabled={refreshingAll || verifyingAll || cards.length === 0}
               title="Refresh daily numbers (Stock Price, Market Cap, Shares) for the entire portfolio — fast, no web research"
               className="flex items-center gap-1.5"
             >
@@ -192,6 +240,20 @@ export function PortfolioDetailPage() {
               {refreshingAll && refreshProgress
                 ? `Refreshing ${refreshProgress.done}/${refreshProgress.total}…`
                 : "Refresh daily (all)"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleTwoStageRefreshAll}
+              disabled={refreshingAll || verifyingAll || cards.length === 0}
+              title="Two-stage extractor + verifier: fetches values from official reports and challenges each with a separate LLM pass. Slower and more expensive than daily refresh but catches per-share/adjusted/unit-scale errors."
+              className="flex items-center gap-1.5"
+            >
+              {verifyingAll
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <ShieldCheck className="h-4 w-4" />}
+              {verifyingAll && verifyProgress
+                ? `Verifying ${verifyProgress.done}/${verifyProgress.total} · $${verifyProgress.cost.toFixed(2)}`
+                : "Verify (2-stage, all)"}
             </Button>
           <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); setLookedUp(false); } }}>
             <DialogTrigger render={<Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20" />}>

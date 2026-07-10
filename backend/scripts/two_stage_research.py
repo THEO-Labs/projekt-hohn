@@ -30,12 +30,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Literal
+from uuid import UUID, uuid4
 
 import anthropic
 
@@ -44,6 +47,15 @@ import anthropic
 from app.config import settings
 from app.llm.claude import get_client
 from app.llm.rate_limiter import RateLimiter
+
+# Cost estimates per 1M tokens (USD, checked 2026-07)
+_COST_TABLE = {
+    "claude-sonnet-4-6":  {"in": 3.00,  "out": 15.00},
+    "claude-opus-4-7":    {"in": 15.00, "out": 75.00},
+    "claude-haiku-4-5":   {"in": 1.00,  "out": 5.00},
+    "claude-haiku-4-5-20251001": {"in": 1.00, "out": 5.00},
+}
+_WEB_SEARCH_COST_PER_CALL = 0.01  # $10 per 1000 web searches
 
 
 # --- Prompt files ---------------------------------------------------------
@@ -488,6 +500,43 @@ class TwoStageResult:
         }
 
 
+@dataclass
+class CostTracker:
+    """Tracks cumulative API cost across a batch run + enforces budget cap."""
+    max_usd: float | None = None
+    spent_usd: float = 0.0
+    calls: int = 0
+
+    def add_response(self, response: anthropic.types.Message, model: str, web_search_calls: int = 0) -> float:
+        usage = getattr(response, "usage", None)
+        in_tok = getattr(usage, "input_tokens", 0) or 0
+        out_tok = getattr(usage, "output_tokens", 0) or 0
+        rates = _COST_TABLE.get(model.replace("[1m]", ""), {"in": 3.0, "out": 15.0})
+        cost = (in_tok * rates["in"] + out_tok * rates["out"]) / 1_000_000
+        cost += web_search_calls * _WEB_SEARCH_COST_PER_CALL
+        self.spent_usd += cost
+        self.calls += 1
+        return cost
+
+    def check_budget(self) -> None:
+        if self.max_usd is not None and self.spent_usd >= self.max_usd:
+            raise RuntimeError(
+                f"Budget cap reached: spent ${self.spent_usd:.2f} >= max ${self.max_usd:.2f} "
+                f"after {self.calls} calls"
+            )
+
+
+def choose_mode_for_year(year: int, today: date | None = None) -> Mode:
+    """Auto-select HISTORIC vs CURRENT based on today's date and the target year.
+
+    Convention: any year strictly before the current calendar year is HISTORIC
+    (annual reports are out). The current calendar year is CURRENT (interim
+    reports only). Future years are CURRENT (only guidance/consensus available).
+    """
+    t = today or date.today()
+    return "historic" if year < t.year else "current"
+
+
 def research_two_stage(
     ticker: str,
     company_name: str,
@@ -499,9 +548,12 @@ def research_two_stage(
     prev_year_fy_hint: Decimal | None = None,
     limiter: RateLimiter | None = None,
     extractor_model: str = "claude-sonnet-4-6",
-    verifier_model: str = "claude-sonnet-4-6",
+    verifier_model: str = "claude-haiku-4-5-20251001",
+    cost_tracker: CostTracker | None = None,
 ) -> TwoStageResult:
     """Full pipeline: extract with sources -> verify -> apply corrections."""
+    if cost_tracker:
+        cost_tracker.check_budget()
     extract = run_extractor(
         ticker=ticker,
         company_name=company_name,
@@ -522,6 +574,106 @@ def research_two_stage(
     return TwoStageResult(extract=extract, verdict=verdict)
 
 
+# --- DB Persistence -------------------------------------------------------
+
+
+def _period_key_for_result(result: TwoStageResult) -> list[tuple[str, Decimal | None]]:
+    """Flatten TwoStageResult to (period_type, final_value) tuples for DB write."""
+    out: list[tuple[str, Decimal | None]] = []
+    for period, value in result.final_values.items():
+        if value is None:
+            continue
+        out.append((period, value))
+    return out
+
+
+def apply_to_db(
+    db,
+    company_id: UUID,
+    value_key: str,
+    year: int,
+    result: TwoStageResult,
+    currency: str | None = None,
+) -> list:
+    """Persist Verifier-corrected values to company_values.
+
+    Writes each non-null quarter + FY as a separate row. Sets:
+      primary_method = 'two_stage_verified' | 'two_stage_confirmed' | 'two_stage_insufficient'
+      source_name = ticker + verdict.reason + source_url from extractor
+      manually_overridden = True (so future refreshes don't overwrite blindly)
+
+    Uses INSERT-or-UPDATE via a (company_id, value_key, period_type, period_year) key.
+    """
+    from sqlalchemy import select
+    from app.values.models import CompanyValue
+
+    verdict_tag = {
+        "confirm": "two_stage_confirmed",
+        "correct": "two_stage_verified",
+        "insufficient_evidence": "two_stage_insufficient",
+    }.get(result.verdict.verdict, "two_stage_verified")
+
+    written = []
+    for period_type, value in _period_key_for_result(result):
+        stmt = select(CompanyValue).where(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_type == period_type,
+            CompanyValue.period_year == year,
+        )
+        existing = db.execute(stmt).scalar_one_or_none()
+
+        # Source URL from the corresponding extracted quarter (if any)
+        src_url = None
+        src_quote = None
+        qv = None
+        if period_type == "FY":
+            qv = result.extract.fy
+        elif period_type in ("Q1", "Q2", "Q3", "Q4"):
+            qv = getattr(result.extract, period_type.lower(), None)
+        if qv:
+            src_url = qv.source_url
+            src_quote = (qv.source_quote or "")[:200]
+
+        source_name = (
+            f"Two-Stage {verdict_tag}: {result.verdict.reason[:400]}"
+            + (f" | flags={','.join(result.verdict.flags)}" if result.verdict.flags else "")
+        )
+
+        if existing:
+            existing.numeric_value = value
+            existing.source_name = source_name
+            existing.source_link = src_url
+            existing.primary_method = verdict_tag
+            existing.manually_overridden = True
+            existing.fetched_at = datetime.now(timezone.utc)
+            if currency and not existing.currency:
+                existing.currency = currency
+            written.append(existing)
+        else:
+            cv = CompanyValue(
+                id=uuid4(),
+                company_id=company_id,
+                value_key=value_key,
+                period_type=period_type,
+                period_year=year,
+                is_forecast=False,
+                numeric_value=value,
+                currency=currency,
+                source_name=source_name,
+                source_link=src_url,
+                primary_method=verdict_tag,
+                manually_overridden=True,
+                from_ir_pdf=False,
+                fetched_at=datetime.now(timezone.utc),
+            )
+            db.add(cv)
+            written.append(cv)
+
+    db.flush()
+    return written
+
+
 # --- CLI ------------------------------------------------------------------
 
 
@@ -532,14 +684,22 @@ def _cli() -> int:
     ap.add_argument("--key", required=True, help="value_key, e.g. revenue")
     ap.add_argument("--year", type=int, required=True)
     ap.add_argument("--currency", default="EUR")
-    ap.add_argument("--mode", choices=["historic", "current"], required=True)
+    ap.add_argument("--mode", choices=["historic", "current", "auto"], default="auto",
+                    help="auto = decide based on today's date")
     ap.add_argument("--quarter", default=None, help="Q1/Q2/Q3/Q4 (required for current mode)")
     ap.add_argument("--prev-fy", type=str, default=None, help="Prior-year FY value as decimal")
     ap.add_argument("--extractor-model", default="claude-sonnet-4-6")
-    ap.add_argument("--verifier-model", default="claude-sonnet-4-6")
+    ap.add_argument("--verifier-model", default=os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001"))
+    ap.add_argument("--apply-to-db", action="store_true", help="Write verifier-final values to prod DB")
+    ap.add_argument("--company-id", default=None, help="UUID of the company (required for --apply-to-db)")
+    ap.add_argument("--max-cost-usd", type=float, default=None, help="Budget cap for this run")
     args = ap.parse_args()
 
+    if args.mode == "auto":
+        args.mode = choose_mode_for_year(args.year)
+
     prev = Decimal(args.prev_fy) if args.prev_fy else None
+    tracker = CostTracker(max_usd=args.max_cost_usd) if args.max_cost_usd else None
     result = research_two_stage(
         ticker=args.ticker,
         company_name=args.company,
@@ -551,6 +711,7 @@ def _cli() -> int:
         prev_year_fy_hint=prev,
         extractor_model=args.extractor_model,
         verifier_model=args.verifier_model,
+        cost_tracker=tracker,
     )
 
     out = {
@@ -568,8 +729,25 @@ def _cli() -> int:
         },
         "verdict": result.verdict.to_dict(),
         "final_values": {k: str(v) if v is not None else None for k, v in result.final_values.items()},
+        "mode_used": args.mode,
     }
     print(json.dumps(out, indent=2, default=str))
+
+    if args.apply_to_db:
+        if not args.company_id:
+            print("ERROR: --apply-to-db requires --company-id", file=sys.stderr)
+            return 2
+        from app.db import SessionLocal
+        db = SessionLocal()
+        try:
+            written = apply_to_db(
+                db, UUID(args.company_id), args.key, args.year, result, currency=args.currency,
+            )
+            db.commit()
+            print(f"\nApplied to DB: {len(written)} rows.", file=sys.stderr)
+        finally:
+            db.close()
+
     return 0
 
 

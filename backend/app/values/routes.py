@@ -63,7 +63,15 @@ from app.values.always_current import ALWAYS_CURRENT_KEYS
 from app.values.currency_keys import CURRENCY_KEYS
 from app.values.models import CompanyValue, SourceType, ValueDefinition
 from app.values.progress import cleanup_old_jobs, finish_job, get_job, mark_success, set_phase, start_job, update_job
-from app.values.schemas import CompanyValueOut, OverrideRequest, RefreshRequest, ValueDefinitionOut
+from app.values.schemas import (
+    CompanyValueOut,
+    OverrideRequest,
+    RefreshRequest,
+    TwoStageRefreshRequest,
+    TwoStageRefreshResponse,
+    TwoStageVerdictOut,
+    ValueDefinitionOut,
+)
 
 catalog_router = APIRouter(prefix="/api/value-definitions", tags=["values"])
 values_router = APIRouter(prefix="/api/companies", tags=["values"])
@@ -1922,3 +1930,108 @@ def override_company_value(
     db.commit()
     db.refresh(result_cv)
     return result_cv
+
+
+# --- Two-Stage Research Endpoint ------------------------------------------
+
+
+@values_router.post(
+    "/{company_id}/values/two-stage-refresh",
+    response_model=TwoStageRefreshResponse,
+)
+def two_stage_refresh(
+    company_id: UUID,
+    payload: TwoStageRefreshRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> TwoStageRefreshResponse:
+    """Run the two-stage extractor + verifier for a set of value_keys and
+    persist verifier-final values with primary_method='two_stage_*'.
+
+    Skips CALCULATED and ALWAYS_CURRENT keys server-side.
+    """
+    company = _get_owned_company(db, user, company_id)
+
+    # Local import: keep two_stage_research optional if module isn't loaded
+    # by other paths (avoids circular pulls on server startup).
+    import os as _os
+    from decimal import Decimal as _Dec
+    from scripts.two_stage_research import (
+        CostTracker,
+        apply_to_db as _apply,
+        choose_mode_for_year,
+        research_two_stage,
+    )
+
+    tracker = CostTracker(max_usd=payload.max_cost_usd)
+    verifier_model = _os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
+
+    results: list[TwoStageVerdictOut] = []
+    for key in payload.keys:
+        if key in CALCULATED_KEYS or key in ALWAYS_CURRENT_KEYS:
+            results.append(TwoStageVerdictOut(
+                value_key=key, period_year=payload.period_year,
+                verdict="error", error="calculated/always-current key not eligible",
+            ))
+            continue
+
+        try:
+            tracker.check_budget()
+        except RuntimeError as e:
+            results.append(TwoStageVerdictOut(
+                value_key=key, period_year=payload.period_year,
+                verdict="error", error=str(e),
+            ))
+            break
+
+        # Load prev-year FY as hint (if exists)
+        prev_stmt = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_year == payload.period_year - 1,
+                CompanyValue.period_type == "FY",
+            )
+            .one_or_none()
+        )
+        prev_fy = prev_stmt.numeric_value if prev_stmt else None
+
+        try:
+            mode = choose_mode_for_year(payload.period_year)
+            result = research_two_stage(
+                ticker=company.ticker,
+                company_name=company.name,
+                value_key=key,
+                year=payload.period_year,
+                currency=company.currency,
+                mode=mode,
+                quarter=None,
+                prev_year_fy_hint=prev_fy,
+                verifier_model=verifier_model,
+                cost_tracker=tracker,
+            )
+            _apply(db, company_id, key, payload.period_year, result, currency=company.currency)
+            db.commit()
+            results.append(TwoStageVerdictOut(
+                value_key=key,
+                period_year=payload.period_year,
+                verdict=result.verdict.verdict,
+                flags=result.verdict.flags,
+                confidence=result.verdict.confidence,
+                reason=result.verdict.reason[:500],
+                final_values={
+                    k: (str(v) if v is not None else None)
+                    for k, v in result.final_values.items()
+                },
+            ))
+        except Exception as e:
+            db.rollback()
+            results.append(TwoStageVerdictOut(
+                value_key=key, period_year=payload.period_year,
+                verdict="error", error=f"{type(e).__name__}: {str(e)[:300]}",
+            ))
+
+    return TwoStageRefreshResponse(
+        results=results, spent_usd=round(tracker.spent_usd, 4), calls=tracker.calls,
+    )

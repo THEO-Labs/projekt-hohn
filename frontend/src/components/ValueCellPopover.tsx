@@ -23,10 +23,20 @@ function cellBadge(cell: {
   primary_method?: string | null | undefined;
   manually_overridden?: boolean;
 }): { text: string; dot: string; text_cls: string } {
-  if (cell.manually_overridden || cell.primary_method === "manual") {
+  const pm = cell.primary_method;
+  if (pm === "two_stage_verified") {
+    return { text: "Verified (corrected)", dot: "bg-emerald-600", text_cls: "text-emerald-800" };
+  }
+  if (pm === "two_stage_confirmed") {
+    return { text: "Verified", dot: "bg-emerald-500", text_cls: "text-emerald-700" };
+  }
+  if (pm === "two_stage_insufficient") {
+    return { text: "Verified (weak)", dot: "bg-yellow-500", text_cls: "text-yellow-800" };
+  }
+  if (cell.manually_overridden || pm === "manual") {
     return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
   }
-  if (cell.primary_method === "calculated") {
+  if (pm === "calculated") {
     return { text: "Calculated", dot: "bg-violet-500", text_cls: "text-violet-700" };
   }
   if (cell.is_forecast) {
@@ -42,6 +52,9 @@ function methodOrigin(method: string | null | undefined): string {
     case "web_guidance": return "via Claude Web-Search";
     case "manual": return "manual";
     case "calculated": return "computed";
+    case "two_stage_confirmed": return "extractor + verifier confirmed";
+    case "two_stage_verified": return "extractor + verifier corrected";
+    case "two_stage_insufficient": return "extractor + verifier · weak evidence";
     default: return "";
   }
 }
