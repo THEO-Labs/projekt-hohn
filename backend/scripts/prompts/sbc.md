@@ -47,7 +47,13 @@ unit: EUR (fuer QIA: USD) — absolute Waehrung
 **FY-only vs Q-Split**:
 - Die meisten Firmen disclosen SBC nur FY-Notes
 - Ausnahmen mit Q-Disclosure: Infineon, Qiagen, Zalando, Porsche SE
-- Konvention: **wenn nur FY: Q1-Q4 = null** (nicht FY/4-Interpolation)
+- **Fuer ABGESCHLOSSENE FYs**: wenn nur FY disclosed → Q1-Q4 = null (nicht FY/4-Interpolation)
+- **Fuer LAUFENDES FY**: wenn nur FY-Guidance/Analyst-Total: schaetze Q's mittels
+  Vorjahres-Q-Verteilung (Prior-Year Q-Anteil x FY-Estimate). Beispiel:
+  Adidas FY 2026 SBC-Schaetzung 95M, Vorjahr Q1-Q4 waren 18/24/37/43 (Summe 122M).
+  Q-Anteile: 15%/20%/30%/35%. Adidas 2026 SBC Q1 = 95M x 15% = 14M usw. Dokumentiere
+  als "prior-year seasonality: Q1=15% of FY". is_estimate=true.
+  User braucht ausgefuellte Q-Zeilen — Halluzination nicht, Extrapolation ja.
 
 **Employee Stock Purchase Plan (ESPP)**:
 - Kleiner Anteil - einbeziehen falls disclosed

@@ -49,9 +49,16 @@ unit: EUR (fuer QIA: USD) — Cash-Ausgabe fuer Aktienrueckkaufe
 - Cancellation ist bilanzieller Vorgang (Reduktion Grundkapital), nicht Cash
 - Nur der Cash-Rueckkauf ist buyback_volume
 
-**Employee Stock Plans (SBC-Bewegung)**:
-- Wenn Firma Aktien fuer SBC zurueckkauft: technisch Buyback, aber typisch klein
-- Konvention: **einbeziehen wenn im CFS als Cash-Rueckkauf**
+**Employee Stock Plans (SBC-Bewegung) — kritisch NICHT uebersehen**:
+- Wenn Firma Aktien fuer SBC zurueckkauft: technisch Buyback, EINBEZIEHEN.
+- Auch wenn die Firma "kein formales Buyback-Programm" verkuendet hat:
+  im Cash-Flow-Statement steht typisch "Purchase of treasury shares" in
+  zweistelligen Mio EUR fuer Employee-Stock-Plan-Bedienung. **DAS IST buyback_volume**.
+- Beispiel adidas 2025: kein oeffentliches Buyback-Programm, aber 43M EUR
+  Treasury-Share-Kaeufe fuer SBP-Bedienung → buyback_volume 2025 = 43M EUR
+  (NICHT 0). Nur wenn CFS wirklich 0 zeigt: 0.
+- Konvention: **immer den CFS-Betrag "Purchase of treasury shares" einsetzen**,
+  egal ob Firma es "formales Programm" nennt oder nur SBP-Bedienung.
 
 **Vorzeichen**:
 - CFS zeigt negativ (Cash-Outflow) → als **positiver Absolutbetrag** speichern
