@@ -29,6 +29,12 @@ export type Cell = {
   period_label?: string | null;
   period_type?: "FY" | "Q1" | "Q2" | "Q3" | "Q4" | "SNAPSHOT" | null;
   period_year?: number | null;
+  // Adjusted / Non-IFRS variant of the same value (Bayer Core, RWE
+  // Bereinigt, SAP Non-IFRS, MRK EBITDA Pre, EOAN Adjusted, etc.).
+  // Populated when the company publishes a separate Adjusted figure.
+  adjusted_value?: number | null;
+  adjustments_note?: string | null;
+  adjustments_source?: string | null;
   // Marks an adjusted-column cell that fell back to the GAAP value because
   // no separate Non-GAAP figure was reported. Rendered in muted colour with
   // "≈" prefix to signal "same as GAAP".
@@ -233,6 +239,21 @@ function refToCell(
   if (isCurrency && value !== null && fx.rates && nativeCurrency !== fx.displayCurrency) {
     value = convertCurrency(value, nativeCurrency, fx.displayCurrency, fx.rates);
   }
+  // Adjusted value on the ref (only present when the extractor found a
+  // separate Adjusted / Non-IFRS figure for the same period).
+  const adjRaw = (r as unknown as { adjusted_value?: number | null; adjustments_note?: string | null; adjustments_source?: string | null } | null)?.adjusted_value ?? null;
+  let adjustedValue: number | null = null;
+  if (adjRaw !== null && adjRaw !== undefined) {
+    let av = typeof adjRaw === "string" ? parseFloat(adjRaw) : adjRaw;
+    if (!Number.isNaN(av)) {
+      av = av / scaleFactor;
+      if (isCurrency && fx.rates && nativeCurrency !== fx.displayCurrency) {
+        av = convertCurrency(av, nativeCurrency, fx.displayCurrency, fx.rates) ?? av;
+      }
+      adjustedValue = av;
+    }
+  }
+
   return {
     value,
     source_name: r?.source_name ?? null,
@@ -246,6 +267,9 @@ function refToCell(
     period_label: periodLabel,
     period_type: periodType ?? null,
     period_year: periodYear ?? null,
+    adjusted_value: adjustedValue,
+    adjustments_note: (r as unknown as { adjustments_note?: string | null } | null)?.adjustments_note ?? null,
+    adjustments_source: (r as unknown as { adjustments_source?: string | null } | null)?.adjustments_source ?? null,
     is_gaap_fallback,
   };
 }

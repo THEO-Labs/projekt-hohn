@@ -114,6 +114,12 @@ class QuarterValue:
     source_quote: str | None
     source_url: str | None
     is_estimate: bool = False
+    # Adjusted / Non-GAAP variant of the same metric for the same period.
+    # Only populated for companies that publish separate Adjusted / Core /
+    # Bereinigt figures. Left as None for companies that don't.
+    adjusted_value: Decimal | None = None
+    adjusted_source_quote: str | None = None
+    adjustments_note: str | None = None
 
 
 @dataclass
@@ -200,12 +206,20 @@ def _build_historic_extractor_prompt(
     metric_context = load_metric_prompt(value_key)
 
     schema = """{
-  "q1": {"value": <number in absolute """ + currency + """|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
-  "q2": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
-  "q3": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
-  "q4": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
-  "fy": {"value": <number|null>, "source_quote": <string|null>, "source_url": <string|null>, "is_estimate": <bool>},
-  "extractor_note_adjusted_vs_reported": <string|null: describe if source only shows Adjusted/Core/Bereinigt>
+  "q1": {
+    "value": <number in absolute """ + currency + """|null: IFRS REPORTED>,
+    "source_quote": <string|null>,
+    "source_url": <string|null>,
+    "is_estimate": <bool>,
+    "adjusted_value": <number|null: Adjusted/Core/Bereinigt variant if company publishes one>,
+    "adjusted_source_quote": <string|null>,
+    "adjustments_note": <string|null: what is stripped out, e.g. 'excludes Monsanto impairment, restructuring, PPA'>
+  },
+  "q2": {...same shape...},
+  "q3": {...same shape...},
+  "q4": {...same shape...},
+  "fy": {...same shape...},
+  "extractor_note_adjusted_vs_reported": <string|null: describe overall differences at company level>
 }"""
 
     return f"""Task: Extract `{value_key}` for {company_name} ({ticker}), fiscal year {year}.
@@ -217,10 +231,23 @@ Ground rules (metric-specific, from backend/scripts/prompts/{value_key}.md):
 
 {metric_context}
 
-For each value MUST provide:
-- `value`: the number itself, absolute {currency}, IFRS reported (NOT adjusted unless no reported exists)
-- `source_quote`: the exact sentence from the annual report / quarterly report you took the number from
-- `source_url`: URL of the source document
+For each period MUST provide:
+- `value`: IFRS REPORTED figure (with all one-offs, impairments,
+  discontinued ops, PPA etc.), absolute {currency}. This is the
+  headline / consolidated / statutory number in the income statement.
+- `source_quote`: exact sentence from the report / interim statement.
+- `source_url`: URL of the source document.
+- `adjusted_value`: The company's Adjusted / Core / Bereinigt / Non-IFRS
+  / Pre variant of the SAME metric for the SAME period. Only populate
+  this if the company actually publishes a separate adjusted figure
+  (Bayer Core, RWE Bereinigt, SAP Non-IFRS, MRK EBITDA Pre, ENR
+  Adjusted, EOAN Adjusted, DTE Adjusted AL, etc.). If the company does
+  not publish a separate adjusted variant (Continental, Vonovia,
+  most banks/insurers): leave adjusted_value null.
+- `adjusted_source_quote`: exact sentence for the adjusted figure.
+- `adjustments_note`: a short list of what is stripped out to get from
+  reported to adjusted, e.g. "Monsanto legal reserves 3.5B,
+  restructuring 1.2B, PPA amortization 2.0B, discontinued Aumovio 0.4B".
 
 Availability rules — CRITICAL:
 - Each period has an `is_estimate` boolean. Set carefully:
@@ -385,18 +412,23 @@ def _extract_json(text: str) -> dict:
 def _to_qv(raw: dict | None) -> QuarterValue | None:
     if not raw:
         return None
-    val = raw.get("value")
-    dec: Decimal | None = None
-    if val is not None:
+
+    def _dec(x):
+        if x is None:
+            return None
         try:
-            dec = Decimal(str(val))
+            return Decimal(str(x))
         except Exception:
-            dec = None
+            return None
+
     return QuarterValue(
-        value=dec,
+        value=_dec(raw.get("value")),
         source_quote=raw.get("source_quote"),
         source_url=raw.get("source_url"),
         is_estimate=bool(raw.get("is_estimate", False)),
+        adjusted_value=_dec(raw.get("adjusted_value")),
+        adjusted_source_quote=raw.get("adjusted_source_quote"),
+        adjustments_note=raw.get("adjustments_note"),
     )
 
 
@@ -845,6 +877,16 @@ def apply_to_db(
         source_name = " | ".join(parts)
 
         is_estimate = bool(qv.is_estimate) if qv else False
+        adjusted_value = qv.adjusted_value if qv else None
+        adjustments_note = qv.adjustments_note if qv else None
+        adjustments_source = None
+        if qv and (qv.adjusted_source_quote or qv.source_url):
+            parts = []
+            if qv.adjusted_source_quote:
+                parts.append(qv.adjusted_source_quote[:400])
+            if qv.source_url:
+                parts.append(qv.source_url)
+            adjustments_source = " | ".join(parts) or None
 
         # FIX: manually_overridden=False so future Refresh full re-runs
         # can actually update the value. The two-stage_* primary_method
@@ -852,6 +894,9 @@ def apply_to_db(
         # writes in the UI.
         if existing:
             existing.numeric_value = value
+            existing.numeric_value_adjusted = adjusted_value
+            existing.adjustments_note = adjustments_note
+            existing.adjustments_source = adjustments_source
             existing.source_name = source_name
             existing.source_link = src_url
             existing.primary_method = verdict_tag
@@ -870,6 +915,9 @@ def apply_to_db(
                 period_year=year,
                 is_forecast=is_estimate,
                 numeric_value=value,
+                numeric_value_adjusted=adjusted_value,
+                adjustments_note=adjustments_note,
+                adjustments_source=adjustments_source,
                 currency=currency,
                 source_name=source_name,
                 source_link=src_url,

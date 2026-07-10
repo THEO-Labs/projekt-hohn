@@ -352,6 +352,25 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
                 ))}
               </div>
             )}
+            {/* Adjusted / Non-IFRS variant of the same period — shown only
+                when the company publishes a separate adjusted figure. */}
+            {cell.adjusted_value != null && (
+              <div className="rounded-md border border-violet-200 bg-violet-50/60 p-2 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-violet-800">
+                    Adjusted / Non-IFRS
+                  </span>
+                  <span className="font-mono text-[12.5px] font-semibold tabular-nums text-violet-950">
+                    {cell.adjusted_value.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                {cell.adjustments_note && (
+                  <div className="text-[11px] leading-snug text-violet-900/90">
+                    Excludes: {cell.adjustments_note}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : head && (
           <div className="text-foreground">{head}</div>
