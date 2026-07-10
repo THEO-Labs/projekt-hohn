@@ -519,14 +519,17 @@ def _process_one_key_via_two_stage(
 
     verifier_model = _os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
     try:
-        mode = choose_mode_for_year(payload.period_year)
+        # Full FY refresh always uses historic-style extractor (Q1..Q4 + FY
+        # together). For current year the extractor returns null for
+        # quarters not yet reported — the prompt instructs it to do so
+        # rather than guess.
         result = research_two_stage(
             ticker=company.ticker,
             company_name=company.name,
             value_key=key,
             year=payload.period_year,
             currency=company.currency,
-            mode=mode,
+            mode="historic",
             quarter=None,
             prev_year_fy_hint=prev_fy,
             verifier_model=verifier_model,

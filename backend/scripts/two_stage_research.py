@@ -194,7 +194,16 @@ For each value MUST provide:
 - `source_quote`: the exact sentence from the annual report / quarterly report you took the number from
 - `source_url`: URL of the source document
 
-Consistency: Q1 + Q2 + Q3 + Q4 should equal FY within 0.5% for flow metrics.
+Availability rules — CRITICAL:
+- If the annual report for FY {year} is NOT YET PUBLISHED (still in-progress fiscal year):
+    * For each quarter that has an interim / earnings report out: extract that value.
+    * For quarters NOT YET reported: set value to null, source_quote to null, source_url to null.
+    * For FY total: set to null UNLESS the company has issued explicit FY guidance —
+      then use that guidance value and note "FY guidance" in the source_quote.
+    * DO NOT extrapolate, DO NOT sum Q1-Q3 to guess Q4, DO NOT estimate.
+- If the annual report IS published: extract all Q1..Q4 + FY from it.
+
+Consistency: when Q1..Q4 are ALL non-null, Q1 + Q2 + Q3 + Q4 should equal FY within 0.5% for flow metrics.
 
 If the company only reports Adjusted / Core / Bereinigt values (not IFRS reported),
 set the values but populate `extractor_note_adjusted_vs_reported` explaining which
