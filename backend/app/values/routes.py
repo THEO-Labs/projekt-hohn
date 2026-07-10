@@ -490,11 +490,15 @@ def _process_one_key_via_two_stage(
     company_id: UUID,
     payload,
     updated: list,
+    target_year: int | None = None,
 ) -> bool:
     """Two-stage extractor + verifier for one key on the FY refresh path.
 
     Transparent to the caller (Full-Refresh button user): no separate opt-in.
     Called only for API-source non-STAMMDATEN keys on FY periods.
+
+    target_year overrides payload.period_year when set. Used by the
+    prev-year backfill so we can re-use the same helper for FY N and FY N-1.
     """
     import os as _os
     from decimal import Decimal as _Dec
@@ -505,12 +509,14 @@ def _process_one_key_via_two_stage(
         research_two_stage,
     )
 
+    year = target_year if target_year is not None else payload.period_year
+
     prev_stmt = (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company_id,
             CompanyValue.value_key == key,
-            CompanyValue.period_year == payload.period_year - 1,
+            CompanyValue.period_year == year - 1,
             CompanyValue.period_type == "FY",
         )
         .one_or_none()
@@ -519,15 +525,11 @@ def _process_one_key_via_two_stage(
 
     verifier_model = _os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
     try:
-        # Full FY refresh always uses historic-style extractor (Q1..Q4 + FY
-        # together). For current year the extractor returns null for
-        # quarters not yet reported — the prompt instructs it to do so
-        # rather than guess.
         result = research_two_stage(
             ticker=company.ticker,
             company_name=company.name,
             value_key=key,
-            year=payload.period_year,
+            year=year,
             currency=company.currency,
             mode="historic",
             quarter=None,
@@ -536,13 +538,38 @@ def _process_one_key_via_two_stage(
             cost_tracker=CostTracker(),
         )
     except Exception as e:
-        logger.error("two-stage failed for %s / %s: %s", company.ticker, key, e)
+        logger.error("two-stage failed for %s / %s (year=%s): %s", company.ticker, key, year, e)
         return False
 
-    written = _apply(db, company_id, key, payload.period_year, result, currency=company.currency)
+    written = _apply(db, company_id, key, year, result, currency=company.currency)
     for cv in written:
         updated.append(cv)
     return bool(written)
+
+
+def _prev_year_needs_backfill(
+    db: Session, company_id: UUID, key: str, prev_year: int
+) -> bool:
+    """True if there is no fresh two-stage row for (company, key, FY prev_year).
+
+    Skip-if-already-good: if we already have a two_stage_* row for FY N-1
+    (any variant: confirmed / verified / insufficient), we do NOT rerun it
+    on a FY N refresh. That keeps subsequent 'Refresh full' clicks cheap.
+    """
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_year == prev_year,
+            CompanyValue.period_type == "FY",
+        )
+        .one_or_none()
+    )
+    if row is None:
+        return True
+    pm = row.primary_method or ""
+    return not pm.startswith("two_stage_")
 
 
 def _process_one_key(
@@ -1167,7 +1194,21 @@ def refresh_company_values(
         and payload.period_year is not None
     )
 
-    start_job(company_id, len(effective_keys))
+    # Precompute prev-year backfill list: for a two-stage FY N refresh we
+    # also fill FY N-1 for each key that has no two-stage row yet. Skip
+    # already-verified rows so a second Refresh full click stays cheap.
+    two_stage_eligible_keys: list[str] = []
+    prev_year_backfill_keys: list[str] = []
+    if use_two_stage_fy:
+        for k in effective_keys:
+            if k in ALWAYS_CURRENT_KEYS or k in CALCULATED_KEYS:
+                continue
+            two_stage_eligible_keys.append(k)
+            if _prev_year_needs_backfill(db, company_id, k, payload.period_year - 1):
+                prev_year_backfill_keys.append(k)
+
+    total_steps = len(effective_keys) + len(prev_year_backfill_keys)
+    start_job(company_id, total_steps)
     try:
         for key in effective_keys:
             update_job(company_id, key)
@@ -1196,6 +1237,27 @@ def refresh_company_values(
             except Exception as e:
                 logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
                 db.rollback()
+
+        # Prev-year backfill: for the two-stage-eligible keys where FY N-1
+        # has no two-stage row yet, run the pipeline against FY N-1 too.
+        if prev_year_backfill_keys:
+            prev_year = payload.period_year - 1
+            for key in prev_year_backfill_keys:
+                update_job(company_id, f"{key} (FY{prev_year})")
+                try:
+                    wrote = _process_one_key_via_two_stage(
+                        db=db, key=key, company=company,
+                        company_id=company_id, payload=payload,
+                        updated=updated, target_year=prev_year,
+                    )
+                    if wrote:
+                        mark_success(company_id)
+                except Exception as e:
+                    logger.error(
+                        "prev-year two-stage failed for %s / %s / FY%s: %s",
+                        ticker, key, prev_year, e,
+                    )
+                    db.rollback()
 
         db.commit()
 
