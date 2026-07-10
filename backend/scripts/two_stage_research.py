@@ -209,20 +209,38 @@ Availability rules — CRITICAL:
 - If the annual report for FY {year} is NOT YET PUBLISHED (in-progress fiscal year):
     * Already-reported quarter: extract the reported value, `is_estimate: false`.
     * NOT-yet-reported quarter: YOU MUST PROVIDE A NUMERIC ESTIMATE.
-      Priority order:
+      Priority order for FLOW metrics (revenue, net_income, ebitda,
+      operating_cash_flow, capex, sbc, buyback_volume, dividends):
         1. Analyst consensus for that specific quarter (search
            MarketScreener / TipRanks / Bloomberg summary pages).
         2. Company Q-guidance if issued.
         3. Extrapolation: prior-year same-quarter value × (Q1 YoY growth
            observed). Document the calculation in source_quote as
            "Q1 YTD growth X% × prior-year Qn value Y = estimated Z".
-      Never null out a future quarter just because you didn't find a
-      consensus quickly — always fall back to method 3. The user needs
-      a filled row.
+      Priority order for DERIVED metrics (`fcf`, `net_debt`):
+        1. If component metrics for the same period are known:
+           - fcf = operating_cash_flow − capex (per period).
+           - net_debt = st_debt + lt_debt − cash_and_equivalents − st_investments.
+           Compute it. source_quote = "Derived: OCF X − CapEx Y = Z" or
+           equivalent. is_estimate matches whether the components are
+           estimated.
+        2. Otherwise fall back to consensus / extrapolation as above.
+      Priority order for BALANCE-SHEET metrics (`cash_and_equivalents`,
+      `st_investments`, `st_debt`, `lt_debt`):
+        These do not change quarter-to-quarter as fast as flows. If no
+        new balance-sheet disclosure for a quarter exists, CARRY FORWARD
+        the last known balance-sheet value (prior Q4 from the annual
+        report, or the most recent interim balance sheet). source_quote
+        must say so explicitly, e.g. "Carried forward from FY{year-1}
+        year-end balance sheet — no new disclosure in QN {year} interim".
+        is_estimate = true.
+      Never null out any period just because you didn't find a
+      consensus quickly — every method above ALWAYS produces a value.
     * FY total: MUST BE POPULATED. Priority:
         1. Company FY guidance midpoint.
         2. Analyst consensus FY.
-        3. Q1 actual + estimated Q2 + Q3 + Q4 (sum-of-parts).
+        3. Sum-of-parts: Q1 actual + estimated Q2 + Q3 + Q4.
+        4. For balance-sheet metrics: FY = Q4 = latest known value.
       source_quote cites the guidance / consensus / sum-of-parts basis.
 
 - If the annual report IS published: extract all Q1..Q4 + FY from it,
