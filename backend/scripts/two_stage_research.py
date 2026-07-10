@@ -197,26 +197,41 @@ For each value MUST provide:
 
 Availability rules — CRITICAL:
 - Each period has an `is_estimate` boolean. Set carefully:
-    * `is_estimate: false` = value comes from a published company report
+    * `is_estimate: false` = value from a published company report
       (interim, quarterly, annual, press release with hard numbers).
-      Source_quote is a sentence from that publication.
-    * `is_estimate: true` = value comes from company FY guidance ranges,
-      analyst consensus (Bloomberg, Refinitiv, MarketScreener), or your
-      own model based on the reported YTD run-rate + prior-year Q pattern.
-      Source_quote must cite the guidance / consensus / model basis.
+      source_quote MUST be a sentence from that publication.
+    * `is_estimate: true` = value from company FY guidance, analyst
+      consensus (MarketScreener, Refinitiv, Bloomberg, TipRanks), or
+      Q1-YTD run-rate × prior-year seasonal factor.
+      source_quote MUST cite the guidance / consensus / model basis
+      verbatim.
+
 - If the annual report for FY {year} is NOT YET PUBLISHED (in-progress fiscal year):
-    * Each already-reported quarter: extract the reported value, `is_estimate: false`.
-    * Each not-yet-reported quarter: PROVIDE a consensus / analyst-estimate /
-      company-guidance-implied value with `is_estimate: true`.
-      If no such estimate is available at all: set value to null.
-    * FY total: use company FY guidance midpoint (`is_estimate: true`),
-      or Q1-YTD scaled to full year based on prior-year seasonality
-      (`is_estimate: true`), or null if none is available.
-    * NEVER halluzinate — every non-null estimate MUST have a real source_quote
-      pointing to a guidance number, consensus figure, or explicit prior-year
-      seasonal pattern that supports the extrapolation.
+    * Already-reported quarter: extract the reported value, `is_estimate: false`.
+    * NOT-yet-reported quarter: YOU MUST PROVIDE A NUMERIC ESTIMATE.
+      Priority order:
+        1. Analyst consensus for that specific quarter (search
+           MarketScreener / TipRanks / Bloomberg summary pages).
+        2. Company Q-guidance if issued.
+        3. Extrapolation: prior-year same-quarter value × (Q1 YoY growth
+           observed). Document the calculation in source_quote as
+           "Q1 YTD growth X% × prior-year Qn value Y = estimated Z".
+      Never null out a future quarter just because you didn't find a
+      consensus quickly — always fall back to method 3. The user needs
+      a filled row.
+    * FY total: MUST BE POPULATED. Priority:
+        1. Company FY guidance midpoint.
+        2. Analyst consensus FY.
+        3. Q1 actual + estimated Q2 + Q3 + Q4 (sum-of-parts).
+      source_quote cites the guidance / consensus / sum-of-parts basis.
+
 - If the annual report IS published: extract all Q1..Q4 + FY from it,
   `is_estimate: false` throughout.
+
+- ABSOLUTE RULE: every non-null value MUST have a non-empty source_quote
+  that unambiguously points to where the number comes from. If you
+  cannot find or construct a source_quote, set value to null. Never
+  guess a number without documented basis.
 
 Consistency: when Q1..Q4 are ALL non-null, Q1 + Q2 + Q3 + Q4 should equal FY within 0.5% for flow metrics.
 
@@ -651,14 +666,6 @@ def apply_to_db(
 
     written = []
     for period_type, value in _period_key_for_result(result):
-        stmt = select(CompanyValue).where(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == value_key,
-            CompanyValue.period_type == period_type,
-            CompanyValue.period_year == year,
-        )
-        existing = db.execute(stmt).scalar_one_or_none()
-
         # Source URL and quote from the corresponding extracted quarter (if any)
         src_url = None
         src_quote = None
@@ -669,7 +676,28 @@ def apply_to_db(
             qv = getattr(result.extract, period_type.lower(), None)
         if qv:
             src_url = qv.source_url
-            src_quote = (qv.source_quote or "")[:400]
+            src_quote = (qv.source_quote or "").strip()[:400]
+
+        # HARD SKIP: never write a value that has no source_quote and no
+        # verifier correction reason backing it. That produces the
+        # "No source captured" placeholder cells the user rightly hates.
+        # If the extractor did not have a quote and the verifier did not
+        # correct with an explicit reason, keep the previous DB value.
+        has_source_evidence = bool(src_quote)
+        has_verifier_correction = (
+            verdict_tag == "two_stage_verified"
+            and result.verdict.reason.strip() != ""
+        )
+        if not has_source_evidence and not has_verifier_correction:
+            continue
+
+        stmt = select(CompanyValue).where(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_type == period_type,
+            CompanyValue.period_year == year,
+        )
+        existing = db.execute(stmt).scalar_one_or_none()
 
         # source_name is what the UI cell popover shows. We surface:
         #   1) origin: is this a Reported value from a filed report, or an
