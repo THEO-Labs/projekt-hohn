@@ -33,10 +33,26 @@ unit: EUR (fuer QIA: USD)
 
 ## Anti-Confusion (typische Fehler)
 
-**Reported IFRS EBITDA vs Adjusted EBITDA**:
-- RWE Q1 2026: nur "Bereinigtes EBITDA 1,63 Mrd" reported, kein IFRS EBITDA
-- MRK Q1 2026: "EBITDA Pre" (excl. Sondereinfluesse)
-- Konvention: **IFRS reported** wenn verfuegbar. Wenn nur adjusted: **null setzen** und in Notes vermerken
+**Reported IFRS EBITDA vs Adjusted EBITDA — beide sind MUST-HAVE**:
+- **RWE, Bayer, MRK, E.ON, Merck KGaA, DTE, ENR** publizieren beides
+  separat und prominent — extrahiere BEIDE Zahlen in einem Extraktions-Aufruf.
+- `numeric_value` = IFRS reported EBITDA (aus dem Cash Flow Statement bzw.
+  Konzern-GuV: EBIT + Depreciation + Amortization). Wenn die Firma
+  reported EBITDA nicht direkt in der GuV zeigt: aus EBIT + D&A des CFS
+  ableiten und in source_quote als "EBIT X + D&A Y = reported EBITDA Z"
+  dokumentieren. NIE null lassen bei diesen Firmen — Reported IFRS ist
+  immer aus den GuV-Komponenten ableitbar.
+- `adjusted_value` = die Adjusted / Bereinigt / Core / Pre Variante:
+  - RWE: "Bereinigtes EBITDA" (excl. Derivat-Bewertungseffekte)
+  - Bayer: "EBITDA vor Sondereinfluessen"
+  - MRK Merck KGaA: "EBITDA Pre" (excl. Sondereinfluesse)
+  - E.ON: "Adjusted EBITDA" (excl. non-operating items, restructuring)
+  - Deutsche Telekom: "Adjusted EBITDA AL" (After Leases)
+  - Siemens Energy: "Adjusted EBITA vor Sondereffekten"
+  - `adjustments_note` listet was rausgestrippt wurde
+- Konvention: **immer beide extrahieren** wenn die Firma beide reported.
+  Nur wenn Firma wirklich KEIN Adjusted publiziert (Continental, Vonovia,
+  meiste Banken): adjusted_value=null. Reported ist IMMER Pflicht.
 
 **EBIT vs EBITDA**:
 - Verwechsel nicht: EBIT = EBITDA - D&A

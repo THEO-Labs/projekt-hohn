@@ -840,6 +840,48 @@ def _period_key_for_result(result: TwoStageResult) -> list[tuple[str, Decimal | 
     return out
 
 
+_STOCK_METRICS_NO_QSUM = {
+    "cash_and_equivalents", "st_investments", "st_debt", "lt_debt", "net_debt",
+    "market_cap", "shares_outstanding", "stock_price",
+}
+
+
+def _derive_missing_quarter(result: "TwoStageResult") -> None:
+    """If FY + exactly three quarters are present as final values but the
+    fourth is missing, derive the fourth as FY - sum(others).
+
+    Catches the RWE Q4 2025 net_income class of bug where the extractor
+    silently returned null for one quarter, apply_to_db then skipped that
+    row, and the old (often stale) DB value survived. Only applied to
+    flow metrics — for balance-sheet stock metrics the arithmetic does
+    not make sense (Q4 = FY is the correct rule, not FY - Q1 - Q2 - Q3).
+    """
+    if result.extract.value_key in _STOCK_METRICS_NO_QSUM:
+        return
+    finals = result.final_values
+    q_keys = ["Q1", "Q2", "Q3", "Q4"]
+    fy = finals.get("FY")
+    if fy is None:
+        return
+    present = [k for k in q_keys if finals.get(k) is not None]
+    missing = [k for k in q_keys if finals.get(k) is None]
+    if len(present) != 3 or len(missing) != 1:
+        return
+    m = missing[0]
+    derived = fy - sum(finals[k] for k in present)
+    # Inject a synthetic QuarterValue that apply_to_db can persist.
+    other_qs = "+".join(present)
+    quote = f"Derived: FY {fy} minus ({other_qs}) = {derived}"
+    qv = QuarterValue(
+        value=derived,
+        source_quote=quote,
+        source_url=None,
+        is_estimate=False,
+    )
+    # Attach to the extract as the missing-quarter slot.
+    setattr(result.extract, m.lower(), qv)
+
+
 def apply_to_db(
     db,
     company_id: UUID,
@@ -859,6 +901,9 @@ def apply_to_db(
     """
     from sqlalchemy import select
     from app.values.models import CompanyValue
+
+    # Fill in a missing quarter if FY + 3 quarters are present.
+    _derive_missing_quarter(result)
 
     verdict_tag = {
         "confirm": "two_stage_confirmed",
