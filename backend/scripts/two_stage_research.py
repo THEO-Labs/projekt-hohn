@@ -260,6 +260,32 @@ Availability rules — CRITICAL:
       source_quote MUST cite the guidance / consensus / model basis
       verbatim.
 
+- INTERIM REPORTS ARE PRIMARY SOURCES for closed quarters even if the
+  annual report is not out yet. If Q1 report is published: Q1 value
+  MUST be is_estimate=false from that Q1 report. If H1 / 6-month
+  report is published: Q1 is from Q1 report AND Q2 = H1 - Q1 (still
+  is_estimate=false because H1 is filed). If 9M / three-quarter
+  report is published: Q3 = 9M - H1 (still is_estimate=false). Only
+  the currently-in-progress quarter and any quarter that has not
+  reported yet gets is_estimate=true.
+
+  Concrete example (Bayer FY 2025 as of mid-2026):
+    - Bayer Q1 2025 report was released May 2025 -> Q1 value from that
+      report, is_estimate=false.
+    - Bayer H1 2025 report was released August 2025 -> Q2 = H1 - Q1
+      derived, is_estimate=false, source_quote cites the H1 report
+      and shows the subtraction: "H1 2025 net income €X million minus
+      Q1 2025 €Y million = Q2 €Z million".
+    - Bayer 9M 2025 report was released November 2025 -> Q3 = 9M - H1
+      derived, is_estimate=false.
+    - Bayer Annual Report 2025 was released March 2026 -> Q4 = FY - 9M
+      derived, is_estimate=false, OR just extract the segment tables
+      from the AR directly.
+  Do NOT flag a quarter as is_estimate=true when a company filing
+  covers that quarter, even if the FY annual report is still pending.
+  Extrapolation from prior-year seasonality is a LAST RESORT, only
+  when NO filing covers the period yet.
+
 - If the annual report for FY {year} is NOT YET PUBLISHED (in-progress fiscal year):
     * Already-reported quarter: extract the reported value, `is_estimate: false`.
     * NOT-yet-reported quarter: YOU MUST PROVIDE A NUMERIC ESTIMATE.
@@ -615,7 +641,24 @@ Challenge every number. Check:
 4. Unit scale: is the number in millions but extractor stored as millions?
    (Should be absolute currency: 440M = 440000000)
 5. For {extract.value_key}: any metric-specific pitfalls from the rules above?
-6. If Q1+Q2+Q3+Q4 vs FY differs by >5%: flag 'qsum_mismatch' and correct.
+6. Q-SUM CONSISTENCY CHECK (mandatory when Q1..Q4 and FY are all present).
+   Compute S = Q1 + Q2 + Q3 + Q4. Compute delta_pct = 100 * (S - FY) /
+   max(abs(FY), 1). If abs(delta_pct) > 5%:
+     - flag 'qsum_mismatch'
+     - verdict='correct'
+     - Identify the likely culprit by scanning source_quotes: any
+       quarter whose source_quote references "H1", "half-year", "6
+       months", "9M", "nine months", "YTD", or "cumulative" instead
+       of the standalone quarter is a strong suspect — the extractor
+       probably stored a cumulative-window value in a standalone-Q
+       slot.
+     - In corrections, fix that quarter's value to the correctly
+       derived standalone number (e.g. Q2 = H1 - Q1) and update Q4
+       so Q1..Q4 sum matches FY within 0.5%.
+     - reason MUST show the arithmetic and cite the mis-attributed
+       source_quote fragment, e.g. "Q1+Q2+Q3+Q4 = 1.9B but FY = 1.5B,
+       delta = +27%. Q4 source_quote says 'first half of 2025' which
+       is H1, not Q4 — Q4 should be FY - 9M-YTD = 2.8B, adjusted."
 
 Return JSON matching exactly:
 
