@@ -279,6 +279,15 @@ For each period MUST provide:
   reported to adjusted, e.g. "Monsanto legal reserves 3.5B,
   restructuring 1.2B, PPA amortization 2.0B, discontinued Aumovio 0.4B".
 
+SOURCE PRIORITY — use the HIGHEST available tier and stick to ONE tier per
+period; name the tier in source_quote:
+  1. Company filings / interim reports / official press releases (IR pages).
+  2. Company guidance statements (call transcripts, outlook sections).
+  3. Analyst consensus from ONE named aggregator — prefer MarketScreener;
+     only if unavailable use TipRanks. Never mix aggregators across periods
+     of the same metric, and never replace an available higher tier with a
+     lower one.
+
 Availability rules — CRITICAL:
 - Each period has an `is_estimate` boolean. Set carefully:
     * `is_estimate: false` = value from a published company report
@@ -641,6 +650,11 @@ VERIFIER_SYSTEM = (
     "English inline (e.g. write \"the source says '2.70 EUR per share'\" "
     "even if the German quote said '2,70 EUR je Aktie'). The reader is "
     "an English-speaking analyst.\n\n"
+    "ESTIMATE CORRECTION RULE: for values marked is_estimate=true, "
+    "'correct' is allowed ONLY for provable internal errors — arithmetic, "
+    "unit scale, per-share confusion, temporal mislabeling. A third-party "
+    "source showing a DIFFERENT forecast is never grounds for correction: "
+    "forecasts legitimately differ.\n\n"
     "Bias toward 'confirm'. Only downgrade when you have a specific, "
     "citable reason — from the source_quote itself or from your own "
     "web_search evidence. If your independent search contradicts the "
@@ -887,6 +901,21 @@ def choose_mode_for_year(year: int, today: date | None = None, quarter: str | No
     return "historic" if year < t.year else "current"
 
 
+# FY-Werte mit dem groessten Hebel auf die H-Return: hier eliminiert
+# Median-of-3-Sampling die Ausreisser einzelner Web-Search-Laeufe.
+CRITICAL_MEDIAN_KEYS = frozenset({"net_income", "revenue", "fcf"})
+
+
+def _pick_median_extract(candidates: list[ExtractResult]) -> ExtractResult:
+    """Waehlt die komplette Extraktion mit dem Median-FY-Wert (keine
+    Perioden-Mischung ueber Samples hinweg)."""
+    with_fy = [c for c in candidates if c.fy is not None and c.fy.value is not None]
+    if not with_fy:
+        return candidates[0]
+    with_fy.sort(key=lambda c: c.fy.value)
+    return with_fy[len(with_fy) // 2]
+
+
 def research_two_stage(
     ticker: str,
     company_name: str,
@@ -904,17 +933,22 @@ def research_two_stage(
     """Full pipeline: extract with sources -> verify -> apply corrections."""
     if cost_tracker:
         cost_tracker.check_budget()
-    extract = run_extractor(
-        ticker=ticker,
-        company_name=company_name,
-        value_key=value_key,
-        year=year,
-        currency=currency,
-        mode=mode,
-        quarter=quarter,
-        limiter=limiter,
-        model=extractor_model,
-    )
+    n_samples = 3 if (value_key in CRITICAL_MEDIAN_KEYS and mode == "historic") else 1
+    n_samples = int(os.environ.get("TWO_STAGE_MEDIAN_SAMPLES", n_samples))
+    candidates: list[ExtractResult] = []
+    for _ in range(max(1, n_samples)):
+        candidates.append(run_extractor(
+            ticker=ticker,
+            company_name=company_name,
+            value_key=value_key,
+            year=year,
+            currency=currency,
+            mode=mode,
+            quarter=quarter,
+            limiter=limiter,
+            model=extractor_model,
+        ))
+    extract = _pick_median_extract(candidates)
     verdict = run_verifier(
         extract=extract,
         prev_year_fy_hint=prev_year_fy_hint,
