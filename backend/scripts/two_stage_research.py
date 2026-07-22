@@ -100,7 +100,26 @@ def load_metric_prompt(value_key: str) -> str:
     p = PROMPTS_DIR / f"{value_key}.md"
     if not p.exists():
         return ""
-    return p.read_text(encoding="utf-8")
+    raw = p.read_text(encoding="utf-8")
+
+    # YAML-Frontmatter strippen — reine Katalog-Metadaten.
+    if raw.startswith("---"):
+        end = raw.find("\n---", 3)
+        if end != -1:
+            raw = raw[end + 4:]
+
+    # "Output-Format"- und "Query-Template"-Abschnitte sind fuer den
+    # Standalone-Agent-Gebrauch. Im Two-Stage-Extractor konkurrieren ihre
+    # JSON-Beispiele mit dem verbindlichen q1..q4/fy-Schema und provozieren
+    # Format-Brueche — beim Einbetten weglassen.
+    kept: list[str] = []
+    skip = False
+    for line in raw.splitlines():
+        if line.startswith("## "):
+            skip = "Output-Format" in line or "Query-Template" in line
+        if not skip:
+            kept.append(line)
+    return "\n".join(kept).strip()
 
 
 # --- Data structures ------------------------------------------------------
@@ -146,6 +165,9 @@ class ExtractResult:
                 "value": str(qv.value) if qv.value is not None else None,
                 "source_quote": qv.source_quote,
                 "source_url": qv.source_url,
+                "is_estimate": qv.is_estimate,
+                "adjusted_value": str(qv.adjusted_value) if qv.adjusted_value is not None else None,
+                "adjustments_note": qv.adjustments_note,
             }
 
         return {
@@ -558,17 +580,31 @@ def run_extractor(
 # --- Stage 2: Verifier ----------------------------------------------------
 
 
+# Web-Search gibt dem Verifier UNABHAENGIGE Evidenz. Ohne sie prueft er nur
+# das Zitat, das der Extractor selbst behauptet — ein plausibel halluziniertes
+# Zitat wuerde bestaetigt (Zirkelschluss).
+VERIFIER_WEB_SEARCH_MAX_USES = 3
+VERIFIER_MAX_TOKENS = 2048
+
 VERIFIER_SYSTEM = (
-    "You are a financial-data second-opinion. You receive a set of "
-    "extracted values plus the exact source_quote and source_url each "
-    "came from. For EACH value decide one of three verdicts:\n\n"
+    "You are a financial-data second-opinion with your own web_search "
+    "tool. You receive a set of extracted values plus the exact "
+    "source_quote and source_url each came from. The quotes were "
+    "produced by another model and may be fabricated or misattributed — "
+    "do NOT treat them as ground truth. INDEPENDENT CHECK: use "
+    "web_search to verify the most material number (FY, or the single "
+    "quarter in single-quarter mode) against a primary source (company "
+    "IR page, filed report, reputable financial data site). Budget is "
+    "limited — one or two targeted searches, not one per period. "
+    "For EACH value decide one of three verdicts:\n\n"
     "  * 'confirm' — DEFAULT. Use this when the source_quote plainly "
     "supports the number and no obvious error is present. This is what "
     "most values will get. Do NOT invent doubts to justify a lower "
     "verdict — 'confirm' with an empty reason is the correct behaviour "
     "for the majority of rows.\n"
     "  * 'correct' — Use ONLY when there is a concrete detectable error "
-    "in the extracted number that the source_quote proves. Examples: "
+    "proven by the source_quote itself OR by your own web_search "
+    "evidence (then cite that source in reason). Examples: "
     "per-share vs total confusion (quote says '2.70 EUR per share' but "
     "extractor stored 2,700,000,000); adjusted vs IFRS reported "
     "confusion (quote says 'Adjusted' but extractor stored it without "
@@ -595,7 +631,10 @@ VERIFIER_SYSTEM = (
     "even if the German quote said '2,70 EUR je Aktie'). The reader is "
     "an English-speaking analyst.\n\n"
     "Bias toward 'confirm'. Only downgrade when you have a specific, "
-    "citable reason from the source_quote itself."
+    "citable reason — from the source_quote itself or from your own "
+    "web_search evidence. If your independent search contradicts the "
+    "extracted number materially (>5%), verdict='correct' with your "
+    "found value and source cited in reason."
 )
 
 
@@ -660,6 +699,17 @@ Challenge every number. Check:
        delta = +27%. Q4 source_quote says 'first half of 2025' which
        is H1, not Q4 — Q4 should be FY - 9M-YTD = 2.8B, adjusted."
 
+7. INDEPENDENT VERIFICATION (mandatory, budget-aware): run 1-2 targeted
+   web_search queries to check the most material number — FY {extract.year}
+   {extract.value_key} for {extract.ticker} (or the single quarter in
+   single-quarter mode) — against a primary source. The source_quotes
+   above come from another model and may be fabricated; your search is
+   the only independent evidence. If your finding matches within 5%:
+   supports 'confirm'. If it contradicts materially: verdict='correct',
+   put your found value in corrections and cite the source in reason.
+   If you cannot find anything either way, do NOT downgrade to
+   insufficient_evidence just because of that — judge on the quotes.
+
 Return JSON matching exactly:
 
 {schema}
@@ -690,8 +740,13 @@ def run_verifier(
     def _call() -> anthropic.types.Message:
         return client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=VERIFIER_MAX_TOKENS,
             system=VERIFIER_SYSTEM,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": VERIFIER_WEB_SEARCH_MAX_USES,
+            }],
             messages=[{"role": "user", "content": prompt}],
         )
 
@@ -730,9 +785,18 @@ class TwoStageResult:
 
     @property
     def final_values(self) -> dict[str, Decimal | None]:
-        """Extracted values overridden by verifier corrections."""
+        """Extracted values overridden by verifier corrections.
+
+        Korrekturen greifen NUR bei verdict='correct' — bei 'confirm' oder
+        'insufficient_evidence' darf ein versehentlich befuelltes
+        corrections-Feld den Extractor-Wert nicht ueberschreiben.
+        """
         def _pick(period: str, extracted: QuarterValue | None) -> Decimal | None:
-            corr = self.verdict.corrections.get(period)
+            corr = (
+                self.verdict.corrections.get(period)
+                if self.verdict.verdict == "correct"
+                else None
+            )
             if corr is not None:
                 return corr
             if extracted is None:
@@ -779,13 +843,17 @@ class CostTracker:
             )
 
 
-def choose_mode_for_year(year: int, today: date | None = None) -> Mode:
-    """Auto-select HISTORIC vs CURRENT based on today's date and the target year.
+def choose_mode_for_year(year: int, today: date | None = None, quarter: str | None = None) -> Mode:
+    """Auto-select HISTORIC vs CURRENT based on target year and requested quarter.
 
-    Convention: any year strictly before the current calendar year is HISTORIC
-    (annual reports are out). The current calendar year is CURRENT (interim
-    reports only). Future years are CURRENT (only guidance/consensus available).
+    CURRENT is the single-standalone-quarter extraction and is only valid when
+    a specific quarter is requested for the running/future year. FY-level runs
+    (quarter=None) always use HISTORIC: its prompt carries the
+    in-progress-fiscal-year protocol (reported quarters as actuals, missing
+    quarters as estimates, FY via guidance/consensus).
     """
+    if quarter is None:
+        return "historic"
     t = today or date.today()
     return "historic" if year < t.year else "current"
 
@@ -901,6 +969,7 @@ def apply_to_db(
     """
     from sqlalchemy import select
     from app.values.models import CompanyValue
+    from app.values.persistence import normalize_sign
 
     # Fill in a missing quarter if FY + 3 quarters are present.
     _derive_missing_quarter(result)
@@ -940,6 +1009,10 @@ def apply_to_db(
         )
         if not has_source_evidence and not has_verifier_correction:
             continue
+
+        value = normalize_sign(
+            value_key, value, context=f"two-stage {result.extract.ticker}/{period_type} {year}",
+        )
 
         stmt = select(CompanyValue).where(
             CompanyValue.company_id == company_id,
@@ -997,7 +1070,11 @@ def apply_to_db(
             existing.manually_overridden = False
             existing.is_forecast = is_estimate
             existing.fetched_at = datetime.now(timezone.utc)
-            if currency and not existing.currency:
+            # Das Currency-Label muss den GESCHRIEBENEN Wert beschreiben — der
+            # Extractor liefert explizit in Firmenwaehrung. Ein altes Label
+            # (z.B. USD aus einem frueheren Provider-Write) darf nicht am
+            # neuen Wert kleben bleiben.
+            if currency:
                 existing.currency = currency
             written.append(existing)
         else:
@@ -1049,7 +1126,7 @@ def _cli() -> int:
     args = ap.parse_args()
 
     if args.mode == "auto":
-        args.mode = choose_mode_for_year(args.year)
+        args.mode = choose_mode_for_year(args.year, quarter=args.quarter)
 
     prev = Decimal(args.prev_fy) if args.prev_fy else None
     tracker = CostTracker(max_usd=args.max_cost_usd) if args.max_cost_usd else None
