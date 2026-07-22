@@ -44,6 +44,7 @@ export type CompanyValue = {
   primary_method?: "web_guidance" | "q_factor_proxy" | "pdf" | "manual" | "provider" | "calculated" | null;
   last_refresh_attempt?: string | null;
   from_ir_pdf?: boolean;
+  consistency_flags?: string | null;
 };
 
 export const getValueDefinitions = () =>

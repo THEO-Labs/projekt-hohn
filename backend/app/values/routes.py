@@ -1260,6 +1260,21 @@ def refresh_company_values(
 
         db.commit()
 
+        # Cross-Metrik-Konsistenz: net_debt aus Komponenten ableiten (eine
+        # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
+        if use_two_stage_fy and payload.period_year is not None:
+            from app.values.consistency import (
+                derive_net_debt_from_components,
+                validate_cross_metrics,
+            )
+            try:
+                derive_net_debt_from_components(db, company_id, payload.period_year)
+                validate_cross_metrics(db, company_id, payload.period_year)
+                db.commit()
+            except Exception as e:
+                logger.error("consistency pass failed for %s FY%s: %s", ticker, payload.period_year, e)
+                db.rollback()
+
         # Bei Stammdaten-Only: kein historisches MCap-Fetch, kein Prev-Year-
         # Refresh — die haben mit den taeglichen Live-Werten nichts zu tun.
         if not payload.stammdaten_only and payload.period_type == "FY" and payload.period_year is not None:

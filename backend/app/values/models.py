@@ -99,3 +99,7 @@ class CompanyValue(Base):
     last_refresh_attempt: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Kommagetrennte Verletzungen der Cross-Metrik-Checks (qsum_mismatch,
+    # fcf_vs_ocf_capex, eps_ni_mismatch, ...). NULL = alle Checks bestanden
+    # oder nicht pruefbar. Wird bei jedem Validator-Lauf neu gesetzt.
+    consistency_flags: Mapped[str | None] = mapped_column(String(512), nullable=True)

@@ -48,6 +48,7 @@ class ValueRef(BaseModel):
     # already-published 10-Q (is_forecast=false), which should render as
     # Actual, not Estimate.
     is_forecast: bool = False
+    consistency_flags: str | None = None
 
 
 class QuarterlyRow(BaseModel):
@@ -169,6 +170,7 @@ def _to_ref(row: CompanyValue | None) -> ValueRef:
         manually_overridden=bool(row.manually_overridden),
         primary_method=row.primary_method,
         is_forecast=bool(row.is_forecast),
+        consistency_flags=row.consistency_flags,
     )
 
 

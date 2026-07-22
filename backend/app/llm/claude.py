@@ -1245,6 +1245,7 @@ def research_value(
                 kwargs = dict(
                     model="claude-sonnet-4-6",
                     max_tokens=2048,
+                    temperature=0,
                     system=system_blocks,
                     messages=messages,
                 )
@@ -1488,6 +1489,7 @@ def research_adjusted_only(
         response = claude_limiter.call(lambda: client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=512,
+            temperature=0,
             system=[{"type": "text", "text": (
                 "You are a financial research assistant. Return ONLY the requested "
                 "format. Never invent values. Use web-search."

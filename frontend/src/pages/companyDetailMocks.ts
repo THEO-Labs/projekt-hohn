@@ -39,6 +39,8 @@ export type Cell = {
   // no separate Non-GAAP figure was reported. Rendered in muted colour with
   // "≈" prefix to signal "same as GAAP".
   is_gaap_fallback?: boolean;
+  // Kommagetrennte Cross-Metrik-Verletzungen vom Backend-Validator.
+  consistency_flags?: string | null;
 };
 
 export const emptyCell = (): Cell => ({ value: null });
@@ -271,6 +273,7 @@ function refToCell(
     adjustments_note: (r as unknown as { adjustments_note?: string | null } | null)?.adjustments_note ?? null,
     adjustments_source: (r as unknown as { adjustments_source?: string | null } | null)?.adjustments_source ?? null,
     is_gaap_fallback,
+    consistency_flags: r?.consistency_flags ?? null,
   };
 }
 
@@ -420,6 +423,7 @@ export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): B
       value_key: keyHint ?? null,
       period_label: `${label} FY ${year}`,
       is_gaap_fallback,
+      consistency_flags: ref.consistency_flags ?? null,
     };
   };
 

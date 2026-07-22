@@ -50,6 +50,7 @@ class CompanyValueOut(BaseModel):
     primary_method: str | None = None
     last_refresh_attempt: datetime | None = None
     from_ir_pdf: bool = False
+    consistency_flags: str | None = None
 
     model_config = {"from_attributes": True}
 

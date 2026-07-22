@@ -234,6 +234,13 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
         </button>
       </div>
 
+      {cell.consistency_flags && (
+        <div className="mx-3 mb-1.5 rounded-md bg-amber-50 px-2 py-1 text-[10.5px] text-amber-900 ring-1 ring-amber-200">
+          <span className="font-semibold">Konsistenz-Warnung:</span>{" "}
+          {cell.consistency_flags.split(",").join(", ")}
+        </div>
+      )}
+
       {/* Big value */}
       <div className="flex items-end justify-between gap-2 border-b border-border/40 px-3 pb-2.5">
         {editing ? (

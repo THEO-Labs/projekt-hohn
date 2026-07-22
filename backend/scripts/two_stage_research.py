@@ -156,6 +156,7 @@ class ExtractResult:
     fy: QuarterValue | None
     quarter_only: str | None  # e.g. "Q1" if current-year single-quarter mode
     is_adjusted_note: str | None  # extractor flags if only adjusted found
+    model_id: str | None = None  # extractor model used (provenance/reproducibility)
 
     def to_verifier_json(self) -> dict:
         def _q(qv: QuarterValue | None) -> dict | None:
@@ -516,6 +517,7 @@ def run_extractor(
         return client.messages.create(
             model=model,
             max_tokens=8192,
+            temperature=0,
             system=EXTRACTOR_SYSTEM,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
             messages=[{"role": "user", "content": user_content}],
@@ -564,6 +566,7 @@ def run_extractor(
             fy=_to_qv(payload.get("fy")),
             quarter_only=None,
             is_adjusted_note=payload.get("extractor_note_adjusted_vs_reported"),
+            model_id=model,
         )
     else:
         assert quarter is not None
@@ -581,6 +584,7 @@ def run_extractor(
             fy=None,
             quarter_only=quarter,
             is_adjusted_note=payload.get("extractor_note_adjusted_vs_reported"),
+            model_id=model,
         )
 
 
@@ -765,6 +769,7 @@ def run_verifier(
         return client.messages.create(
             model=model,
             max_tokens=VERIFIER_MAX_TOKENS,
+            temperature=0,
             system=VERIFIER_SYSTEM,
             tools=[{
                 "type": "web_search_20250305",
@@ -1159,6 +1164,8 @@ def apply_to_db(
             parts.append(f"verifier_note={result.verdict.reason[:800]}")
         if result.verdict.flags:
             parts.append(f"flags={','.join(result.verdict.flags)}")
+        if result.extract.model_id:
+            parts.append(f"model={result.extract.model_id}")
         source_name = " | ".join(parts)
 
         is_estimate = bool(qv.is_estimate) if qv else False

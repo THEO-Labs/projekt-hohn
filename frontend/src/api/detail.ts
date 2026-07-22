@@ -9,6 +9,7 @@ export type ValueRef = {
   manually_overridden: boolean;
   primary_method: string | null;
   is_forecast: boolean;
+  consistency_flags?: string | null;
 };
 
 export type QuarterlyRowRefs = {
