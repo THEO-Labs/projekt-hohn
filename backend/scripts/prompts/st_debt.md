@@ -3,7 +3,7 @@ key: st_debt
 label_de: Kurzfristige Schulden
 category: DEBT
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # st_debt — Kurzfristige Finanzverbindlichkeiten

@@ -3,7 +3,7 @@ key: eps_diluted
 label_de: Verwaesserter Gewinn je Aktie
 category: NI_GROWTH
 data_type: NUMERIC
-unit: EUR per share (fuer QIA: USD) — pro Aktie, NIEMALS absolute Total
+unit: Berichtswaehrung per share — pro Aktie, NIEMALS absolute Total
 ---
 
 # eps_diluted — Diluted Earnings per Share

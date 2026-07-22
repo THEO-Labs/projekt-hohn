@@ -3,7 +3,7 @@ key: sbc
 label_de: Stock-Based Compensation
 category: SBC
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD) — absolute Waehrung
+unit: Berichtswaehrung der Firma — absolute Waehrung
 ---
 
 # sbc — Stock-Based Compensation Expense
@@ -18,7 +18,7 @@ unit: EUR (fuer QIA: USD) — absolute Waehrung
 4. **P&L-Aufwandsposten**: verteilt auf Cost of Sales / R&D / SG&A
 
 ## Einheit & Format
-- Absolute EUR (fuer QIA: USD)
+- Absolute Berichtswaehrung der Firma (EUR fuer DAX, USD fuer US-Firmen)
 - Vorzeichen: **positiv** (Aufwand)
 - Cash-settled + equity-settled zusammen
 
@@ -105,7 +105,8 @@ Fuer {ticker} in Periode {period_year} {period_type}:
 2. P&L-Aufwand der Periode (NICHT grant value neuer Awards)
 3. Cash-settled + Equity-settled zusammen
 4. Positive Absolutzahl (Aufwand)
-5. Wenn nur FY disclosed: Q1-Q4 = null (NICHT FY/4 interpolieren)
+5. ABGESCHLOSSENES FY mit nur-FY-Disclosure: Q1-Q4 = null (NICHT FY/4 interpolieren).
+   LAUFENDES FY: Q-Schaetzung via Vorjahres-Q-Verteilung (siehe Anti-Confusion), is_estimate=true
 6. Wenn Firma explizit "no SBC" reported (PAH3, BEI): 0
 7. Sanity: sbc/net_income typisch 5-30%, sbc/mc 0.1-2%
 ```

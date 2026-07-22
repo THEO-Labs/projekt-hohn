@@ -3,7 +3,7 @@ key: fcf
 label_de: Free Cash Flow
 category: FCF
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # fcf — Free Cash Flow
@@ -17,7 +17,7 @@ unit: EUR (fuer QIA: USD)
 3. Konvention: **beide Zahlen dokumentieren** wenn abweichend, primaer OCF-CapEx nehmen
 
 ## Einheit & Format
-- Absolute EUR (fuer QIA: USD)
+- Absolute Berichtswaehrung der Firma (EUR fuer DAX, USD fuer US-Firmen)
 - Vorzeichen: **kann negativ sein** (Q1 saisonal oft negativ bei Auto/Chemie/Retail)
 
 ## Sanity-Range
@@ -74,8 +74,8 @@ unit: EUR (fuer QIA: USD)
 | Ticker | period_year | Q | Correct | Falsches Muster |
 |---|---|---|---|---|
 | SAP.DE | 2025 | Q1 | 3.583 Mio EUR (OCF - CapEx) | Andere Zahlen bei Company-Def |
-| AIR.PA | 2025 | Q4 | 5.531 Mio EUR (Airbus-eigene Def) vs 4.031 klassisch | Ohne Klarheit |
-| VOW3.DE | 2025 | Q4 | 4.648 (Net Cash Flow Automotive) vs Konzern-Total | Nur eine Kennung |
+| AIR.PA | 2025 | Q4 | **4.031 Mio klassisch (OCF - CapEx)** als value; Airbus-eigene "FCF" 5.531 nur dokumentieren | 5.531 (Company-Def als value eingetragen) |
+| VOW3.DE | 2025 | Q4 | **Konzern-Total OCF - CapEx** als value; "Net Cash Flow Automotive" 4.648 nur dokumentieren | 4.648 (VW-eigene Automotive-Def als value) |
 | BAS.DE | 2025 | Q1 | **-1.798 Mio** (Working Capital Aufbau) | positive Schaetzung |
 
 ## Query-Template fuer Agent

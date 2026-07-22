@@ -3,7 +3,7 @@ key: cash_and_equivalents
 label_de: Cash und Aequivalente
 category: CASH
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # cash_and_equivalents — Zahlungsmittel und -aequivalente
@@ -16,7 +16,7 @@ unit: EUR (fuer QIA: USD)
 2. Bei Banken: "Cash and central bank balances" (unterschiedliches Konzept)
 
 ## Einheit & Format
-- Absolute EUR
+- Absolute Berichtswaehrung der Firma
 - Vorzeichen: **positiv** (Aktivposten)
 - KEINE Mio-Skalierung
 

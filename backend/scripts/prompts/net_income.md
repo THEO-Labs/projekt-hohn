@@ -3,7 +3,7 @@ key: net_income
 label_de: Nettogewinn
 category: NI_GROWTH
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD) — absolute Waehrungseinheiten
+unit: Berichtswaehrung der Firma — absolute Waehrungseinheiten
 ---
 
 # net_income — Nettogewinn / Konzernergebnis
@@ -18,7 +18,7 @@ Bei Konzernen mit Minderheiten (VOW3, DBK, RWE): **Net income attributable to sh
 2. Bei Split "attributable to shareholders of parent" vs "attributable to non-controlling interests" → **parent-attributable nutzen**
 
 ## Einheit & Format
-- **Absolute EUR** (fuer QIA: USD)
+- **Absolute Berichtswaehrung der Firma** (EUR fuer DAX, USD fuer US-Firmen)
 - KEINE Mio-Skalierung
 - Vorzeichen: **negativ bei Verlust** (z.B. BAYN 2025 = -3.620.000.000)
 
@@ -40,7 +40,10 @@ Bei Konzernen mit Minderheiten (VOW3, DBK, RWE): **Net income attributable to sh
 **Reported (IFRS) vs Adjusted (Non-IFRS)**:
 - BAYN 2024: reported -2,55 Mrd EUR (mit Monsanto-Impairment), adjusted +4,5 Mrd
 - ENR 2024: reported -1,6 Mrd (Wind-Sparte), adjusted positiv
-- Konvention: **IFRS reported** (mit allen Sondereffekten)
+- Konvention: **IFRS reported als value** (mit allen Sondereffekten).
+  Publiziert die Firma eine Adjusted/Core-Variante (Bayer Core, SAP Non-IFRS):
+  ZUSAETZLICH als adjusted_value extrahieren (nie als value), adjustments_note
+  listet die Bereinigungen.
 
 **Continuing vs Total Operations**:
 - Continental 2025: reported ist Total inkl. Aumovio-Zeit

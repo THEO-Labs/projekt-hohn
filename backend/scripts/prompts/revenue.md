@@ -3,7 +3,7 @@ key: revenue
 label_de: Umsatz
 category: NI_GROWTH
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD) — absolute Waehrungseinheiten
+unit: Berichtswaehrung der Firma — absolute Waehrungseinheiten
 ---
 
 # revenue — Umsatz
@@ -17,7 +17,7 @@ unit: EUR (fuer QIA: USD) — absolute Waehrungseinheiten
 3. **Quarterly Statements Trading-Update** → Sales-Zahl
 
 ## Einheit & Format
-- **Absolute EUR** (fuer QIA: USD)
+- **Absolute Berichtswaehrung der Firma** (EUR fuer DAX, USD fuer US-Firmen)
 - KEINE Mio-Skalierung: `36800000000` fuer 36,8 Mrd EUR
 - Vorzeichen: **positiv** (Retouren/Discounts sind schon abgezogen)
 
@@ -66,7 +66,7 @@ Q ~= FY / 4 (mit Saisonalitaet ±20%). Wenn Q > FY oder Q < 0 = red flag.
 - Konvention: **Total Group Revenue** (inkl. FS)
 
 ## Cross-References
-1. **Q1 + Q2 + Q3 + Q4 = FY** (exakt bei realen actuals)
+1. **Q1 + Q2 + Q3 + Q4 = FY** (Toleranz 0,5% bei actuals — FX-Rundung in Interim-Reports)
 2. **ni_margin = net_income / revenue × 100** (typisch 3-15% DAX)
 3. **ps_ratio = market_cap / revenue** (0,5–15 typisch)
 4. **fcf_margin = fcf / revenue × 100**
@@ -101,5 +101,5 @@ Fuer {ticker} in Periode {period_year} {period_type}:
 3. Total Group (inkl. Financial Services bei Auto, inkl. discontinued bis Spin-off-Datum)
 4. Fuer Fiskaljahr-Firmen (IFX/SIE/SHL/ENR): Kal-Q1 2025 = FQ2 FY25 etc.
 5. Bei Q: Sum von Q1-Q4 sollte FY exakt matchen (Sanity-Check)
-6. Gib absolute EUR (nicht Mio), Vorzeichen positiv
+6. Gib absolute Berichtswaehrung (nicht Mio), Vorzeichen positiv
 ```

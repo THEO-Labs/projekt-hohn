@@ -3,7 +3,7 @@ key: dividends
 label_de: Dividenden (Cash-Payout)
 category: DIVIDENDS
 data_type: NUMERIC
-unit: EUR total (absoluter Cash-Payout, NIEMALS per-share)
+unit: Berichtswaehrung total (absoluter Cash-Payout, NIEMALS per-share)
 ---
 
 # dividends — Cash-Dividende Total
@@ -22,7 +22,7 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Dividende fuer G
 4. **Kapitalflussrechnung** `{period_year+1}` → "Dividends paid to shareholders" (Verifikation der tatsaechlichen Zahlung)
 
 ## Einheit & Format
-- **Absolute EUR** (fuer QIA.DE: USD)
+- **Absolute Berichtswaehrung der Firma** (EUR fuer DAX, USD fuer US-Firmen)
 - **KEINE** Millionen-Skalierung (nicht `440`, sondern `440000000`)
 - Vorzeichen: **positiv**
 
@@ -61,7 +61,11 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Dividende fuer G
 - Div ist Corporate-Ebene, immer Total.
 
 ## Cross-References (Konsistenz-Checks)
-1. **Q-Split**: Div wird typisch nur einmal jaehrlich gezahlt (in Q2 des Folgejahres nach HV). Fuer `period_year=2025` bedeutet das: Q-Werte alle in `period_year=2026 Q2` sichtbar (Auszahlung), nicht im GJ des Verdienens. Konvention hier: Q-Werte NULL lassen, nur FY-Wert setzen — Q-Split wuerde nur bei Firmen wie QIA (Q3) oder REITs (quartalsweise) Sinn machen.
+1. **Q-Split (Rollup-Konvention, KEIN Zahlungs-Timing)**: Die Pipeline summiert
+   Q1+Q2+Q3+Q4 = FY fuer dividends. Deutsche Einmal-Zahler: **Q1 = Q2 = Q3 = 0
+   und Q4 = FY-Wert** eintragen (source_quote: "Rollup-Konvention: Jahresdividende
+   dem Q4 des verdienten GJ zugeordnet"). Quartalszahler (US-Firmen, QIA, REITs):
+   echte Quartals-Cash-Dividenden pro Q. So bleibt Q-Sum = FY immer konsistent.
 2. **dividend_yield = dividends / market_cap × 100**: muss in Sanity-Range fallen (2–6% DAX)
 3. **per_share_check = dividends / shares_outstanding**: sollte plausibel sein (0,5–20 EUR fuer DAX)
 
@@ -99,7 +103,7 @@ Fuer {ticker} ({company_name}) Geschaeftsjahr {period_year}:
    "Dividendenvorschlag" fuer GJ {period_year}).
 2. Wenn nur per-share Wert verfuegbar: multipliziere mit total shares outstanding
    (bei Dual-Class-Firmen: BEIDE Klassen zusammen).
-3. Gib absolute EUR zurueck (fuer QIA: USD).
+3. Gib absolute Berichtswaehrung zurueck.
 4. Verifiziere: dividends_eur / shares_outstanding sollte plausibel per-share sein (0,5-20 EUR).
 5. Verifiziere: dividends_eur / market_cap sollte 2-6% ergeben (max 10%, sonst Fehler).
 6. WICHTIG: period_year=2025 heisst "fuer GJ 2025" (Zahlung 2026), NICHT "gezahlt in 2025".

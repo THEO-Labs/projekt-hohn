@@ -3,7 +3,7 @@ key: st_investments
 label_de: Kurzfristige Anlagen
 category: CASH
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # st_investments — Kurzfristige Anlagen

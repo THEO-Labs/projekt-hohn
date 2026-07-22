@@ -3,7 +3,7 @@ key: operating_cash_flow
 label_de: Operativer Cashflow
 category: FCF
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # operating_cash_flow — Cash Flow aus operativer Taetigkeit
@@ -16,7 +16,7 @@ unit: EUR (fuer QIA: USD)
 2. **Notes to CFS**: Detailkomponenten (falls Analyse noetig)
 
 ## Einheit & Format
-- Absolute EUR
+- Absolute Berichtswaehrung der Firma
 - Vorzeichen: **kann negativ sein** (RWE Q1 2025: -2.065 Mio, VW Q1 saisonal auch)
 
 ## Sanity-Range

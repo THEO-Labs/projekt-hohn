@@ -48,9 +48,17 @@ unit: Absolute Anzahl Aktien (keine Millionen, keine Tausend)
 
 **Common Aktien nicht vergessen bei deutschen Familien-Konzernen** (Merck, Henkel, Porsche SE, BMW, Beiersdorf, VW etc.).
 
-**Treasury Shares**:
-- Aussuenderzahlen enthalten oft Treasury Shares (zurueckgekaufte). Fuer MC-Rechnung: **shares outstanding INKLUSIVE Treasury** (weil das der aktuelle Umlauf ist bevor Cancellation).
-- Wenn eine Firma Treasury eingezogen hat: dann sind die weg.
+**Treasury Shares — ISSUED vs OUTSTANDING**:
+- Standard-Definition: **outstanding = issued − treasury shares**. Zurueckgekaufte
+  eigene Aktien (Treasury) sind NICHT outstanding — sie erhalten keine Dividende
+  und zaehlen nicht in Market Cap oder EPS-Nenner.
+- FALSCH: "issued shares" oder "Grundkapital / Nennwert" als outstanding eintragen
+  (ueberschaetzt MC und macht den Buyback-Effekt unsichtbar: die Aktienzahl
+  wuerde trotz laufender Rueckkaeufe nie sinken).
+- RICHTIG: die "shares outstanding"-Zahl aus der Share-Capital-Note bzw.
+  issued minus treasury laut Note.
+- Konsistenz-Check: dividends.md rechnet per_share × outstanding — Treasury
+  bekommt keine Dividende, die Zahlen muessen zusammenpassen.
 
 **Kapitalerhoehungen / Splits**:
 - Nach Kapitalerhoehung (z.B. Rheinmetall 2025) neue shares nutzen fuer aktuelle Periode
@@ -97,7 +105,7 @@ unit: Absolute Anzahl Aktien (keine Millionen, keine Tausend)
 Fuer {ticker} ({company_name}) zum Stichtag {reference_date}:
 1. Suche in den Notes to FS die "Share Capital"-Note.
 2. Liste ALLE Aktienklassen auf (Preferred, Common, Ordinary, Bearer, Registered).
-3. Total = Summe aller ausstehenden Aktien aller Klassen (INKL. Treasury im Umlauf).
+3. Total = Summe aller ausstehenden Aktien aller Klassen (outstanding = issued − treasury).
 4. Verifiziere: Total × Stock-Price sollte den Market-Cap-Referenzwert (Bloomberg/FT) treffen ±2%.
 5. Wenn Dual-Class: gib Breakdown separat an im Response.
 ```

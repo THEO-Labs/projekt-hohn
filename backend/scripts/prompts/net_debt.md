@@ -3,7 +3,7 @@ key: net_debt
 label_de: Net Debt
 category: DEBT
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # net_debt — Nettoverschuldung
@@ -22,7 +22,7 @@ Negativ = Firma hat mehr Cash als Schulden (Netto-Cash-Position)
 2. **Aus Bilanz-Komponenten**: st_debt + lt_debt - cash - st_investments
 
 ## Einheit & Format
-- Absolute EUR
+- Absolute Berichtswaehrung der Firma
 - Vorzeichen: **positiv** bei Netto-Schuld, **negativ** bei Netto-Cash
 - KEINE Mio-Skalierung
 
@@ -89,8 +89,7 @@ Negativ = Firma hat mehr Cash als Schulden (Netto-Cash-Position)
 | SAP.DE | 2025 | **-3.500 Mio** (Netto-Cash-Position) | +3.500 (Vorzeichen falsch) |
 | BAS.DE | 2025 | **~+40 Mrd** (Netto-Schuld) | negativ (Netto-Cash-Fehler) |
 | DTE.DE | 2025 | **~+133 Mrd** (Netto-Schuld inkl. T-Mobile US Kredite) | +60 Mrd (nur Konzern DE ohne T-Mobile US) |
-| BMW.DE | 2025 | **~-40 Mrd Automotive** (Netto-Cash-Position, Konvention negativ) | +40 Mrd (Vorzeichen falsch — Netto-Cash muss negativ sein) |
-| BMW.DE | 2025 | **~+80 Mrd Total-Konzern** (positive Netto-Schuld inkl. Financial Services) | Nur Automotive (unterschaetzt echte Verschuldung) |
+| BMW.DE | 2025 | **~+80 Mrd Total-Konzern** (Konvention: Total inkl. Financial Services) | ~-40 Mrd (nur Automotive Netto-Cash — falsche Ebene, unterschaetzt echte Verschuldung) |
 | VOW3.DE | 2025 | **~+180 Mrd Total-Konzern** (Netto-Schuld inkl. FS) | Nur Automotive Netto-Cash-Position |
 
 ## Query-Template

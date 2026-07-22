@@ -3,7 +3,7 @@ key: lt_debt
 label_de: Langfristige Schulden
 category: DEBT
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # lt_debt — Langfristige Finanzverbindlichkeiten

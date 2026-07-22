@@ -3,7 +3,7 @@ key: buyback_volume
 label_de: Buyback-Volumen (Cash-Ausgabe)
 category: BUYBACKS
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD) — Cash-Ausgabe fuer Aktienrueckkaufe
+unit: Berichtswaehrung der Firma — Cash-Ausgabe fuer Aktienrueckkaufe
 ---
 
 # buyback_volume — Aktienrueckkauf Cash-Volumen

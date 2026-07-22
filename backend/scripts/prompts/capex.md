@@ -3,7 +3,7 @@ key: capex
 label_de: CapEx (Investitionen in Sachanlagen + Immat.)
 category: FCF
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # capex — Capital Expenditure

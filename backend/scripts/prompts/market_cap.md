@@ -3,7 +3,7 @@ key: market_cap
 label_de: Marktkapitalisierung
 category: STAMMDATEN
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD) — absolute Waehrungseinheiten
+unit: Berichtswaehrung der Firma — absolute Waehrungseinheiten
 ---
 
 # market_cap — Marktkapitalisierung Total
@@ -20,7 +20,7 @@ Fuer SNAPSHOT: aktueller Kurs × aktuelle Total Shares.
 - **Shares**: siehe `shares_outstanding.md` (TOTAL, alle Klassen)
 
 ## Einheit & Format
-- Absolute EUR (fuer QIA: USD)
+- Absolute Berichtswaehrung der Firma (EUR fuer DAX, USD fuer US-Firmen)
 - Format: `163240000000` fuer 163,24 Mrd EUR (keine Kilo/Mio-Skalierung)
 - Vorzeichen: immer positiv
 
@@ -44,6 +44,15 @@ Fuer SNAPSHOT: aktueller Kurs × aktuelle Total Shares.
 - FY 2025 market_cap = Kurs am **31.12.2024** × Shares (nicht 31.12.2025).
 - FY 2024 market_cap = Kurs am **31.12.2023** × Shares.
 - SNAPSHOT = **heute** × Shares.
+- Fiskaljahr-Firmen (IFX Sep-FYE, SIE etc.): Stichtag = **Ende des VORANGEGANGENEN
+  Geschaeftsjahres** (z.B. 30.09.), nicht pauschal 31.12.
+
+**Adj Close vs Raw Close (bewusster Trade-off)**:
+- Wir nutzen Adj Close (dividenden-adjustiert), damit actual_return
+  (MC_FY+1 / MC_FY − 1) den Total Return inkl. Dividenden abbildet.
+- Folge: der historische "market_cap" ist bei Dividendenzahlern leicht
+  niedriger als der echte Boersen-MC des Stichtags. Das ist gewollt —
+  NICHT gegen den Raw-Close-MC "korrigieren".
 
 **Mio vs Absolute**:
 - FALSCH: `163240` (nur Mio-Einheit)

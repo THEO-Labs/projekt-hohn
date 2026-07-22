@@ -3,7 +3,7 @@ key: stock_price
 label_de: Aktienkurs
 category: STAMMDATEN
 data_type: NUMERIC
-unit: EUR per share (fuer QIA: USD) — Preis pro Aktie
+unit: Berichtswaehrung per share — Preis pro Aktie
 ---
 
 # stock_price — Aktienkurs pro Aktie

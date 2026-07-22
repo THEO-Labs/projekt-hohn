@@ -3,7 +3,7 @@ key: ebitda
 label_de: EBITDA
 category: VALUATION
 data_type: NUMERIC
-unit: EUR (fuer QIA: USD)
+unit: Berichtswaehrung der Firma (absolute Einheiten)
 ---
 
 # ebitda — Earnings Before Interest, Tax, Depreciation, Amortization
@@ -17,7 +17,7 @@ unit: EUR (fuer QIA: USD)
 3. **Segment-Report**: manchmal EBITDA pro Segment mit Konzern-Sum
 
 ## Einheit & Format
-- Absolute EUR
+- Absolute Berichtswaehrung der Firma
 - KEINE Mio-Skalierung
 - Vorzeichen: typisch positiv, kann bei Verlust negativ sein (ZAL Q1 2026: -80M)
 
@@ -86,24 +86,26 @@ unit: EUR (fuer QIA: USD)
   "type": "IFRS reported",
   "derivation": "Operating Profit 2003 + D&A 330 from CFS",
   "source_report": "SAP Q1 2025 Quarterly Statement",
-  "note": "Wenn Firma nur adjusted reported -> null"
+  "note": "adjusted_value separat befuellen wenn Firma eine Adjusted/Pre-Variante publiziert"
 }
 ```
 
 ## Referenz-Beispiele
 | Ticker | period_year | Q | Correct | Falsches Muster |
 |---|---|---|---|---|
-| SAP.DE | 2025 | FY | 9.830 Mio EUR (IFRS) | 12.500 Mio (Non-IFRS Cloud EBITDA) |
-| RWE.DE | 2026 | Q1 | **null** (nur adjusted 1,63 Mrd) | 1,63 Mrd (adjusted eingetragen) |
+| SAP.DE | 2025 | FY | 9.830 Mio EUR (IFRS) als value | 12.500 Mio (Non-IFRS Cloud EBITDA) als value |
+| RWE.DE | 2026 | Q1 | value = EBIT + D&A abgeleitet, adjusted_value = 1,63 Mrd (Bereinigt) | value null lassen ODER adjusted als value eintragen |
 | DBK.DE | * | * | **null** immer (Bank) | 3 Mrd (Netto-Zinsertrag verwechselt) |
-| MRK.DE | 2026 | Q1 | **null** (nur "EBITDA Pre" 1,53 Mrd) | 1,53 Mrd (das ist Pre, nicht reported) |
+| MRK.DE | 2026 | Q1 | value = EBIT + D&A abgeleitet, adjusted_value = 1,53 Mrd ("EBITDA Pre") | 1,53 Mrd als value (das ist Pre, nicht reported) |
 
 ## Query-Template fuer Agent
 ```
 Fuer {ticker} in Periode {period_year} {period_type}:
 1. Suche im Konzern-Report explizit "EBITDA" (nicht "Adjusted EBITDA", nicht "EBITDA Pre")
-2. Wenn nicht direkt reported: EBIT + D&A aus Cash Flow Statement ableiten
-3. Wenn Firma nur adjusted/pre-Sondereinfluesse reported: null, KEINE Adjusted eintragen
-4. Banken (DBK/CBK) und Versicherer (ALV/MUV2/HNR1): immer null
-5. Gib absolute EUR, Vorzeichen wie reported
+2. Wenn nicht direkt reported: EBIT + D&A aus Cash Flow Statement ableiten und die
+   Ableitung dokumentieren ("EBIT X + D&A Y = reported EBITDA Z"). NIE null nur weil
+   die Firma bloss eine Adjusted-Variante zeigt — Reported ist immer ableitbar.
+3. Adjusted/Bereinigt/Pre-Variante ZUSAETZLICH als adjusted_value extrahieren (nie als value)
+4. Banken (DBK/CBK) und Versicherer (ALV/MUV2/HNR1): immer null (kein EBITDA-Konzept)
+5. Gib absolute Berichtswaehrung, Vorzeichen wie reported
 ```
