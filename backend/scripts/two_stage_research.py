@@ -1057,8 +1057,37 @@ def apply_to_db(
         "insufficient_evidence": "two_stage_insufficient",
     }.get(result.verdict.verdict, "two_stage_verified")
 
+    periods = _period_key_for_result(result)
+    if not periods:
+        # Extractor lieferte alle Perioden null (sbc-Fall): NICHT lautlos
+        # nichts tun — alle bestehenden Zeilen als versucht stempeln.
+        now = datetime.now(timezone.utc)
+        stale_rows = db.execute(select(CompanyValue).where(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == value_key,
+            CompanyValue.period_year == year,
+        )).scalars().all()
+        for row in stale_rows:
+            row.last_refresh_attempt = now
+        db.flush()
+        return []
+
+    # Ein FY-Wert eines noch nicht beendeten Geschaeftsjahres kann kein
+    # Actual sein — Extractor-Fehldeklarationen (is_estimate=false) hier
+    # hart korrigieren. FY-Ende aus den Company-Stammdaten, Fallback 31.12.
+    fy_end_future = False
+    try:
+        from datetime import date as _date
+        from app.companies.models import Company
+        comp = db.get(Company, company_id)
+        m = getattr(comp, "fiscal_year_end_month", None) or 12
+        d = getattr(comp, "fiscal_year_end_day", None) or 31
+        fy_end_future = _date(year, m, d) >= _date.today()
+    except Exception:
+        fy_end_future = year >= datetime.now(timezone.utc).year
+
     written = []
-    for period_type, value in _period_key_for_result(result):
+    for period_type, value in periods:
         # Source URL and quote from the corresponding extracted quarter (if any)
         src_url = None
         src_quote = None
@@ -1133,6 +1162,8 @@ def apply_to_db(
         source_name = " | ".join(parts)
 
         is_estimate = bool(qv.is_estimate) if qv else False
+        if period_type == "FY" and fy_end_future:
+            is_estimate = True
         adjusted_value = qv.adjusted_value if qv else None
         adjustments_note = qv.adjustments_note if qv else None
         adjustments_source = None

@@ -80,6 +80,53 @@ def test_apply_to_db_skip_stamps_refresh_attempt(client, db):
     assert row.last_refresh_attempt is not None
 
 
+def test_apply_to_db_all_null_result_stamps_existing_rows(client, db):
+    """Extractor liefert alle Perioden null (sbc-Fall im dritten adidas-Lauf):
+    apply_to_db darf nicht lautlos nichts tun — bestehende Zeilen muessen den
+    Refresh-Versuch gestempelt bekommen."""
+    cid = _company(client, db, email="ts4@example.com")
+    stale = CompanyValue(
+        company_id=cid, value_key="sbc", period_type="FY", period_year=2025,
+        numeric_value=Decimal("95000000"), source_name="old row",
+    )
+    db.add(stale)
+    db.commit()
+
+    empty = _result("sbc", Decimal("1"))
+    empty.extract.fy = None
+    apply_to_db(db, cid, "sbc", 2025, empty, currency="EUR")
+    db.commit()
+
+    row = _fy_row(db, cid, "sbc")
+    assert row.numeric_value == Decimal("95000000")
+    assert row.last_refresh_attempt is not None
+
+
+def test_apply_to_db_forces_forecast_for_unfinished_fy(client, db):
+    """FY-Wert eines noch nicht beendeten Geschaeftsjahres kann kein Actual
+    sein — auch wenn der Extractor is_estimate=false behauptet (OCF-Fall)."""
+    from datetime import date
+
+    cid = _company(client, db, email="ts5@example.com")
+    running_year = date.today().year
+    r = _result("operating_cash_flow", Decimal("751000000"))
+    r.extract.year = running_year
+    apply_to_db(db, cid, "operating_cash_flow", running_year, r, currency="EUR")
+    db.commit()
+
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == cid,
+            CompanyValue.value_key == "operating_cash_flow",
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == running_year,
+        )
+        .one()
+    )
+    assert row.is_forecast is True
+
+
 def test_apply_to_db_normalizes_sign(client, db):
     cid = _company(client, db)
     apply_to_db(db, cid, "buyback_volume", 2025, _result("buyback_volume", Decimal("-2000")),
