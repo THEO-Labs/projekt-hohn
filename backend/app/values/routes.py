@@ -138,10 +138,16 @@ def _persist_calc_results(
 
         if existing:
             if existing.manually_overridden:
-                # Defensive: a calculated key should never be manually_overridden
-                # (override_company_value blocks that). Skip rather than silently
-                # reset the flag.
-                continue
+                # Ein Calculated-Key kann via API nicht manuell ueberschrieben
+                # werden (override_company_value blockt das) — ein gesetztes
+                # Flag ist ein Legacy-Artefakt. Wuerde es respektiert, bliebe
+                # der stale Wert fuer immer stehen und verfaelschte die
+                # H-Return. Daher: Formelwert schreiben, Flag zuruecksetzen.
+                logger.info(
+                    "Stale manual lock on calculated key %s/%s %s%s — overwriting with formula value",
+                    company_id, key, period_type, period_year or "",
+                )
+                existing.manually_overridden = False
             existing.numeric_value = value
             existing.numeric_value_adjusted = adj_value
             existing.source_name = default_source
@@ -822,20 +828,13 @@ def _process_one_key(
     # Sign normalisation last-mile: every persistence path (PDF, EDGAR, Yahoo,
     # Claude-research, factor-estimate) goes through here, so applying abs()
     # here covers ALL sources at once instead of patching each provider.
-    from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
-    if numeric_value is not None and key in ALWAYS_POSITIVE_KEYS and numeric_value < 0:
-        logger.info("Sign-normalising %s/%s/%s: %s -> %s (source=%s)",
-                    ticker, key, effective_period_year, numeric_value, abs(numeric_value),
-                    result.source_name)
-        numeric_value = abs(numeric_value)
+    from app.values.persistence import currency_conflict, normalize_sign
+    numeric_value = normalize_sign(
+        key, numeric_value,
+        context=f"{ticker}/FY{effective_period_year} source={result.source_name}",
+    )
 
-    if (
-        existing
-        and existing.currency
-        and result.currency
-        and existing.currency != result.currency
-        and key in CURRENCY_KEYS
-    ):
+    if existing and currency_conflict(key, existing.currency, result.currency):
         # Currency-Mismatch HARTER REJECT statt silent overwrite. Sonst mischen
         # sich USD/EUR/GBP-Werte in FY-Cross-Year-Aggregaten und produzieren
         # falsche Yields/Hohn-Renditen. Lieber alten Wert behalten + last_refresh
@@ -2030,9 +2029,12 @@ def override_company_value(
 
     inherit_currency = company.currency if value_key in CURRENCY_KEYS else None
 
+    from app.values.persistence import normalize_sign
+    override_value = normalize_sign(value_key, payload.numeric_value, context="manual override")
+
     if existing:
-        if payload.numeric_value is not None:
-            existing.numeric_value = payload.numeric_value
+        if override_value is not None:
+            existing.numeric_value = override_value
         if payload.text_value is not None:
             existing.text_value = payload.text_value
         if payload.source_name is not None:
@@ -2051,7 +2053,7 @@ def override_company_value(
             value_key=value_key,
             period_type=effective_period_type,
             period_year=effective_period_year,
-            numeric_value=payload.numeric_value,
+            numeric_value=override_value,
             text_value=payload.text_value,
             source_name=payload.source_name,
             currency=inherit_currency,

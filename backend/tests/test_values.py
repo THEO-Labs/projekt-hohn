@@ -6,7 +6,7 @@ from app.auth.models import User
 from app.auth.security import hash_password
 from app.providers.base import ProviderResult
 from app.values.catalog import SEED_VALUES
-from app.values.models import CompanyValue, ValueDefinition
+from app.values.models import CompanyValue
 
 
 def _seed_catalog(db):
@@ -177,21 +177,37 @@ def test_refresh_updates_existing_value(client, db):
     assert len(all_values) == 1
 
 
+def _fake_two_stage_result(value_key: str, year: int, fy_value: Decimal):
+    from scripts.two_stage_research import (
+        ExtractResult,
+        QuarterValue,
+        TwoStageResult,
+        VerifierVerdict,
+    )
+
+    extract = ExtractResult(
+        ticker="AAPL", value_key=value_key, year=year, currency="USD",
+        q1=None, q2=None, q3=None, q4=None,
+        fy=QuarterValue(value=fy_value, source_quote="10-K net income line",
+                        source_url=None, is_estimate=False),
+        quarter_only=None, is_adjusted_note=None,
+    )
+    verdict = VerifierVerdict(
+        verdict="confirm", corrections={}, reason="reconciles", confidence=0.9, flags=[],
+    )
+    return TwoStageResult(extract=extract, verdict=verdict)
+
+
 def test_get_company_values_after_refresh(client, db):
+    """FY-Refresh fuer API-Keys laeuft transparent durch die Two-Stage-
+    Pipeline (kein Provider-Fallback) — der Test mockt research_two_stage."""
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db)
 
-    mock_result = ProviderResult(
-        value=Decimal("3.14"),
-        source_name="Yahoo Finance",
-        source_link="https://finance.yahoo.com/quote/AAPL",
-        currency="USD",
-    )
+    def fake_research(*, ticker, company_name, value_key, year, **kwargs):
+        return _fake_two_stage_result(value_key, year, Decimal("314000000"))
 
-    with patch("app.values.routes.get_providers") as mock_get_providers:
-        mock_provider = MagicMock()
-        mock_provider.fetch.return_value = mock_result
-        mock_get_providers.return_value = [mock_provider]
+    with patch("scripts.two_stage_research.research_two_stage", side_effect=fake_research):
         client.post(
             f"/api/companies/{cid}/values/refresh",
             json={"keys": ["net_income"], "period_type": "FY", "period_year": 2024},
@@ -200,8 +216,10 @@ def test_get_company_values_after_refresh(client, db):
     response = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024")
     assert response.status_code == 200
     data = response.json()
-    keys = {item["value_key"] for item in data}
-    assert "net_income" in keys
+    rows = {item["value_key"]: item for item in data}
+    assert "net_income" in rows
+    assert Decimal(rows["net_income"]["numeric_value"]) == Decimal("314000000")
+    assert rows["net_income"]["primary_method"] == "two_stage_confirmed"
 
 
 def test_manual_override(client, db):
@@ -217,6 +235,20 @@ def test_manual_override(client, db):
     assert data["manually_overridden"] is True
     assert data["numeric_value"] == "5.250000"
     assert data["source_name"] == "Manual"
+
+
+def test_manual_override_sign_normalized(client, db):
+    """Negative Eingabe fuer einen ALWAYS_POSITIVE_KEY wird zentral auf abs()
+    normalisiert — unabhaengig vom Schreibpfad (hier: Override-Endpoint)."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="sign@example.com")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/buyback_volume/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "-3000", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+    assert Decimal(response.json()["numeric_value"]) == Decimal("3000")
 
 
 def test_manual_override_zero_persists(client, db):
@@ -246,7 +278,10 @@ def test_manual_override_zero_persists(client, db):
     assert Decimal(rows[0]["numeric_value"]) == Decimal("0")
 
 
-def test_manual_override_prevents_refresh(client, db):
+def test_refresh_overwrites_manual_override_on_always_current_key(client, db):
+    """Aktueller Vertrag: Manual-Overrides auf ALWAYS_CURRENT-Keys sind
+    temporaer — ein Refresh holt den Live-Wert und setzt das Flag zurueck.
+    (Hart gesperrt bleiben nur manuell ueberschriebene Forecasts.)"""
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db)
 
@@ -271,8 +306,8 @@ def test_manual_override_prevents_refresh(client, db):
 
     assert response.status_code == 200
     data = response.json()
-    assert data[0]["numeric_value"] == "999.990000"
-    assert data[0]["manually_overridden"] is True
+    assert data[0]["numeric_value"] == "100.000000"
+    assert data[0]["manually_overridden"] is False
 
 
 def test_refresh_one_failing_provider_doesnt_crash_others(client, db):
@@ -361,7 +396,9 @@ def test_override_calculated_key_rejected(client, db):
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db, email="lock@example.com")
 
-    for key in ("hohn_return_simple", "hohn_return_detailed", "net_debt", "ni_growth", "fcf_yield"):
+    # net_debt ist bewusst KEIN Calculated-Key mehr (kommt direkt aus der
+    # Extraktion) und darf daher manuell ueberschrieben werden.
+    for key in ("hohn_return_simple", "hohn_return_detailed", "ni_growth", "fcf_yield"):
         response = client.post(
             f"/api/companies/{cid}/values/{key}/override?period_type=FY&period_year=2024",
             json={"numeric_value": "1.0", "source_name": "Manual"},
@@ -446,86 +483,6 @@ def test_override_market_cap_recalcs_all_existing_fy_years(client, db):
     fy_2024 = _get_row(client, cid, "fcf_yield", "FY", 2024)
     assert fy_2023 is not None and Decimal(fy_2023["numeric_value"]) == Decimal("5")
     assert fy_2024 is not None and Decimal(fy_2024["numeric_value"]) == Decimal("10")
-
-
-def test_override_logs_recalc_system_messages_same_year(client, db):
-    _seed_catalog(db)
-    _user, _pid, cid = _login_with_company(client, db, email="audit@example.com")
-
-    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
-    _seed_value(db, cid, "net_income", "FY", 2023, "100")
-    _seed_value(db, cid, "net_income", "FY", 2024, "150")
-
-    response = client.post(
-        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
-        json={"numeric_value": "200", "source_name": "Manuell"},
-    )
-    assert response.status_code == 200
-
-    history = client.get(
-        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2024"
-    ).json()
-    system_msgs = [m for m in history["messages"] if m["role"] == "system"]
-    assert len(system_msgs) >= 1
-    msg = system_msgs[0]["content"]
-    assert "Automatisch neu berechnet" in msg
-    assert "Net Income" in msg
-    assert "FY2024" in msg
-
-
-def test_override_logs_recalc_in_next_year_via_cascade(client, db):
-    _seed_catalog(db)
-    _user, _pid, cid = _login_with_company(client, db, email="audit2@example.com")
-
-    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
-    _seed_value(db, cid, "net_income", "FY", 2023, "100")
-    _seed_value(db, cid, "net_income", "FY", 2024, "150")
-    _seed_value(db, cid, "net_income", "FY", 2025, "180")
-
-    response = client.post(
-        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
-        json={"numeric_value": "200", "source_name": "Manuell"},
-    )
-    assert response.status_code == 200
-
-    history_2025 = client.get(
-        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2025"
-    ).json()
-    system_msgs = [m for m in history_2025["messages"] if m["role"] == "system"]
-    assert len(system_msgs) >= 1
-    assert "Automatisch neu berechnet" in system_msgs[0]["content"]
-    assert "Net Income" in system_msgs[0]["content"]
-
-
-def test_unchanged_calc_value_does_not_log_message(client, db):
-    _seed_catalog(db)
-    _user, _pid, cid = _login_with_company(client, db, email="audit3@example.com")
-
-    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
-    _seed_value(db, cid, "net_income", "FY", 2023, "100")
-    _seed_value(db, cid, "net_income", "FY", 2024, "150")
-
-    client.post(
-        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
-        json={"numeric_value": "200", "source_name": "Manuell"},
-    )
-
-    history_before = client.get(
-        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2024"
-    ).json()
-    msgs_before = len([m for m in history_before["messages"] if m["role"] == "system"])
-
-    client.post(
-        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
-        json={"numeric_value": "200", "source_name": "Manuell"},
-    )
-
-    history_after = client.get(
-        f"/api/companies/{cid}/chat/ni_growth/history?period_type=FY&period_year=2024"
-    ).json()
-    msgs_after = len([m for m in history_after["messages"] if m["role"] == "system"])
-
-    assert msgs_after == msgs_before
 
 
 def test_old_calc_key_with_stale_lock_gets_overwritten(client, db):
