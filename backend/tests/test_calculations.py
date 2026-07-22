@@ -12,7 +12,7 @@ def test_stammdaten_market_cap_calc():
 
 
 def test_net_buyback():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"buyback_volume": Decimal("1840"), "sbc": Decimal("1955")},
         None,
         {"market_cap": Decimal("101100")},
@@ -21,7 +21,7 @@ def test_net_buyback():
 
 
 def test_sbc_yield_and_net_buyback_yield():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"sbc": Decimal("1900"), "buyback_volume": Decimal("3000")},
         None,
         {"market_cap": Decimal("101100")},
@@ -32,7 +32,7 @@ def test_sbc_yield_and_net_buyback_yield():
 
 
 def test_fcf_yield():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"fcf": Decimal("4636")},
         None,
         {"market_cap": Decimal("101100")},
@@ -41,7 +41,7 @@ def test_fcf_yield():
 
 
 def test_ni_growth():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"net_income": Decimal("1748")},
         {"net_income": Decimal("1425")},
         {},
@@ -51,7 +51,7 @@ def test_ni_growth():
 
 def test_ni_growth_negative_prev_correct_sign():
     """Turnaround: NI war negativ, jetzt positiv → Growth muss POSITIV sein."""
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"net_income": Decimal("764")},
         {"net_income": Decimal("-75")},
         {},
@@ -62,7 +62,7 @@ def test_ni_growth_negative_prev_correct_sign():
 
 
 def test_dividend_yield():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"dividends": Decimal("200")},
         None,
         {"market_cap": Decimal("100000")},
@@ -75,7 +75,7 @@ def test_net_debt_change_pct_from_primary_net_debt():
     current = {"net_debt": Decimal("-7764")}
     previous = {"net_debt": Decimal("-6023")}
     stammdaten = {"market_cap": Decimal("101100")}
-    result = calculate_fy(current, previous, stammdaten)
+    result, _adj = calculate_fy(current, previous, stammdaten)
     # change = prev - curr = -6023 - (-7764) = 1741 (positiv = Schulden-Abbau)
     assert result["net_debt_change"] == Decimal("1741")
     # 1741 / 101100 * 100 ≈ 1.722
@@ -84,7 +84,7 @@ def test_net_debt_change_pct_from_primary_net_debt():
 
 def test_net_debt_change_missing_prev():
     """Ohne Vorjahres-Net-Debt → kein change."""
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"net_debt": Decimal("100")},
         {},
         {"market_cap": Decimal("1000")},
@@ -105,7 +105,7 @@ def test_hohn_return_simple_servicenow():
         "net_debt": Decimal("-6023"),
     }
     stammdaten = {"market_cap": Decimal("101100")}
-    result = calculate_fy(current, previous, stammdaten)
+    result, _adj = calculate_fy(current, previous, stammdaten)
     # fcf_yield ≈ 4.587, ni_growth ≈ 22.67, sbc_yield ≈ 1.879, nd_change_pct ≈ 1.722
     # simple = 4.587 + 22.67 - 1.879 + 1.722 ≈ 27.1
     assert result["hohn_return_simple"] is not None
@@ -122,7 +122,7 @@ def test_hohn_return_detailed_requires_dividends():
     }
     previous = {"net_income": Decimal("1425")}
     stammdaten = {"market_cap": Decimal("101100")}
-    result = calculate_fy(current, previous, stammdaten)
+    result, _adj = calculate_fy(current, previous, stammdaten)
     # div_yield = 0, ni_growth ≈ 22.67, net_buyback = 1840-1900 = -60
     # net_buyback_yield = -60/101100*100 ≈ -0.06
     # detailed = 0 + 22.67 - 0.06 ≈ 22.6
@@ -131,7 +131,7 @@ def test_hohn_return_detailed_requires_dividends():
 
 
 def test_zero_market_cap_safe():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"fcf": Decimal("100"), "sbc": Decimal("10")},
         None,
         {"market_cap": Decimal("0")},
@@ -142,12 +142,12 @@ def test_zero_market_cap_safe():
 
 
 def test_all_inputs_missing():
-    assert calculate_fy({}, None, {})["hohn_return_simple"] is None
-    assert calculate_fy({}, None, {})["hohn_return_detailed"] is None
+    assert calculate_fy({}, None, {})[0]["hohn_return_simple"] is None
+    assert calculate_fy({}, None, {})[0]["hohn_return_detailed"] is None
 
 
 def test_actual_return_from_next_year_mcap():
-    result = calculate_fy(
+    result, _adj = calculate_fy(
         {"net_income": Decimal("100")},
         None,
         {"market_cap": Decimal("1000")},

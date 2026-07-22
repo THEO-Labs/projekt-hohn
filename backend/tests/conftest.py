@@ -39,6 +39,40 @@ def db(engine):
 
 
 @pytest.fixture(autouse=True)
+def no_live_network(monkeypatch):
+    """Tests muessen hermetisch sein: keine Live-Calls zu Yahoo/EDGAR.
+
+    Ohne diese Patches holt die Company-Anlage das echte FY-Ende und die
+    Recalc-Kaskade echte historische Market-Caps als FY+1-Anker — echte
+    Weltdaten verschmutzen dann die geseedete Test-Welt (nichtdeterministisch).
+    Provider-Fetches selbst mocken die Tests explizit via get_providers.
+    """
+    from app.providers.yahoo import YahooFinanceProvider
+
+    monkeypatch.setattr(
+        YahooFinanceProvider, "detect_fiscal_year_end", lambda self, ticker: None
+    )
+    import app.values.routes as values_routes
+
+    monkeypatch.setattr(
+        values_routes, "_fetch_and_store_historical_mcap",
+        lambda db, ticker, company_id, year: None,
+    )
+
+    # Kein Test darf real gegen die Anthropic-API laufen. Tests, die die
+    # Two-Stage-Pipeline brauchen, mocken research_two_stage direkt.
+    def _no_llm_in_tests():
+        raise RuntimeError("Live-Anthropic-Call in Tests blockiert — mocke research_two_stage/get_client")
+
+    import app.llm.claude as claude_mod
+    import scripts.two_stage_research as ts_mod
+
+    monkeypatch.setattr(claude_mod, "get_client", _no_llm_in_tests)
+    monkeypatch.setattr(ts_mod, "get_client", _no_llm_in_tests)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def reset_rate_limiter():
     from app.auth.routes import limiter, _FAILED, _LOCK
     limiter.reset()
