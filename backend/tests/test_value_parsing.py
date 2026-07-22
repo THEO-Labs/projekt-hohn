@@ -1,11 +1,9 @@
 """Comprehensive tests for value parsing, sanity checks, and error handling."""
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from app.llm.claude import (
-    extract_value,
     extract_research_value,
     validate_claude_value,
     _parse_numeric_string,
@@ -33,26 +31,27 @@ class TestParseNumericString:
     def test_us_decimal_dot(self):
         assert _parse_numeric_string("14,770.65") == Decimal("14770.65")
 
-    def test_mrd_dot(self):
-        assert _parse_numeric_string("14.77 Mrd") == Decimal("14770000000")
+    # Suffixe (Mrd/B/M/...) werden hier NICHT skaliert — das macht
+    # _apply_unit_scale in der Kette. _parse_numeric_string liefert nur
+    # den numerischen Teil.
+    def test_mrd_dot_returns_unscaled(self):
+        assert _parse_numeric_string("14.77 Mrd") == Decimal("14.77")
 
-    def test_mrd_comma(self):
-        assert _parse_numeric_string("14,77 Mrd") == Decimal("14770000000")
+    def test_mrd_comma_returns_unscaled_decimal(self):
+        # Suffix darf die Dezimal-Komma-Heuristik nicht kippen (14,77 != 1477)
+        assert _parse_numeric_string("14,77 Mrd") == Decimal("14.77")
 
-    def test_b_suffix(self):
-        assert _parse_numeric_string("14.77B") == Decimal("14770000000")
+    def test_b_suffix_returns_unscaled(self):
+        assert _parse_numeric_string("14.77B") == Decimal("14.77")
 
-    def test_billion_word(self):
-        assert _parse_numeric_string("14.77 billion") == Decimal("14770000000")
+    def test_m_suffix_with_thousands_returns_unscaled(self):
+        assert _parse_numeric_string("14,770.65M") == Decimal("14770.65")
 
-    def test_m_suffix(self):
-        assert _parse_numeric_string("14,770.65M") == Decimal("14770650000")
+    def test_mio_german_returns_unscaled(self):
+        assert _parse_numeric_string("14.770,65 Mio") == Decimal("14770.65")
 
-    def test_mio_suffix(self):
-        assert _parse_numeric_string("14.770,65 Mio") == Decimal("14770650000")
-
-    def test_negative_mrd(self):
-        assert _parse_numeric_string("-1.5 Mrd") == Decimal("-1500000000")
+    def test_negative_mrd_returns_unscaled(self):
+        assert _parse_numeric_string("-1.5 Mrd") == Decimal("-1.5")
 
     def test_percent_stripped(self):
         assert _parse_numeric_string("4.38%") == Decimal("4.38")
@@ -65,73 +64,6 @@ class TestParseNumericString:
 
     def test_simple_negative(self):
         assert _parse_numeric_string("-1.5") == Decimal("-1.5")
-
-    def test_t_suffix_trillion(self):
-        result = _parse_numeric_string("2.5T")
-        assert result == Decimal("2500000000000")
-
-    def test_k_suffix(self):
-        result = _parse_numeric_string("500K")
-        assert result == Decimal("500000")
-
-
-# ---------------------------------------------------------------------------
-# extract_value (chat-style WERT: parsing)
-# ---------------------------------------------------------------------------
-
-class TestExtractValue:
-    def test_plain_integer(self):
-        assert extract_value("WERT: 139947000000") == Decimal("139947000000")
-
-    def test_us_thousands(self):
-        assert extract_value("WERT: 139,947,000,000") == Decimal("139947000000")
-
-    def test_german_thousands(self):
-        assert extract_value("WERT: 139.947.000.000") == Decimal("139947000000")
-
-    def test_german_mixed(self):
-        assert extract_value("WERT: 139.947,00") == Decimal("139947.00")
-
-    def test_mrd_dot(self):
-        assert extract_value("WERT: 14.77 Mrd") == Decimal("14770000000")
-
-    def test_mrd_comma(self):
-        assert extract_value("WERT: 14,77 Mrd") == Decimal("14770000000")
-
-    def test_b_suffix(self):
-        assert extract_value("WERT: 14.77B") == Decimal("14770000000")
-
-    def test_b_suffix_spaced(self):
-        assert extract_value("WERT: 14.77 B") == Decimal("14770000000")
-
-    def test_m_suffix_with_thousands(self):
-        assert extract_value("WERT: 14,770.65M") == Decimal("14770650000")
-
-    def test_mio_german_format(self):
-        assert extract_value("WERT: 14.770,65 Mio") == Decimal("14770650000")
-
-    def test_negative_mrd(self):
-        assert extract_value("WERT: -1.5 Mrd") == Decimal("-1500000000")
-
-    def test_percent_value(self):
-        assert extract_value("WERT: 4.38%") == Decimal("4.38")
-
-    def test_nicht_gefunden_falls_back_to_none(self):
-        assert extract_value("WERT: NICHT_GEFUNDEN") is None
-
-    def test_no_wert_falls_back_to_score(self):
-        result = extract_value("SCORE: 1.20\nBEGRUENDUNG: test")
-        assert result == Decimal("1.20")
-
-    def test_no_wert_no_score_returns_none(self):
-        assert extract_value("Keine relevante Antwort") is None
-
-    def test_multiline_context(self):
-        text = "Das Ergebnis ist:\nWERT: 139,947,000,000\nQUELLE: Geschäftsbericht"
-        assert extract_value(text) == Decimal("139947000000")
-
-    def test_simple_decimal(self):
-        assert extract_value("WERT: 27.65") == Decimal("27.65")
 
 
 # ---------------------------------------------------------------------------
@@ -192,47 +124,64 @@ class TestExtractResearchValue:
         text = "WERT: 1450000000\nEINHEIT: USD\nQUELLE: x"
         assert extract_research_value(text) == Decimal("1450000000")
 
+    def test_m_suffix_with_us_thousands(self):
+        assert extract_research_value("WERT: 14,770.65M") == Decimal("14770650000")
+
+    def test_mio_german_format(self):
+        assert extract_research_value("WERT: 14.770,65 Mio") == Decimal("14770650000")
+
+    def test_mrd_comma_german_decimal(self):
+        assert extract_research_value("WERT: 14,77 Mrd") == Decimal("14770000000")
+
+    def test_billion_word(self):
+        assert extract_research_value("WERT: 14.77 billion") == Decimal("14770000000")
+
+    def test_t_suffix_trillion(self):
+        assert extract_research_value("WERT: 2.5T") == Decimal("2500000000000")
+
+    def test_k_suffix(self):
+        assert extract_research_value("WERT: 500K") == Decimal("500000")
+
+    def test_negative_mrd(self):
+        assert extract_research_value("WERT: -1.5 Mrd") == Decimal("-1500000000")
+
+    def test_prose_units_in_begruendung_do_not_scale(self):
+        # Absolute WERT + Einheiten-Woerter nur in der Begruendungs-Prosa:
+        # es darf NICHT skaliert werden (sonst 1e9-fach zu gross).
+        text = (
+            "WERT: 1450000000\n"
+            "EINHEIT: USD\n"
+            "BEGRUENDUNG: Das entspricht rund 1,45 Milliarden US-Dollar laut 10-K."
+        )
+        assert extract_research_value(text) == Decimal("1450000000")
+
 
 # ---------------------------------------------------------------------------
 # validate_claude_value
 # ---------------------------------------------------------------------------
 
+# validate_claude_value ist bewusst ein Pass-Through (Kunden-Anforderung:
+# keine Range/Unit/YoY-Rejects). Diese Tests dokumentieren genau diesen
+# Vertrag — schlaegt einer fehl, wurde die Validierung reaktiviert und die
+# Caller-Erwartungen muessen neu geprueft werden.
 class TestValidateClaudeValue:
-    def test_valid_market_cap(self):
+    def test_valid_market_cap_passes_through(self):
         val = Decimal("3000000000000")
         assert validate_claude_value("market_cap", val) == val
 
-    def test_negative_market_cap_rejected(self):
-        assert validate_claude_value("market_cap", Decimal("-1")) is None
+    def test_negative_value_passes_through(self):
+        assert validate_claude_value("market_cap", Decimal("-1")) == Decimal("-1")
 
-    def test_absurdly_large_market_cap_rejected(self):
-        assert validate_claude_value("market_cap", Decimal("2e14")) is None
-
-    def test_valid_sbc(self):
-        assert validate_claude_value("sbc", Decimal("1_900_000_000")) == Decimal("1900000000")
-
-    def test_sbc_absurd_rejected(self):
-        assert validate_claude_value("sbc", Decimal("1e20")) is None
-
-    def test_valid_net_income(self):
-        val = Decimal("8000000000")
-        assert validate_claude_value("net_income", val) == val
-
-    def test_valid_eps_adj(self):
-        val = Decimal("5.00")
-        assert validate_claude_value("eps_adj", val) == val
+    def test_absurdly_large_value_passes_through(self):
+        assert validate_claude_value("sbc", Decimal("1e20")) == Decimal("1e20")
 
     def test_unknown_key_passes_through(self):
         val = Decimal("999999999999999")
         assert validate_claude_value("some_unknown_key", val) == val
 
-    def test_buyback_negative_rejected(self):
-        # buyback_volume is always-positive in our model; negative → reject
-        assert validate_claude_value("buyback_volume", Decimal("-1")) is None
-
-    def test_net_debt_negative_accepted(self):
-        # net_debt CAN be negative (Net Cash Position) — must NOT be rejected.
-        val = Decimal("-50000000000")  # 50B Net Cash
+    def test_net_debt_negative_passes_through(self):
+        # net_debt CAN be negative (Net Cash Position).
+        val = Decimal("-50000000000")
         assert validate_claude_value("net_debt", val) == val
 
 
@@ -248,15 +197,12 @@ class TestYahooToDecimal:
         assert self.provider._to_decimal(None) is None
 
     def test_nan_float_returns_none(self):
-        import math
         assert self.provider._to_decimal(float("nan")) is None
 
     def test_inf_float_returns_none(self):
-        import math
         assert self.provider._to_decimal(float("inf")) is None
 
     def test_neg_inf_float_returns_none(self):
-        import math
         assert self.provider._to_decimal(float("-inf")) is None
 
     def test_valid_int(self):

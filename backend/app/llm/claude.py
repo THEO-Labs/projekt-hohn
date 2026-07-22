@@ -73,9 +73,16 @@ def _collect_text(response) -> str:
 
 
 def _parse_numeric_string(raw: str) -> Decimal | None:
-    """Parse a numeric string like '1.45', '1,45', '1.450.000', '4.38 %'."""
+    """Parse a numeric string like '1.45', '1,45', '1.450.000', '4.38 %'.
+
+    Liefert NUR den numerischen Teil — Einheiten-Suffixe (Mrd/Mio/B/M/...)
+    werden entfernt, die Skalierung macht _apply_unit_scale. Der Suffix muss
+    VOR der Separator-Heuristik weg, sonst macht '14,77Mrd' aus dem
+    Dezimal-Komma ein Tausender-Komma (-> 1477 statt 14.77).
+    """
     s = raw.strip().replace(" ", "")
     s = re.sub(r"[%]", "", s)
+    s = re.sub(r"[A-Za-z]+\.?$", "", s)
     is_neg = s.startswith("-")
     if is_neg:
         s = s[1:]
@@ -106,17 +113,31 @@ def _parse_numeric_string(raw: str) -> Decimal | None:
         return None
 
 
+# \b-Grenzen funktionieren nicht bei ziffern-angrenzenden Suffixen ('2.5B':
+# Ziffer->Buchstabe ist keine Wortgrenze) — daher explizite Letter-Lookarounds.
 _UNIT_SCALE_PATTERNS = [
-    (re.compile(r"\b(Mrd|Milliarden|billion|[Bb])\.?\b", re.IGNORECASE), Decimal("1000000000")),
-    (re.compile(r"\b(Mio|Millionen|million|[Mm])\.?\b", re.IGNORECASE), Decimal("1000000")),
-    (re.compile(r"\b(Tsd|Tausend|thousand|[Kk])\.?\b", re.IGNORECASE), Decimal("1000")),
+    (re.compile(r"(?<![A-Za-z])(Bio|Billionen|trillion|[Tt])\.?(?![A-Za-z])", re.IGNORECASE), Decimal("1000000000000")),
+    (re.compile(r"(?<![A-Za-z])(Mrd|Milliarden|billion|[Bb])\.?(?![A-Za-z])", re.IGNORECASE), Decimal("1000000000")),
+    (re.compile(r"(?<![A-Za-z])(Mio|Millionen|million|[Mm])\.?(?![A-Za-z])", re.IGNORECASE), Decimal("1000000")),
+    (re.compile(r"(?<![A-Za-z])(Tsd|Tausend|thousand|[Kk])\.?(?![A-Za-z])", re.IGNORECASE), Decimal("1000")),
 ]
+
+_EINHEIT_LINE = re.compile(r"EINHEIT:\s*([^\n]+)")
 
 
 def _apply_unit_scale(value: Decimal, text: str, wert_raw: str) -> Decimal:
+    """Skaliert anhand des Suffix im WERT selbst, sonst anhand der
+    EINHEIT-Zeile. Nur die EINHEIT-Zeile wird gescannt — nie der ganze
+    Antworttext, sonst skaliert Prosa in BEGRUENDUNG ('rund 1,4 Milliarden')
+    bereits absolute Werte doppelt."""
     for pattern, scale in _UNIT_SCALE_PATTERNS:
         if pattern.search(wert_raw):
             return value * scale
+    m = _EINHEIT_LINE.search(text or "")
+    if m:
+        for pattern, scale in _UNIT_SCALE_PATTERNS:
+            if pattern.search(m.group(1)):
+                return value * scale
     return value
 
 
