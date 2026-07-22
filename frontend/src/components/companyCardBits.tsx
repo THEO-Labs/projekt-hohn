@@ -97,6 +97,9 @@ export function RefreshActions({
   const busy = daily || full;
   const pollTimer = useRef<number | null>(null);
   const lastSeenFinishedAt = useRef<string | null>(null);
+  // Ref statt State: das Interval haelt die poll-Closure des ersten Renders,
+  // dort waere `full` fuer immer false und der Abschluss-Reload feuerte nie.
+  const wasRunningRef = useRef(false);
 
   const reload = async () => {
     try {
@@ -114,6 +117,7 @@ export function RefreshActions({
     try {
       const s = await getRefreshStatus(company.id);
       if (s.status === "running") {
+        wasRunningRef.current = true;
         setFull(true);
         const label =
           s.phase_label ||
@@ -130,7 +134,8 @@ export function RefreshActions({
       } else if (s.status === "done" || s.status === "failed" || s.status === "idle") {
         // Nur reload+toast wenn wir vorher einen "running" gesehen haben und
         // dieser Job seit letztem Poll neu-fertig ist (finished_at aendert sich).
-        const wasRunning = full;
+        const wasRunning = wasRunningRef.current;
+        wasRunningRef.current = false;
         setFull(false);
         setProgress(null);
         if (wasRunning && s.finished_at && s.finished_at !== lastSeenFinishedAt.current) {
