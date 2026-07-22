@@ -59,6 +59,27 @@ def _fy_row(db, cid: UUID, key: str) -> CompanyValue:
     )
 
 
+def test_apply_to_db_skip_stamps_refresh_attempt(client, db):
+    """Hard-Skip (keine Evidenz) laesst den alten Wert stehen — muss aber
+    last_refresh_attempt stempeln, sonst sieht stale Data ewig frisch aus."""
+    cid = _company(client, db, email="ts3@example.com")
+    stale = CompanyValue(
+        company_id=cid, value_key="sbc", period_type="FY", period_year=2025,
+        numeric_value=Decimal("95000000"), source_name="old contaminated row",
+    )
+    db.add(stale)
+    db.commit()
+
+    no_evidence = _result("sbc", Decimal("120000000"))
+    no_evidence.extract.fy.source_quote = None
+    apply_to_db(db, cid, "sbc", 2025, no_evidence, currency="EUR")
+    db.commit()
+
+    row = _fy_row(db, cid, "sbc")
+    assert row.numeric_value == Decimal("95000000")
+    assert row.last_refresh_attempt is not None
+
+
 def test_apply_to_db_normalizes_sign(client, db):
     cid = _company(client, db)
     apply_to_db(db, cid, "buyback_volume", 2025, _result("buyback_volume", Decimal("-2000")),

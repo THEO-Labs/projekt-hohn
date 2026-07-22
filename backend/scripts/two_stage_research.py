@@ -652,6 +652,23 @@ def _build_verifier_prompt(
     metric_context = load_metric_prompt(extract.value_key)
     payload = extract.to_verifier_json()
 
+    temporal_rule = ""
+    if extract.year >= date.today().year:
+        temporal_rule = (
+            f"\n\nIN-PROGRESS FISCAL YEAR RULE (critical): FY {extract.year} is "
+            "not over. The FY value and unreported quarters are SUPPOSED to be "
+            "forward estimates (guidance / analyst consensus) marked "
+            "is_estimate=true — do NOT correct an estimate merely for being an "
+            "estimate. A 'reported full-year' figure for an in-progress year "
+            "cannot exist; any web source showing one is mislabeled (prior "
+            "year, trailing-twelve-months, or the site's own forecast) and "
+            "MUST NOT be used as a correction. Also sanity-check corrections "
+            "against reported actuals and the prior-year FY: a correction that "
+            "implies a massive residual swing in the remaining quarters "
+            "(e.g. a deeply negative final quarter after growing reported "
+            "quarters) is almost certainly wrong."
+        )
+
     prev_hint = ""
     if prev_year_fy_hint is not None:
         prev_hint = (
@@ -675,7 +692,7 @@ def _build_verifier_prompt(
 Extracted values with source evidence:
 
 {json.dumps(payload, indent=2, default=str)}
-{prev_hint}
+{temporal_rule}{prev_hint}
 
 Challenge every number. Check:
 
@@ -1068,6 +1085,18 @@ def apply_to_db(
             and result.verdict.reason.strip() != ""
         )
         if not has_source_evidence and not has_verifier_correction:
+            # Alter Wert bleibt stehen — aber den Refresh-Versuch stempeln,
+            # sonst sieht die stille Stale-Zeile ewig frisch aus (adidas-Lauf:
+            # sbc/ocf/st_investments blieben unmarkiert auf Vor-Deploy-Stand).
+            stale_stmt = select(CompanyValue).where(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == value_key,
+                CompanyValue.period_type == period_type,
+                CompanyValue.period_year == year,
+            )
+            stale_row = db.execute(stale_stmt).scalar_one_or_none()
+            if stale_row is not None:
+                stale_row.last_refresh_attempt = datetime.now(timezone.utc)
             continue
 
         value = normalize_sign(

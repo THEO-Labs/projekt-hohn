@@ -201,8 +201,8 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
   return (
     <div
       ref={ref}
-      style={{ top, left, width: popoverWidth }}
-      className="fixed z-50 overflow-hidden rounded-xl border border-border/70 bg-popover text-foreground shadow-xl ring-1 ring-black/5"
+      style={{ top, left, width: popoverWidth, maxHeight: window.innerHeight - top - 8 }}
+      className="fixed z-50 overflow-y-auto overscroll-contain rounded-xl border border-border/70 bg-popover text-foreground shadow-xl ring-1 ring-black/5"
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header row: method dot + label + period, close on right */}
