@@ -216,9 +216,16 @@ EXTRACTOR_SYSTEM = (
     "object matching the schema in the user message — no prose, no markdown. "
     "For every number you output you MUST include the exact quoted sentence "
     "from the source document (source_quote) and the URL (source_url). "
-    "If a value cannot be verified against a source quote, set it to null. "
-    "Do NOT extrapolate, do NOT estimate — only report what the document "
-    "actually says."
+    "REPORTED periods: only what the document actually says, is_estimate=false; "
+    "if a reported value cannot be backed by a source quote, set it to null. "
+    "ESTIMATES are allowed ONLY where the task protocol explicitly asks for "
+    "them (not-yet-reported periods of an in-progress fiscal year); they must "
+    "be marked is_estimate=true and their source_quote must document the "
+    "guidance/consensus/derivation basis. "
+    "CONTAMINATION RULE: the metric guidance in the user message contains "
+    "illustrative example numbers — they are NOT data. Every number you "
+    "output must come from your own web_search results for THIS company and "
+    "period, never from examples in the instructions."
 )
 
 
@@ -950,6 +957,56 @@ def _derive_missing_quarter(result: "TwoStageResult") -> None:
     setattr(result.extract, m.lower(), qv)
 
 
+_QSUM_TOLERANCE = Decimal("0.005")  # 0.5% — gleiche Toleranz wie der Extractor-Prompt
+
+
+def _enforce_qsum_consistency(result: "TwoStageResult") -> None:
+    """Erzwingt Q1+Q2+Q3+Q4 = FY fuer Flow-Metriken IM CODE.
+
+    Prompts und Verifier fordern die Konsistenz nur — der Adidas-EBITDA-Fall
+    zeigte, dass das Modell die Ableitung 'Q4 = FY - Summe' beschreiben, aber
+    falsch rechnen kann und der Verifier es dennoch bestaetigt. Hier wird das
+    LETZTE geschaetzte Quartal deterministisch als Residuum neu berechnet.
+    Sind alle Quartale reported (Actuals), wird nichts umgeschrieben — dann
+    ist die Abweichung ein Extraktionsfehler, kein Schaetz-Residuum.
+    """
+    if result.extract.value_key in _STOCK_METRICS_NO_QSUM:
+        return
+    if result.extract.quarter_only:
+        return
+    finals = result.final_values
+    fy = finals.get("FY")
+    q_keys = ["Q1", "Q2", "Q3", "Q4"]
+    if fy is None or fy == 0 or any(finals.get(k) is None for k in q_keys):
+        return
+    total = sum(finals[k] for k in q_keys)
+    if abs(total - fy) <= abs(fy) * _QSUM_TOLERANCE:
+        return
+    target = None
+    for k in ("Q4", "Q3", "Q2", "Q1"):
+        qv = getattr(result.extract, k.lower(), None)
+        if qv is not None and qv.is_estimate:
+            target = k
+            break
+    if target is None:
+        return
+    others = sum(finals[k] for k in q_keys if k != target)
+    derived = fy - others
+    old = finals[target]
+    quote = (
+        f"Derived for Q-sum consistency: FY {fy} - sum(other quarters) {others} "
+        f"= {derived}; model estimate {old} discarded (sum deviated "
+        f"{(total - fy) / fy:.1%} from FY)"
+    )
+    setattr(result.extract, target.lower(), QuarterValue(
+        value=derived, source_quote=quote, source_url=None, is_estimate=True,
+    ))
+    # Eine Verifier-Korrektur auf dem Ziel-Quartal wuerde final_values sonst
+    # weiterhin dominieren.
+    if result.verdict.verdict == "correct":
+        result.verdict.corrections[target] = derived
+
+
 def apply_to_db(
     db,
     company_id: UUID,
@@ -973,6 +1030,9 @@ def apply_to_db(
 
     # Fill in a missing quarter if FY + 3 quarters are present.
     _derive_missing_quarter(result)
+    # Enforce Q1..Q4 = FY for flow metrics (rewrites the last estimated
+    # quarter as the residual when the model's arithmetic drifted).
+    _enforce_qsum_consistency(result)
 
     verdict_tag = {
         "confirm": "two_stage_confirmed",

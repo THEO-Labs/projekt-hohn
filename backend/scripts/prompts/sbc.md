@@ -49,10 +49,13 @@ unit: Berichtswaehrung der Firma — absolute Waehrung
 - Ausnahmen mit Q-Disclosure: Infineon, Qiagen, Zalando, Porsche SE
 - **Fuer ABGESCHLOSSENE FYs**: wenn nur FY disclosed → Q1-Q4 = null (nicht FY/4-Interpolation)
 - **Fuer LAUFENDES FY**: wenn nur FY-Guidance/Analyst-Total: schaetze Q's mittels
-  Vorjahres-Q-Verteilung (Prior-Year Q-Anteil x FY-Estimate). Beispiel:
-  Adidas FY 2026 SBC-Schaetzung 95M, Vorjahr Q1-Q4 waren 18/24/37/43 (Summe 122M).
-  Q-Anteile: 15%/20%/30%/35%. Adidas 2026 SBC Q1 = 95M x 15% = 14M usw. Dokumentiere
+  Vorjahres-Q-Verteilung (Prior-Year Q-Anteil x FY-Estimate). Hypothetisches
+  Rechen-Beispiel (Fantasie-Firma "Beispiel AG", NICHT als Datenquelle nutzen):
+  FY-Schaetzung 200M, Vorjahres-Qs waren 30/40/60/70 (Summe 200M) ->
+  Q-Anteile 15%/20%/30%/35% -> Q1 = 200M x 15% = 30M usw. Dokumentiere
   als "prior-year seasonality: Q1=15% of FY". is_estimate=true.
+  Die Vorjahres-Q-Werte und das FY-Total MUSST du selbst recherchieren —
+  NIEMALS Zahlen aus diesem Beispiel uebernehmen.
   User braucht ausgefuellte Q-Zeilen — Halluzination nicht, Extrapolation ja.
 
 **Employee Stock Purchase Plan (ESPP)**:
