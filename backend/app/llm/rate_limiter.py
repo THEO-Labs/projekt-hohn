@@ -23,7 +23,13 @@ class RateLimiter:
 
     def call(self, fn: Callable[[], T]) -> T:
         """Execute fn with rate limiting. Blocks until interval elapsed. Retries on
-        429 rate_limit_error with a full-minute backoff so the token budget resets."""
+        429 rate_limit_error with a full-minute backoff so the token budget resets.
+
+        Der Lock schuetzt NUR das Start-Spacing — der API-Call selbst laeuft
+        ausserhalb. Sonst serialisiert der Limiter alle parallelen Worker auf
+        (Spacing + volle Call-Dauer) pro Call und ein Portfolio-Batch dauert
+        3x laenger als noetig.
+        """
         attempt = 0
         while True:
             with self._lock:
@@ -32,25 +38,26 @@ class RateLimiter:
                 if wait > 0:
                     time.sleep(wait)
                 self._last_call = time.monotonic()
-                try:
-                    return fn()
-                except Exception as e:
-                    if attempt >= self.max_retries:
-                        raise
-                    is_rate_limit = (
-                        getattr(e, "status_code", None) == 429
-                        or "rate_limit" in str(e).lower()
-                        or "429" in str(e)
-                    )
-                    if not is_rate_limit:
-                        raise
-                    logger.warning(
-                        "Claude 429 rate limit (attempt %s/%s). Sleeping %ss before retry.",
-                        attempt + 1, self.max_retries, self.backoff_seconds,
-                    )
-                    time.sleep(self.backoff_seconds)
+            try:
+                return fn()
+            except Exception as e:
+                if attempt >= self.max_retries:
+                    raise
+                is_rate_limit = (
+                    getattr(e, "status_code", None) == 429
+                    or "rate_limit" in str(e).lower()
+                    or "429" in str(e)
+                )
+                if not is_rate_limit:
+                    raise
+                logger.warning(
+                    "Claude 429 rate limit (attempt %s/%s). Sleeping %ss before retry.",
+                    attempt + 1, self.max_retries, self.backoff_seconds,
+                )
+                time.sleep(self.backoff_seconds)
+                with self._lock:
                     self._last_call = time.monotonic()
-                    attempt += 1
+                attempt += 1
 
 
 from app.config import settings
