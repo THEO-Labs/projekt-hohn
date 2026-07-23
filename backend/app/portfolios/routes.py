@@ -60,3 +60,39 @@ def delete_portfolio(
     portfolio = _get_owned(db, user, portfolio_id)
     db.delete(portfolio)
     db.commit()
+
+
+def _owned_portfolio(db: Session, user: User, portfolio_id: UUID) -> Portfolio:
+    p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).one_or_none()
+    if not p or p.owner_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
+    return p
+
+
+@router.post("/{portfolio_id}/full-recompute")
+def start_full_recompute(
+    portfolio_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Startet den portfolio-weiten Full Recompute (Queue, 3 Firmen parallel).
+
+    Idempotent: laeuft bereits ein Batch fuer dieses Portfolio, wird dessen
+    Status zurueckgegeben statt ein zweiter gestartet.
+    """
+    from app.values.batch import start_portfolio_recompute
+
+    _owned_portfolio(db, user, portfolio_id)
+    return start_portfolio_recompute(portfolio_id, user.id)
+
+
+@router.get("/{portfolio_id}/full-recompute-status")
+def full_recompute_status(
+    portfolio_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.values.batch import get_batch_status
+
+    _owned_portfolio(db, user, portfolio_id)
+    return get_batch_status(portfolio_id)

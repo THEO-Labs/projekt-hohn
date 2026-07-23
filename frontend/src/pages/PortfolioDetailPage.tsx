@@ -23,6 +23,7 @@ import {
   refreshCompanyDaily,
   type CompanyCardData,
 } from "@/api/dashboard";
+import { startFullRecompute, getFullRecomputeStatus } from "@/api/portfolios";
 import { t } from "@/lib/i18n";
 
 export function PortfolioDetailPage() {
@@ -41,6 +42,33 @@ export function PortfolioDetailPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const [refreshingAll, setRefreshingAll] = useState(false);
+  const [batch, setBatch] = useState<{ status: string; done?: number; total?: number; current?: string[] } | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    let timer: number | null = null;
+    const pollBatch = async () => {
+      try {
+        const s = await getFullRecomputeStatus(id);
+        setBatch(s.status === "idle" ? null : s);
+        if (s.status === "done" && timer !== null) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+      } catch { /* backend nicht erreichbar */ }
+    };
+    pollBatch();
+    timer = window.setInterval(pollBatch, 5000);
+    return () => { if (timer !== null) window.clearInterval(timer); };
+  }, [id]);
+
+  const handleFullRecomputeAll = async () => {
+    if (!id) return;
+    if (!window.confirm("Full Recompute fuer ALLE Firmen starten? Dauer mehrere Stunden, LLM-Kosten fallen an.")) return;
+    const s = await startFullRecompute(id);
+    setBatch(s);
+    toast.success(`Full recompute gestartet (${s.total} Firmen, 3 parallel)`);
+  };
   const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
 
   const loadAll = async () => {
@@ -192,6 +220,20 @@ export function PortfolioDetailPage() {
               {refreshingAll && refreshProgress
                 ? `Refreshing ${refreshProgress.done}/${refreshProgress.total}…`
                 : "Refresh daily (all)"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleFullRecomputeAll}
+              disabled={batch?.status === "running" || cards.length === 0}
+              title="Full Recompute (Two-Stage-Research) fuer alle Firmen — Queue mit 3 parallel, dauert Stunden"
+              className="flex items-center gap-1.5"
+            >
+              {batch?.status === "running"
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <RefreshCw className="h-4 w-4" />}
+              {batch?.status === "running"
+                ? `Recompute ${batch.done ?? 0}/${batch.total ?? 0} (${(batch.current ?? []).join(", ")})`
+                : "Full recompute (all)"}
             </Button>
           <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); setLookedUp(false); } }}>
             <DialogTrigger render={<Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20" />}>

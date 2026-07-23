@@ -47,7 +47,7 @@ import httpx
 # per-minute budget as the production extractor.
 from app.config import settings
 from app.llm.claude import get_client
-from app.llm.rate_limiter import RateLimiter
+from app.llm.rate_limiter import RateLimiter, claude_limiter
 
 
 def _validate_source_url(url: str | None) -> bool:
@@ -510,7 +510,7 @@ def run_extractor(
 ) -> ExtractResult:
     """Stage 1: fetch values with source quotes."""
     client = get_client()
-    limiter = limiter or RateLimiter()
+    limiter = limiter or claude_limiter
 
     if mode == "historic":
         prompt = _build_historic_extractor_prompt(ticker, company_name, value_key, year, currency)
@@ -775,7 +775,7 @@ def run_verifier(
 ) -> VerifierVerdict:
     """Stage 2: challenge extracted values against their own source quotes."""
     client = get_client()
-    limiter = limiter or RateLimiter()
+    limiter = limiter or claude_limiter
 
     prompt = _build_verifier_prompt(extract, prev_year_fy_hint)
 
