@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.auth.deps import current_user
 from app.auth.models import User
 from app.db import get_db
-from app.portfolios.models import Portfolio
+from app.portfolios.models import Portfolio, PortfolioMember, has_portfolio_access
 from app.portfolios.schemas import PortfolioCreate, PortfolioOut, PortfolioUpdate
 
 router = APIRouter(prefix="/api/portfolios", tags=["portfolios"])
@@ -14,7 +14,13 @@ router = APIRouter(prefix="/api/portfolios", tags=["portfolios"])
 
 @router.get("", response_model=list[PortfolioOut])
 def list_portfolios(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[Portfolio]:
-    return db.query(Portfolio).filter(Portfolio.owner_user_id == user.id).order_by(Portfolio.created_at).all()
+    member_ids = db.query(PortfolioMember.portfolio_id).filter(PortfolioMember.user_id == user.id)
+    return (
+        db.query(Portfolio)
+        .filter((Portfolio.owner_user_id == user.id) | (Portfolio.id.in_(member_ids)))
+        .order_by(Portfolio.created_at)
+        .all()
+    )
 
 
 @router.post("", response_model=PortfolioOut, status_code=status.HTTP_201_CREATED)
@@ -32,7 +38,7 @@ def create_portfolio(
 
 def _get_owned(db: Session, user: User, portfolio_id: UUID) -> Portfolio:
     portfolio = db.query(Portfolio).filter(Portfolio.id == portfolio_id).one_or_none()
-    if not portfolio or portfolio.owner_user_id != user.id:
+    if not portfolio or not has_portfolio_access(db, user.id, portfolio):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
     return portfolio
 
@@ -64,7 +70,7 @@ def delete_portfolio(
 
 def _owned_portfolio(db: Session, user: User, portfolio_id: UUID) -> Portfolio:
     p = db.query(Portfolio).filter(Portfolio.id == portfolio_id).one_or_none()
-    if not p or p.owner_user_id != user.id:
+    if not p or not has_portfolio_access(db, user.id, p):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Portfolio not found")
     return p
 

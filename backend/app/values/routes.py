@@ -57,7 +57,7 @@ from app.calculations.lock import (
 )
 from app.companies.models import Company
 from app.db import get_db
-from app.portfolios.models import Portfolio
+from app.portfolios.models import Portfolio, PortfolioMember
 from app.providers.registry import get_providers
 from app.values.always_current import ALWAYS_CURRENT_KEYS
 from app.values.currency_keys import CURRENCY_KEYS
@@ -299,7 +299,8 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     portfolio = db.query(Portfolio).filter(Portfolio.id == company.portfolio_id).one_or_none()
-    if not portfolio or portfolio.owner_user_id != user.id:
+    from app.portfolios.models import has_portfolio_access
+    if not portfolio or not has_portfolio_access(db, user.id, portfolio):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return company
 
@@ -1569,7 +1570,14 @@ def recalc_all_fy(
     Use after changing the MCap-anchor semantics so stored values + Calculated
     rows reflect the new logic. Returns counts."""
     owned_pids = (
-        db.query(Portfolio.id).filter(Portfolio.owner_user_id == user.id).all()
+        db.query(Portfolio.id)
+        .filter(
+            (Portfolio.owner_user_id == user.id)
+            | Portfolio.id.in_(
+                db.query(PortfolioMember.portfolio_id).filter(PortfolioMember.user_id == user.id)
+            )
+        )
+        .all()
     )
     pid_set = {p[0] for p in owned_pids}
     companies = (
