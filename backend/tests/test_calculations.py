@@ -49,16 +49,54 @@ def test_ni_growth():
     assert abs(result["ni_growth"] - Decimal("22.67")) < Decimal("0.1")
 
 
-def test_ni_growth_negative_prev_correct_sign():
-    """Turnaround: NI war negativ, jetzt positiv → Growth muss POSITIV sein."""
+def test_ni_growth_negative_prev_correct_sign_and_capped():
+    """Turnaround: NI war negativ, jetzt positiv → Growth POSITIV, aber bei
+    ±100% gekappt — sonst dominieren Turnarounds (Bayer +178%-H-Return-Klasse)
+    jedes Ranking."""
     result, _adj = calculate_fy(
         {"net_income": Decimal("764")},
         {"net_income": Decimal("-75")},
         {},
     )
-    # |prev|=75, change=839, growth=839/75*100 ≈ +1118.67
-    assert result["ni_growth"] is not None
-    assert result["ni_growth"] > Decimal("1000")
+    assert result["ni_growth"] == Decimal("100")
+
+
+def test_ni_growth_capped_negative():
+    result, _adj = calculate_fy(
+        {"net_income": Decimal("-500")},
+        {"net_income": Decimal("100")},
+        {},
+    )
+    assert result["ni_growth"] == Decimal("-100")
+
+
+def test_ni_growth_uncapped_inside_range():
+    result, _adj = calculate_fy(
+        {"net_income": Decimal("150")},
+        {"net_income": Decimal("100")},
+        {},
+    )
+    assert result["ni_growth"] == Decimal("50")
+
+
+def test_financial_excludes_net_debt_change_from_hohn():
+    """Banken/Versicherer: net_debt_change_pct fliegt aus der H-Return raus
+    (DBK -2036%-Klasse) — der Wert selbst bleibt aber gespeichert."""
+    result, _adj = calculate_fy(
+        {"net_income": Decimal("150"), "net_debt": Decimal("50000"), "dividends": Decimal("20")},
+        {"net_income": Decimal("100"), "net_debt": Decimal("10000")},
+        {"market_cap": Decimal("1000")},
+        exclude_net_debt_change=True,
+    )
+    assert result["net_debt_change_pct"] is not None
+    # detailed = div_yield 2 + ni_growth 50 (OHNE nd-Komponente -4000)
+    assert result["hohn_return_detailed"] == Decimal("52")
+
+
+def test_is_financial_ticker_set():
+    from app.calculations.engine import is_financial
+    assert is_financial("DBK.DE") and is_financial("ALV.DE")
+    assert not is_financial("SAP.DE")
 
 
 def test_dividend_yield():

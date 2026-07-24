@@ -10,7 +10,17 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(settings.database_url, future=True)
+# Pool gross genug fuer Batch-Worker (halten Sessions ueber lange LLM-Phasen)
+# PLUS UI-Polling von 40 Cards gleichzeitig. Default 5+10 war unter Batch-Last
+# erschoepft -> 500er auf UI-Reads. pool_pre_ping recycelt tote Verbindungen.
+engine = create_engine(
+    settings.database_url,
+    future=True,
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=30,
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 

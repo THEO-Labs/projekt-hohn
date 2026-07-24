@@ -48,6 +48,28 @@ def _safe_div_pct(numerator: Decimal | None, denominator: Decimal | None) -> Dec
     return numerator / denominator * Decimal("100")
 
 
+# Banken/Versicherer: Finanzverbindlichkeiten sind Refinanzierung, kein
+# Schulden-"Abbau" — net_debt_change_pct fliegt bei ihnen aus der H-Return
+# (analog EBITDA=null in den Prompts). Exakte Ticker wie in der DB.
+FINANCIAL_TICKERS = frozenset({"DBK.DE", "CBK.DE", "ALV.DE", "MUV2.DE", "HNR1.DE"})
+
+# Turnaround-Schutz: |ni_growth| wird gekappt, sonst dominiert ein kleines/
+# negatives Vorjahres-NI (Nenner) jedes Ranking.
+NI_GROWTH_CAP = Decimal("100")
+
+
+def is_financial(ticker: str | None) -> bool:
+    return ticker in FINANCIAL_TICKERS
+
+
+def _cap_growth(value: Decimal) -> Decimal:
+    if value > NI_GROWTH_CAP:
+        return NI_GROWTH_CAP
+    if value < -NI_GROWTH_CAP:
+        return -NI_GROWTH_CAP
+    return value
+
+
 def calculate_stammdaten(values: dict[str, Decimal | None]) -> dict[str, Decimal | None]:
     results: dict[str, Decimal | None] = {"market_cap_calc": None}
     stock_price = values.get("stock_price")
@@ -64,6 +86,7 @@ def calculate_fy(
     next_year_market_cap: Decimal | None = None,
     current_adjusted: dict[str, Decimal | None] | None = None,
     previous_adjusted: dict[str, Decimal | None] | None = None,
+    exclude_net_debt_change: bool = False,
     is_running_fy: bool = False,
 ) -> tuple[dict[str, Decimal | None], dict[str, Decimal | None]]:
     """Berechnet Calculated-Werte fuer das FY.
@@ -187,12 +210,12 @@ def calculate_fy(
             # |ni_prev| im Nenner, damit das Vorzeichen des Wachstums auch
             # bei negativem Vorjahres-Net-Income korrekt bleibt (Turnaround
             # von Verlust → Gewinn = positives Wachstum, nicht negatives).
-            results["ni_growth"] = (ni - ni_prev) / abs(ni_prev) * Decimal("100")
+            results["ni_growth"] = _cap_growth((ni - ni_prev) / abs(ni_prev) * Decimal("100"))
         # NI-Growth Adjusted: mode-konsistent (Adj-NI / Adj-NI-Prev).
         pa = previous_adjusted or {}
         ni_adj_prev = pa.get("net_income") if pa.get("net_income") is not None else ni_prev
         if ni_adj is not None and ni_adj_prev is not None and ni_adj_prev != 0:
-            results_adjusted["ni_growth"] = (ni_adj - ni_adj_prev) / abs(ni_adj_prev) * Decimal("100")
+            results_adjusted["ni_growth"] = _cap_growth((ni_adj - ni_adj_prev) / abs(ni_adj_prev) * Decimal("100"))
 
         # ΔNet Debt = previous − current (positive = Schulden-Abbau / Cash-Wachstum).
         prev_net_debt = previous.get("net_debt")
@@ -222,6 +245,9 @@ def calculate_fy(
     ni_growth = results.get("ni_growth")
     sbc_yield = results.get("sbc_yield")
     nd_change_pct = results.get("net_debt_change_pct")
+    if exclude_net_debt_change:
+        # Wert bleibt gespeichert (Info), zaehlt aber nicht in die H-Return.
+        nd_change_pct = None
     div_yield = results.get("dividend_yield")
     net_buyback_yield = results.get("net_buyback_yield")
 

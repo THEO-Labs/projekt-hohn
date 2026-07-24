@@ -273,12 +273,14 @@ def _run_and_persist_calculations(
             for r in current_rows
         )
 
+        from app.calculations.engine import is_financial
         fy_calc, fy_calc_adj = calculate_fy(
             current, previous, stammdaten,
             next_year_market_cap=next_mcap,
             current_adjusted=current_adj,
             previous_adjusted=previous_adj,
             is_running_fy=is_forecast_year,
+            exclude_net_debt_change=is_financial(company.ticker if company else None),
         )
 
         allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
