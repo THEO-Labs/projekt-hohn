@@ -520,6 +520,8 @@ def _process_one_key_via_two_stage(
 
     year = target_year if target_year is not None else payload.period_year
 
+    # Actual+Forecast koennen als Paar koexistieren — one_or_none() wuerde
+    # dann MultipleResultsFound werfen. Actual-Zeile bevorzugen.
     prev_stmt = (
         db.query(CompanyValue)
         .filter(
@@ -528,7 +530,8 @@ def _process_one_key_via_two_stage(
             CompanyValue.period_year == year - 1,
             CompanyValue.period_type == "FY",
         )
-        .one_or_none()
+        .order_by(CompanyValue.is_forecast.asc())
+        .first()
     )
     prev_fy = prev_stmt.numeric_value if prev_stmt else None
 
@@ -548,23 +551,71 @@ def _process_one_key_via_two_stage(
         )
     except Exception as e:
         logger.error("two-stage failed for %s / %s (year=%s): %s", company.ticker, key, year, e)
-        return False
+        # LLM-Pipeline tot heisst nicht dass die Zeitreihe leer bleiben muss:
+        # fuer abgeschlossene Jahre kann der XBRL-Anker trotzdem liefern.
+        anchored = _anchor_fy_after_apply(db, company, key, year, updated)
+        if not anchored:
+            # Kein stiller Zustand: bestehende FY/Q-Zeilen des Keys werden
+            # last_refresh_attempt-gestempelt, komplett fehlende Perioden
+            # bekommen not_found-Platzhalter (rote Zelle im UI).
+            from scripts.two_stage_research import stamp_attempt_and_fill_not_found
+            stamp_attempt_and_fill_not_found(
+                db, company_id, key, year,
+                periods=("Q1", "Q2", "Q3", "Q4", "FY"),
+                currency=company.currency,
+            )
+        return anchored
 
     written = _apply(db, company_id, key, year, result, currency=company.currency)
     for cv in written:
         updated.append(cv)
-    return bool(written)
+    # XBRL-Provider-Anker: fuer abgeschlossene Geschaeftsjahre ueberschreibt
+    # der strukturierte Filing-Wert (EDGAR/ESEF) den LLM-FY-Wert.
+    anchored = _anchor_fy_after_apply(db, company, key, year, updated)
+    return bool(written) or anchored
+
+
+def _anchor_fy_after_apply(db: Session, company, key: str, year: int, updated: list) -> bool:
+    """XBRL-Anker nach dem Two-Stage-Apply: XBRL schlaegt LLM als FY-Anker
+    fuer abgeschlossene Jahre. Fehler duerfen den Refresh niemals crashen."""
+    try:
+        from app.values.provider_anchor import anchor_fy_with_provider
+        anchored = anchor_fy_with_provider(db, company, key, year)
+    except Exception as e:
+        logger.warning(
+            "Provider-Anker failed for %s/%s/FY%s: %s", company.ticker, key, year, e,
+        )
+        return False
+    if anchored:
+        row = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company.id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == year,
+                CompanyValue.is_forecast.is_(False),
+            )
+            .first()
+        )
+        if row is not None and row not in updated:
+            updated.append(row)
+    return anchored
 
 
 def _prev_year_needs_backfill(
     db: Session, company_id: UUID, key: str, prev_year: int
 ) -> bool:
-    """True if there is no fresh two-stage row for (company, key, FY prev_year).
+    """True if there is no fresh two-stage/provider row for (company, key,
+    FY prev_year).
 
     Skip-if-already-good: if we already have a two_stage_* row for FY N-1
-    (any variant: confirmed / verified / insufficient), we do NOT rerun it
-    on a FY N refresh. That keeps subsequent 'Refresh full' clicks cheap.
+    (any variant: confirmed / verified / insufficient) or a geankerte
+    'provider'-Zeile (XBRL), we do NOT rerun it on a FY N refresh. That
+    keeps subsequent 'Refresh full' clicks cheap.
     """
+    # first() statt one_or_none(): Actual+Forecast koennen koexistieren,
+    # die Actual-Zeile entscheidet ueber die Frische.
     row = (
         db.query(CompanyValue)
         .filter(
@@ -573,12 +624,13 @@ def _prev_year_needs_backfill(
             CompanyValue.period_year == prev_year,
             CompanyValue.period_type == "FY",
         )
-        .one_or_none()
+        .order_by(CompanyValue.is_forecast.asc())
+        .first()
     )
     if row is None:
         return True
     pm = row.primary_method or ""
-    return not pm.startswith("two_stage_")
+    return not (pm.startswith("two_stage_") or pm == "provider")
 
 
 def _process_one_key(
@@ -1212,8 +1264,12 @@ def refresh_company_values(
     total_steps = len(effective_keys) + len(prev_year_backfill_keys)
     start_job(company_id, total_steps)
     try:
+        # Pro Key committen: ein Fehler (und der zugehoerige Rollback) in
+        # Key N darf die bereits erfolgreich geschriebenen Keys 1..N-1
+        # nicht mit verwerfen. mark_success erst NACH erfolgreichem Commit.
         for key in effective_keys:
             update_job(company_id, key)
+            updated_before = len(updated)
             try:
                 if (
                     use_two_stage_fy
@@ -1234,11 +1290,16 @@ def refresh_company_values(
                         payload=payload,
                         updated=updated,
                     )
+                db.commit()
                 if wrote:
                     mark_success(company_id)
             except Exception as e:
                 logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
                 db.rollback()
+                # Verworfene Instanzen des fehlgeschlagenen Keys aus
+                # `updated` entfernen — db.refresh am Ende darf keine nie
+                # committeten Zeilen anfassen.
+                del updated[updated_before:]
 
         # Prev-year backfill: for the two-stage-eligible keys where FY N-1
         # has no two-stage row yet, run the pipeline against FY N-1 too.
@@ -1246,12 +1307,14 @@ def refresh_company_values(
             prev_year = payload.period_year - 1
             for key in prev_year_backfill_keys:
                 update_job(company_id, f"{key} (FY{prev_year})")
+                updated_before = len(updated)
                 try:
                     wrote = _process_one_key_via_two_stage(
                         db=db, key=key, company=company,
                         company_id=company_id, payload=payload,
                         updated=updated, target_year=prev_year,
                     )
+                    db.commit()
                     if wrote:
                         mark_success(company_id)
                 except Exception as e:
@@ -1260,8 +1323,7 @@ def refresh_company_values(
                         ticker, key, prev_year, e,
                     )
                     db.rollback()
-
-        db.commit()
+                    del updated[updated_before:]
 
         # Cross-Metrik-Konsistenz: net_debt aus Komponenten ableiten (eine
         # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
@@ -1272,15 +1334,22 @@ def refresh_company_values(
                 derive_sbc_quarters,
                 validate_cross_metrics,
             )
-            try:
-                derive_net_debt_from_components(db, company_id, payload.period_year)
-                derive_missing_ocf(db, company_id, payload.period_year)
-                derive_sbc_quarters(db, company_id, payload.period_year)
-                validate_cross_metrics(db, company_id, payload.period_year)
-                db.commit()
-            except Exception as e:
-                logger.error("consistency pass failed for %s FY%s: %s", ticker, payload.period_year, e)
-                db.rollback()
+            # Wenn der Prev-Year-Backfill Keys verarbeitet hat, muss der
+            # Konsistenz-Pass auch fuer FY N-1 laufen — sonst bleiben
+            # FY/Quartals-Mismatches im Vorjahr ungeflaggt.
+            consistency_years = (
+                [payload.period_year - 1] if prev_year_backfill_keys else []
+            ) + [payload.period_year]
+            for cons_year in consistency_years:
+                try:
+                    derive_net_debt_from_components(db, company_id, cons_year)
+                    derive_missing_ocf(db, company_id, cons_year)
+                    derive_sbc_quarters(db, company_id, cons_year)
+                    validate_cross_metrics(db, company_id, cons_year)
+                    db.commit()
+                except Exception as e:
+                    logger.error("consistency pass failed for %s FY%s: %s", ticker, cons_year, e)
+                    db.rollback()
 
         # Bei Stammdaten-Only: kein historisches MCap-Fetch, kein Prev-Year-
         # Refresh — die haben mit den taeglichen Live-Werten nichts zu tun.
@@ -2159,20 +2228,25 @@ def two_stage_refresh(
             ))
             break
 
-        # Load prev-year FY as hint (if exists)
-        prev_stmt = (
-            db.query(CompanyValue)
-            .filter(
-                CompanyValue.company_id == company_id,
-                CompanyValue.value_key == key,
-                CompanyValue.period_year == payload.period_year - 1,
-                CompanyValue.period_type == "FY",
-            )
-            .one_or_none()
-        )
-        prev_fy = prev_stmt.numeric_value if prev_stmt else None
-
         try:
+            # Load prev-year FY as hint (if exists). Im inneren try: ein
+            # Lookup-Fehler soll nur diesen Key als error markieren, nicht
+            # den ganzen Endpoint crashen. Actual+Forecast koennen als Paar
+            # koexistieren — one_or_none() wuerde MultipleResultsFound
+            # werfen, daher order_by(is_forecast asc).first() = Actual.
+            prev_row = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company_id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_year == payload.period_year - 1,
+                    CompanyValue.period_type == "FY",
+                )
+                .order_by(CompanyValue.is_forecast.asc())
+                .first()
+            )
+            prev_fy = prev_row.numeric_value if prev_row else None
+
             mode = choose_mode_for_year(payload.period_year)
             result = research_two_stage(
                 ticker=company.ticker,

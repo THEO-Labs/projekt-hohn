@@ -59,6 +59,14 @@ def no_live_network(monkeypatch):
         lambda db, ticker, company_id, year: None,
     )
 
+    # Der XBRL-Provider-Anker (FY-Refresh, provider_anchor.py) ruft die
+    # Provider-Kette direkt — Default leer, sonst fetcht jeder FY-Refresh-
+    # Test live gegen EDGAR/ESEF/Yahoo. Anker-Tests patchen
+    # app.values.provider_anchor.get_providers explizit.
+    import app.values.provider_anchor as anchor_mod
+
+    monkeypatch.setattr(anchor_mod, "get_providers", lambda key: [])
+
     # Kein Test darf real gegen die Anthropic-API laufen. Tests, die die
     # Two-Stage-Pipeline brauchen, mocken research_two_stage direkt.
     def _no_llm_in_tests():

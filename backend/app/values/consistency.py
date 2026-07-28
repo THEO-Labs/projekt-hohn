@@ -29,14 +29,21 @@ _NET_DEBT_COMPONENTS = ("st_debt", "lt_debt", "cash_and_equivalents", "st_invest
 
 
 def _rows_for_year(db: Session, company_id: UUID, year: int) -> list[CompanyValue]:
+    # Deterministische Ordnung: der Unique-Index erlaubt pro Zelle ZWEI
+    # Zeilen (Actual + Forecast). Ohne order_by haengt es von der Query-
+    # Reihenfolge ab, welche Zeile _row_of/_value_of als "erste passende"
+    # sehen — mit is_forecast asc gewinnt immer die Actual-Zeile.
     return (
         db.query(CompanyValue)
         .filter(CompanyValue.company_id == company_id, CompanyValue.period_year == year)
+        .order_by(CompanyValue.is_forecast.asc())
         .all()
     )
 
 
 def _value_of(rows: list[CompanyValue], key: str, period_type: str) -> Decimal | None:
+    # Erste passende Zeile = Actual bevorzugt (rows sind is_forecast-asc
+    # sortiert, siehe _rows_for_year).
     for r in rows:
         if r.value_key == key and r.period_type == period_type:
             return r.numeric_value
@@ -44,6 +51,8 @@ def _value_of(rows: list[CompanyValue], key: str, period_type: str) -> Decimal |
 
 
 def _row_of(rows: list[CompanyValue], key: str, period_type: str) -> CompanyValue | None:
+    # Erste passende Zeile = Actual bevorzugt (rows sind is_forecast-asc
+    # sortiert, siehe _rows_for_year).
     for r in rows:
         if r.value_key == key and r.period_type == period_type:
             return r

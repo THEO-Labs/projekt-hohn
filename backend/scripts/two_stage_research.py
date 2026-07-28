@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -48,6 +49,8 @@ import httpx
 from app.config import settings
 from app.llm.claude import get_client
 from app.llm.rate_limiter import RateLimiter, claude_limiter
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_source_url(url: str | None) -> bool:
@@ -507,6 +510,7 @@ def run_extractor(
     quarter: str | None = None,
     limiter: RateLimiter | None = None,
     model: str = "claude-sonnet-4-6",
+    cost_tracker: "CostTracker | None" = None,
 ) -> ExtractResult:
     """Stage 1: fetch values with source quotes."""
     client = get_client()
@@ -534,6 +538,9 @@ def run_extractor(
 
     # First attempt
     response = limiter.call(lambda: _call(""))
+    # Budget-Tracking: ohne diesen Aufruf waere der Cost-Cap ein No-op.
+    if cost_tracker is not None:
+        cost_tracker.add_response(response, model)
     text_parts = []
     for block in response.content:
         text = getattr(block, "text", None)
@@ -554,6 +561,8 @@ def run_extractor(
             "be complete; do not truncate."
         )
         response = limiter.call(lambda: _call(retry_instr))
+        if cost_tracker is not None:
+            cost_tracker.add_response(response, model)
         text_parts = []
         for block in response.content:
             text = getattr(block, "text", None)
@@ -772,6 +781,7 @@ def run_verifier(
     prev_year_fy_hint: Decimal | None = None,
     limiter: RateLimiter | None = None,
     model: str = "claude-sonnet-4-6",
+    cost_tracker: "CostTracker | None" = None,
 ) -> VerifierVerdict:
     """Stage 2: challenge extracted values against their own source quotes."""
     client = get_client()
@@ -794,6 +804,9 @@ def run_verifier(
         )
 
     response = limiter.call(_call)
+    # Budget-Tracking: ohne diesen Aufruf waere der Cost-Cap ein No-op.
+    if cost_tracker is not None:
+        cost_tracker.add_response(response, model)
     text_parts = []
     for block in response.content:
         text = getattr(block, "text", None)
@@ -947,6 +960,7 @@ def research_two_stage(
             quarter=quarter,
             limiter=limiter,
             model=extractor_model,
+            cost_tracker=cost_tracker,
         ))
     extract = _pick_median_extract(candidates)
     verdict = run_verifier(
@@ -954,6 +968,7 @@ def research_two_stage(
         prev_year_fy_hint=prev_year_fy_hint,
         limiter=limiter,
         model=verifier_model,
+        cost_tracker=cost_tracker,
     )
     return TwoStageResult(extract=extract, verdict=verdict)
 
@@ -1000,6 +1015,14 @@ def _derive_missing_quarter(result: "TwoStageResult") -> None:
         return
     m = missing[0]
     derived = fy - sum(finals[k] for k in present)
+    # is_estimate erben: ist FY oder irgendeine Basis-Periode geschaetzt,
+    # ist auch das abgeleitete Residuum eine Schaetzung — sonst wuerde ein
+    # aus Forecasts errechnetes Quartal faelschlich als Actual persistiert.
+    fy_qv = result.extract.fy
+    base_qvs = [getattr(result.extract, k.lower(), None) for k in present]
+    inherited_estimate = bool(fy_qv is not None and fy_qv.is_estimate) or any(
+        qv is not None and qv.is_estimate for qv in base_qvs
+    )
     # Inject a synthetic QuarterValue that apply_to_db can persist.
     other_qs = "+".join(present)
     quote = f"Derived: FY {fy} minus ({other_qs}) = {derived}"
@@ -1007,7 +1030,7 @@ def _derive_missing_quarter(result: "TwoStageResult") -> None:
         value=derived,
         source_quote=quote,
         source_url=None,
-        is_estimate=False,
+        is_estimate=inherited_estimate,
     )
     # Attach to the extract as the missing-quarter slot.
     setattr(result.extract, m.lower(), qv)
@@ -1063,6 +1086,52 @@ def _enforce_qsum_consistency(result: "TwoStageResult") -> None:
         result.verdict.corrections[target] = derived
 
 
+def stamp_attempt_and_fill_not_found(
+    db,
+    company_id: UUID,
+    value_key: str,
+    year: int,
+    periods,
+    currency: str | None = None,
+) -> None:
+    """Pro Periode: Refresh-Versuch dokumentieren statt still nichts zu tun.
+
+    Bestehende Zeilen (paarfest: Actual UND Forecast) bekommen einen
+    last_refresh_attempt-Stempel; Perioden ganz ohne Zeile einen
+    not_found-Platzhalter (primary_method='not_found'), damit das UI die
+    Zelle rot markieren kann (= manuell raussuchen).
+    """
+    from sqlalchemy import select
+    from app.values.models import CompanyValue
+    from app.values.persistence import NOT_FOUND_SOURCE
+
+    periods = list(periods)
+    if not periods:
+        return
+    now = datetime.now(timezone.utc)
+    rows = db.execute(select(CompanyValue).where(
+        CompanyValue.company_id == company_id,
+        CompanyValue.value_key == value_key,
+        CompanyValue.period_year == year,
+        CompanyValue.period_type.in_(periods),
+    )).scalars().all()
+    for row in rows:
+        row.last_refresh_attempt = now
+    present = {row.period_type for row in rows}
+    for pt in periods:
+        if pt in present:
+            continue
+        db.add(CompanyValue(
+            id=uuid4(), company_id=company_id, value_key=value_key,
+            period_type=pt, period_year=year, numeric_value=None,
+            source_name=NOT_FOUND_SOURCE,
+            primary_method="not_found", currency=currency,
+            fetched_at=now, last_refresh_attempt=now,
+            manually_overridden=False, from_ir_pdf=False,
+        ))
+    db.flush()
+
+
 def apply_to_db(
     db,
     company_id: UUID,
@@ -1082,7 +1151,7 @@ def apply_to_db(
     """
     from sqlalchemy import select
     from app.values.models import CompanyValue
-    from app.values.persistence import normalize_sign
+    from app.values.persistence import currency_conflict, normalize_sign
 
     # Fill in a missing quarter if FY + 3 quarters are present.
     _derive_missing_quarter(result)
@@ -1097,32 +1166,16 @@ def apply_to_db(
     }.get(result.verdict.verdict, "two_stage_verified")
 
     periods = _period_key_for_result(result)
+    # Pro-Periode-Behandlung von null-Ergebnissen (nicht nur beim
+    # Komplett-Null-Fall): jede null-Periode ohne bestehende Zeile bekommt
+    # einen not_found-Platzhalter, jede bestehende einen
+    # last_refresh_attempt-Stempel. Perioden-Universum aus final_values:
+    # Q1..Q4+FY im Full-Modus, das Einzel-Quartal im quarter_only-Modus.
+    null_periods = [p for p, v in result.final_values.items() if v is None]
+    stamp_attempt_and_fill_not_found(
+        db, company_id, value_key, year, null_periods, currency=currency,
+    )
     if not periods:
-        # Extractor lieferte alle Perioden null (sbc-Fall): NICHT lautlos
-        # nichts tun — bestehende Zeilen als versucht stempeln und fuer
-        # fehlende Perioden not_found-Platzhalter anlegen, damit das UI die
-        # Zelle rot markieren kann (= manuell raussuchen).
-        now = datetime.now(timezone.utc)
-        stale_rows = db.execute(select(CompanyValue).where(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == value_key,
-            CompanyValue.period_year == year,
-        )).scalars().all()
-        for row in stale_rows:
-            row.last_refresh_attempt = now
-        present = {row.period_type for row in stale_rows}
-        for pt in ("Q1", "Q2", "Q3", "Q4", "FY"):
-            if pt in present:
-                continue
-            db.add(CompanyValue(
-                id=uuid4(), company_id=company_id, value_key=value_key,
-                period_type=pt, period_year=year, numeric_value=None,
-                source_name="No source found (research attempted)",
-                primary_method="not_found", currency=currency,
-                fetched_at=now, last_refresh_attempt=now,
-                manually_overridden=False, from_ir_pdf=False,
-            ))
-        db.flush()
         return []
 
     # Ein FY-Wert eines noch nicht beendeten Geschaeftsjahres kann kein
@@ -1156,42 +1209,70 @@ def apply_to_db(
         if src_url and not _validate_source_url(src_url):
             src_url = None
 
-        # HARD SKIP: never write a value that has no source_quote and no
-        # verifier correction reason backing it. That produces the
-        # "No source captured" placeholder cells the user rightly hates.
-        # If the extractor did not have a quote and the verifier did not
-        # correct with an explicit reason, keep the previous DB value.
-        has_source_evidence = bool(src_quote)
-        has_verifier_correction = (
-            verdict_tag == "two_stage_verified"
-            and result.verdict.reason.strip() != ""
-        )
-        if not has_source_evidence and not has_verifier_correction:
-            # Alter Wert bleibt stehen — aber den Refresh-Versuch stempeln,
-            # sonst sieht die stille Stale-Zeile ewig frisch aus (adidas-Lauf:
-            # sbc/ocf/st_investments blieben unmarkiert auf Vor-Deploy-Stand).
-            stale_stmt = select(CompanyValue).where(
-                CompanyValue.company_id == company_id,
-                CompanyValue.value_key == value_key,
-                CompanyValue.period_type == period_type,
-                CompanyValue.period_year == year,
-            )
-            stale_row = db.execute(stale_stmt).scalar_one_or_none()
-            if stale_row is not None:
-                stale_row.last_refresh_attempt = datetime.now(timezone.utc)
-            continue
+        is_estimate = bool(qv.is_estimate) if qv else False
+        if period_type == "FY" and fy_end_future:
+            is_estimate = True
 
-        value = normalize_sign(
-            value_key, value, context=f"two-stage {result.extract.ticker}/{period_type} {year}",
-        )
-
+        # Paarfeste Ziel-Zeilen-Wahl: der Unique-Index erlaubt pro Zelle
+        # ZWEI Zeilen (Actual + Forecast) — scalar_one_or_none() wuerde
+        # dann MultipleResultsFound werfen. Deterministisch: bevorzugt die
+        # Zeile, deren is_forecast zur is_estimate des Ergebnisses passt,
+        # sonst die Actual-Zeile (order_by is_forecast asc, erste Zeile).
         stmt = select(CompanyValue).where(
             CompanyValue.company_id == company_id,
             CompanyValue.value_key == value_key,
             CompanyValue.period_type == period_type,
             CompanyValue.period_year == year,
+        ).order_by(CompanyValue.is_forecast.asc())
+        existing_rows = db.execute(stmt).scalars().all()
+        existing = next(
+            (r for r in existing_rows if bool(r.is_forecast) == is_estimate),
+            existing_rows[0] if existing_rows else None,
         )
-        existing = db.execute(stmt).scalar_one_or_none()
+
+        # HARD SKIP: never write a value that has no source_quote and no
+        # verifier correction backing it. That produces the
+        # "No source captured" placeholder cells the user rightly hates.
+        # Korrektur-Gate PRO PERIODE: die Verifier-Korrektur zaehlt nur fuer
+        # Perioden, die in verdict.corrections wirklich korrigiert wurden —
+        # sonst rutschen quote-lose Perioden durch, sobald der Verifier
+        # irgendeine ANDERE Periode korrigiert hat.
+        has_source_evidence = bool(src_quote)
+        has_verifier_correction = (
+            verdict_tag == "two_stage_verified"
+            and result.verdict.reason.strip() != ""
+            and result.verdict.corrections.get(period_type) is not None
+        )
+        if not has_source_evidence and not has_verifier_correction:
+            # Alter Wert bleibt stehen — aber den Refresh-Versuch stempeln,
+            # sonst sieht die stille Stale-Zeile ewig frisch aus (adidas-Lauf:
+            # sbc/ocf/st_investments blieben unmarkiert auf Vor-Deploy-Stand).
+            for stale_row in existing_rows:
+                stale_row.last_refresh_attempt = datetime.now(timezone.utc)
+            continue
+
+        # Invariante wie provider_anchor/routes: Manual-Override- und
+        # PDF-Zeilen sind authoritative — NICHT ueberschreiben, nur den
+        # Refresh-Versuch stempeln.
+        if existing is not None and (existing.manually_overridden or existing.from_ir_pdf):
+            existing.last_refresh_attempt = datetime.now(timezone.utc)
+            continue
+
+        # Currency-Konflikt wie im Refresh-/Anker-Pfad: bestehende Zeile
+        # mit anderem Currency-Label wird nicht ueberschrieben — sonst
+        # mischen sich USD/EUR-Werte in Cross-Year-Aggregaten.
+        if existing is not None and currency_conflict(value_key, existing.currency, currency):
+            logger.warning(
+                "two-stage currency mismatch BLOCKED %s/%s/%s FY%s: existing=%s new=%s",
+                result.extract.ticker, value_key, period_type, year,
+                existing.currency, currency,
+            )
+            existing.last_refresh_attempt = datetime.now(timezone.utc)
+            continue
+
+        value = normalize_sign(
+            value_key, value, context=f"two-stage {result.extract.ticker}/{period_type} {year}",
+        )
 
         # source_name is what the UI cell popover shows. We surface:
         #   1) origin: is this a Reported value from a filed report, or an
@@ -1216,9 +1297,6 @@ def apply_to_db(
             parts.append(f"model={result.extract.model_id}")
         source_name = " | ".join(parts)
 
-        is_estimate = bool(qv.is_estimate) if qv else False
-        if period_type == "FY" and fy_end_future:
-            is_estimate = True
         adjusted_value = qv.adjusted_value if qv else None
         adjustments_note = qv.adjustments_note if qv else None
         adjustments_source = None
@@ -1246,9 +1324,9 @@ def apply_to_db(
             existing.is_forecast = is_estimate
             existing.fetched_at = datetime.now(timezone.utc)
             # Das Currency-Label muss den GESCHRIEBENEN Wert beschreiben — der
-            # Extractor liefert explizit in Firmenwaehrung. Ein altes Label
-            # (z.B. USD aus einem frueheren Provider-Write) darf nicht am
-            # neuen Wert kleben bleiben.
+            # Extractor liefert explizit in Firmenwaehrung. Abweichende alte
+            # Labels wurden oben als Currency-Konflikt geblockt; hier wird nur
+            # ein fehlendes/gleiches Label gesetzt.
             if currency:
                 existing.currency = currency
             written.append(existing)

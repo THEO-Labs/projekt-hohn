@@ -178,8 +178,30 @@ def test_apply_to_db_normalizes_sign(client, db):
 
 def test_apply_to_db_updates_currency_label_on_overwrite(client, db):
     # Der Extractor liefert explizit Firmenwaehrung — beim Ueberschreiben muss
-    # das Currency-Label der Zeile dem neuen Wert folgen, nicht dem alten.
+    # ein fehlendes Currency-Label dem neuen Wert folgen. (Ein ABWEICHENDES
+    # Label ist ein Currency-Konflikt und blockt den Write, siehe
+    # test_apply_to_db_currency_conflict_blocks_write.)
     cid = _company(client, db, email="ts2@example.com")
+    stale = CompanyValue(
+        company_id=cid, value_key="revenue", period_type="FY", period_year=2025,
+        numeric_value=Decimal("999"), currency=None, source_name="old provider row",
+    )
+    db.add(stale)
+    db.commit()
+
+    apply_to_db(db, cid, "revenue", 2025, _result("revenue", Decimal("50000")), currency="EUR")
+    db.commit()
+
+    row = _fy_row(db, cid, "revenue")
+    assert row.numeric_value == Decimal("50000")
+    assert row.currency == "EUR"
+
+
+def test_apply_to_db_currency_conflict_blocks_write(client, db):
+    """Punkt 7: bestehende Zeile mit anderem Currency-Label wird NICHT
+    ueberschrieben (Konsistenz mit routes/_anchor) — nur der Refresh-Versuch
+    wird gestempelt."""
+    cid = _company(client, db, email="ts8@example.com")
     stale = CompanyValue(
         company_id=cid, value_key="revenue", period_type="FY", period_year=2025,
         numeric_value=Decimal("999"), currency="USD", source_name="old provider row",
@@ -191,5 +213,190 @@ def test_apply_to_db_updates_currency_label_on_overwrite(client, db):
     db.commit()
 
     row = _fy_row(db, cid, "revenue")
-    assert row.numeric_value == Decimal("50000")
-    assert row.currency == "EUR"
+    assert row.numeric_value == Decimal("999")
+    assert row.currency == "USD"
+    assert row.last_refresh_attempt is not None
+
+
+def _pair(db, cid, key, year=2025, actual=Decimal("111"), forecast=Decimal("222")):
+    """Actual+Forecast-Zeilenpaar fuer dieselbe Zelle (Unique-Index erlaubt 2)."""
+    a = CompanyValue(
+        company_id=cid, value_key=key, period_type="FY", period_year=year,
+        numeric_value=actual, is_forecast=False, source_name="actual row",
+    )
+    f = CompanyValue(
+        company_id=cid, value_key=key, period_type="FY", period_year=year,
+        numeric_value=forecast, is_forecast=True, source_name="forecast row",
+    )
+    db.add_all([a, f])
+    db.commit()
+    return a, f
+
+
+def test_apply_to_db_pair_actual_result_targets_actual_row(client, db):
+    """Punkt 1: Actual+Forecast-Paar pro Zelle darf nicht crashen
+    (scalar_one_or_none -> MultipleResultsFound). Ein Actual-Ergebnis
+    (is_estimate=False) aktualisiert die Actual-Zeile."""
+    cid = _company(client, db, email="ts9@example.com")
+    a, f = _pair(db, cid, "revenue")
+
+    apply_to_db(db, cid, "revenue", 2025, _result("revenue", Decimal("50000")), currency="EUR")
+    db.commit()
+    db.refresh(a)
+    db.refresh(f)
+
+    assert a.numeric_value == Decimal("50000")
+    assert a.primary_method.startswith("two_stage")
+    assert f.numeric_value == Decimal("222")  # Forecast-Zeile unangetastet
+
+
+def test_apply_to_db_pair_estimate_result_targets_forecast_row(client, db):
+    """Punkt 1: ein Estimate-Ergebnis (is_estimate=True) bevorzugt die zur
+    is_estimate passende Forecast-Zeile."""
+    cid = _company(client, db, email="ts10@example.com")
+    a, f = _pair(db, cid, "revenue")
+
+    r = _result("revenue", Decimal("50000"))
+    r.extract.fy.is_estimate = True
+    apply_to_db(db, cid, "revenue", 2025, r, currency="EUR")
+    db.commit()
+    db.refresh(a)
+    db.refresh(f)
+
+    assert f.numeric_value == Decimal("50000")
+    assert a.numeric_value == Decimal("111")  # Actual-Zeile unangetastet
+
+
+def test_apply_to_db_pair_hard_skip_stamps_both_rows(client, db):
+    """Punkt 1: auch der Stempel-Pfad (keine Evidenz) muss paarfest sein —
+    beide Zeilen der Zelle bekommen last_refresh_attempt."""
+    cid = _company(client, db, email="ts11@example.com")
+    a, f = _pair(db, cid, "sbc")
+
+    no_evidence = _result("sbc", Decimal("120000000"))
+    no_evidence.extract.fy.source_quote = None
+    apply_to_db(db, cid, "sbc", 2025, no_evidence, currency="EUR")
+    db.commit()
+    db.refresh(a)
+    db.refresh(f)
+
+    assert a.numeric_value == Decimal("111")
+    assert f.numeric_value == Decimal("222")
+    assert a.last_refresh_attempt is not None
+    assert f.last_refresh_attempt is not None
+
+
+def test_apply_to_db_never_touches_manual_override(client, db):
+    """Punkt 3: manuell ueberschriebene Zeilen sind authoritative — Wert und
+    Flag bleiben, nur last_refresh_attempt wird gestempelt."""
+    cid = _company(client, db, email="ts12@example.com")
+    manual = CompanyValue(
+        company_id=cid, value_key="revenue", period_type="FY", period_year=2025,
+        numeric_value=Decimal("999"), manually_overridden=True,
+        primary_method="manual", source_name="manual row",
+    )
+    db.add(manual)
+    db.commit()
+
+    apply_to_db(db, cid, "revenue", 2025, _result("revenue", Decimal("50000")), currency="EUR")
+    db.commit()
+    db.refresh(manual)
+
+    assert manual.numeric_value == Decimal("999")
+    assert manual.manually_overridden is True
+    assert manual.primary_method == "manual"
+    assert manual.last_refresh_attempt is not None
+
+
+def test_apply_to_db_never_touches_ir_pdf_row(client, db):
+    """Punkt 3: from_ir_pdf-Zeilen sind authoritative (Invariante wie
+    provider_anchor/routes)."""
+    cid = _company(client, db, email="ts13@example.com")
+    pdf = CompanyValue(
+        company_id=cid, value_key="revenue", period_type="FY", period_year=2025,
+        numeric_value=Decimal("888"), from_ir_pdf=True,
+        primary_method="pdf", source_name="pdf row",
+    )
+    db.add(pdf)
+    db.commit()
+
+    apply_to_db(db, cid, "revenue", 2025, _result("revenue", Decimal("50000")), currency="EUR")
+    db.commit()
+    db.refresh(pdf)
+
+    assert pdf.numeric_value == Decimal("888")
+    assert pdf.from_ir_pdf is True
+    assert pdf.primary_method == "pdf"
+    assert pdf.last_refresh_attempt is not None
+
+
+def test_apply_to_db_partial_null_periods_get_placeholders_and_stamps(client, db):
+    """Punkt 4: null-Perioden werden PRO PERIODE behandelt, nicht nur wenn
+    ALLE Perioden null sind. Bestehende Zeile einer null-Periode wird
+    gestempelt, fehlende bekommen not_found-Platzhalter — der FY-Wert wird
+    normal geschrieben."""
+    cid = _company(client, db, email="ts14@example.com")
+    q1_old = CompanyValue(
+        company_id=cid, value_key="revenue", period_type="Q1", period_year=2025,
+        numeric_value=Decimal("10"), source_name="old q1 row",
+    )
+    db.add(q1_old)
+    db.commit()
+
+    # FY vorhanden, Q1..Q4 null.
+    apply_to_db(db, cid, "revenue", 2025, _result("revenue", Decimal("50000")), currency="EUR")
+    db.commit()
+
+    assert _fy_row(db, cid, "revenue").numeric_value == Decimal("50000")
+    db.refresh(q1_old)
+    assert q1_old.numeric_value == Decimal("10")
+    assert q1_old.last_refresh_attempt is not None
+    for pt in ("Q2", "Q3", "Q4"):
+        ph = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == cid,
+                CompanyValue.value_key == "revenue",
+                CompanyValue.period_type == pt,
+                CompanyValue.period_year == 2025,
+            )
+            .one()
+        )
+        assert ph.numeric_value is None
+        assert ph.primary_method == "not_found"
+
+
+def test_apply_to_db_correction_gate_is_per_period(client, db):
+    """Punkt 5: eine Verifier-Korrektur einer ANDEREN Periode darf eine
+    quote-lose Periode nicht durchrutschen lassen — das Gate zaehlt nur fuer
+    Perioden, die in verdict.corrections wirklich korrigiert wurden."""
+    from scripts.two_stage_research import QuarterValue
+
+    cid = _company(client, db, email="ts15@example.com")
+    r = _result("revenue", Decimal("50000"))
+    # FY: vom Verifier korrigiert (mit Reason), aber ohne source_quote.
+    r.extract.fy.source_quote = None
+    # Q1: Wert ohne Quote, NICHT in corrections -> muss geskippt werden.
+    r.extract.q1 = QuarterValue(value=Decimal("100"), source_quote=None,
+                                source_url=None, is_estimate=False)
+    r.verdict.verdict = "correct"
+    r.verdict.reason = "per-share confusion fixed"
+    r.verdict.corrections = {"FY": Decimal("51000")}
+
+    apply_to_db(db, cid, "revenue", 2025, r, currency="EUR")
+    db.commit()
+
+    fy = _fy_row(db, cid, "revenue")
+    assert fy.numeric_value == Decimal("51000")  # Korrektur der Periode selbst
+    q1 = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == cid,
+            CompanyValue.value_key == "revenue",
+            CompanyValue.period_type == "Q1",
+            CompanyValue.period_year == 2025,
+        )
+        .all()
+    )
+    # Q1 hat weder Quote noch eigene Korrektur -> kein Write (keine Zeile).
+    assert q1 == []

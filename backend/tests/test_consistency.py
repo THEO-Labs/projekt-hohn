@@ -203,3 +203,22 @@ def test_sbc_plausible_not_flagged(client, db):
     validate_cross_metrics(db, cid, 2026)
     db.commit()
     assert _row(db, cid, "sbc", "FY").consistency_flags is None
+
+
+def test_row_lookup_prefers_actual_over_forecast_pair(client, db):
+    """Actual+Forecast koennen als Paar koexistieren (Unique-Index erlaubt
+    2 Zeilen pro Zelle) — _rows_for_year ordnet is_forecast asc, damit
+    _row_of/_value_of deterministisch die Actual-Zeile sehen, egal in
+    welcher Reihenfolge die Zeilen eingefuegt wurden."""
+    from app.values.consistency import _row_of, _rows_for_year, _value_of
+
+    cid = _company(client, db, "c15@example.com")
+    # Forecast-Zeile ZUERST einfuegen — ohne order_by wuerde sie als
+    # "erste passende" gewinnen.
+    _seed(db, cid, "net_income", "FY", 999e6, is_forecast=True)
+    _seed(db, cid, "net_income", "FY", 764e6, is_forecast=False)
+
+    rows = _rows_for_year(db, cid, 2026)
+    assert _value_of(rows, "net_income", "FY") == Decimal("764000000")
+    row = _row_of(rows, "net_income", "FY")
+    assert row is not None and row.is_forecast is False

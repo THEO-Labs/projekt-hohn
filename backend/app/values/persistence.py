@@ -14,6 +14,11 @@ from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
 
 logger = logging.getLogger(__name__)
 
+# Source-Name der roten "manuell recherchieren"-Platzhalter im UI.
+# Geteilt zwischen Gap-Fill (scripts/fill_gaps.py) und dem Two-Stage-
+# Platzhalter-Pfad (scripts/two_stage_research.py).
+NOT_FOUND_SOURCE = "No source found (research attempted)"
+
 
 def normalize_sign(key: str, value: Decimal | None, *, context: str = "") -> Decimal | None:
     """abs() fuer ALWAYS_POSITIVE_KEYS; alle anderen Keys unveraendert.
