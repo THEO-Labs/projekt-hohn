@@ -65,6 +65,11 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "ifrs-full:NoncurrentLeaseLiabilities",
         "ifrs-full:LeaseLiabilities",
     ],
+    "operating_cash_flow": [
+        "ifrs-full:CashFlowsFromUsedInOperatingActivities",
+        "ifrs-full:CashFlowsFromUsedInOperatingActivitiesContinuingOperations",
+        "CashFlowsFromUsedInOperatingActivities",
+    ],
 }
 
 EBITDA_EBIT_CONCEPTS = [
@@ -81,21 +86,29 @@ EBITDA_DA_CONCEPTS = [
     "DepreciationAndAmortisationExpense",
 ]
 
-FCF_OCF_CONCEPTS = [
-    "ifrs-full:CashFlowsFromUsedInOperatingActivities",
-    "CashFlowsFromUsedInOperatingActivities",
+FCF_OCF_CONCEPTS = CONCEPT_MAP["operating_cash_flow"]
+
+# CapEx-Ableitung fuer ESEF: IFRS taggt PP&E- und Intangible-Kaeufe getrennt,
+# manche Filer nutzen ein kombiniertes Extension-Concept. Combined hat
+# Vorrang — dann werden die Einzel-Concepts NICHT zusaetzlich addiert
+# (Doppelzaehlung). Cash-Outflows werden via abs() immer positiv gefuehrt.
+CAPEX_COMBINED_CONCEPTS = [
+    "PurchasesOfIntangibleAssetsPropertyPlantAndEquipmentInvestmentProperty",
 ]
-FCF_CAPEX_CONCEPTS = [
+CAPEX_PPE_CONCEPTS = [
     "ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
     "ifrs-full:PurchaseOfPropertyPlantAndEquipment",
-    "PurchasesOfIntangibleAssetsPropertyPlantAndEquipmentInvestmentProperty",
     "PurchaseOfPropertyPlantAndEquipment",
+]
+CAPEX_INTANGIBLES_CONCEPTS = [
+    "ifrs-full:PurchaseOfIntangibleAssetsClassifiedAsInvestingActivities",
+    "PurchaseOfIntangibleAssets",
 ]
 
 
 class ESEFProvider:
     name = "ESEF (filings.xbrl.org)"
-    supported_keys = set(CONCEPT_MAP.keys()) | {"fcf", "ebitda"}
+    supported_keys = set(CONCEPT_MAP.keys()) | {"fcf", "ebitda", "capex"}
 
     GLEIF_BASE = "https://api.gleif.org/api/v1"
     ESEF_BASE = "https://filings.xbrl.org"
@@ -276,6 +289,29 @@ class ESEFProvider:
                 return value, currency
         return None, None
 
+    def _derive_capex(
+        self, facts: dict, period_year: int
+    ) -> tuple[Decimal | None, str | None, str]:
+        """Gemeinsame CapEx-Ableitung fuer die Keys 'capex' und 'fcf':
+        kombiniertes Concept hat Vorrang (deckt PP&E + Intangibles ab),
+        sonst PP&E + Intangibles. Cash-Outflows via abs() immer positiv.
+        fcf = ocf - capex MUSS strukturell mit dem capex-Key konsistent
+        sein — deshalb genau EINE Ableitung fuer beide.
+
+        Returns (value, currency, note); value None wenn kein PP&E-/
+        Combined-Concept getaggt ist.
+        """
+        combined, cur = self._find_fact_for_period(facts, CAPEX_COMBINED_CONCEPTS, period_year)
+        if combined is not None:
+            return abs(combined), cur, "kombiniertes Concept (PP&E + Intangibles)"
+        ppe, cur = self._find_fact_for_period(facts, CAPEX_PPE_CONCEPTS, period_year)
+        if ppe is None:
+            return None, None, ""
+        intang, _ = self._find_fact_for_period(facts, CAPEX_INTANGIBLES_CONCEPTS, period_year)
+        if intang is not None:
+            return abs(ppe) + abs(intang), cur, "PP&E + Intangibles"
+        return abs(ppe), cur, "PP&E (Intangibles nicht getaggt)"
+
     def fetch(
         self,
         ticker: str,
@@ -311,15 +347,28 @@ class ESEFProvider:
         source_link = f"{self.ESEF_BASE}{viewer_url}" if viewer_url else None
 
         if key == "fcf":
+            # DIESELBE CapEx-Ableitung wie beim capex-Key — sonst verletzt
+            # der Provider selbst die Identitaet fcf = ocf - abs(capex).
             ocf, cur = self._find_fact_for_period(facts, FCF_OCF_CONCEPTS, period_year)
-            capex, _ = self._find_fact_for_period(facts, FCF_CAPEX_CONCEPTS, period_year)
+            capex, _, _ = self._derive_capex(facts, period_year)
             if ocf is None or capex is None:
                 return None
             return ProviderResult(
-                value=ocf - abs(capex),
+                value=ocf - capex,
                 source_name=f"ESEF FY{period_year} (FCF = OCF - CapEx)",
                 source_link=source_link,
                 currency=cur if "fcf" in CURRENCY_KEYS else None,
+            )
+
+        if key == "capex":
+            value, cur, note = self._derive_capex(facts, period_year)
+            if value is None:
+                return None
+            return ProviderResult(
+                value=value,
+                source_name=f"ESEF FY{period_year} (CapEx = {note})",
+                source_link=source_link,
+                currency=cur if "capex" in CURRENCY_KEYS else None,
             )
 
         if key == "ebitda":
