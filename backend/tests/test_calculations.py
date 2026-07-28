@@ -193,3 +193,22 @@ def test_actual_return_from_next_year_mcap():
     )
     # (1200 / 1000 - 1) * 100 = 20%
     assert result["actual_return"] == Decimal("20")
+
+
+def test_net_buyback_with_only_sbc_defaults_buybacks_to_zero():
+    """Firma ohne Buyback-Programm: statt Strich soll 0 - sbc stehen."""
+    result, _adj = calculate_fy(
+        {"sbc": Decimal("100")},
+        None,
+        {"market_cap": Decimal("10000")},
+    )
+    assert result["net_buyback"] == Decimal("-100")
+
+
+def test_net_buyback_with_only_buybacks_defaults_sbc_to_zero():
+    result, _adj = calculate_fy(
+        {"buyback_volume": Decimal("500")},
+        None,
+        {"market_cap": Decimal("10000")},
+    )
+    assert result["net_buyback"] == Decimal("500")

@@ -135,8 +135,10 @@ def calculate_fy(
 
     buyback_vol = current.get("buyback_volume")
     sbc = current.get("sbc")
-    if buyback_vol is not None and sbc is not None:
-        results["net_buyback"] = buyback_vol - sbc
+    # Fehlende Komponente = 0, solange mindestens eine belegt ist: Firmen
+    # ohne Buyback-Programm sollen 0 - sbc zeigen statt einer leeren Zelle.
+    if buyback_vol is not None or sbc is not None:
+        results["net_buyback"] = (buyback_vol or Decimal("0")) - (sbc or Decimal("0"))
 
     results["sbc_yield"] = _safe_div_pct(sbc, market_cap)
     results["net_buyback_yield"] = _safe_div_pct(results["net_buyback"], market_cap)
