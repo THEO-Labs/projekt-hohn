@@ -182,3 +182,44 @@ def derive_net_debt_from_components(db: Session, company_id: UUID, year: int) ->
         written += 1
     db.flush()
     return written
+
+
+def derive_missing_ocf(db: Session, company_id: UUID, year: int) -> int:
+    """Fehlende operating_cash_flow-Zeilen aus der Identitaet ocf = fcf + capex.
+
+    NUR fuer fehlende Zellen (nie ueberschreiben) — wenn der Extractor keine
+    zitierfaehige OCF-Quelle findet, ist die deterministische Ableitung aus
+    den vorhandenen fcf/capex-Zeilen besser als eine leere Zelle.
+    """
+    rows = _rows_for_year(db, company_id, year)
+    written = 0
+    for pt in ("FY",) + _Q_TYPES:
+        existing = _row_of(rows, "operating_cash_flow", pt)
+        if existing is not None and existing.numeric_value is not None:
+            continue
+        fcf_row = _row_of(rows, "fcf", pt)
+        capex_row = _row_of(rows, "capex", pt)
+        if (fcf_row is None or fcf_row.numeric_value is None
+                or capex_row is None or capex_row.numeric_value is None):
+            continue
+        derived = fcf_row.numeric_value + abs(capex_row.numeric_value)
+        now = datetime.now(timezone.utc)
+        target = existing or CompanyValue(
+            id=uuid4(), company_id=company_id, value_key="operating_cash_flow",
+            period_type=pt, period_year=year,
+        )
+        if existing is None:
+            db.add(target)
+        target.numeric_value = derived
+        target.source_name = (
+            f"Derived (identity): fcf {fcf_row.numeric_value} + capex "
+            f"{abs(capex_row.numeric_value)} = {derived}"
+        )[:4096]
+        target.primary_method = "calculated"
+        target.is_forecast = bool(fcf_row.is_forecast or capex_row.is_forecast)
+        target.currency = fcf_row.currency or target.currency
+        target.fetched_at = now
+        target.last_refresh_attempt = now
+        written += 1
+    db.flush()
+    return written

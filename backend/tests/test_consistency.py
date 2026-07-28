@@ -127,3 +127,26 @@ def test_derive_net_debt_skips_when_component_missing(client, db):
     derive_net_debt_from_components(db, cid, 2026)
     db.commit()
     assert _row(db, cid, "net_debt", "FY").numeric_value == Decimal("5475000000")
+
+
+def test_derive_missing_ocf_from_fcf_and_capex(client, db):
+    from app.values.consistency import derive_missing_ocf
+    cid = _company(client, db, "c8@example.com")
+    _seed(db, cid, "fcf", "FY", 2200e6)
+    _seed(db, cid, "capex", "FY", 500e6)
+    derive_missing_ocf(db, cid, 2026)
+    db.commit()
+    row = _row(db, cid, "operating_cash_flow", "FY")
+    assert row.numeric_value == Decimal("2700000000")
+    assert row.primary_method == "calculated"
+
+
+def test_derive_missing_ocf_never_overwrites(client, db):
+    from app.values.consistency import derive_missing_ocf
+    cid = _company(client, db, "c9@example.com")
+    _seed(db, cid, "fcf", "FY", 2200e6)
+    _seed(db, cid, "capex", "FY", 500e6)
+    _seed(db, cid, "operating_cash_flow", "FY", 2518e6)
+    derive_missing_ocf(db, cid, 2026)
+    db.commit()
+    assert _row(db, cid, "operating_cash_flow", "FY").numeric_value == Decimal("2518000000")

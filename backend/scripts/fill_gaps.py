@@ -102,13 +102,18 @@ def main() -> int:
                 print(f"[{i}/{len(todo)}] {c.ticker} {key} {year} FAILED: {str(e)[:150]}", flush=True)
 
         # Nachlauf pro beruehrter Firma: net_debt-Ableitung, Konsistenz, Recalc.
-        from app.values.consistency import derive_net_debt_from_components, validate_cross_metrics
+        from app.values.consistency import (
+            derive_missing_ocf,
+            derive_net_debt_from_components,
+            validate_cross_metrics,
+        )
         from app.values.routes import _run_and_persist_calculations
 
         for c in touched_companies.values():
             try:
                 for year in years:
                     derive_net_debt_from_components(db, c.id, year)
+                    derive_missing_ocf(db, c.id, year)
                     validate_cross_metrics(db, c.id, year)
                     _run_and_persist_calculations(db, c.id, "FY", year)
                 db.commit()

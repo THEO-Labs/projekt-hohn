@@ -1267,11 +1267,13 @@ def refresh_company_values(
         # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
         if use_two_stage_fy and payload.period_year is not None:
             from app.values.consistency import (
+                derive_missing_ocf,
                 derive_net_debt_from_components,
                 validate_cross_metrics,
             )
             try:
                 derive_net_debt_from_components(db, company_id, payload.period_year)
+                derive_missing_ocf(db, company_id, payload.period_year)
                 validate_cross_metrics(db, company_id, payload.period_year)
                 db.commit()
             except Exception as e:
