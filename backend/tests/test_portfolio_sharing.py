@@ -49,3 +49,20 @@ def test_stranger_still_blocked(client, db):
     assert client.get("/api/portfolios").json() == []
     r = client.get(f"/api/portfolios/{pid}/companies")
     assert r.status_code == 404
+
+
+def test_member_can_read_company_detail(client, db):
+    from tests.test_values import _seed_catalog
+    _seed_catalog(db)
+    _user(db, "owner3@example.com")
+    member = _user(db, "member3@example.com")
+    _login(client, "owner3@example.com")
+    pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
+    cid = client.post(f"/api/portfolios/{pid}/companies",
+                      json={"name": "TestCo", "ticker": "TST", "currency": "EUR"}).json()["id"]
+    db.add(PortfolioMember(portfolio_id=pid, user_id=member.id))
+    db.commit()
+
+    _login(client, "member3@example.com")
+    r = client.get(f"/api/companies/{cid}/detail")
+    assert r.status_code == 200

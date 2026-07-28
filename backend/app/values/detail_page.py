@@ -310,7 +310,8 @@ def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     portfolio = db.query(Portfolio).filter(Portfolio.id == company.portfolio_id).one_or_none()
-    if not portfolio or portfolio.owner_user_id != user.id:
+    from app.portfolios.models import has_portfolio_access
+    if not portfolio or not has_portfolio_access(db, user.id, portfolio):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
     return company
 
