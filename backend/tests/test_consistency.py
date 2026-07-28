@@ -173,3 +173,33 @@ def test_derive_sbc_quarters_keeps_reported_quarters(client, db):
     db.commit()
     assert _row(db, cid, "sbc", "Q1").numeric_value == Decimal("40000000")
     assert _row(db, cid, "sbc", "Q2").numeric_value == Decimal("25000000")
+
+
+def test_sbc_implausibly_low_flagged(client, db):
+    """SBC-Teilkomponenten-Detektor: 4.1M bei 24 Mrd Umsatz (adidas-Fall)
+    ist fast sicher eine uebersehene Teilsumme -> Flag."""
+    cid = _company(client, db, "c12@example.com")
+    _seed(db, cid, "revenue", "FY", 24000e6)
+    _seed(db, cid, "sbc", "FY", 4.1e6)
+    validate_cross_metrics(db, cid, 2026)
+    db.commit()
+    assert "sbc_implausibly_low" in (_row(db, cid, "sbc", "FY").consistency_flags or "")
+
+
+def test_sbc_zero_not_flagged(client, db):
+    """Explizite 0 (Familien-Konzerne ohne SBC) ist legitim — kein Flag."""
+    cid = _company(client, db, "c13@example.com")
+    _seed(db, cid, "revenue", "FY", 24000e6)
+    _seed(db, cid, "sbc", "FY", 0)
+    validate_cross_metrics(db, cid, 2026)
+    db.commit()
+    assert _row(db, cid, "sbc", "FY").consistency_flags is None
+
+
+def test_sbc_plausible_not_flagged(client, db):
+    cid = _company(client, db, "c14@example.com")
+    _seed(db, cid, "revenue", "FY", 24000e6)
+    _seed(db, cid, "sbc", "FY", 83.6e6)
+    validate_cross_metrics(db, cid, 2026)
+    db.commit()
+    assert _row(db, cid, "sbc", "FY").consistency_flags is None

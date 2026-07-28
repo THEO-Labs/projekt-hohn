@@ -40,6 +40,19 @@ unit: Berichtswaehrung der Firma — absolute Waehrung
 - FALSCH: neuer Grant von 1,1 Mrd als SBC eintragen (vested erst ueber 3-4 Jahre)
 - RICHTIG: **P&L-Aufwand der Periode** (typisch 25-33% des Grant-Values pro Jahr)
 
+**SUMMATIONS-PROTOKOLL (haeufigster Fehler: nur EINE Teilkomponente)**:
+- SBC = SUMME ALLER aktienbasierten Komponenten der IFRS-2-Note. Typisches
+  deutsches Muster: LTIP/RSU-Aufwand + ESOP Investment-Shares + Matching-
+  Shares + sonstige Aktienplaene (+ ggf. Sozialabgaben auf Awards).
+- FALSCH (adidas-Fall): nur "Costs for the LTIP 4.1M" uebernehmen, obwohl
+  die Note weitere Plaene nennt (real: 70 + 4.3 + 3.3 + 6 = 83.6M).
+- PFLICHT: source_quote zeigt die Addition ("70M LTIP + 4.3M ESOP inv +
+  3.3M matching + 6M other = 83.6M"). Wenn dein Wert exakt dem Aufwand
+  EINES Plans entspricht und die Note mehrere Plaene erwaehnt: du hast
+  Komponenten uebersehen — nochmal lesen.
+- RED FLAG: SBC < 0.05% vom Umsatz bei einem Grosskonzern ist fast immer
+  eine uebersehene Teilsumme (ausser die Note bestaetigt explizit ~0).
+
 **Cash-settled vs Equity-settled**:
 - Beide sind IFRS 2 Aufwand. **Beide einbeziehen**.
 - Manche Firmen reporten getrennt (Henkel: "LTI + LTP" beide)

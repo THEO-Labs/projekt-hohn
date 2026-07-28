@@ -123,6 +123,22 @@ def validate_cross_metrics(db: Session, company_id: UUID, year: int) -> list[str
         if mismatch:
             active.append("eps_ni_mismatch")
 
+    # 4. SBC-Teilkomponenten-Detektor: non-zero aber winzig relativ zum
+    #    Umsatz = fast sicher nur EIN Plan aus der IFRS-2-Note uebernommen
+    #    (adidas: 4.1M LTIP statt 83.6M Gesamtsumme). Explizite 0 (Familien-
+    #    Konzerne ohne SBC) ist legitim und wird nicht geflaggt.
+    sbc_row = _row_of(rows, "sbc", "FY")
+    rev = _value_of(rows, "revenue", "FY")
+    if (
+        sbc_row is not None and sbc_row.numeric_value is not None
+        and sbc_row.numeric_value > 0
+        and rev is not None and rev > Decimal("5000000000")
+    ):
+        mismatch = sbc_row.numeric_value / rev < Decimal("0.0005")
+        _set_flag(sbc_row, "sbc_implausibly_low", mismatch)
+        if mismatch:
+            active.append("sbc_implausibly_low")
+
     if active:
         logger.warning("consistency: %s/%s flags: %s", company_id, year, ",".join(active))
     return active
