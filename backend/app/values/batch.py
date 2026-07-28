@@ -27,18 +27,25 @@ MAX_PARALLEL_COMPANIES = 3
 @dataclass
 class BatchState:
     status: str = "running"  # running | done
+    # Abschnitt des Batch-Laufs: companies | gap_fill | report | done
+    phase: str = "companies"
     total: int = 0
     done: int = 0
     failed: list[str] = field(default_factory=list)
     current: list[str] = field(default_factory=list)
     started_at: str = ""
     finished_at: str | None = None
+    # Vollstaendigkeits-Report ({"years": [...], "per_key": {key: {...}}}),
+    # gesetzt am Ende des Laufs.
+    report: dict | None = None
 
     def to_dict(self) -> dict:
         return {
-            "status": self.status, "total": self.total, "done": self.done,
+            "status": self.status, "phase": self.phase,
+            "total": self.total, "done": self.done,
             "failed": self.failed, "current": self.current,
             "started_at": self.started_at, "finished_at": self.finished_at,
+            "report": self.report,
         }
 
 
@@ -112,6 +119,63 @@ def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID) -> dict:
                 if ticker in state.current:
                     state.current.remove(ticker)
 
+    def _finalize() -> None:
+        """Batch-Abschluss: Gap-Fill + not_found-Platzhalter + Report.
+
+        Fehler werden geloggt, aber der Batch darf hier nie crashen —
+        der Firmen-Recompute ist zu diesem Zeitpunkt bereits durch.
+        """
+        from scripts import fill_gaps
+
+        years = [year - 1, year]
+
+        with _LOCK:
+            state.phase = "gap_fill"
+        db = SessionLocal()
+        try:
+            # Getrennte try/except-Bloecke: die not_found-Platzhalter muessen
+            # auch dann geschrieben werden, wenn der Gap-Fill wirft.
+            try:
+                import os as _os
+                from scripts.two_stage_research import CostTracker
+                # Budget-Deckel fuer die automatische Gap-Fill-Phase (Review-
+                # Befund: sonst unbegrenzte LLM-Ausgaben bei vielen Luecken).
+                cap = float(_os.environ.get("BATCH_GAPFILL_MAX_USD", "50"))
+                stats = fill_gaps.fill_portfolio_gaps(
+                    db, portfolio_id, years,
+                    progress_cb=lambda msg: logger.info("batch gap-fill: %s", msg),
+                    cost_tracker=CostTracker(max_usd=cap),
+                )
+                logger.info("batch gap-fill stats: %s", stats)
+            except Exception:
+                logger.exception("batch: gap-fill failed for portfolio %s", portfolio_id)
+                db.rollback()
+            try:
+                placeholders = fill_gaps.write_not_found_placeholders(db, portfolio_id, years)
+                logger.info("batch: %d not_found placeholders written", placeholders)
+            except Exception:
+                logger.exception("batch: placeholder write failed for portfolio %s", portfolio_id)
+                db.rollback()
+        finally:
+            db.close()
+
+        with _LOCK:
+            state.phase = "report"
+        db = SessionLocal()
+        try:
+            report = fill_gaps.build_completeness_report(db, portfolio_id, years)
+            with _LOCK:
+                state.report = report
+            for key, s in report["per_key"].items():
+                logger.info(
+                    "batch report: %s expected=%d with_value=%d not_found=%d excluded=%d",
+                    key, s["expected"], s["with_value"], s["not_found"], s["excluded"],
+                )
+        except Exception:
+            logger.exception("batch: report phase failed for portfolio %s", portfolio_id)
+        finally:
+            db.close()
+
     def _run() -> None:
         with ThreadPoolExecutor(max_workers=MAX_PARALLEL_COMPANIES) as pool:
             futures = {}
@@ -128,8 +192,10 @@ def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID) -> dict:
                     with _LOCK:
                         state.failed.append(ticker)
                     logger.error("batch: %s FAILED: %s", ticker, e)
+        _finalize()
         with _LOCK:
             state.status = "done"
+            state.phase = "done"
             state.finished_at = datetime.now(timezone.utc).isoformat()
         logger.info("batch: portfolio %s finished, %d/%d ok, failed: %s",
                     portfolio_id, state.total - len(state.failed), state.total, state.failed)
