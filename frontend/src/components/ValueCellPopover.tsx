@@ -33,6 +33,9 @@ function cellBadge(cell: {
   if (pm === "two_stage_insufficient") {
     return { text: "Verified (weak)", dot: "bg-yellow-500", text_cls: "text-yellow-800" };
   }
+  if (pm === "not_found") {
+    return { text: "Nicht gefunden — manuell recherchieren", dot: "bg-red-500", text_cls: "text-red-700" };
+  }
   if (cell.manually_overridden || pm === "manual") {
     return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
   }
@@ -433,6 +436,8 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
 // Primary marker: is_forecast (Actual vs Estimate). primary_method is only
 // used as a secondary discriminator for calculated/manual overrides.
 export function cellColorClass(cell: Cell | undefined): string {
+  // Recherche lief, fand aber nichts: rot markieren = manuell raussuchen.
+  if (cell?.primary_method === "not_found" && cell.value === null) return "text-red-600 font-semibold";
   if (!cell || cell.value === null) return "text-muted-foreground/60";
   if (cell.is_gaap_fallback) return "text-muted-foreground/70";
   if (cell.manually_overridden || cell.primary_method === "manual") return "text-amber-700";

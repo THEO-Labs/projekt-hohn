@@ -223,3 +223,38 @@ def derive_missing_ocf(db: Session, company_id: UUID, year: int) -> int:
         written += 1
     db.flush()
     return written
+
+
+def derive_sbc_quarters(db: Session, company_id: UUID, year: int) -> int:
+    """SBC-Quartale fuer Annual-only-Reporter: FY gleichmaessig auf Q1-Q4
+    verteilen (FY/4). Kunden-Feedback: leere SBC-Quartale bei vorhandenem
+    FY-Wert. Nur fehlende Zellen; berichtete Quartale bleiben unberuehrt."""
+    rows = _rows_for_year(db, company_id, year)
+    fy_row = _row_of(rows, "sbc", "FY")
+    if fy_row is None or fy_row.numeric_value is None:
+        return 0
+    quarter_val = fy_row.numeric_value / Decimal("4")
+    now = datetime.now(timezone.utc)
+    written = 0
+    for pt in _Q_TYPES:
+        existing = _row_of(rows, "sbc", pt)
+        if existing is not None and existing.numeric_value is not None:
+            continue
+        target = existing or CompanyValue(
+            id=uuid4(), company_id=company_id, value_key="sbc",
+            period_type=pt, period_year=year,
+        )
+        if existing is None:
+            db.add(target)
+        target.numeric_value = quarter_val
+        target.source_name = (
+            f"Convention: annual-only SBC disclosure, FY {fy_row.numeric_value} / 4 = {quarter_val}"
+        )[:4096]
+        target.primary_method = "calculated"
+        target.is_forecast = bool(fy_row.is_forecast)
+        target.currency = fy_row.currency or target.currency
+        target.fetched_at = now
+        target.last_refresh_attempt = now
+        written += 1
+    db.flush()
+    return written

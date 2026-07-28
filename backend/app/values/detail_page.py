@@ -397,14 +397,24 @@ def get_company_detail(
     def _derived_net_buyback_row(year: int | None) -> QuarterlyRow:
         """net_buyback = buyback_volume - sbc, pro Quartal."""
         def cell_for(q: str) -> ValueRef:
+            from decimal import Decimal as _D
             bv = quarterly_rows.get(("buyback_volume", q, year))
             s = quarterly_rows.get(("sbc", q, year))
-            if bv is None or s is None or bv.numeric_value is None or s.numeric_value is None:
+            bv_val = bv.numeric_value if bv is not None else None
+            s_val = s.numeric_value if s is not None else None
+            # Eine belegte Komponente reicht — fehlende zaehlt als 0 (Kunden-
+            # Feedback: Tabelle war leer obwohl Buybacks vorhanden).
+            if bv_val is None and s_val is None:
                 return ValueRef()
-            bv_adj = bv.numeric_value_adjusted if bv.numeric_value_adjusted is not None else bv.numeric_value
-            s_adj = s.numeric_value_adjusted if s.numeric_value_adjusted is not None else s.numeric_value
+            _zero = _D("0")
+            bv = bv or ValueRef()
+            s = s or ValueRef()
+            bv_num = bv_val if bv_val is not None else _zero
+            s_num = s_val if s_val is not None else _zero
+            bv_adj = bv.numeric_value_adjusted if getattr(bv, "numeric_value_adjusted", None) is not None else bv_num
+            s_adj = s.numeric_value_adjusted if getattr(s, "numeric_value_adjusted", None) is not None else s_num
             return ValueRef(
-                value=bv.numeric_value - s.numeric_value,
+                value=bv_num - s_num,
                 adjusted=bv_adj - s_adj if bv_adj is not None and s_adj is not None else None,
                 source_name=f"Derived: Buyback Volume ({bv.primary_method or '?'}) − SBC ({s.primary_method or '?'})",
                 fetched_at=max(x for x in (bv.fetched_at, s.fetched_at) if x is not None) if any((bv.fetched_at, s.fetched_at)) else None,

@@ -105,6 +105,7 @@ def main() -> int:
         from app.values.consistency import (
             derive_missing_ocf,
             derive_net_debt_from_components,
+            derive_sbc_quarters,
             validate_cross_metrics,
         )
         from app.values.routes import _run_and_persist_calculations
@@ -114,6 +115,7 @@ def main() -> int:
                 for year in years:
                     derive_net_debt_from_components(db, c.id, year)
                     derive_missing_ocf(db, c.id, year)
+                    derive_sbc_quarters(db, c.id, year)
                     validate_cross_metrics(db, c.id, year)
                     _run_and_persist_calculations(db, c.id, "FY", year)
                 db.commit()

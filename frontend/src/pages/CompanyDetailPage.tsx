@@ -119,7 +119,8 @@ const SECTIONS: { title: string; rows: MetricRowSpec[] }[] = [
     title: "Other Multiples",
     rows: [
       { label: "PEG", key: null, computed: computePeg, format: num },
-      { label: "PS Ratio", key: null, format: (_v) => "—" },
+      { label: "PS Ratio", key: "ps_ratio", format: num },
+      { label: "Net Debt / Op. Cashflow", key: "net_debt_to_ocf", format: num },
     ],
   },
 ];
@@ -221,12 +222,12 @@ function MetricsBody({
           </div>
           <div className="flex items-center justify-end gap-1.5 text-[10px] font-semibold tracking-wider uppercase text-sky-700">
             <span className="h-2 w-2 rounded-full bg-sky-500" />
-            GAAP
+            IFRS
           </div>
         </div>
         <div className="flex items-center justify-end gap-1.5 text-[10px] font-semibold tracking-wider uppercase text-emerald-700">
           <span className="h-2 w-2 rounded-full bg-emerald-500" />
-          Non-GAAP adjusted
+          Adjusted
         </div>
       </div>
       <div className="px-6 py-3">
@@ -338,8 +339,9 @@ function ClickableCell({
   const rawLabel = fmt(cell.value);
   const label = cell.is_gaap_fallback && cell.value !== null ? `≈ ${rawLabel}` : rawLabel;
   const hasMeta =
-    cell.value !== null &&
-    (cell.source_name || cell.source_link || cell.formula || cell.primary_method || cell.is_gaap_fallback);
+    (cell.value !== null &&
+      (cell.source_name || cell.source_link || cell.formula || cell.primary_method || cell.is_gaap_fallback)) ||
+    cell.primary_method === "not_found";
   const clickable = hasMeta;
   return (
     <td
@@ -354,7 +356,13 @@ function ClickableCell({
             }
           : undefined
       }
-      title={cell.is_gaap_fallback ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert" : undefined}
+      title={
+        cell.primary_method === "not_found"
+          ? "Recherche ohne Fund — Wert manuell raussuchen"
+          : cell.is_gaap_fallback
+            ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert"
+            : undefined
+      }
     >
       {label}
     </td>
@@ -366,10 +374,12 @@ function QuarterlyBlock({
   variant,
   showAnnual = true,
   onOpenCell,
+  unit,
 }: {
   data: QuarterlyBlockData;
   variant: "gaap" | "adjusted";
   showAnnual?: boolean;
+  unit?: string;
   onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   const [current, prior] = data.rows;
@@ -389,10 +399,11 @@ function QuarterlyBlock({
   const head = "px-1.5 py-1 text-[10px] font-semibold tracking-wide uppercase text-muted-foreground text-right";
 
   const dotCls = variant === "gaap" ? "bg-sky-500" : "bg-emerald-500";
-  const label = variant === "gaap" ? "GAAP" : "Non-GAAP adjusted";
+  const label = variant === "gaap" ? "IFRS" : "Adjusted";
   const labelCls = variant === "gaap" ? "text-sky-700" : "text-emerald-700";
 
-  const defaultFmt = (v: number | null) => formatNumber(v, 0);
+  const isPerShare = !!unit && !unit.includes("millions");
+  const defaultFmt = (v: number | null) => formatNumber(v, isPerShare ? 2 : 0);
   const pctFmt = (v: number | null) => formatPercent(v, 1);
 
   return (
@@ -463,7 +474,9 @@ function QuarterlyDualBody({
   adjusted,
   showAnnual = true,
   onOpenCell,
+  unit,
 }: {
+  unit?: string;
   gaap: QuarterlyBlockData;
   adjusted: QuarterlyBlockData;
   showAnnual?: boolean;
@@ -471,8 +484,8 @@ function QuarterlyDualBody({
 }) {
   return (
     <div className={`${HALVES} px-6 py-3`}>
-      <QuarterlyBlock data={gaap} variant="gaap" showAnnual={showAnnual} onOpenCell={onOpenCell} />
-      <QuarterlyBlock data={adjusted} variant="adjusted" showAnnual={showAnnual} onOpenCell={onOpenCell} />
+      <QuarterlyBlock data={gaap} variant="gaap" showAnnual={showAnnual} onOpenCell={onOpenCell} unit={unit} />
+      <QuarterlyBlock data={adjusted} variant="adjusted" showAnnual={showAnnual} onOpenCell={onOpenCell} unit={unit} />
     </div>
   );
 }
@@ -495,7 +508,7 @@ function BalanceSheetBlock({
   const head = "px-1.5 py-1 text-[10px] font-semibold tracking-wide uppercase text-muted-foreground text-right";
 
   const dotCls = variant === "gaap" ? "bg-sky-500" : "bg-emerald-500";
-  const label = variant === "gaap" ? "GAAP" : "Non-GAAP adjusted";
+  const label = variant === "gaap" ? "IFRS" : "Adjusted";
   const labelCls = variant === "gaap" ? "text-sky-700" : "text-emerald-700";
 
   return (
@@ -866,6 +879,16 @@ function CompanyDetailContent({
           </div>
         </CollapsibleCard>
 
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+          <span className="font-semibold uppercase tracking-wide text-[10px]">Legende</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-foreground" /> Actual (berichtet)</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-500" /> Estimate</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-violet-500" /> Calculated (Formel)</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> Manuell</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Verified (2-Stage)</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500" /> Nicht gefunden — manuell recherchieren</span>
+        </div>
+
         <CollapsibleCard id={METRICS_ID} title="Overview metrics">
           <MetricsBody rowsByKey={rowsByKey} fyYear={fyYear} onOpenCell={openCell} />
         </CollapsibleCard>
@@ -882,6 +905,7 @@ function CompanyDetailContent({
               adjusted={s.adjusted}
               showAnnual={s.showAnnual}
               onOpenCell={openCell}
+              unit={s.unit}
             />
           </CollapsibleCard>
         ))}

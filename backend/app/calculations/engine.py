@@ -28,6 +28,7 @@ FY_CALC_KEYS = {
     "ni_growth",
     "net_debt_change",
     "net_debt_change_pct",
+    "net_debt_to_ocf",
     "dividend_yield",
     "actual_return",
     "pe_ratio",
@@ -321,6 +322,11 @@ def calculate_fy(
     pe_ratio = results.get("pe_ratio")
     if h_return_d is not None and pe_ratio is not None and h_return_d > 0:
         results["h_peg"] = pe_ratio / h_return_d
+    # Net Debt / Operativer Cashflow (Kunden-Feedback: drittes Multiple).
+    # Negativ = Net-Cash-Position relativ zum OCF; nur bei positivem OCF sinnvoll.
+    ocf_for_ratio = current.get("operating_cash_flow")
+    if net_debt is not None and ocf_for_ratio is not None and ocf_for_ratio > 0:
+        results["net_debt_to_ocf"] = net_debt / ocf_for_ratio
     h_return_d_adj = results_adjusted.get("hohn_return_detailed")
     pe_ratio_adj = results_adjusted.get("pe_ratio")
     pe_for_peg_adj = pe_ratio_adj if pe_ratio_adj is not None else pe_ratio

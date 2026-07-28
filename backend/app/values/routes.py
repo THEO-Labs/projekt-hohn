@@ -1269,11 +1269,13 @@ def refresh_company_values(
             from app.values.consistency import (
                 derive_missing_ocf,
                 derive_net_debt_from_components,
+                derive_sbc_quarters,
                 validate_cross_metrics,
             )
             try:
                 derive_net_debt_from_components(db, company_id, payload.period_year)
                 derive_missing_ocf(db, company_id, payload.period_year)
+                derive_sbc_quarters(db, company_id, payload.period_year)
                 validate_cross_metrics(db, company_id, payload.period_year)
                 db.commit()
             except Exception as e:

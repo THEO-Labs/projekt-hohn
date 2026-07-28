@@ -212,3 +212,22 @@ def test_net_buyback_with_only_buybacks_defaults_sbc_to_zero():
         {"market_cap": Decimal("10000")},
     )
     assert result["net_buyback"] == Decimal("500")
+
+
+def test_net_debt_to_ocf_ratio():
+    result, _adj = calculate_fy(
+        {"net_debt": Decimal("4681"), "operating_cash_flow": Decimal("2972")},
+        None,
+        {"market_cap": Decimal("10000")},
+    )
+    assert result["net_debt_to_ocf"] is not None
+    assert abs(result["net_debt_to_ocf"] - Decimal("1.575")) < Decimal("0.01")
+
+
+def test_net_debt_to_ocf_requires_positive_ocf():
+    result, _adj = calculate_fy(
+        {"net_debt": Decimal("4681"), "operating_cash_flow": Decimal("-500")},
+        None,
+        {},
+    )
+    assert result.get("net_debt_to_ocf") is None

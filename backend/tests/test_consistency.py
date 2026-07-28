@@ -150,3 +150,26 @@ def test_derive_missing_ocf_never_overwrites(client, db):
     derive_missing_ocf(db, cid, 2026)
     db.commit()
     assert _row(db, cid, "operating_cash_flow", "FY").numeric_value == Decimal("2518000000")
+
+
+def test_derive_sbc_quarters_splits_fy_evenly(client, db):
+    from app.values.consistency import derive_sbc_quarters
+    cid = _company(client, db, "c10@example.com")
+    _seed(db, cid, "sbc", "FY", 94e6, is_forecast=False)
+    derive_sbc_quarters(db, cid, 2026)
+    db.commit()
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        row = _row(db, cid, "sbc", q)
+        assert row.numeric_value == Decimal("23500000")
+        assert row.primary_method == "calculated"
+
+
+def test_derive_sbc_quarters_keeps_reported_quarters(client, db):
+    from app.values.consistency import derive_sbc_quarters
+    cid = _company(client, db, "c11@example.com")
+    _seed(db, cid, "sbc", "FY", 100e6)
+    _seed(db, cid, "sbc", "Q1", 40e6)
+    derive_sbc_quarters(db, cid, 2026)
+    db.commit()
+    assert _row(db, cid, "sbc", "Q1").numeric_value == Decimal("40000000")
+    assert _row(db, cid, "sbc", "Q2").numeric_value == Decimal("25000000")

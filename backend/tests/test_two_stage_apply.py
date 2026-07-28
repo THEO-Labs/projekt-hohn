@@ -80,6 +80,47 @@ def test_apply_to_db_skip_stamps_refresh_attempt(client, db):
     assert row.last_refresh_attempt is not None
 
 
+def test_apply_to_db_all_null_creates_not_found_placeholders(client, db):
+    """Recherche ohne Fund und ohne bestehende Zeilen: Platzhalter mit
+    primary_method='not_found', damit das UI die Zelle rot markieren kann
+    (= manuell raussuchen)."""
+    cid = _company(client, db, email="ts6@example.com")
+    empty = _result("sbc", Decimal("1"))
+    empty.extract.fy = None
+    apply_to_db(db, cid, "sbc", 2024, empty, currency="EUR")
+    db.commit()
+
+    rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == cid,
+            CompanyValue.value_key == "sbc",
+            CompanyValue.period_year == 2024,
+        )
+        .all()
+    )
+    assert len(rows) == 5
+    assert all(r.numeric_value is None for r in rows)
+    assert all(r.primary_method == "not_found" for r in rows)
+    assert all(r.last_refresh_attempt is not None for r in rows)
+
+
+def test_successful_write_replaces_not_found_placeholder(client, db):
+    cid = _company(client, db, email="ts7@example.com")
+    placeholder = CompanyValue(
+        company_id=cid, value_key="revenue", period_type="FY", period_year=2025,
+        numeric_value=None, primary_method="not_found", source_name="No source found",
+    )
+    db.add(placeholder)
+    db.commit()
+
+    apply_to_db(db, cid, "revenue", 2025, _result("revenue", Decimal("50000")), currency="EUR")
+    db.commit()
+    row = _fy_row(db, cid, "revenue")
+    assert row.numeric_value == Decimal("50000")
+    assert row.primary_method.startswith("two_stage")
+
+
 def test_apply_to_db_all_null_result_stamps_existing_rows(client, db):
     """Extractor liefert alle Perioden null (sbc-Fall im dritten adidas-Lauf):
     apply_to_db darf nicht lautlos nichts tun — bestehende Zeilen muessen den

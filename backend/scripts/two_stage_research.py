@@ -1099,7 +1099,9 @@ def apply_to_db(
     periods = _period_key_for_result(result)
     if not periods:
         # Extractor lieferte alle Perioden null (sbc-Fall): NICHT lautlos
-        # nichts tun — alle bestehenden Zeilen als versucht stempeln.
+        # nichts tun — bestehende Zeilen als versucht stempeln und fuer
+        # fehlende Perioden not_found-Platzhalter anlegen, damit das UI die
+        # Zelle rot markieren kann (= manuell raussuchen).
         now = datetime.now(timezone.utc)
         stale_rows = db.execute(select(CompanyValue).where(
             CompanyValue.company_id == company_id,
@@ -1108,6 +1110,18 @@ def apply_to_db(
         )).scalars().all()
         for row in stale_rows:
             row.last_refresh_attempt = now
+        present = {row.period_type for row in stale_rows}
+        for pt in ("Q1", "Q2", "Q3", "Q4", "FY"):
+            if pt in present:
+                continue
+            db.add(CompanyValue(
+                id=uuid4(), company_id=company_id, value_key=value_key,
+                period_type=pt, period_year=year, numeric_value=None,
+                source_name="No source found (research attempted)",
+                primary_method="not_found", currency=currency,
+                fetched_at=now, last_refresh_attempt=now,
+                manually_overridden=False, from_ir_pdf=False,
+            ))
         db.flush()
         return []
 
