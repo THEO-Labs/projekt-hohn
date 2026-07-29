@@ -1,4 +1,5 @@
 import logging
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 import yfinance
@@ -105,6 +106,7 @@ class YahooFinanceProvider:
         self._balance_sheet_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._cashflow_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._isin_ticker_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
+        self._next_earnings_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
 
     def resolve_ticker_from_isin(self, isin: str) -> str | None:
         if isin in self._isin_ticker_cache:
@@ -341,6 +343,47 @@ class YahooFinanceProvider:
             return None
 
 
+
+    def fetch_next_earnings_date(self, ticker: str) -> date | None:
+        """Naechster ZUKUENFTIGER Earnings-Termin fuer den Ticker.
+
+        Primaer via Ticker.calendar (ein leichter calendarEvents-Call, liefert
+        'Earnings Date' bereits als date-Liste), Fallback get_earnings_dates
+        (DataFrame mit Timestamp-Index, enthaelt kuenftige + vergangene
+        Termine). Vergangene Termine werden verworfen; None wenn kein
+        kuenftiger Termin bekannt ist. Fehler (Netz/Rate-Limit) RAISEN,
+        damit der Aufrufer einen Ausfall von 'kein Termin' unterscheiden
+        kann und keinen bekannten Termin mit None ueberschreibt."""
+        if ticker in self._next_earnings_cache:
+            return self._next_earnings_cache[ticker]
+        try:
+            t = self._get_ticker(ticker)
+            today = date.today()
+            candidates: list[date] = []
+
+            cal = t.calendar or {}
+            for d in cal.get("Earnings Date") or []:
+                if isinstance(d, datetime):
+                    d = d.date()
+                if isinstance(d, date) and d >= today:
+                    candidates.append(d)
+
+            if not candidates:
+                df = t.get_earnings_dates(limit=8)
+                if df is not None and not df.empty:
+                    for ts in df.index:
+                        if not hasattr(ts, "date"):
+                            continue
+                        d = ts.date()
+                        if d >= today:
+                            candidates.append(d)
+
+            result = min(candidates) if candidates else None
+            self._next_earnings_cache[ticker] = result
+            return result
+        except Exception as e:
+            logger.warning("Yahoo next-earnings fetch failed for %s: %s", ticker, e)
+            raise
 
     def detect_fiscal_year_end(self, ticker: str) -> tuple[int, int] | None:
         """Detect FY-end (month, day) from Yahoo annual financials columns.

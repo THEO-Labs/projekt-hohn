@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
@@ -47,6 +47,8 @@ class CompanyOut(BaseModel):
     currency: str
     fiscal_year_end_month: int | None = None
     fiscal_year_end_day: int | None = None
+    # Naechster bekannter Earnings-Termin (via Daily-Refresh gepflegt)
+    next_earnings_date: date | None = None
     created_at: datetime
     updated_at: datetime
 

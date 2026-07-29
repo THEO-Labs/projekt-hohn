@@ -27,7 +27,7 @@ Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
     Default OFF (Cost-Optimierung). Env-Flag ADJUSTED_AUTOFETCH=true.
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -1197,6 +1197,40 @@ def _ensure_previous_year_inputs(
             db.rollback()
 
 
+def _maybe_refresh_next_earnings(db: Session, company: Company, ticker: str) -> None:
+    """Naechsten Earnings-Termin hoechstens alle 24h neu holen.
+
+    Laeuft im Stammdaten-Only-Pfad (Daily-Refresh-Button): ist
+    earnings_checked_at juenger als 24h, passiert nichts. Sonst Yahoo
+    fragen und Ergebnis (auch None) + Zeitstempel persistieren. Fehler
+    werden nur geloggt — der Daily-Refresh darf daran nie scheitern."""
+    now = datetime.now(timezone.utc)
+    checked = company.earnings_checked_at
+    if checked is not None:
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=timezone.utc)
+        if now - checked < timedelta(hours=24):
+            return
+    try:
+        providers = get_providers("stock_price")
+        provider = next(
+            (p for p in providers if hasattr(p, "fetch_next_earnings_date")), None
+        )
+        if provider is None:
+            return
+        # Provider raist bei Ausfall — dann NICHT persistieren und NICHT
+        # stempeln, damit ein bekannter Termin erhalten bleibt und der
+        # naechste Refresh es erneut versucht. Ein echtes None ("kein
+        # Termin bekannt") wird dagegen gespeichert.
+        fetched = provider.fetch_next_earnings_date(ticker)
+        company.next_earnings_date = fetched
+        company.earnings_checked_at = now
+        db.flush()
+    except Exception as e:
+        db.rollback()
+        logger.warning("Next-earnings refresh failed for %s: %s", ticker, e)
+
+
 @values_router.get("/{company_id}/refresh-status")
 def get_refresh_status(
     company_id: UUID,
@@ -1300,6 +1334,12 @@ def refresh_company_values(
                 # `updated` entfernen — db.refresh am Ende darf keine nie
                 # committeten Zeilen anfassen.
                 del updated[updated_before:]
+
+        # Stammdaten-Only (Daily-Refresh): naechsten Earnings-Termin
+        # mitpflegen — hoechstens alle 24h (earnings_checked_at-TTL).
+        if payload.stammdaten_only:
+            _maybe_refresh_next_earnings(db, company, ticker)
+            db.commit()
 
         # Prev-year backfill: for the two-stage-eligible keys where FY N-1
         # has no two-stage row yet, run the pipeline against FY N-1 too.
