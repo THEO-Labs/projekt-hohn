@@ -40,7 +40,8 @@ const SORT_STORAGE_KEY = "hohn:portfolio_sort";
 
 function loadSortMode(): CardSortMode {
   try {
-    return localStorage.getItem(SORT_STORAGE_KEY) === "h_return" ? "h_return" : "alphabetical";
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    return raw === "h_return" || raw === "earnings" ? raw : "alphabetical";
   } catch { return "alphabetical"; }
 }
 
@@ -298,6 +299,7 @@ export function PortfolioDetailPage() {
               {([
                 ["alphabetical", "Alphabetisch"],
                 ["h_return", "H-Return"],
+                ["earnings", "Earnings"],
               ] as const).map(([mode, label]) => (
                 <Button
                   key={mode}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { FY_KPI_KEYS, extractFyKpis, sortCompanyCards, type CompanyCardData } from "@/api/dashboard";
 import type { CompanyValue } from "@/api/values";
+import { formatEarningsDate, isEarningsSoon } from "@/lib/format";
 
 // Minimaler FY-Row-Baukasten fuer die Tests
 const row = (value_key: string, period_year: number, numeric_value: number | null): CompanyValue => ({
@@ -99,6 +100,68 @@ describe("sortCompanyCards", () => {
   });
 });
 
+// Karten-Attrappe fuer den earnings-Sortiermodus
+const ecard = (name: string, date: string | null): CompanyCardData =>
+  ({
+    company: { id: name, name, next_earnings_date: date },
+    h_return_gaap: null,
+  }) as unknown as CompanyCardData;
+
+describe("sortCompanyCards earnings", () => {
+  it("sortiert aufsteigend nach next_earnings_date, naechster Termin zuerst", () => {
+    const cards = [ecard("A", "2026-09-15"), ecard("B", "2026-08-05"), ecard("C", "2027-01-10")];
+    const names = sortCompanyCards(cards, "earnings").map((c) => c.company.name);
+    expect(names).toEqual(["B", "A", "C"]);
+  });
+
+  it("sortiert Karten ohne Termin ans Ende", () => {
+    const cards = [ecard("A", null), ecard("B", "2026-08-05"), ecard("C", null), ecard("D", "2026-08-01")];
+    const names = sortCompanyCards(cards, "earnings").map((c) => c.company.name);
+    expect(names).toEqual(["D", "B", "A", "C"]);
+  });
+
+  it("bricht Gleichstand (gleicher Termin und beide null) per Name", () => {
+    const cards = [ecard("Zeta", "2026-08-05"), ecard("Beta", null), ecard("Alpha", "2026-08-05")];
+    const names = sortCompanyCards(cards, "earnings").map((c) => c.company.name);
+    expect(names).toEqual(["Alpha", "Zeta", "Beta"]);
+  });
+});
+
+describe("formatEarningsDate", () => {
+  const now = new Date(2026, 6, 15); // 15.07.2026
+
+  it("formatiert Termine im laufenden Jahr ohne Jahr", () => {
+    expect(formatEarningsDate("2026-08-05", now)).toBe("05.08.");
+  });
+
+  it("haengt bei anderem Jahr das Jahr an", () => {
+    expect(formatEarningsDate("2027-01-12", now)).toBe("12.01.2027");
+  });
+
+  it("liefert leeren String fuer null und unparsebare Werte", () => {
+    expect(formatEarningsDate(null, now)).toBe("");
+    expect(formatEarningsDate("kaputt", now)).toBe("");
+  });
+});
+
+describe("isEarningsSoon", () => {
+  const now = new Date(2026, 6, 15); // 15.07.2026
+
+  it("markiert heute und genau 7 Tage im Voraus", () => {
+    expect(isEarningsSoon("2026-07-15", now)).toBe(true);
+    expect(isEarningsSoon("2026-07-22", now)).toBe(true);
+  });
+
+  it("markiert 8 Tage im Voraus und Vergangenheit nicht", () => {
+    expect(isEarningsSoon("2026-07-23", now)).toBe(false);
+    expect(isEarningsSoon("2026-07-14", now)).toBe(false);
+  });
+
+  it("liefert false fuer null", () => {
+    expect(isEarningsSoon(null, now)).toBe(false);
+  });
+});
+
 // NaN-Werte (kaputte Strings) muessen wie fehlende ans Ende sortieren.
 it("sorts unparseable h-return values to the end", () => {
   const mk = (name: string, hr: unknown) => ({
@@ -108,4 +171,18 @@ it("sorts unparseable h-return values to the end", () => {
   const cards = [mk("A", "kaputt"), mk("B", "10.0"), mk("C", null)] as never[];
   const sorted = sortCompanyCards(cards, "h_return");
   expect(sorted.map((c: { company: { name: string } }) => c.company.name)).toEqual(["B", "A", "C"]);
+});
+
+// Kalender-Range: unmoegliche Daten duerfen weder rendern noch amber triggern.
+it("rejects impossible calendar dates", async () => {
+  const { formatEarningsDate, isEarningsSoon } = await import("@/lib/format");
+  expect(formatEarningsDate("2026-13-40")).toBe("");
+  expect(isEarningsSoon("2026-13-40")).toBe(false);
+});
+
+it("marks past earnings dates via isEarningsPast", async () => {
+  const { isEarningsPast } = await import("@/lib/format");
+  expect(isEarningsPast("2020-01-01")).toBe(true);
+  expect(isEarningsPast("2099-01-01")).toBe(false);
+  expect(isEarningsPast(null)).toBe(false);
 });

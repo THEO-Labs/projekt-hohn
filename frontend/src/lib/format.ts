@@ -86,3 +86,47 @@ export function formatFyEnd(month: number | null, day: number | null): string {
   return `${String(day).padStart(2, "0")}.${String(month).padStart(2, "0")}.`;
 }
 
+// Zerlegt ein ISO-Datum (YYYY-MM-DD) ohne Timezone-Fallen von new Date(iso).
+function parseIsoDate(iso: string | null | undefined): { year: number; month: number; day: number } | null {
+  if (!iso) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.slice(0, 10));
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  // Kalender-Range pruefen — sonst rendert "2026-13-40" als 40.13. und
+  // der JS-Date-Rollover verschiebt die Amber-Logik auf ein anderes Datum.
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+// Naechster Earnings-Termin fuer die Karte: "05.08." im laufenden Jahr,
+// sonst mit Jahr ("05.08.2027"). null/unparsebar -> leerer String (nichts anzeigen).
+export function formatEarningsDate(iso: string | null | undefined, now: Date = new Date()): string {
+  const d = parseIsoDate(iso);
+  if (!d) return "";
+  const base = `${String(d.day).padStart(2, "0")}.${String(d.month).padStart(2, "0")}.`;
+  return d.year === now.getFullYear() ? base : `${base}${d.year}`;
+}
+
+// true, wenn der Termin innerhalb der naechsten `days` Kalendertage liegt
+// (heute eingeschlossen, Vergangenheit nicht) — Basis fuer die Amber-Hervorhebung.
+// true, wenn der Termin in der Vergangenheit liegt (Stale-Data zwischen
+// zwei Refreshes) — Karte dimmt dann und passt den Tooltip an.
+export function isEarningsPast(iso: string | null | undefined, now: Date = new Date()): boolean {
+  const d = parseIsoDate(iso);
+  if (!d) return false;
+  const target = new Date(d.year, d.month - 1, d.day).getTime();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return target < today;
+}
+
+export function isEarningsSoon(iso: string | null | undefined, now: Date = new Date(), days = 7): boolean {
+  const d = parseIsoDate(iso);
+  if (!d) return false;
+  const target = new Date(d.year, d.month - 1, d.day).getTime();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const diffDays = Math.round((target - today) / 86_400_000);
+  return diffDays >= 0 && diffDays <= days;
+}
+

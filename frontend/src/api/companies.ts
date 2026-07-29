@@ -18,6 +18,8 @@ export type Company = {
   fiscal_year_end_day: number | null;
   // Serverseitig aus der ISIN abgeleitet: US-Filer -> "US-GAAP", sonst "IFRS"
   accounting_standard: "IFRS" | "US-GAAP";
+  // Naechster Earnings-Termin als ISO-Datum (YYYY-MM-DD), null wenn unbekannt
+  next_earnings_date: string | null;
   created_at: string;
   updated_at: string;
 };

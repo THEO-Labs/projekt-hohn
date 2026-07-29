@@ -27,6 +27,7 @@ import {
   formatNumber,
   formatPercent,
   formatShort,
+  formatEarningsDate,
 } from "@/lib/format";
 import {
   QUARTERLY_SECTIONS,
@@ -887,7 +888,11 @@ function CompanyDetailContent({
             <div>
               <OverviewRow label="Date" value={new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" })} />
               <OverviewRow label="Fiscal Year End" value={formatFyEnd(company.fiscal_year_end_month, company.fiscal_year_end_day)} />
-              <OverviewRow label="Next Earnings Release" value={<span className="text-muted-foreground/60">—</span>} />
+              <OverviewRow label="Next Earnings Release" value={
+                company.next_earnings_date
+                  ? <span>{formatEarningsDate(company.next_earnings_date)}</span>
+                  : <span className="text-muted-foreground/60">—</span>
+              } />
             </div>
           </div>
         </CollapsibleCard>

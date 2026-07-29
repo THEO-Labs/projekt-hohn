@@ -17,10 +17,13 @@ import {
   hReturnTone,
 } from "@/components/companyCardBits";
 import {
+  formatEarningsDate,
+  isEarningsPast,
   formatFyEnd,
   formatNumber,
   formatPercent,
   formatShort,
+  isEarningsSoon,
 } from "@/lib/format";
 
 // KPI-Bestandteile des H-Returns: Label und Formatierung je value_key
@@ -136,6 +139,11 @@ export function CompanyCard({ portfolioId, data, definitions, onChanged }: Props
 
   const detailHref = `/portfolios/${portfolioId}/companies/${company.id}`;
 
+  // Naechster Earnings-Termin: leer -> kein Badge; <= 7 Tage -> dezente Amber-Hervorhebung
+  const earningsLabel = formatEarningsDate(company.next_earnings_date);
+  const earningsSoon = isEarningsSoon(company.next_earnings_date);
+  const earningsPast = isEarningsPast(company.next_earnings_date);
+
   return (
     <Card className="gap-0 py-0">
       {/* Header + Actions row */}
@@ -155,6 +163,22 @@ export function CompanyCard({ portfolioId, data, definitions, onChanged }: Props
           {data.fy_estimate_year && (
             <span className="rounded bg-violet-100 px-1.5 py-0.5 font-mono text-[10px] font-medium text-violet-700 ring-1 ring-violet-200">
               FY {data.fy_estimate_year}
+            </span>
+          )}
+          {earningsLabel && (
+            <span
+              className={
+                earningsSoon
+                  ? "rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 ring-1 ring-amber-200"
+                  : earningsPast
+                    ? "rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground/50 line-through"
+                    : "rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
+              }
+              title={earningsPast
+                ? "Letzter bekannter Earnings-Termin (bereits vorbei — Daily Refresh aktualisiert)"
+                : "Naechster Earnings-Termin"}
+            >
+              Earnings: {earningsLabel}
             </span>
           )}
         </Link>
@@ -178,7 +202,6 @@ export function CompanyCard({ portfolioId, data, definitions, onChanged }: Props
           <OverviewRow label="Shares outstanding" value={formatShort(data.shares_outstanding?.numeric_value ?? null)} ts={data.shares_outstanding?.fetched_at} />
           <OverviewRow label="Market Cap" value={formatShort(data.market_cap?.numeric_value ?? null, currency)} ts={data.market_cap?.fetched_at} />
           <OverviewRow label="Enterprise Value" value={formatShort(data.enterprise_value, currency)} ts={data.enterprise_value_ts} />
-          <OverviewRow label="Next Earnings" value={<span className="text-muted-foreground/60">—</span>} />
           {editingFy ? (
             <div className="flex items-center gap-2 py-0.5">
               <div className="text-[12px] text-muted-foreground">Fiscal Year End</div>

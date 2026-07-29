@@ -39,12 +39,14 @@ export type CompanyCardData = {
 
 const DAILY_KEYS = ["market_cap", "stock_price", "shares_outstanding"];
 
-export type CardSortMode = "alphabetical" | "h_return";
+export type CardSortMode = "alphabetical" | "h_return" | "earnings";
 
 // Sortiert die Karten fuer die Anzeige — rein und nicht-destruktiv (neues Array).
 // "alphabetical": Firmenname aufsteigend (de-Locale).
 // "h_return": H-Return IFRS (hohn_return_detailed, numeric_value) absteigend,
 // Karten ohne Wert ans Ende; Gleichstand faellt auf den Namen zurueck.
+// "earnings": next_earnings_date aufsteigend (naechster Termin zuerst),
+// Karten ohne Termin ans Ende; Gleichstand faellt auf den Namen zurueck.
 export function sortCompanyCards(
   cards: CompanyCardData[],
   mode: CardSortMode,
@@ -67,6 +69,17 @@ export function sortCompanyCards(
       if (av == null) return 1;
       if (bv == null) return -1;
       if (bv !== av) return bv - av;
+      return byName(a, b);
+    });
+  } else if (mode === "earnings") {
+    // ISO-Daten (YYYY-MM-DD) sortieren lexikographisch korrekt chronologisch.
+    sorted.sort((a, b) => {
+      const av = a.company.next_earnings_date ?? null;
+      const bv = b.company.next_earnings_date ?? null;
+      if (av == null && bv == null) return byName(a, b);
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (av !== bv) return av < bv ? -1 : 1;
       return byName(a, b);
     });
   } else {
