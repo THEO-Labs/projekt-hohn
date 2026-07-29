@@ -21,10 +21,24 @@ import {
   loadCompanyCard,
   getDashboardDefinitions,
   refreshCompanyDaily,
+  sortCompanyCards,
+  type CardSortMode,
   type CompanyCardData,
 } from "@/api/dashboard";
 import { startFullRecompute, getFullRecomputeStatus } from "@/api/portfolios";
 import { t } from "@/lib/i18n";
+
+const SORT_STORAGE_KEY = "hohn:portfolio_sort";
+
+function loadSortMode(): CardSortMode {
+  try {
+    return localStorage.getItem(SORT_STORAGE_KEY) === "h_return" ? "h_return" : "alphabetical";
+  } catch { return "alphabetical"; }
+}
+
+function saveSortMode(mode: CardSortMode): void {
+  try { localStorage.setItem(SORT_STORAGE_KEY, mode); } catch { /* ignore */ }
+}
 
 export function PortfolioDetailPage() {
   const { pid: id } = useParams<{ pid: string }>();
@@ -32,6 +46,7 @@ export function PortfolioDetailPage() {
 
   const [loading, setLoading] = useState(true);
   const [cards, setCards] = useState<CompanyCardData[]>([]);
+  const [sortMode, setSortMode] = useState<CardSortMode>(loadSortMode);
   const [definitions, setDefinitions] = useState<ValueDefinition[]>([]);
 
   const [open, setOpen] = useState(false);
@@ -178,10 +193,14 @@ export function PortfolioDetailPage() {
     }
   };
 
-  const orderedCards = useMemo(
-    () => [...cards].sort((a, b) => a.company.name.localeCompare(b.company.name, "de")),
-    [cards],
-  );
+  const changeSortMode = (mode: CardSortMode) => {
+    setSortMode(mode);
+    saveSortMode(mode);
+  };
+
+  // Sortierung nur beim Rendern — der cards-State bleibt unangetastet,
+  // damit onChanged-Updates einzelner Karten weiter per id greifen.
+  const orderedCards = useMemo(() => sortCompanyCards(cards, sortMode), [cards, sortMode]);
 
   if (!user) return null;
 
@@ -206,7 +225,28 @@ export function PortfolioDetailPage() {
               {cards.length === 1 ? "1 company" : `${cards.length} companies`} in this portfolio.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Sortier-Auswahl: kompaktes Segmented-Control, Wahl landet in localStorage */}
+            <div
+              role="group"
+              aria-label="Sortierung"
+              className="flex items-center gap-0.5 rounded-lg border border-border p-0.5"
+            >
+              {([
+                ["alphabetical", "Alphabetisch"],
+                ["h_return", "H-Return"],
+              ] as const).map(([mode, label]) => (
+                <Button
+                  key={mode}
+                  size="sm"
+                  variant={sortMode === mode ? "secondary" : "ghost"}
+                  aria-pressed={sortMode === mode}
+                  onClick={() => changeSortMode(mode)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
             <Button
               variant="outline"
               onClick={handleRefreshAllDaily}

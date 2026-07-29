@@ -39,6 +39,42 @@ export type CompanyCardData = {
 
 const DAILY_KEYS = ["market_cap", "stock_price", "shares_outstanding"];
 
+export type CardSortMode = "alphabetical" | "h_return";
+
+// Sortiert die Karten fuer die Anzeige — rein und nicht-destruktiv (neues Array).
+// "alphabetical": Firmenname aufsteigend (de-Locale).
+// "h_return": H-Return IFRS (hohn_return_detailed, numeric_value) absteigend,
+// Karten ohne Wert ans Ende; Gleichstand faellt auf den Namen zurueck.
+export function sortCompanyCards(
+  cards: CompanyCardData[],
+  mode: CardSortMode,
+): CompanyCardData[] {
+  const byName = (a: CompanyCardData, b: CompanyCardData) =>
+    a.company.name.localeCompare(b.company.name, "de");
+  const sorted = [...cards];
+  if (mode === "h_return") {
+    // API liefert Decimal ggf. als String; nicht-parsebare Werte (NaN)
+    // wie fehlende behandeln, sonst bricht die Comparator-Transitivitaet.
+    const hReturn = (c: CompanyCardData): number | null => {
+      if (c.h_return_gaap?.numeric_value == null) return null;
+      const n = Number(c.h_return_gaap.numeric_value);
+      return Number.isFinite(n) ? n : null;
+    };
+    sorted.sort((a, b) => {
+      const av = hReturn(a);
+      const bv = hReturn(b);
+      if (av == null && bv == null) return byName(a, b);
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (bv !== av) return bv - av;
+      return byName(a, b);
+    });
+  } else {
+    sorted.sort(byName);
+  }
+  return sorted;
+}
+
 // Bei Actual+Forecast-Paaren fuer dieselbe Zelle gewinnt IMMER die
 // Actual-Zeile (is_forecast=false) — das Backend liefert ohne ORDER BY,
 // sonst kann die Karte nichtdeterministisch einen stale Forecast zeigen.

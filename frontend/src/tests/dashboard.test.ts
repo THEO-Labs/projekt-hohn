@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FY_KPI_KEYS, extractFyKpis } from "@/api/dashboard";
+import { FY_KPI_KEYS, extractFyKpis, sortCompanyCards, type CompanyCardData } from "@/api/dashboard";
 import type { CompanyValue } from "@/api/values";
 
 // Minimaler FY-Row-Baukasten fuer die Tests
@@ -63,4 +63,49 @@ it("parses string numeric values from the wire format", () => {
   ] as never[];
   const kpis = extractFyKpis(rows, 2026);
   expect(kpis.dividend_yield).toBeCloseTo(2.03);
+});
+
+// Minimale Karten-Attrappe fuer die Sortier-Tests
+const card = (name: string, hReturn: number | string | null): CompanyCardData =>
+  ({
+    company: { id: name, name },
+    h_return_gaap: hReturn == null ? null : { numeric_value: hReturn },
+  }) as unknown as CompanyCardData;
+
+describe("sortCompanyCards", () => {
+  it("sortiert alphabetisch nach Firmenname aufsteigend", () => {
+    const cards = [card("Zeta", 1), card("Alpha", 2), card("Mitte", null)];
+    const names = sortCompanyCards(cards, "alphabetical").map((c) => c.company.name);
+    expect(names).toEqual(["Alpha", "Mitte", "Zeta"]);
+  });
+
+  it("sortiert nach H-Return absteigend, Karten ohne Wert ans Ende", () => {
+    const cards = [card("A", 5), card("B", null), card("C", 12), card("D", -3)];
+    const names = sortCompanyCards(cards, "h_return").map((c) => c.company.name);
+    expect(names).toEqual(["C", "A", "D", "B"]);
+  });
+
+  it("parst String-Werte aus dem Wire-Format und bricht Gleichstand per Name", () => {
+    const cards = [card("Beta", "7.5"), card("Alpha", 7.5), card("Gamma", "10.0")];
+    const names = sortCompanyCards(cards, "h_return").map((c) => c.company.name);
+    expect(names).toEqual(["Gamma", "Alpha", "Beta"]);
+  });
+
+  it("mutiert das Eingabe-Array nicht", () => {
+    const cards = [card("B", 1), card("A", 2)];
+    const result = sortCompanyCards(cards, "h_return");
+    expect(result).not.toBe(cards);
+    expect(cards.map((c) => c.company.name)).toEqual(["B", "A"]);
+  });
+});
+
+// NaN-Werte (kaputte Strings) muessen wie fehlende ans Ende sortieren.
+it("sorts unparseable h-return values to the end", () => {
+  const mk = (name: string, hr: unknown) => ({
+    company: { name },
+    h_return_gaap: hr == null ? null : { numeric_value: hr },
+  });
+  const cards = [mk("A", "kaputt"), mk("B", "10.0"), mk("C", null)] as never[];
+  const sorted = sortCompanyCards(cards, "h_return");
+  expect(sorted.map((c: { company: { name: string } }) => c.company.name)).toEqual(["B", "A", "C"]);
 });
