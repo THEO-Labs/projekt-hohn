@@ -16,10 +16,10 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Cash-Zahlung im 
 **ACHTUNG — Abweichung von allen anderen Metriken**: period_year = Kalenderjahr des CASH-FLUSSES, nicht das Geschaeftsjahr des Verdienens. Fuer das laufende Jahr ist die Zahlung meist schon bekannt/beschlossen (HV im Fruehjahr) — dann is_estimate=false.
 
 ## Quelle im Report
-1. **Annual Report `{period_year}`** → "Dividendenvorschlag" / "Proposed dividend" fuer GJ `{period_year}`
-2. **Notes** → "Dividends per share" fuer GJ `{period_year}`
-3. **Statement of Changes in Equity** naechstes Jahr → Cash-Bewegung der Auszahlung (Verifikation)
-4. **Kapitalflussrechnung** `{period_year+1}` → "Dividends paid to shareholders" (Verifikation der tatsaechlichen Zahlung)
+1. **Kapitalflussrechnung `{period_year}`** → "Dividends paid to shareholders" (der tatsaechliche Cash-Fluss des Jahres — PRIMAERQUELLE)
+2. **Annual Report `{period_year - 1}`** → "Dividendenvorschlag" fuer GJ `{period_year - 1}` (wird auf der HV im Fruehjahr `{period_year}` beschlossen und dann gezahlt)
+3. **HV-/IR-Meldungen Fruehjahr `{period_year}`** → beschlossene Dividende + Zahltermin
+4. **Statement of Changes in Equity `{period_year}`** → Cash-Bewegung der Auszahlung (Verifikation)
 
 ## Einheit & Format
 - **Absolute Berichtswaehrung der Firma** (EUR fuer DAX, USD fuer US-Firmen)
@@ -74,36 +74,37 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Cash-Zahlung im 
   "ticker": "CON.DE",
   "period_year": 2025,
   "period_type": "FY",
-  "dividends_eur": 540500000,
-  "per_share_eur": 2.70,
+  "dividends_eur": 440500000,
+  "per_share_eur": 2.20,
   "shares_used": 200178074,
-  "for_fiscal_year": 2025,
-  "expected_payment_date": "2026-05-XX",
+  "for_fiscal_year": 2024,
+  "payment_date": "2025-05-XX",
   "source_url": "https://www.continental.com/en/investors/shares/dividend/",
   "source_quote": "Continental Executive Board has proposed increasing the dividend by €0.20 to €2.70 per share for the past fiscal year, with a total distribution to shareholders of approximately €540 million"
 }
 ```
 
 ## Referenz-Beispiele (DAX, verifizierte Werte)
-| Ticker | period_year | Correct | Herleitung |
+| Ticker | period_year (=Zahljahr) | Correct | Herleitung |
 |---|---|---|---|
-| CON.DE | 2025 | 540.500.000 EUR | 2,70 EUR/Aktie × 200,18M Aktien (Vorschlag im AR 2025, Zahlung 2026) |
-| CON.DE | 2024 | 440.500.000 EUR | 2,20 EUR/Aktie × 200,18M Aktien (Vorschlag im AR 2024, Zahlung 2025) |
-| SAP.DE | 2024 | ~3.320.000.000 EUR | 2,85 EUR × 1.166M Aktien (Zahlung Mai 2025) |
-| ALV.DE | 2024 | ~6.160.000.000 EUR | 15,40 EUR × 400M Aktien (Zahlung Mai 2025) |
-| DTE.DE | 2024 | ~4.292.000.000 EUR | 0,90 EUR × 4.769M Aktien (Zahlung Mai 2025) |
-| PAH3.DE | 2024 | ~1.170.000.000 EUR | 1,91 EUR × 612,50M Aktien inkl. Common (Zahlung Mai 2025) |
-| BAYN.DE | 2024 | ~110.000.000 EUR | 0,11 EUR × 982M Aktien (Sonderkuerzung wegen Verlusten) |
+| ADS.DE | 2025 | ~357.000.000 EUR | 2,00 EUR/Aktie (GJ 2024) × 178,6M, HV/Zahlung Mai 2025 |
+| ADS.DE | 2026 | ~500.000.000 EUR | 2,80 EUR/Aktie (GJ 2025), HV 07.05.2026 |
+| CON.DE | 2025 | 440.500.000 EUR | 2,20 EUR (GJ 2024) × 200,18M, Zahlung Mai 2025 |
+| CON.DE | 2026 | 540.500.000 EUR | 2,70 EUR (GJ 2025) × 200,18M, Zahlung Mai 2026 |
+| SAP.DE | 2025 | ~3.320.000.000 EUR | 2,85 EUR (GJ 2024) × 1.166M, Zahlung Mai 2025 |
+| PAH3.DE | 2025 | ~1.170.000.000 EUR | 1,91 EUR (GJ 2024) × 612,50M inkl. Common |
+| BAYN.DE | 2025 | ~110.000.000 EUR | 0,11 EUR (GJ 2024) × 982M (Sonderkuerzung) |
 
 ## Query-Template fuer Agent
 ```
-Fuer {ticker} ({company_name}) Geschaeftsjahr {period_year}:
-1. Finde im Annual Report {period_year} den Dividendenvorschlag ("proposed dividend" /
-   "Dividendenvorschlag" fuer GJ {period_year}).
+Fuer {ticker} ({company_name}) Zahlungsjahr {period_year}:
+1. Finde die im Kalenderjahr {period_year} GEZAHLTE Dividende (CFS "Dividends paid"
+   bzw. HV-Beschluss Fruehjahr {period_year} = Vorschlag aus AR {period_year - 1}).
 2. Wenn nur per-share Wert verfuegbar: multipliziere mit total shares outstanding
    (bei Dual-Class-Firmen: BEIDE Klassen zusammen).
 3. Gib absolute Berichtswaehrung zurueck.
 4. Verifiziere: dividends_eur / shares_outstanding sollte plausibel per-share sein (0,5-20 EUR).
 5. Verifiziere: dividends_eur / market_cap sollte 2-6% ergeben (max 10%, sonst Fehler).
-6. WICHTIG: period_year=2025 heisst "fuer GJ 2025" (Zahlung 2026), NICHT "gezahlt in 2025".
+6. WICHTIG: period_year = Jahr des CASH-FLUSSES. period_year=2025 heisst "gezahlt in 2025"
+   (= Dividende fuer GJ 2024), NICHT "fuer GJ 2025".
 ```
