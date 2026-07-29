@@ -22,8 +22,12 @@ function cellBadge(cell: {
   is_forecast?: boolean;
   primary_method?: string | null | undefined;
   manually_overridden?: boolean;
+  status?: string | null;
 }): { text: string; dot: string; text_cls: string } {
   const pm = cell.primary_method;
+  if (cell.status === "not_yet_reported" && (cell as { value?: number | null }).value == null) {
+    return { text: "Noch nicht berichtet", dot: "bg-slate-400", text_cls: "text-slate-600" };
+  }
   if (pm === "two_stage_verified") {
     return { text: "Verified (corrected)", dot: "bg-emerald-600", text_cls: "text-emerald-800" };
   }
@@ -438,6 +442,9 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
 // Primary marker: is_forecast (Actual vs Estimate). primary_method is only
 // used as a secondary discriminator for calculated/manual overrides.
 export function cellColorClass(cell: Cell | undefined): string {
+  // Periode noch nicht berichtet: dezent grau, NICHT rot — die Firma kann
+  // die Zahl noch gar nicht veroeffentlicht haben.
+  if (cell?.status === "not_yet_reported" && cell.value == null) return "text-muted-foreground/60 italic";
   // Recherche lief, fand aber nichts: rot markieren = manuell raussuchen.
   if (cell?.primary_method === "not_found" && cell.value === null) return "text-red-600 font-semibold";
   if (!cell || cell.value === null) return "text-muted-foreground/60";

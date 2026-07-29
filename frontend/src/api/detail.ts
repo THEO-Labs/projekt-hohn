@@ -10,6 +10,9 @@ export type ValueRef = {
   primary_method: string | null;
   is_forecast: boolean;
   consistency_flags?: string | null;
+  // "not_yet_reported": Periode des laufenden Jahres, deren Zahlen die
+  // Firma noch nicht veroeffentlicht haben kann. Grau statt rot rendern.
+  status?: string | null;
 };
 
 export type QuarterlyRowRefs = {

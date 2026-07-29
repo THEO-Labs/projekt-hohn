@@ -41,6 +41,9 @@ export type Cell = {
   is_gaap_fallback?: boolean;
   // Kommagetrennte Cross-Metrik-Verletzungen vom Backend-Validator.
   consistency_flags?: string | null;
+  // "not_yet_reported": Periode noch nicht berichtet (Quartalsende in der
+  // Zukunft oder innerhalb der Reporting-Frist) — grau, nicht rot.
+  status?: string | null;
   // Anzeige-Skalierung (z.B. 1e6 fuer Mio-Tabellen): beim manuellen
   // Override multipliziert der Popover die Eingabe damit zurueck auf
   // absolute Werte (Tobi-Bug: 357 eingetippt -> 357 EUR gespeichert).
@@ -278,6 +281,7 @@ function refToCell(
     adjustments_source: (r as unknown as { adjustments_source?: string | null } | null)?.adjustments_source ?? null,
     is_gaap_fallback,
     consistency_flags: r?.consistency_flags ?? null,
+    status: r?.status ?? null,
     scale: scaleFactor,
   };
 }

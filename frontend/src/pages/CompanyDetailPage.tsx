@@ -343,7 +343,8 @@ function ClickableCell({
   const hasMeta =
     (cell.value !== null &&
       (cell.source_name || cell.source_link || cell.formula || cell.primary_method || cell.is_gaap_fallback)) ||
-    cell.primary_method === "not_found";
+    cell.primary_method === "not_found" ||
+    cell.status === "not_yet_reported";
   const clickable = hasMeta;
   return (
     <td
@@ -359,11 +360,13 @@ function ClickableCell({
           : undefined
       }
       title={
-        cell.primary_method === "not_found"
-          ? "Recherche ohne Fund — Wert manuell raussuchen"
-          : cell.is_gaap_fallback
-            ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert"
-            : undefined
+        cell.status === "not_yet_reported"
+          ? "Periode noch nicht berichtet — Zahlen folgen mit dem naechsten Bericht"
+          : cell.primary_method === "not_found"
+            ? "Recherche ohne Fund — Wert manuell raussuchen"
+            : cell.is_gaap_fallback
+              ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert"
+              : undefined
       }
     >
       {label}

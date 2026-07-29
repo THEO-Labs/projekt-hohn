@@ -8,7 +8,8 @@ refresh endpoints).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import calendar
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -50,6 +51,11 @@ class ValueRef(BaseModel):
     # Actual, not Estimate.
     is_forecast: bool = False
     consistency_flags: str | None = None
+    # "not_yet_reported": Periode des laufenden Jahres, deren Zahlen die
+    # Firma noch gar nicht veroeffentlicht haben kann (Quartalsende in der
+    # Zukunft oder juenger als die typische Reporting-Frist). Das UI rendert
+    # das dezent grau statt rot (not_found = Recherche fand nichts).
+    status: str | None = None
 
 
 class QuarterlyRow(BaseModel):
@@ -159,6 +165,61 @@ OVERVIEW_METRIC_KEYS: list[str] = [
     "ev_ebitda",
     "ps_ratio",
 ]
+
+
+# Typische Frist zwischen Quartalsende und Veroeffentlichung des Berichts.
+# Innerhalb dieser Frist gilt eine fehlende Zahl als "noch nicht berichtet",
+# nicht als Recherche-Fehlschlag.
+REPORTING_GRACE_DAYS = 45
+
+
+def quarter_end_date(
+    period_year: int,
+    quarter: str,
+    fy_end_month: int | None,
+    fy_end_day: int | None,
+) -> date | None:
+    """Quartalsende aus dem FY-Ende ableiten — gleiche Konvention wie
+    edgar._q_end_date: Q4 = FY-Ende, Q3 = -3M, Q2 = -6M, Q1 = -9M, mit
+    Day-Clamping auf den Monatsletzten. Ohne bekanntes FY-Ende fallen wir
+    auf Kalenderquartale zurueck (FY-Ende 31.12.)."""
+    if quarter not in ("Q1", "Q2", "Q3", "Q4"):
+        return None
+    if not fy_end_month or not fy_end_day:
+        fy_end_month, fy_end_day = 12, 31
+    try:
+        fy_end = date(period_year, fy_end_month, fy_end_day)
+    except ValueError:
+        return None
+    months_back = (4 - int(quarter[1])) * 3
+    new_month = fy_end.month - months_back
+    new_year = fy_end.year
+    while new_month <= 0:
+        new_month += 12
+        new_year -= 1
+    last_day = calendar.monthrange(new_year, new_month)[1]
+    return date(new_year, new_month, min(fy_end.day, last_day))
+
+
+def is_not_yet_reported(
+    period_year: int | None,
+    quarter: str,
+    fy_end_month: int | None,
+    fy_end_day: int | None,
+    today: date | None = None,
+) -> bool:
+    """True, wenn die Firma die Zahlen fuer dieses Quartal noch gar nicht
+    veroeffentlicht haben kann: Quartalsende liegt in der Zukunft oder
+    weniger als REPORTING_GRACE_DAYS zurueck. Laengst faellige Perioden
+    (z.B. Vorjahr) liefern False."""
+    if period_year is None:
+        return False
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+    q_end = quarter_end_date(period_year, quarter, fy_end_month, fy_end_day)
+    if q_end is None:
+        return False
+    return (today - q_end).days < REPORTING_GRACE_DAYS
 
 
 def _to_ref(row: CompanyValue | None) -> ValueRef:
@@ -293,17 +354,35 @@ def _build_quarterly_row(
     rows: dict[tuple[str, str, int | None], CompanyValue],
     key: str,
     year: int | None,
+    fy_end_month: int | None = None,
+    fy_end_day: int | None = None,
 ) -> QuarterlyRow:
     q1 = rows.get((key, "Q1", year))
     q2 = rows.get((key, "Q2", year))
     q3 = rows.get((key, "Q3", year))
     q4 = rows.get((key, "Q4", year))
     fy = rows.get((key, "FY", year))
+
+    def _q_ref(quarter: str, row: CompanyValue | None) -> ValueRef:
+        # Zelle ohne Zeile oder mit not_found-Zeile: wenn das Quartal noch
+        # gar nicht berichtet sein kann, statt "Recherche fand nichts" den
+        # Status "noch nicht berichtet" liefern. Vergangene, laengst
+        # faellige Perioden bleiben not_found/leer.
+        # Ein recherchierter/manueller Wert darf NIE maskiert werden — der
+        # Status ersetzt nur wirklich leere Zellen (Review-Befund: Research
+        # aktualisiert numeric_value, aber nicht primary_method).
+        if (
+            (row is None or (row.primary_method == "not_found" and row.numeric_value is None))
+            and is_not_yet_reported(year, quarter, fy_end_month, fy_end_day)
+        ):
+            return ValueRef(status="not_yet_reported")
+        return _to_ref(row)
+
     return QuarterlyRow(
-        q1=_to_ref(q1),
-        q2=_to_ref(q2),
-        q3=_to_ref(q3),
-        q4=_to_ref(q4),
+        q1=_q_ref("Q1", q1),
+        q2=_q_ref("Q2", q2),
+        q3=_q_ref("Q3", q3),
+        q4=_q_ref("Q4", q4),
         annual=_derive_annual(key, q1, q2, q3, q4, fy),
     )
 
@@ -438,8 +517,14 @@ def get_company_detail(
             current_row = _derived_net_buyback_row(current_year)
             prior_row = _derived_net_buyback_row(prior_year)
         else:
-            current_row = _build_quarterly_row(quarterly_rows, key, current_year)
-            prior_row = _build_quarterly_row(quarterly_rows, key, prior_year)
+            current_row = _build_quarterly_row(
+                quarterly_rows, key, current_year,
+                company.fiscal_year_end_month, company.fiscal_year_end_day,
+            )
+            prior_row = _build_quarterly_row(
+                quarterly_rows, key, prior_year,
+                company.fiscal_year_end_month, company.fiscal_year_end_day,
+            )
         quarterly.append(QuarterlySection(
             value_key=key,
             label_en=d.label_en,
