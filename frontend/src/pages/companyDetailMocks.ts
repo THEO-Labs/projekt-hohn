@@ -41,6 +41,10 @@ export type Cell = {
   is_gaap_fallback?: boolean;
   // Kommagetrennte Cross-Metrik-Verletzungen vom Backend-Validator.
   consistency_flags?: string | null;
+  // Anzeige-Skalierung (z.B. 1e6 fuer Mio-Tabellen): beim manuellen
+  // Override multipliziert der Popover die Eingabe damit zurueck auf
+  // absolute Werte (Tobi-Bug: 357 eingetippt -> 357 EUR gespeichert).
+  scale?: number;
 };
 
 export const emptyCell = (): Cell => ({ value: null });
@@ -274,6 +278,7 @@ function refToCell(
     adjustments_source: (r as unknown as { adjustments_source?: string | null } | null)?.adjustments_source ?? null,
     is_gaap_fallback,
     consistency_flags: r?.consistency_flags ?? null,
+    scale: scaleFactor,
   };
 }
 
@@ -424,6 +429,7 @@ export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): B
       period_label: `${label} FY ${year}`,
       is_gaap_fallback,
       consistency_flags: ref.consistency_flags ?? null,
+      scale: isPct ? 1 : 1_000_000,
     };
   };
 

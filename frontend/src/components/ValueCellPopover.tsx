@@ -151,10 +151,12 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
     }
     setSaving(true);
     try {
+      // Tabelle zeigt skalierte Werte (Mio) — Eingabe zurueck auf absolut.
+      const absolute = num * (cell.scale ?? 1);
       await overrideValue(
         companyId,
         cell.value_key,
-        { numeric_value: num, source_name: "Manual" },
+        { numeric_value: absolute, source_name: "Manual" },
         cell.period_type,
         cell.period_year ?? undefined,
       );
