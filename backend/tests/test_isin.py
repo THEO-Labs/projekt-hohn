@@ -1,5 +1,5 @@
 import pytest
-from app.companies.isin import validate_isin
+from app.companies.isin import accounting_standard, is_us_isin, validate_isin
 
 
 @pytest.mark.parametrize("isin", [
@@ -26,3 +26,16 @@ def test_valid_isins(isin):
 ])
 def test_invalid_isins(isin, reason):
     assert validate_isin(isin) is False, f"Expected invalid for: {reason}"
+
+
+@pytest.mark.parametrize("isin,expected_us,expected_standard", [
+    ("US0378331005", True, "US-GAAP"),   # Apple
+    ("us0378331005", True, "US-GAAP"),   # Praefix case-insensitiv
+    ("DE000BASF111", False, "IFRS"),     # BASF
+    ("GB0002634946", False, "IFRS"),     # BAE Systems
+    (None, False, "IFRS"),               # ohne ISIN -> IFRS
+    ("", False, "IFRS"),
+])
+def test_accounting_standard_from_isin(isin, expected_us, expected_standard):
+    assert is_us_isin(isin) is expected_us
+    assert accounting_standard(isin) == expected_standard

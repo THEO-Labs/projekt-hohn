@@ -199,7 +199,7 @@ export function CompanyCard({ portfolioId, data, definitions, onChanged }: Props
             <div>
               <div className="flex items-center justify-between gap-2">
                 <div className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
-                  H-Return IFRS
+                  H-Return {company.accounting_standard}
                 </div>
                 <AgeBadge iso={data.h_return_gaap?.fetched_at} />
               </div>

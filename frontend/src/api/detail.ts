@@ -76,6 +76,8 @@ export type CompanyMetaOut = {
   currency: string;
   fiscal_year_end_month: number | null;
   fiscal_year_end_day: number | null;
+  // Serverseitig aus der ISIN abgeleitet: US-Filer -> "US-GAAP", sonst "IFRS"
+  accounting_standard: "IFRS" | "US-GAAP";
 };
 
 export type CompanyDetailOut = {

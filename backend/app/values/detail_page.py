@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.deps import current_user
 from app.auth.models import User
+from app.companies.isin import accounting_standard
 from app.companies.models import Company
 from app.db import get_db
 from app.portfolios.models import Portfolio
@@ -115,6 +116,8 @@ class CompanyMetaOut(BaseModel):
     currency: str
     fiscal_year_end_month: int | None
     fiscal_year_end_day: int | None
+    # Berechnetes Feld: US-Filer -> "US-GAAP", sonst "IFRS"
+    accounting_standard: str
 
 
 class CompanyDetailOut(BaseModel):
@@ -547,6 +550,7 @@ def get_company_detail(
             currency=company.currency,
             fiscal_year_end_month=company.fiscal_year_end_month,
             fiscal_year_end_day=company.fiscal_year_end_day,
+            accounting_standard=accounting_standard(company.isin),
         ),
         current_fy_estimate_year=current_year,
         prior_fy_year=prior_year,

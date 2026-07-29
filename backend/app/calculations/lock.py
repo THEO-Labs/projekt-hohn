@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.companies.isin import is_us_isin
 from app.companies.models import Company
 from app.ir_documents.models import (
     DocumentType,
@@ -21,7 +22,7 @@ _ANNUAL_REPORT_TYPES = (
 
 
 def is_us_company(company: Company) -> bool:
-    return bool(company.isin and company.isin.upper().startswith("US"))
+    return is_us_isin(company.isin)
 
 
 def annual_report_years(db: Session, company_id: UUID) -> list[int]:

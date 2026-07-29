@@ -112,7 +112,7 @@ function parseTwoStageSource(raw: string | null | undefined): {
 }
 
 const FLAG_LABELS: Record<string, string> = {
-  adjusted_not_reported: "Adjusted, not IFRS",
+  adjusted_not_reported: "Adjusted, not as-reported",
   per_share_confusion: "Per-share vs total",
   unit_scale_error: "Unit scale",
   currency_error: "Currency",
@@ -364,13 +364,13 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
                 ))}
               </div>
             )}
-            {/* Adjusted / Non-IFRS variant of the same period — shown only
+            {/* Adjusted / Non-reported standard variant of the same period — shown only
                 when the company publishes a separate adjusted figure. */}
             {cell.adjusted_value != null && (
               <div className="rounded-md border border-violet-200 bg-violet-50/60 p-2 space-y-1">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-violet-800">
-                    Adjusted / Non-IFRS
+                    Adjusted / Non-reported standard
                   </span>
                   <span className="font-mono text-[12.5px] font-semibold tabular-nums text-violet-950">
                     {cell.adjusted_value.toLocaleString("en-US", {

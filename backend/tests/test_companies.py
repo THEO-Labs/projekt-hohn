@@ -50,6 +50,48 @@ def test_delete_company(client, db):
     assert client.get(f"/api/portfolios/{pid}/companies").json() == []
 
 
+def test_accounting_standard_us_gaap_for_us_company(client, db):
+    # US-Filer (ISIN-Praefix "US") -> US-GAAP, in CompanyOut und im Detail-Endpoint
+    _user, pid = _login_with_portfolio(client, db)
+    created = client.post(f"/api/portfolios/{pid}/companies",
+                          json={"name": "Apple", "ticker": "AAPL",
+                                "isin": "US0378331005", "currency": "USD"})
+    assert created.status_code == 201
+    assert created.json()["accounting_standard"] == "US-GAAP"
+    cid = created.json()["id"]
+
+    listed = client.get(f"/api/portfolios/{pid}/companies").json()
+    assert listed[0]["accounting_standard"] == "US-GAAP"
+
+    detail = client.get(f"/api/companies/{cid}/detail")
+    assert detail.status_code == 200
+    assert detail.json()["company"]["accounting_standard"] == "US-GAAP"
+
+
+def test_accounting_standard_ifrs_for_german_company(client, db):
+    # Deutsche Firma -> IFRS
+    _user, pid = _login_with_portfolio(client, db)
+    created = client.post(f"/api/portfolios/{pid}/companies",
+                          json={"name": "BASF", "ticker": "BAS.DE",
+                                "isin": "DE000BASF111", "currency": "EUR"})
+    assert created.status_code == 201
+    assert created.json()["accounting_standard"] == "IFRS"
+    cid = created.json()["id"]
+
+    detail = client.get(f"/api/companies/{cid}/detail")
+    assert detail.status_code == 200
+    assert detail.json()["company"]["accounting_standard"] == "IFRS"
+
+
+def test_accounting_standard_ifrs_without_isin(client, db):
+    # Ohne ISIN kein US-Nachweis -> Default IFRS
+    _user, pid = _login_with_portfolio(client, db)
+    created = client.post(f"/api/portfolios/{pid}/companies",
+                          json={"name": "X", "ticker": "X", "currency": "EUR"})
+    assert created.status_code == 201
+    assert created.json()["accounting_standard"] == "IFRS"
+
+
 def test_create_company_with_invalid_isin_returns_422(client, db):
     _user, pid = _login_with_portfolio(client, db)
     response = client.post(f"/api/portfolios/{pid}/companies",

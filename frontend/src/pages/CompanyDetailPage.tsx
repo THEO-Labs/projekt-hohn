@@ -206,10 +206,12 @@ const HALF_LEFT_INNER = "grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-
 function MetricsBody({
   rowsByKey,
   fyYear,
+  gaapLabel,
   onOpenCell,
 }: {
   rowsByKey: Record<string, CompanyValue | undefined>;
   fyYear: number | null;
+  gaapLabel: string;
   onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   return (
@@ -222,7 +224,7 @@ function MetricsBody({
           </div>
           <div className="flex items-center justify-end gap-1.5 text-[10px] font-semibold tracking-wider uppercase text-sky-700">
             <span className="h-2 w-2 rounded-full bg-sky-500" />
-            IFRS
+            {gaapLabel}
           </div>
         </div>
         <div className="flex items-center justify-end gap-1.5 text-[10px] font-semibold tracking-wider uppercase text-emerald-700">
@@ -372,12 +374,14 @@ function ClickableCell({
 function QuarterlyBlock({
   data,
   variant,
+  gaapLabel,
   showAnnual = true,
   onOpenCell,
   unit,
 }: {
   data: QuarterlyBlockData;
   variant: "gaap" | "adjusted";
+  gaapLabel: string;
   showAnnual?: boolean;
   unit?: string;
   onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
@@ -399,7 +403,7 @@ function QuarterlyBlock({
   const head = "px-1.5 py-1 text-[10px] font-semibold tracking-wide uppercase text-muted-foreground text-right";
 
   const dotCls = variant === "gaap" ? "bg-sky-500" : "bg-emerald-500";
-  const label = variant === "gaap" ? "IFRS" : "Adjusted";
+  const label = variant === "gaap" ? gaapLabel : "Adjusted";
   const labelCls = variant === "gaap" ? "text-sky-700" : "text-emerald-700";
 
   const isPerShare = !!unit && !unit.includes("millions");
@@ -472,6 +476,7 @@ function QuarterlyBlock({
 function QuarterlyDualBody({
   gaap,
   adjusted,
+  gaapLabel,
   showAnnual = true,
   onOpenCell,
   unit,
@@ -479,13 +484,14 @@ function QuarterlyDualBody({
   unit?: string;
   gaap: QuarterlyBlockData;
   adjusted: QuarterlyBlockData;
+  gaapLabel: string;
   showAnnual?: boolean;
   onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   return (
     <div className={`${HALVES} px-6 py-3`}>
-      <QuarterlyBlock data={gaap} variant="gaap" showAnnual={showAnnual} onOpenCell={onOpenCell} unit={unit} />
-      <QuarterlyBlock data={adjusted} variant="adjusted" showAnnual={showAnnual} onOpenCell={onOpenCell} unit={unit} />
+      <QuarterlyBlock data={gaap} variant="gaap" gaapLabel={gaapLabel} showAnnual={showAnnual} onOpenCell={onOpenCell} unit={unit} />
+      <QuarterlyBlock data={adjusted} variant="adjusted" gaapLabel={gaapLabel} showAnnual={showAnnual} onOpenCell={onOpenCell} unit={unit} />
     </div>
   );
 }
@@ -495,12 +501,14 @@ function QuarterlyDualBody({
 function BalanceSheetBlock({
   data,
   variant,
+  gaapLabel,
   currentYear,
   priorYear,
   onOpenCell,
 }: {
   data: BSData;
   variant: "gaap" | "adjusted";
+  gaapLabel: string;
   currentYear: number;
   priorYear: number;
   onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
@@ -508,7 +516,7 @@ function BalanceSheetBlock({
   const head = "px-1.5 py-1 text-[10px] font-semibold tracking-wide uppercase text-muted-foreground text-right";
 
   const dotCls = variant === "gaap" ? "bg-sky-500" : "bg-emerald-500";
-  const label = variant === "gaap" ? "IFRS" : "Adjusted";
+  const label = variant === "gaap" ? gaapLabel : "Adjusted";
   const labelCls = variant === "gaap" ? "text-sky-700" : "text-emerald-700";
 
   return (
@@ -557,15 +565,17 @@ function BalanceSheetBlock({
 
 function BalanceSheetBody({
   sec,
+  gaapLabel,
   onOpenCell,
 }: {
   sec: BalanceSheetSection;
+  gaapLabel: string;
   onOpenCell: (cell: Cell, displayValue: string, anchor: DOMRect) => void;
 }) {
   return (
     <div className={`${HALVES} px-6 py-3`}>
-      <BalanceSheetBlock data={sec.gaap} variant="gaap" currentYear={sec.currentYear} priorYear={sec.priorYear} onOpenCell={onOpenCell} />
-      <BalanceSheetBlock data={sec.adjusted} variant="adjusted" currentYear={sec.currentYear} priorYear={sec.priorYear} onOpenCell={onOpenCell} />
+      <BalanceSheetBlock data={sec.gaap} variant="gaap" gaapLabel={gaapLabel} currentYear={sec.currentYear} priorYear={sec.priorYear} onOpenCell={onOpenCell} />
+      <BalanceSheetBlock data={sec.adjusted} variant="adjusted" gaapLabel={gaapLabel} currentYear={sec.currentYear} priorYear={sec.priorYear} onOpenCell={onOpenCell} />
     </div>
   );
 }
@@ -890,7 +900,7 @@ function CompanyDetailContent({
         </div>
 
         <CollapsibleCard id={METRICS_ID} title="Overview metrics">
-          <MetricsBody rowsByKey={rowsByKey} fyYear={fyYear} onOpenCell={openCell} />
+          <MetricsBody rowsByKey={rowsByKey} fyYear={fyYear} gaapLabel={company.accounting_standard} onOpenCell={openCell} />
         </CollapsibleCard>
 
         {quarterlySections.map((s) => (
@@ -903,6 +913,7 @@ function CompanyDetailContent({
             <QuarterlyDualBody
               gaap={s.gaap}
               adjusted={s.adjusted}
+              gaapLabel={company.accounting_standard}
               showAnnual={s.showAnnual}
               onOpenCell={openCell}
               unit={s.unit}
@@ -915,7 +926,7 @@ function CompanyDetailContent({
           title="Balance Sheet"
           right={<UnitInfo unit={balanceSheet.unit} />}
         >
-          <BalanceSheetBody sec={balanceSheet} onOpenCell={openCell} />
+          <BalanceSheetBody sec={balanceSheet} gaapLabel={company.accounting_standard} onOpenCell={openCell} />
         </CollapsibleCard>
 
         {activeCell && (

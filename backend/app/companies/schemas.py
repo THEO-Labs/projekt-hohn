@@ -1,9 +1,9 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-from app.companies.isin import validate_isin
+from app.companies.isin import accounting_standard, validate_isin
 
 
 class CompanyCreate(BaseModel):
@@ -49,6 +49,12 @@ class CompanyOut(BaseModel):
     fiscal_year_end_day: int | None = None
     created_at: datetime
     updated_at: datetime
+
+    # Berechnetes Response-Feld (kein DB-Feld): US-Filer -> "US-GAAP", sonst "IFRS"
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def accounting_standard(self) -> str:
+        return accounting_standard(self.isin)
 
 
 class CompanyLookupOut(BaseModel):

@@ -3,6 +3,18 @@ import re
 _ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}\d$")
 
 
+def is_us_isin(isin: str | None) -> bool:
+    """US-Filer werden am ISIN-Praefix "US" erkannt."""
+    return bool(isin and isin.upper().startswith("US"))
+
+
+def accounting_standard(isin: str | None) -> str:
+    """Rechnungslegungs-Regelwerk der Firma, abgeleitet aus der ISIN:
+    US-Filer berichten nach US-GAAP, alle anderen nach IFRS.
+    Berechnetes Response-Feld, kein DB-Feld."""
+    return "US-GAAP" if is_us_isin(isin) else "IFRS"
+
+
 def validate_isin(value: str) -> bool:
     if not _ISIN_RE.match(value):
         return False
