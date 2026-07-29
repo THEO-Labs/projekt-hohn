@@ -148,6 +148,24 @@ def validate_cross_metrics(db: Session, company_id: UUID, year: int) -> list[str
         if mismatch:
             active.append("sbc_implausibly_low")
 
+    # 5. Einheiten-Detektor: absolute-EUR-Keys unter 1 Mio (aber != 0) sind
+    #    fast immer eine fehlende Mio-Skalierung des Extractors
+    #    (BAYN capex '2510' = 2.51 Mrd, CBK cash '31525' = 31.5 Mrd).
+    _ABS_EUR_KEYS = (
+        "revenue", "net_income", "ebitda", "fcf", "operating_cash_flow", "capex",
+        "sbc", "buyback_volume", "dividends", "cash_and_equivalents",
+        "st_investments", "st_debt", "lt_debt", "net_debt",
+    )
+    for key in _ABS_EUR_KEYS:
+        for pt in ("FY",) + _Q_TYPES:
+            row = _row_of(rows, key, pt)
+            if row is None or row.numeric_value is None:
+                continue
+            suspect = row.numeric_value != 0 and abs(row.numeric_value) < Decimal("1000000")
+            _set_flag(row, "unit_scale_suspect", suspect)
+            if suspect:
+                active.append(f"unit_scale_suspect:{key}:{pt}")
+
     if active:
         logger.warning("consistency: %s/%s flags: %s", company_id, year, ",".join(active))
     return active

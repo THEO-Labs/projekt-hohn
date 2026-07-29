@@ -222,3 +222,23 @@ def test_row_lookup_prefers_actual_over_forecast_pair(client, db):
     assert _value_of(rows, "net_income", "FY") == Decimal("764000000")
     row = _row_of(rows, "net_income", "FY")
     assert row is not None and row.is_forecast is False
+
+
+def test_unit_scale_suspect_flagged(client, db):
+    """Absolute-EUR-Keys mit Wert < 1 Mio sind fast immer fehlende
+    Mio-Skalierung des Extractors (BAYN capex '2510', CBK cash '31525')."""
+    cid = _company(client, db, "c15@example.com")
+    _seed(db, cid, "capex", "FY", 2510)
+    validate_cross_metrics(db, cid, 2026)
+    db.commit()
+    assert "unit_scale_suspect" in (_row(db, cid, "capex", "FY").consistency_flags or "")
+
+
+def test_unit_scale_zero_and_normal_not_flagged(client, db):
+    cid = _company(client, db, "c16@example.com")
+    _seed(db, cid, "capex", "FY", 0)
+    _seed(db, cid, "revenue", "FY", 24000e6)
+    validate_cross_metrics(db, cid, 2026)
+    db.commit()
+    assert _row(db, cid, "capex", "FY").consistency_flags is None
+    assert _row(db, cid, "revenue", "FY").consistency_flags is None
