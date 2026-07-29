@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Building2, ChevronLeft, Loader2, Plus, RefreshCw } from "lucide-react";
+import { Building2, ChevronLeft, Loader2, Plus, RefreshCw, Share2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -25,7 +25,15 @@ import {
   type CardSortMode,
   type CompanyCardData,
 } from "@/api/dashboard";
-import { startFullRecompute, getFullRecomputeStatus } from "@/api/portfolios";
+import {
+  startFullRecompute,
+  getFullRecomputeStatus,
+  listMembers,
+  addMember,
+  removeMember,
+  type PortfolioMember,
+} from "@/api/portfolios";
+import { ApiError } from "@/api/client";
 import { t } from "@/lib/i18n";
 
 const SORT_STORAGE_KEY = "hohn:portfolio_sort";
@@ -56,6 +64,12 @@ export function PortfolioDetailPage() {
   const [lookedUp, setLookedUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  // Teilen-Dialog: Mitglieder werden erst beim Oeffnen geladen
+  const [shareOpen, setShareOpen] = useState(false);
+  const [members, setMembers] = useState<PortfolioMember[] | null>(null);
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [batch, setBatch] = useState<{ status: string; done?: number; total?: number; current?: string[] } | null>(null);
 
@@ -85,6 +99,55 @@ export function PortfolioDetailPage() {
     toast.success(`Full recompute gestartet (${s.total} Firmen, 3 parallel)`);
   };
   const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // Owner-Check ueber die members-Liste: nur der Owner darf verwalten
+  const isOwner = members?.some((m) => m.user_id === user?.id && m.is_owner) ?? false;
+
+  const loadMembers = async () => {
+    if (!id) return;
+    try {
+      setMembers(await listMembers(id));
+    } catch {
+      toast.error("Mitglieder konnten nicht geladen werden");
+    }
+  };
+
+  const openShareDialog = (v: boolean) => {
+    setShareOpen(v);
+    if (v) loadMembers();
+    else { setMembers(null); setShareEmail(""); }
+  };
+
+  const handleAddMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = shareEmail.trim();
+    if (!id || !email || shareBusy) return;
+    setShareBusy(true);
+    try {
+      await addMember(id, email);
+      setShareEmail("");
+      toast.success(`${email} hinzugefuegt`);
+      await loadMembers();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Hinzufuegen fehlgeschlagen");
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const handleRemoveMember = async (m: PortfolioMember) => {
+    if (!id || shareBusy) return;
+    setShareBusy(true);
+    try {
+      await removeMember(id, m.user_id);
+      toast.success(`${m.email} entfernt`);
+      await loadMembers();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Entfernen fehlgeschlagen");
+    } finally {
+      setShareBusy(false);
+    }
+  };
 
   const loadAll = async () => {
     if (!id) return;
@@ -275,6 +338,67 @@ export function PortfolioDetailPage() {
                 ? `Recompute ${batch.done ?? 0}/${batch.total ?? 0} (${(batch.current ?? []).join(", ")})`
                 : "Full recompute (all)"}
             </Button>
+          <Dialog open={shareOpen} onOpenChange={openShareDialog}>
+            <DialogTrigger render={<Button variant="outline" className="flex items-center gap-1.5" />}>
+              <Share2 className="h-4 w-4" />
+              Teilen
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Portfolio teilen</DialogTitle>
+              </DialogHeader>
+              {members === null ? (
+                <div className="flex items-center justify-center py-6 text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Lade Mitglieder…
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    {members.map((m) => (
+                      <div
+                        key={m.user_id}
+                        className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm"
+                      >
+                        <span className="font-mono text-foreground">{m.email}</span>
+                        {m.is_owner ? (
+                          <span className="text-xs text-muted-foreground">Owner</span>
+                        ) : isOwner ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={shareBusy}
+                            onClick={() => handleRemoveMember(m)}
+                            title={`${m.email} entfernen`}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                  {isOwner && (
+                    <form onSubmit={handleAddMember} className="space-y-1.5">
+                      <Label className="text-sm text-muted-foreground">
+                        Per E-Mail hinzufuegen (User muss bereits existieren)
+                      </Label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="email"
+                          value={shareEmail}
+                          onChange={(e) => setShareEmail(e.target.value)}
+                          placeholder="name@example.com"
+                        />
+                        <Button type="submit" variant="secondary" disabled={shareBusy || !shareEmail.trim()}>
+                          {shareBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Hinzufuegen"}
+                        </Button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
           <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setLookupQuery(""); setLookedUp(false); } }}>
             <DialogTrigger render={<Button className="flex items-center gap-1.5 shadow-lg shadow-primary/20" />}>
               <Plus className="h-4 w-4" />
