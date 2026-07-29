@@ -7,6 +7,21 @@ import {
   type ValueDefinition,
 } from "./values";
 
+// KPI-Bestandteile des H-Returns, Anzeige-Reihenfolge auf der Karte
+export const FY_KPI_KEYS = [
+  "dividend_yield",
+  "ni_growth",
+  "net_buyback_yield",
+  "net_debt_change_pct",
+  "pe_ratio",
+  "h_peg",
+  "ps_ratio",
+  "fcf_yield",
+  "net_debt_to_ocf",
+] as const;
+
+export type FyKpiKey = (typeof FY_KPI_KEYS)[number];
+
 export type CompanyCardData = {
   company: Company;
   stock_price: CompanyValue | null;
@@ -19,19 +34,41 @@ export type CompanyCardData = {
   h_return_adjusted_value: number | null;
   h_return_adjusted_ts: string | null;
   fy_estimate_year: number | null;
+  fy_kpis: Record<FyKpiKey, number | null>;
 };
 
 const DAILY_KEYS = ["market_cap", "stock_price", "shares_outstanding"];
 
-const findLatest = (rows: CompanyValue[], key: string): CompanyValue | null => {
-  const matches = rows.filter((r) => r.value_key === key);
-  if (matches.length === 0) return null;
-  return matches.reduce((best, r) => {
-    const bestYear = best.period_year ?? -Infinity;
-    const rYear = r.period_year ?? -Infinity;
-    return rYear > bestYear ? r : best;
-  });
+// Bei Actual+Forecast-Paaren fuer dieselbe Zelle gewinnt IMMER die
+// Actual-Zeile (is_forecast=false) — das Backend liefert ohne ORDER BY,
+// sonst kann die Karte nichtdeterministisch einen stale Forecast zeigen.
+const pickRow = (candidates: CompanyValue[]): CompanyValue | null => {
+  if (candidates.length === 0) return null;
+  return candidates.find((r) => !r.is_forecast) ?? candidates[0];
 };
+
+const findLatest = (rows: CompanyValue[], key: string): CompanyValue | null => {
+  const matches = rows.filter((r) => r.value_key === key && r.period_year != null);
+  if (matches.length === 0) return null;
+  const maxYear = Math.max(...matches.map((r) => r.period_year as number));
+  return pickRow(matches.filter((r) => r.period_year === maxYear));
+};
+
+// Zieht die KPI-Werte aus den FY-Rows. Bevorzugt das Jahr der H-Return-Zeile
+// (Konsistenz mit dem FY-Badge), sonst das jeweils juengste vorhandene Jahr.
+export function extractFyKpis(
+  fyRows: CompanyValue[],
+  fyYear: number | null,
+): Record<FyKpiKey, number | null> {
+  const kpis = {} as Record<FyKpiKey, number | null>;
+  for (const key of FY_KPI_KEYS) {
+    const row = fyYear != null
+      ? pickRow(fyRows.filter((r) => r.value_key === key && r.period_year === fyYear))
+      : findLatest(fyRows, key);
+    kpis[key] = row?.numeric_value != null ? Number(row.numeric_value) : null;
+  }
+  return kpis;
+}
 
 export async function loadCompanyCard(company: Company): Promise<CompanyCardData> {
   const [snapshotRows, fyRows] = await Promise.all([
@@ -64,6 +101,7 @@ export async function loadCompanyCard(company: Company): Promise<CompanyCardData
     : null;
   const h_return_adjusted_ts = h_return_gaap?.fetched_at ?? null;
   const fy_estimate_year = h_return_gaap?.period_year ?? null;
+  const fy_kpis = extractFyKpis(fyRows, fy_estimate_year);
 
   return {
     company,
@@ -77,6 +115,7 @@ export async function loadCompanyCard(company: Company): Promise<CompanyCardData
     h_return_adjusted_value,
     h_return_adjusted_ts,
     fy_estimate_year,
+    fy_kpis,
   };
 }
 

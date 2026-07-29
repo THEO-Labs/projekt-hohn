@@ -9,9 +9,9 @@ describe("LoginPage", () => {
     const onLogin = vi.fn().mockResolvedValue(undefined);
     render(<LoginPage onLogin={onLogin} />);
 
-    await userEvent.type(screen.getByLabelText(/E-Mail/i), "t@example.com");
-    await userEvent.type(screen.getByLabelText(/Passwort/i), "pw1234");
-    await userEvent.click(screen.getByRole("button", { name: /Anmelden/i }));
+    await userEvent.type(screen.getByLabelText(/^Email$/i), "t@example.com");
+    await userEvent.type(screen.getByLabelText(/^Password$/i), "pw1234");
+    await userEvent.click(screen.getByRole("button", { name: /Sign in/i }));
 
     expect(onLogin).toHaveBeenCalledWith("t@example.com", "pw1234");
   });
@@ -20,10 +20,10 @@ describe("LoginPage", () => {
     const onLogin = vi.fn().mockRejectedValue(new Error("nope"));
     render(<LoginPage onLogin={onLogin} />);
 
-    await userEvent.type(screen.getByLabelText(/E-Mail/i), "t@example.com");
-    await userEvent.type(screen.getByLabelText(/Passwort/i), "pw1234");
-    await userEvent.click(screen.getByRole("button", { name: /Anmelden/i }));
+    await userEvent.type(screen.getByLabelText(/^Email$/i), "t@example.com");
+    await userEvent.type(screen.getByLabelText(/^Password$/i), "pw1234");
+    await userEvent.click(screen.getByRole("button", { name: /Sign in/i }));
 
-    expect(await screen.findByText(/Anmeldung fehlgeschlagen/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Sign-in failed/i)).toBeInTheDocument();
   });
 });

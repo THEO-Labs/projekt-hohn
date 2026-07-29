@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { CompanyCardData } from "@/api/dashboard";
+import type { CompanyCardData, FyKpiKey } from "@/api/dashboard";
 import { loadCompanyCard } from "@/api/dashboard";
 import type { ValueDefinition } from "@/api/values";
 import { deleteCompany, updateCompany } from "@/api/companies";
@@ -18,9 +18,29 @@ import {
 } from "@/components/companyCardBits";
 import {
   formatFyEnd,
+  formatNumber,
   formatPercent,
   formatShort,
 } from "@/lib/format";
+
+// KPI-Bestandteile des H-Returns: Label und Formatierung je value_key
+const KPI_ITEMS: { key: FyKpiKey; label: string; kind: "percent" | "ratio" }[] = [
+  { key: "dividend_yield", label: "Dividend Yield", kind: "percent" },
+  { key: "ni_growth", label: "NI Growth", kind: "percent" },
+  { key: "net_buyback_yield", label: "Net Buyback Yield", kind: "percent" },
+  { key: "net_debt_change_pct", label: "ΔNet Debt", kind: "percent" },
+  { key: "pe_ratio", label: "PE Ratio", kind: "ratio" },
+  { key: "h_peg", label: "PEG", kind: "ratio" },
+  { key: "ps_ratio", label: "PS Ratio", kind: "ratio" },
+  { key: "fcf_yield", label: "FCF Yield", kind: "percent" },
+  { key: "net_debt_to_ocf", label: "Net Debt/Op. CF", kind: "ratio" },
+];
+
+function formatKpi(value: number | null, kind: "percent" | "ratio"): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  if (kind === "percent") return formatPercent(value, 1);
+  return formatNumber(value, Math.abs(value) >= 10 ? 1 : 2);
+}
 
 type Props = {
   portfolioId: string;
@@ -174,28 +194,44 @@ export function CompanyCard({ portfolioId, data, definitions, onChanged }: Props
         </div>
 
         {/* H-Returns — kompakt, zwei Spalten nebeneinander */}
-        <div className="grid grid-cols-2 gap-6 border-t border-border/40 pt-2.5 md:border-l md:border-t-0 md:pl-8 md:pt-0">
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
-                H-Return IFRS
+        <div className="border-t border-border/40 pt-2.5 md:border-l md:border-t-0 md:pl-8 md:pt-0">
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+                  H-Return IFRS
+                </div>
+                <AgeBadge iso={data.h_return_gaap?.fetched_at} />
               </div>
-              <AgeBadge iso={data.h_return_gaap?.fetched_at} />
+              <div className={`mt-0.5 text-2xl font-bold tabular-nums ${hReturnTone(data.h_return_gaap?.numeric_value ?? null)}`}>
+                {formatPercent(data.h_return_gaap?.numeric_value ?? null, 1)}
+              </div>
             </div>
-            <div className={`mt-0.5 text-2xl font-bold tabular-nums ${hReturnTone(data.h_return_gaap?.numeric_value ?? null)}`}>
-              {formatPercent(data.h_return_gaap?.numeric_value ?? null, 1)}
+            <div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+                  H-Return Adj.
+                </div>
+                <AgeBadge iso={data.h_return_adjusted_ts} />
+              </div>
+              <div className={`mt-0.5 text-2xl font-bold tabular-nums ${hReturnTone(data.h_return_adjusted_value)}`}>
+                {formatPercent(data.h_return_adjusted_value, 1)}
+              </div>
             </div>
           </div>
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
-                H-Return Adj.
+
+          {/* KPI-Bestandteile des H-Returns */}
+          <div className="mt-2 grid grid-cols-3 gap-x-4 gap-y-1.5 border-t border-border/40 pt-2">
+            {KPI_ITEMS.map((item) => (
+              <div key={item.key} className="min-w-0">
+                <div className="truncate text-[10px] text-muted-foreground" title={item.label}>
+                  {item.label}
+                </div>
+                <div className="text-[11px] font-medium tabular-nums text-foreground">
+                  {formatKpi(data.fy_kpis[item.key], item.kind)}
+                </div>
               </div>
-              <AgeBadge iso={data.h_return_adjusted_ts} />
-            </div>
-            <div className={`mt-0.5 text-2xl font-bold tabular-nums ${hReturnTone(data.h_return_adjusted_value)}`}>
-              {formatPercent(data.h_return_adjusted_value, 1)}
-            </div>
+            ))}
           </div>
         </div>
       </div>
