@@ -9,11 +9,11 @@ unit: Berichtswaehrung total (absoluter Cash-Payout, NIEMALS per-share)
 # dividends — Cash-Dividende Total
 
 ## Definition
-**Cash-Ausschuettung an ALLE Aktionaere fuer das Geschaeftsjahr `{period_year}`**. Das ist die Dividende die im Geschaeftsjahr `{period_year}` **verdient** wurde (aus dem NI dieses GJ) und typisch im Mai des Folgejahres nach der HV ausgezahlt wird.
+**Cash-Ausschuettung an ALLE Aktionaere, die IM KALENDERJAHR `{period_year}` GEZAHLT wurde** (Zahlungsjahr-Konvention, Kundenentscheidung 2026-07). Bei deutschen Einmal-Zahlern ist das die Dividende fuer das VORJAHRES-Geschaeftsjahr, beschlossen auf der HV im Fruehjahr von `{period_year}`.
 
-Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Dividende fuer GJ 2025** = Vorschlag im Annual Report 2025 = Cash-Zahlung Mai 2026 nach HV.
+Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Cash-Zahlung im Mai 2025** = Dividende fuer GJ 2024 (adidas: 2.00 EUR x 178.6M = ~357M; NICHT die 500M fuer GJ 2025, die erst Mai 2026 fliessen).
 
-**Konvention konsistent mit allen anderen Metriken**: `period_year` = Geschaeftsjahr der Firma (nicht Kalenderjahr der Cash-Zahlung).
+**ACHTUNG — Abweichung von allen anderen Metriken**: period_year = Kalenderjahr des CASH-FLUSSES, nicht das Geschaeftsjahr des Verdienens. Fuer das laufende Jahr ist die Zahlung meist schon bekannt/beschlossen (HV im Fruehjahr) — dann is_estimate=false.
 
 ## Quelle im Report
 1. **Annual Report `{period_year}`** → "Dividendenvorschlag" / "Proposed dividend" fuer GJ `{period_year}`
@@ -38,12 +38,12 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Dividende fuer G
 - RICHTIG: 2,70 EUR/Aktie × 200,18M Aktien = **540.500.000 EUR**
 - **PFLICHT**: immer `per_share × shares_outstanding` rechnen wenn du per-share findest.
 
-**Geschaeftsjahr vs Kalenderjahr der Zahlung** (kritisch):
-- FALSCH: `period_year=2025` mit dem Cash-Payout aus dem Kalenderjahr 2025 (= Div fuer GJ 2024) fuellen.
-- RICHTIG: `period_year=2025` = Div die im GJ 2025 **verdient** wurde (Vorschlag im AR 2025, Cash Mai 2026).
+**Geschaeftsjahr vs Kalenderjahr der Zahlung** (kritisch — Konvention seit 2026-07 ZAHLUNGSJAHR):
+- RICHTIG: `period_year=2025` = Cash-Payout im Kalenderjahr 2025 (= Dividende fuer GJ 2024, HV Fruehjahr 2025).
+- FALSCH: den AR-`{period_year}`-Vorschlag eintragen (der fliesst erst im Folgejahr).
 - Beispiel Continental:
-  - `period_year=2024 FY dividends` = 2,20 EUR × 200,18M = **440.500.000 EUR** (Zahlung Mai 2025)
-  - `period_year=2025 FY dividends` = 2,70 EUR × 200,18M = **540.500.000 EUR** (Zahlung Mai 2026)
+  - `period_year=2025 FY dividends` = 2,20 EUR × 200,18M = **440.500.000 EUR** (fuer GJ 2024, Zahlung Mai 2025)
+  - `period_year=2026 FY dividends` = 2,70 EUR × 200,18M = **540.500.000 EUR** (fuer GJ 2025, Zahlung Mai 2026)
 
 **Regular vs Special Dividend**:
 - Sonderdividenden (z.B. aus Spin-offs) sind Teil des Total-Cash-Payout, wenn cash-relevant.
@@ -61,11 +61,10 @@ Beispiel: `dividends`, `period_year=2025`, `period_type=FY` = **Dividende fuer G
 - Div ist Corporate-Ebene, immer Total.
 
 ## Cross-References (Konsistenz-Checks)
-1. **Q-Split (Rollup-Konvention, KEIN Zahlungs-Timing)**: Die Pipeline summiert
-   Q1+Q2+Q3+Q4 = FY fuer dividends. Deutsche Einmal-Zahler: **Q1 = Q2 = Q3 = 0
-   und Q4 = FY-Wert** eintragen (source_quote: "Rollup-Konvention: Jahresdividende
-   dem Q4 des verdienten GJ zugeordnet"). Quartalszahler (US-Firmen, QIA, REITs):
-   echte Quartals-Cash-Dividenden pro Q. So bleibt Q-Sum = FY immer konsistent.
+1. **Q-Split (Zahlungs-Timing)**: Die Pipeline summiert Q1+Q2+Q3+Q4 = FY.
+   Deutsche Einmal-Zahler zahlen nach der HV im Fruehjahr: **Q2 = FY-Wert,
+   Q1 = Q3 = Q4 = 0** (source_quote nennt HV-/Zahldatum). Quartalszahler:
+   echte Quartals-Cash-Dividenden pro Q. Q-Sum = FY bleibt konsistent.
 2. **dividend_yield = dividends / market_cap × 100**: muss in Sanity-Range fallen (2–6% DAX)
 3. **per_share_check = dividends / shares_outstanding**: sollte plausibel sein (0,5–20 EUR fuer DAX)
 
