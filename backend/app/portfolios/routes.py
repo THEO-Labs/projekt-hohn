@@ -184,6 +184,22 @@ def start_full_recompute(
     return start_portfolio_recompute(portfolio_id, user.id)
 
 
+@router.post("/{portfolio_id}/smart-recompute")
+def start_smart_recompute(
+    portfolio_id: UUID,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Smart Recompute: nur Firmen mit neuen Earnings seit dem letzten
+    Two-Stage-Lauf (plus nie gerechnete Firmen). Antwort enthaelt 'selected'
+    mit den Tickern der ausgewaehlten Firmen; leere Auswahl -> done/total=0.
+    """
+    from app.values.batch import start_portfolio_recompute
+
+    _owned_portfolio(db, user, portfolio_id)
+    return start_portfolio_recompute(portfolio_id, user.id, only_stale=True)
+
+
 @router.get("/{portfolio_id}/full-recompute-status")
 def full_recompute_status(
     portfolio_id: UUID,

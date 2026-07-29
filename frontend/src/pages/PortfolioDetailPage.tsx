@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Building2, ChevronLeft, Loader2, Plus, RefreshCw, Share2, X } from "lucide-react";
+import { Building2, ChevronLeft, Loader2, Plus, RefreshCw, Share2, X, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -27,11 +27,13 @@ import {
 } from "@/api/dashboard";
 import {
   startFullRecompute,
+  startSmartRecompute,
   getFullRecomputeStatus,
   listMembers,
   addMember,
   removeMember,
   type PortfolioMember,
+  type BatchStatus,
 } from "@/api/portfolios";
 import { ApiError } from "@/api/client";
 import { t } from "@/lib/i18n";
@@ -72,7 +74,7 @@ export function PortfolioDetailPage() {
   const [shareBusy, setShareBusy] = useState(false);
 
   const [refreshingAll, setRefreshingAll] = useState(false);
-  const [batch, setBatch] = useState<{ status: string; done?: number; total?: number; current?: string[] } | null>(null);
+  const [batch, setBatch] = useState<BatchStatus | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -98,6 +100,27 @@ export function PortfolioDetailPage() {
     const s = await startFullRecompute(id);
     setBatch(s);
     toast.success(`Full recompute gestartet (${s.total} Firmen, 3 parallel)`);
+  };
+
+  const handleSmartRecompute = async () => {
+    if (!id) return;
+    if (!window.confirm("Smart Recompute starten? Rechnet nur Firmen mit neuen Earnings seit dem letzten Recompute.")) return;
+    const s = await startSmartRecompute(id);
+    // Kein selected-Feld = der Guard hat einen bereits laufenden Batch
+    // zurueckgegeben (Smart oder Full) — nicht als Neustart melden.
+    if (s.selected == null) {
+      setBatch(s);
+      toast.info("Es laeuft bereits ein Recompute fuer dieses Portfolio");
+      return;
+    }
+    if (s.selected.length === 0 && s.status === "done") {
+      toast.info("Keine Firma hat neue Earnings — nichts zu tun");
+      return;
+    }
+    setBatch(s);
+    const shown = s.selected.slice(0, 5).join(", ");
+    const more = s.selected.length > 5 ? ` +${s.selected.length - 5} weitere` : "";
+    toast.success(`Smart recompute gestartet (${s.total} Firmen: ${shown}${more})`);
   };
   const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
 
@@ -339,6 +362,16 @@ export function PortfolioDetailPage() {
               {batch?.status === "running"
                 ? `Recompute ${batch.done ?? 0}/${batch.total ?? 0} (${(batch.current ?? []).join(", ")})`
                 : "Full recompute (all)"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleSmartRecompute}
+              disabled={batch?.status === "running" || cards.length === 0}
+              title="Smart Recompute — rechnet nur Firmen mit neuen Earnings seit dem letzten Recompute"
+              className="flex items-center gap-1.5"
+            >
+              <Zap className="h-4 w-4" />
+              Smart recompute
             </Button>
           <Dialog open={shareOpen} onOpenChange={openShareDialog}>
             <DialogTrigger render={<Button variant="outline" className="flex items-center gap-1.5" />}>

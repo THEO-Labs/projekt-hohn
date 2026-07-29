@@ -29,6 +29,9 @@ class BatchState:
     status: str = "running"  # running | done
     # Abschnitt des Batch-Laufs: companies | gap_fill | report | done
     phase: str = "companies"
+    # Auswahl-Modus: 'full' (alle Firmen) | 'stale_only' (nur Firmen mit
+    # neuen Earnings seit dem letzten Two-Stage-Lauf).
+    mode: str = "full"
     total: int = 0
     done: int = 0
     failed: list[str] = field(default_factory=list)
@@ -41,7 +44,7 @@ class BatchState:
 
     def to_dict(self) -> dict:
         return {
-            "status": self.status, "phase": self.phase,
+            "status": self.status, "phase": self.phase, "mode": self.mode,
             "total": self.total, "done": self.done,
             "failed": self.failed, "current": self.current,
             "started_at": self.started_at, "finished_at": self.finished_at,
@@ -72,38 +75,130 @@ def _recompute_one(company_id: UUID, owner_id: UUID, api_keys: list[str], year: 
         db.close()
 
 
-def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID) -> dict:
-    """Startet den Batch als Daemon-Thread; idempotent solange einer laeuft."""
+def select_stale_companies(db, portfolio_id: UUID) -> list:
+    """Firmen, deren Earnings nach dem letzten Two-Stage-Lauf liegen.
+
+    Stale-Kriterium:
+    - keine company_values-Zeile mit primary_method LIKE 'two_stage%'
+      (bzw. keine mit fetched_at) -> stale, die Firma wurde nie gerechnet;
+    - sonst: next_earnings_date existiert, liegt in der Vergangenheit
+      (strikt vor heute — Earnings am selben Tag koennen noch ausstehen)
+      UND nach dem Datum des juengsten two_stage-fetched_at;
+    - Firmen ohne next_earnings_date sind NICHT stale (keine Info).
+    """
+    from sqlalchemy import func as sa_func
+
+    from app.companies.models import Company
+    from app.values.models import CompanyValue
+
+    last_runs = dict(
+        db.query(CompanyValue.company_id, sa_func.max(CompanyValue.fetched_at))
+        .join(Company, Company.id == CompanyValue.company_id)
+        .filter(
+            Company.portfolio_id == portfolio_id,
+            CompanyValue.primary_method.like("two_stage%"),
+        )
+        .group_by(CompanyValue.company_id)
+        .all()
+    )
+
+    companies = (
+        db.query(Company)
+        .filter(Company.portfolio_id == portfolio_id)
+        .order_by(Company.name)
+        .all()
+    )
+
+    today = date.today()
+    stale = []
+    for c in companies:
+        last_run = last_runs.get(c.id)
+        if last_run is None:
+            stale.append(c)  # nie gerechnet
+            continue
+        earnings = c.next_earnings_date
+        if earnings is None or earnings >= today:
+            continue
+        # >= statt >: lief der letzte Lauf am Earnings-Tag VOR dem Release
+        # (z.B. Batch 08:00, Earnings 17:00), waere > faelschlich not-stale.
+        # Kosten der Grenze: maximal eine redundante Neuberechnung.
+        if earnings >= last_run.date():
+            stale.append(c)
+    return stale
+
+
+def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID, only_stale: bool = False) -> dict:
+    """Startet den Batch als Daemon-Thread; idempotent solange einer laeuft.
+
+    only_stale=True filtert die Firmenliste per select_stale_companies
+    (Smart Recompute). Die Antwort enthaelt zusaetzlich 'selected' mit den
+    Tickern der ausgewaehlten Firmen; bei leerer Auswahl wird der Batch
+    sofort als done registriert (kein Thread).
+    """
     from app.db import SessionLocal
     from app.companies.models import Company
     from app.values.models import SourceType, ValueDefinition
 
+    # Guard und Registrierung atomar: sonst koennen zwei fast-gleichzeitige
+    # POSTs (Smart + Full aus zwei Tabs) beide den Check passieren und
+    # doppelte Batches starten. Der Platzhalter reserviert den Slot, bevor
+    # die DB-Arbeit beginnt; bei leerer Auswahl wird er unten finalisiert.
+    placeholder = BatchState(
+        mode="stale_only" if only_stale else "full",
+        started_at=datetime.now(timezone.utc).isoformat(),
+    )
     with _LOCK:
         existing = _BATCHES.get(portfolio_id)
         if existing and existing.status == "running":
             return existing.to_dict()
+        _BATCHES[portfolio_id] = placeholder
 
     db = SessionLocal()
     try:
-        companies = (
-            db.query(Company)
-            .filter(Company.portfolio_id == portfolio_id)
-            .order_by(Company.name)
-            .all()
-        )
+        if only_stale:
+            companies = select_stale_companies(db, portfolio_id)
+        else:
+            companies = (
+                db.query(Company)
+                .filter(Company.portfolio_id == portfolio_id)
+                .order_by(Company.name)
+                .all()
+            )
         company_ids = [(c.id, c.ticker) for c in companies]
         api_keys = [
             vd.key for vd in db.query(ValueDefinition)
             .filter(ValueDefinition.source_type == SourceType.API)
             .order_by(ValueDefinition.sort_order)
         ]
+    except Exception:
+        # Platzhalter freigeben, sonst bleibt das Portfolio dauerhaft
+        # als "running" gesperrt.
+        with _LOCK:
+            if _BATCHES.get(portfolio_id) is placeholder:
+                _BATCHES.pop(portfolio_id)
+        raise
     finally:
         db.close()
 
+    selected = [ticker for _, ticker in company_ids]
+    now = datetime.now(timezone.utc).isoformat()
     state = BatchState(
+        mode="stale_only" if only_stale else "full",
         total=len(company_ids),
-        started_at=datetime.now(timezone.utc).isoformat(),
+        started_at=now,
     )
+
+    if only_stale and not company_ids:
+        # Leere Auswahl: nichts zu rechnen, Batch sofort als done ausweisen.
+        state.status = "done"
+        state.phase = "done"
+        state.finished_at = now
+        state.report = {"note": "no stale companies, nothing recomputed"}
+        with _LOCK:
+            _BATCHES[portfolio_id] = state
+        logger.info("batch: portfolio %s smart recompute — no stale companies, done", portfolio_id)
+        return state.to_dict() | {"selected": selected}
+
     with _LOCK:
         _BATCHES[portfolio_id] = state
 
@@ -201,4 +296,4 @@ def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID) -> dict:
                     portfolio_id, state.total - len(state.failed), state.total, state.failed)
 
     threading.Thread(target=_run, daemon=True, name=f"batch-{portfolio_id}").start()
-    return state.to_dict()
+    return state.to_dict() | {"selected": selected}

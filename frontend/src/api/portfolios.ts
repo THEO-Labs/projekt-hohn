@@ -31,14 +31,20 @@ export const removeMember = (portfolioId: string, userId: string) =>
 
 export type BatchStatus = {
   status: "idle" | "running" | "done";
+  mode?: "full" | "stale_only";
   total?: number;
   done?: number;
   failed?: string[];
   current?: string[];
+  // Nur in der Start-Response von smart-recompute: Ticker der ausgewaehlten Firmen.
+  selected?: string[];
 };
 
 export const startFullRecompute = (portfolioId: string) =>
   api<BatchStatus>(`/api/portfolios/${portfolioId}/full-recompute`, { method: "POST" });
+
+export const startSmartRecompute = (portfolioId: string) =>
+  api<BatchStatus>(`/api/portfolios/${portfolioId}/smart-recompute`, { method: "POST" });
 
 export const getFullRecomputeStatus = (portfolioId: string) =>
   api<BatchStatus>(`/api/portfolios/${portfolioId}/full-recompute-status`);
