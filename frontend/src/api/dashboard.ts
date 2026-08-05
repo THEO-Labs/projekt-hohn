@@ -96,11 +96,21 @@ const pickRow = (candidates: CompanyValue[]): CompanyValue | null => {
   return candidates.find((r) => !r.is_forecast) ?? candidates[0];
 };
 
-const findLatest = (rows: CompanyValue[], key: string): CompanyValue | null => {
-  const matches = rows.filter((r) => r.value_key === key && r.period_year != null);
+export const findLatest = (rows: CompanyValue[], key: string): CompanyValue | null => {
+  const matches = rows.filter((r) => r.value_key === key);
   if (matches.length === 0) return null;
-  const maxYear = Math.max(...matches.map((r) => r.period_year as number));
-  return pickRow(matches.filter((r) => r.period_year === maxYear));
+  const withYear = matches.filter((r) => r.period_year != null);
+  if (withYear.length === 0) {
+    // SNAPSHOT-Rows tragen kein period_year — juengste nach fetched_at.
+    const sorted = [...matches].sort(
+      (a, b) =>
+        (b.fetched_at ? Date.parse(b.fetched_at) : 0) -
+        (a.fetched_at ? Date.parse(a.fetched_at) : 0),
+    );
+    return pickRow(sorted);
+  }
+  const maxYear = Math.max(...withYear.map((r) => r.period_year as number));
+  return pickRow(withYear.filter((r) => r.period_year === maxYear));
 };
 
 // Zieht die KPI-Werte aus den FY-Rows. Bevorzugt das Jahr der H-Return-Zeile

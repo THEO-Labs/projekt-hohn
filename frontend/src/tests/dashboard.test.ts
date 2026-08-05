@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FY_KPI_KEYS, extractFyKpis, sortCompanyCards, type CompanyCardData } from "@/api/dashboard";
+import { FY_KPI_KEYS, extractFyKpis, findLatest, sortCompanyCards, type CompanyCardData } from "@/api/dashboard";
 import type { CompanyValue } from "@/api/values";
 import { formatEarningsDate, isEarningsSoon } from "@/lib/format";
 
@@ -64,6 +64,47 @@ it("parses string numeric values from the wire format", () => {
   ] as never[];
   const kpis = extractFyKpis(rows, 2026);
   expect(kpis.dividend_yield).toBeCloseTo(2.03);
+});
+
+// Regression: SNAPSHOT-Rows (stock_price etc.) tragen kein period_year —
+// findLatest darf sie nicht verwerfen, sonst zeigt die UI keine Stammdaten.
+describe("findLatest", () => {
+  const snap = (value_key: string, numeric_value: number, fetched_at: string | null, is_forecast = false) =>
+    ({
+      id: `${value_key}-${fetched_at}`,
+      company_id: "c1",
+      value_key,
+      period_year: null,
+      period_type: "SNAPSHOT",
+      is_forecast,
+      numeric_value,
+      fetched_at,
+    }) as unknown as CompanyValue;
+
+  it("findet SNAPSHOT-Rows ohne period_year (juengste nach fetched_at)", () => {
+    const rows = [
+      snap("stock_price", 150.0, "2026-08-01T10:00:00Z"),
+      snap("stock_price", 161.05, "2026-08-05T10:10:38Z"),
+    ];
+    expect(findLatest(rows, "stock_price")?.numeric_value).toBe(161.05);
+  });
+
+  it("bevorzugt auch ohne period_year die Actual- vor der Forecast-Zeile", () => {
+    const rows = [
+      snap("market_cap", 99, "2026-08-05T12:00:00Z", true),
+      snap("market_cap", 28193878016, "2026-08-05T10:10:38Z", false),
+    ];
+    expect(findLatest(rows, "market_cap")?.numeric_value).toBe(28193878016);
+  });
+
+  it("bevorzugt weiterhin das juengste Jahr, wenn period_year gesetzt ist", () => {
+    const rows = [row("net_debt", 2024, 100), row("net_debt", 2025, 200)];
+    expect(findLatest(rows, "net_debt")?.numeric_value).toBe(200);
+  });
+
+  it("liefert null ohne Treffer", () => {
+    expect(findLatest([], "stock_price")).toBeNull();
+  });
 });
 
 // Minimale Karten-Attrappe fuer die Sortier-Tests
