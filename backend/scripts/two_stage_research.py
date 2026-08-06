@@ -1205,6 +1205,7 @@ def apply_to_db(
         fy_end_future = year >= datetime.now(timezone.utc).year
 
     written = []
+    provider_skips = 0
     for period_type, value in periods:
         # Source URL and quote from the corresponding extracted quarter (if any)
         src_url = None
@@ -1268,6 +1269,23 @@ def apply_to_db(
         # Refresh-Versuch stempeln.
         if existing is not None and (existing.manually_overridden or existing.from_ir_pdf):
             existing.last_refresh_attempt = datetime.now(timezone.utc)
+            continue
+
+        # Provider-Actuals sind authoritative: der XBRL-Anker (provider_anchor)
+        # refresht sie bei jedem Lauf mit exakten Filing-Werten — Two-Stage-
+        # Werte duerfen sie nicht ueberschreiben. Forecast-Slots bleiben
+        # beschreibbar (Schaetzungen fuers laufende Jahr).
+        if (
+            existing is not None
+            and existing.primary_method == "provider"
+            and not existing.is_forecast
+            and existing.numeric_value is not None
+            # Ausnahme: EBIT-only-Approximation (kein D&A in XBRL) darf die
+            # LLM-Recherche korrigieren — sonst waere sie permanent.
+            and "EBITDA ~ EBIT" not in (existing.source_name or "")
+        ):
+            existing.last_refresh_attempt = datetime.now(timezone.utc)
+            provider_skips += 1
             continue
 
         # Currency-Konflikt wie im Refresh-/Anker-Pfad: bestehende Zeile
@@ -1391,6 +1409,15 @@ def apply_to_db(
                 if row.manually_overridden or (row.from_ir_pdf and row.numeric_value is not None):
                     row.last_refresh_attempt = datetime.now(timezone.utc)
                     continue
+                # Provider-Actual-Guard wie im Normalpfad.
+                if (
+                    row.primary_method == "provider"
+                    and not row.is_forecast
+                    and row.numeric_value is not None
+                ):
+                    row.last_refresh_attempt = datetime.now(timezone.utc)
+                    provider_skips += 1
+                    continue
                 if currency_conflict(value_key, row.currency, currency):
                     logger.warning(
                         "two-stage currency mismatch BLOCKED (race) %s/%s/%s FY%s: existing=%s new=%s",
@@ -1413,6 +1440,11 @@ def apply_to_db(
                     row.currency = currency
                 written.append(row)
 
+    if provider_skips:
+        logger.info(
+            "two-stage apply: %d provider-Actual-Zellen uebersprungen (%s/%s FY%s)",
+            provider_skips, result.extract.ticker, value_key, year,
+        )
     db.flush()
     return written
 

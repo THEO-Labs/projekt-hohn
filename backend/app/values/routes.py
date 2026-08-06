@@ -520,6 +520,47 @@ def _process_one_key_via_two_stage(
 
     year = target_year if target_year is not None else payload.period_year
 
+    # Provider-First: fuer US-Filer die EDGAR-abgedeckten Perioden VOR der
+    # teuren LLM-Recherche verankern. Deckt der Provider ein abgeschlossenes
+    # Jahr komplett ab (FY+Q1-Q4), entfaellt die Two-Stage-Recherche fuer
+    # diesen Key ganz. Coverage zaehlt auch provider-Zeilen aus frueheren
+    # Laeufen: schlaegt der aktuelle EDGAR-Fetch fehl, tragen die alten
+    # Filing-Werte den Skip (dann ohne frischen last_refresh_attempt-Stempel).
+    # Voll-Coverage erreichen praktisch nur Cashflow-/Bilanz-Keys + fcf —
+    # Income-Statement-Keys haben kein Provider-Q4 (implied) und laufen
+    # weiter durch die Recherche. Fehler hier verhindern die Recherche nie.
+    try:
+        from app.providers.edgar import EdgarProvider
+        from app.values.provider_anchor import (
+            _fy_is_closed,
+            anchor_key_periods_with_provider,
+        )
+        if is_us_company(company) and key in EdgarProvider.supported_keys:
+            covered = anchor_key_periods_with_provider(db, company, key, year)
+            db.commit()
+            if _fy_is_closed(company, year) and covered >= {"FY", "Q1", "Q2", "Q3", "Q4"}:
+                logger.info("provider-covered, two-stage uebersprungen: %s/%s", key, year)
+                for row in (
+                    db.query(CompanyValue)
+                    .filter(
+                        CompanyValue.company_id == company_id,
+                        CompanyValue.value_key == key,
+                        CompanyValue.period_year == year,
+                        CompanyValue.period_type.in_(("FY", "Q1", "Q2", "Q3", "Q4")),
+                        CompanyValue.is_forecast.is_(False),
+                    )
+                    .all()
+                ):
+                    if row not in updated:
+                        updated.append(row)
+                return True
+    except Exception as e:
+        logger.warning(
+            "Provider-First-Anker failed for %s/%s/FY%s: %s — weiter mit LLM",
+            company.ticker, key, year, e,
+        )
+        db.rollback()
+
     # Actual+Forecast koennen als Paar koexistieren — one_or_none() wuerde
     # dann MultipleResultsFound werfen. Actual-Zeile bevorzugen.
     prev_stmt = (
@@ -1380,6 +1421,19 @@ def refresh_company_values(
             consistency_years = (
                 [payload.period_year - 1] if prev_year_backfill_keys else []
             ) + [payload.period_year]
+
+            # Quartals-Anker (Gegenstueck zum FY-Anker in
+            # _process_one_key_via_two_stage): gefilte Quartale mit exakten
+            # EDGAR-XBRL-Werten ueberschreiben — VOR dem Konsistenz-Pass,
+            # damit validate_cross_metrics die finalen Werte prueft.
+            # Fehler duerfen den Refresh nicht abbrechen.
+            try:
+                from app.values.provider_anchor import anchor_quarters_with_provider
+                anchor_quarters_with_provider(db, company, consistency_years)
+                db.commit()
+            except Exception as e:
+                logger.warning("quarter anchor failed for %s: %s", ticker, e)
+                db.rollback()
             for cons_year in consistency_years:
                 try:
                     derive_net_debt_from_components(db, company_id, cons_year)

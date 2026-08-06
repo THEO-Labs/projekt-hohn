@@ -153,6 +153,8 @@ class EdgarProvider:
     def __init__(self) -> None:
         self._ticker_to_cik: dict[str, str] | None = None
         self._facts_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
+        # Fehlversuche pro CIK (Ausfall/404/Parse) kurz negativ cachen.
+        self._facts_fail_cache: TTLCache = TTLCache(maxsize=200, ttl=600)
         # HTTPTransport mit retries=3 fuer transiente 429/503/Network-Errors —
         # SEC ist gelegentlich rate-limited, transient.
         self._client = httpx.Client(
@@ -204,14 +206,22 @@ class EdgarProvider:
     def _get_facts(self, cik: str) -> dict | None:
         if cik in self._facts_cache:
             return self._facts_cache[cik]
+        # Negative-Cache: bei EDGAR-Ausfall wuerde sonst JEDE Anker-Zelle
+        # (hunderte pro Refresh) die volle Retry-Kette mit Backoff-Sleeps
+        # durchlaufen — Fehlversuche werden 10 Minuten gemerkt.
+        if cik in self._facts_fail_cache:
+            return None
         url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
         r = self._retried_get(url)
         if r is None:
+            self._facts_fail_cache[cik] = True
             return None
         if r.status_code == 404:
+            self._facts_fail_cache[cik] = True
             return None
         if r.status_code >= 400:
             logger.warning("EDGAR companyfacts CIK %s -> %s after retries", cik, r.status_code)
+            self._facts_fail_cache[cik] = True
             return None
         try:
             data = r.json()
@@ -219,6 +229,7 @@ class EdgarProvider:
             return data
         except Exception as e:
             logger.warning("EDGAR companyfacts parse failed for CIK %s: %s", cik, e)
+            self._facts_fail_cache[cik] = True
             return None
 
     def _find_value(
