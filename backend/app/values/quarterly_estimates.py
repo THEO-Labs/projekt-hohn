@@ -432,14 +432,16 @@ def _estimate_single_quarter(
 
 
 # Keys die der EDGAR-Q-Fallback unterstuetzt (Income-Statement + Cashflow
-# Standalone-Q). Balance-Sheet-Keys (net_debt, cash_and_equivalents, st_debt,
-# lt_debt, st_investments) fehlen bewusst: die sind instant-facts und werden
-# separat als Q4-Snapshot behandelt.
+# Standalone-Q/YTD-Diff, plus Bilanz-Instants). st_debt/lt_debt fehlen
+# bewusst: st_debt braucht das Sum-Handling des FY-Pfads (siehe
+# edgar.BALANCE_KEYS), net_debt wird aus Komponenten abgeleitet.
 EDGAR_QUARTERLY_SUPPORTED = frozenset({
     # Original 6 (Q-Standalone via period-length filter)
     "net_income", "ebitda", "fcf", "sbc", "buyback_volume", "dividends",
     # Detail-Page additions
     "revenue", "eps_diluted", "operating_cash_flow", "capex",
+    # Bilanz-Instants (edgar.BALANCE_KEYS)
+    "cash_and_equivalents", "st_investments",
 })
 
 # Provider-Singleton damit ticker->CIK Map und Facts-Cache reuse zwischen Calls.
@@ -573,7 +575,9 @@ def _try_edgar_q_actuals(
     q_origin: dict[str, str],
     currency: str | None,
 ) -> None:
-    """EDGAR-Q-Fallback fuer US-Filer: Standalone-Q-Actuals aus 10-Q-XBRL.
+    """EDGAR-Q-Fallback fuer US-Filer: Q-Actuals aus 10-Q/10-K-XBRL
+    (Standalone-Frame, YTD-Differenz oder Bilanz-Instant; Q4 kommt nach dem
+    FY-10-K aus FY minus 9M-YTD bzw. Instant).
     Mutiert q_values/q_sources/q_origin direkt, persistiert via _upsert_q_actual_from_provider."""
     from app.calculations.lock import is_us_company
     if not is_us_company(company):
@@ -585,7 +589,7 @@ def _try_edgar_q_actuals(
     if not fy_end_month or not fy_end_day:
         return
     provider = _get_edgar_provider()
-    for q in ("Q1", "Q2", "Q3"):
+    for q in ("Q1", "Q2", "Q3", "Q4"):
         if q in q_values:
             continue
         try:
@@ -624,8 +628,9 @@ def _ensure_prev_fy_q_actuals(
     prev_fy: int,
 ) -> None:
     """Stellt sicher dass FY-1 Q-Actuals (Q1-Q4) in DB sind, fuer Saisonalitaets-
-    Anker in Per-Q-Claude-Calls. Bei US-Filern: EDGAR-XBRL fuer Q1-Q3, Q4
-    implizit aus FY-Total minus Sigma(Q1-Q3). Bei non-US: skip — Saisonalitaets-
+    Anker in Per-Q-Claude-Calls. Bei US-Filern: EDGAR-XBRL fuer Q1-Q4 (Q4 via
+    FY-10-K minus 9M-YTD bzw. Bilanz-Instant); wenn EDGAR fuer Q4 nichts
+    liefert, weiterhin implizit aus FY-Total minus Sigma(Q1-Q3). Bei non-US: skip — Saisonalitaets-
     Anker greift erst wenn User Vorjahres-Q-Daten via Manual oder PDF eingeflegt
     hat (oder ESEF-Q kommt in Zukunft).
 
@@ -730,7 +735,10 @@ def _ensure_prev_fy_q_actuals(
     # nutzt als unser CONCEPT_MAP).
     provider = _get_edgar_provider()
     new_q_values: dict[str, Decimal] = dict(existing_qs)
-    for q in ("Q1", "Q2", "Q3"):
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        # Bewusst: ein bereits vorhandener Q4 — auch ein calculated/implied
+        # (FY minus Sigma Q1-Q3) — wird NICHT durch den Provider-Q4 ersetzt;
+        # das Implied-Recompute unten kuemmert sich um veraltete Q4-Werte.
         if q in new_q_values:
             continue
         v: Decimal | None = None
@@ -750,6 +758,10 @@ def _ensure_prev_fy_q_actuals(
             v = Decimal(str(res.value))
             src_name = f"{res.source_name} (FY-1 Backfill fuer Saisonalitaets-Anker)"
             src_link = res.source_link
+        elif q == "Q4":
+            # Kein Claude-Fallback fuer Q4 — Implied-Q4 (FY-Total minus
+            # Sigma Q1-Q3) unten bleibt der Fallback.
+            continue
         else:
             # Claude-Fallback fuer Vorjahres-Q: is_forecast=False, weil das
             # historische Actuals sind die Claude aus dem 10-Q/8-K herausliest.
@@ -1303,9 +1315,10 @@ def estimate_fy_via_quarterly_sum(
                 q_origin[q] = "actual"
                 continue
 
-    # EDGAR-Q-Fallback (US-Filer): wenn PDF-Actual fehlt, versuche Standalone-Q
-    # aus 10-Q-XBRL zu holen, bevor wir Claude raten lassen.
-    # Q4-laufendes-FY ist nie im 10-Q -> bleibt Claude.
+    # EDGAR-Q-Fallback (US-Filer): wenn PDF-Actual fehlt, versuche Q-Actual
+    # aus 10-Q/10-K-XBRL zu holen, bevor wir Claude raten lassen.
+    # Q4-laufendes-FY ist noch nicht filed -> bleibt Claude; nach dem FY-10-K
+    # kommt Q4 aus FY minus 9M-YTD bzw. Bilanz-Instant.
     _try_edgar_q_actuals(
         db, company, key, target_fy,
         q_values=q_values, q_sources=q_sources, q_origin=q_origin,

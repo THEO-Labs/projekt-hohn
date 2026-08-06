@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy import Enum as SaEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
@@ -58,6 +59,17 @@ class ValueDefinition(Base):
 
 class CompanyValue(Base):
     __tablename__ = "company_values"
+    # Unique-Slot-Index wie in Migration v6d7e8f90123 — hier deklariert,
+    # damit er auch in der create_all-Test-DB existiert. coalesce(-1) macht
+    # SNAPSHOT-Zeilen (period_year NULL) ebenfalls eindeutig.
+    __table_args__ = (
+        sa.Index(
+            "uq_company_values_slot",
+            "company_id", "value_key", "period_type",
+            sa.text("coalesce(period_year, -1)"), "is_forecast",
+            unique=True,
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
     company_id: Mapped[UUID] = mapped_column(

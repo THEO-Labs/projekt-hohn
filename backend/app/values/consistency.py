@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.values.models import CompanyValue
@@ -68,6 +69,23 @@ def _set_flag(row: CompanyValue | None, flag: str, active: bool) -> None:
     else:
         current.discard(flag)
     row.consistency_flags = ",".join(sorted(current)) or None
+
+
+def _reload_slot(
+    db: Session, company_id: UUID, key: str, pt: str, year: int, is_forecast: bool,
+) -> CompanyValue | None:
+    """Slot-Zeile nach IntegrityError-Race frisch laden."""
+    return (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == pt,
+            CompanyValue.period_year == year,
+            CompanyValue.is_forecast == is_forecast,
+        )
+        .first()
+    )
 
 
 def _rel_diff(a: Decimal, b: Decimal) -> Decimal:
@@ -205,9 +223,19 @@ def derive_net_debt_from_components(db: Session, company_id: UUID, year: int) ->
         if target is None:
             target = CompanyValue(
                 id=uuid4(), company_id=company_id, value_key="net_debt",
-                period_type=pt, period_year=year,
+                period_type=pt, period_year=year, is_forecast=is_forecast,
             )
-            db.add(target)
+            # SAVEPOINT pro Insert: Unique-Index-Kollision (Race mit
+            # parallelem Writer) -> Zeile neu laden, nur updaten wenn sie
+            # noch keinen Wert hat, sonst skip.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(db, company_id, "net_debt", pt, year, is_forecast)
+                if target is None or target.numeric_value is not None:
+                    continue
         prev = target.numeric_value
         target.numeric_value = derived
         target.source_name = source[:4096]
@@ -247,19 +275,32 @@ def derive_missing_ocf(db: Session, company_id: UUID, year: int) -> int:
             continue
         derived = fcf_row.numeric_value + abs(capex_row.numeric_value)
         now = datetime.now(timezone.utc)
-        target = existing or CompanyValue(
-            id=uuid4(), company_id=company_id, value_key="operating_cash_flow",
-            period_type=pt, period_year=year,
-        )
-        if existing is None:
-            db.add(target)
+        is_forecast = bool(fcf_row.is_forecast or capex_row.is_forecast)
+        target = existing
+        if target is None:
+            target = CompanyValue(
+                id=uuid4(), company_id=company_id, value_key="operating_cash_flow",
+                period_type=pt, period_year=year, is_forecast=is_forecast,
+            )
+            # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+            # nur updaten wenn sie noch keinen Wert hat, sonst skip.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(
+                    db, company_id, "operating_cash_flow", pt, year, is_forecast
+                )
+                if target is None or target.numeric_value is not None:
+                    continue
         target.numeric_value = derived
         target.source_name = (
             f"Derived (identity): fcf {fcf_row.numeric_value} + capex "
             f"{abs(capex_row.numeric_value)} = {derived}"
         )[:4096]
         target.primary_method = "calculated"
-        target.is_forecast = bool(fcf_row.is_forecast or capex_row.is_forecast)
+        target.is_forecast = is_forecast
         target.currency = fcf_row.currency or target.currency
         target.fetched_at = now
         target.last_refresh_attempt = now
@@ -283,18 +324,29 @@ def derive_sbc_quarters(db: Session, company_id: UUID, year: int) -> int:
         existing = _row_of(rows, "sbc", pt)
         if existing is not None and existing.numeric_value is not None:
             continue
-        target = existing or CompanyValue(
-            id=uuid4(), company_id=company_id, value_key="sbc",
-            period_type=pt, period_year=year,
-        )
-        if existing is None:
-            db.add(target)
+        is_forecast = bool(fy_row.is_forecast)
+        target = existing
+        if target is None:
+            target = CompanyValue(
+                id=uuid4(), company_id=company_id, value_key="sbc",
+                period_type=pt, period_year=year, is_forecast=is_forecast,
+            )
+            # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+            # nur updaten wenn sie noch keinen Wert hat, sonst skip.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(db, company_id, "sbc", pt, year, is_forecast)
+                if target is None or target.numeric_value is not None:
+                    continue
         target.numeric_value = quarter_val
         target.source_name = (
             f"Convention: annual-only SBC disclosure, FY {fy_row.numeric_value} / 4 = {quarter_val}"
         )[:4096]
         target.primary_method = "calculated"
-        target.is_forecast = bool(fy_row.is_forecast)
+        target.is_forecast = is_forecast
         target.currency = fy_row.currency or target.currency
         target.fetched_at = now
         target.last_refresh_attempt = now

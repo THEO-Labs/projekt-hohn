@@ -113,6 +113,9 @@ EBITDA_EBIT_CONCEPTS = [
     "OperatingIncomeLoss",
 ]
 EBITDA_DA_CONCEPTS = [
+    # Voller Cashflow-D&A inkl. Finance-Lease-Amortisation — zuerst, damit
+    # Quartals- und FY-Ableitung dieselbe Basis nutzen.
+    "DepreciationAmortizationAndAccretionNet",
     "DepreciationDepletionAndAmortization",
     "DepreciationAndAmortization",
     "Depreciation",
@@ -126,6 +129,21 @@ FCF_CAPEX_CONCEPTS = [
     "PaymentsToAcquirePropertyPlantAndEquipment",
     "PaymentsToAcquireProductiveAssets",
 ]
+
+# Bilanz-Keys: US-Filer taggen die als Instant-Facts (ohne "start") — die
+# Standalone-Duration-Suche greift dort nie. Q4-Instant steht im 10-K.
+# st_debt/lt_debt bewusst NICHT dabei: st_debt braucht das Sum-Handling des
+# FY-Pfads (DebtCurrent-Total vs Einzelkomponenten, siehe fetch) — ein
+# nackter Instant-Lookup wuerde Teilwerte liefern. Kommt spaeter.
+BALANCE_KEYS = {"cash_and_equivalents", "st_investments"}
+
+# Cashflow-Keys: 10-Qs taggen die meist nur als YTD-Duration. Quartal via
+# YTD-Differenz aus derselben XBRL-Quelle wie das FY — Konsistenz per
+# Konstruktion (Q4 = FY-10-K minus 9M-YTD).
+CASHFLOW_YTD_KEYS = {"operating_cash_flow", "capex", "sbc", "buyback_volume", "dividends"}
+
+# Immer-positive Keys: negativer YTD-Diff = Restatement-Artefakt -> verwerfen.
+ALWAYS_POSITIVE_DIFF_KEYS = {"capex", "sbc", "buyback_volume", "dividends"}
 
 
 class EdgarProvider:
@@ -338,6 +356,240 @@ class EdgarProvider:
                     return Decimal(str(e["val"])), unit_name, e.get("accn")
         return None
 
+    def _fy_start(
+        self,
+        period_year: int,
+        fy_end_month: int | None,
+        fy_end_day: int | None,
+    ) -> "date":
+        """Geschaeftsjahresbeginn = Vorjahres-FY-Ende + 1 Tag.
+        Kalenderjahr-Default: 01.01.period_year."""
+        from datetime import date, timedelta
+        prev_end = self._q_end_date(period_year - 1, "Q4", fy_end_month, fy_end_day)
+        if prev_end is None:
+            return date(period_year, 1, 1)
+        return prev_end + timedelta(days=1)
+
+    def _find_q_ytd(
+        self,
+        facts: dict,
+        concepts: list[str],
+        fy_start: "date",
+        target_end: "date",
+    ) -> tuple[Decimal, str, str | None] | None:
+        """Sucht einen YTD-Duration-Eintrag: start == FY-Beginn (+/-7 Tage),
+        end == target_end (+/-7 Tage), Form 10-Q/10-K, earliest filed.
+        Returns (value, currency, accession) oder None."""
+        from datetime import date
+        us_gaap = facts.get("facts", {}).get("us-gaap", {})
+        for concept_name in concepts:
+            concept_data = us_gaap.get(concept_name)
+            if not concept_data:
+                continue
+            units = concept_data.get("units", {})
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            for unit_name in unit_keys:
+                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                    continue
+                candidates: list[dict] = []
+                for e in units[unit_name]:
+                    form = e.get("form", "")
+                    if not form.startswith(("10-Q", "10-K")):
+                        continue
+                    end_str = e.get("end") or ""
+                    start_str = e.get("start") or ""
+                    if not end_str or not start_str:
+                        continue
+                    try:
+                        end_d = date.fromisoformat(end_str)
+                        start_d = date.fromisoformat(start_str)
+                    except ValueError:
+                        continue
+                    if abs((end_d - target_end).days) > 7:
+                        continue
+                    if abs((start_d - fy_start).days) > 7:
+                        continue
+                    candidates.append(e)
+                if candidates:
+                    best = min(candidates, key=lambda e: e.get("filed", "9999"))
+                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+        return None
+
+    def _find_q_instant(
+        self,
+        facts: dict,
+        concepts: list[str],
+        target_end: "date",
+    ) -> tuple[Decimal, str, str | None] | None:
+        """Sucht einen Instant-Eintrag (ohne "start") zum target_end (+/-7 Tage),
+        Form 10-Q/10-K, earliest filed. Bilanz-Positionen sind Instant-Facts."""
+        from datetime import date
+        us_gaap = facts.get("facts", {}).get("us-gaap", {})
+        for concept_name in concepts:
+            concept_data = us_gaap.get(concept_name)
+            if not concept_data:
+                continue
+            units = concept_data.get("units", {})
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            for unit_name in unit_keys:
+                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                    continue
+                candidates: list[dict] = []
+                for e in units[unit_name]:
+                    form = e.get("form", "")
+                    if not form.startswith(("10-Q", "10-K")):
+                        continue
+                    if e.get("start"):
+                        continue
+                    end_str = e.get("end") or ""
+                    if not end_str:
+                        continue
+                    try:
+                        end_d = date.fromisoformat(end_str)
+                    except ValueError:
+                        continue
+                    if abs((end_d - target_end).days) > 7:
+                        continue
+                    candidates.append(e)
+                if candidates:
+                    best = min(candidates, key=lambda e: e.get("filed", "9999"))
+                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+        return None
+
+    def _find_fy_duration(
+        self,
+        facts: dict,
+        concepts: list[str],
+        fy_end: "date",
+    ) -> tuple[Decimal, str, str | None] | None:
+        """Sucht einen FY-Duration-Eintrag: start vorhanden, Duration 350-380
+        Tage (volles Jahr), end == fy_end (+/-7 Tage), Form 10-Q/10-K,
+        earliest filed. Eigener Lookup fuer den Q4 = FY - YTD3-Diff —
+        _find_value bleibt fuer FY-fetch-Aufrufer unveraendert (die duerfen
+        weiterhin fp=FY-Eintraege ohne start akzeptieren)."""
+        from datetime import date
+        us_gaap = facts.get("facts", {}).get("us-gaap", {})
+        for concept_name in concepts:
+            concept_data = us_gaap.get(concept_name)
+            if not concept_data:
+                continue
+            units = concept_data.get("units", {})
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            for unit_name in unit_keys:
+                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                    continue
+                candidates: list[dict] = []
+                for e in units[unit_name]:
+                    form = e.get("form", "")
+                    if not form.startswith(("10-Q", "10-K")):
+                        continue
+                    end_str = e.get("end") or ""
+                    start_str = e.get("start") or ""
+                    if not end_str or not start_str:
+                        continue
+                    try:
+                        end_d = date.fromisoformat(end_str)
+                        start_d = date.fromisoformat(start_str)
+                    except ValueError:
+                        continue
+                    if abs((end_d - fy_end).days) > 7:
+                        continue
+                    if not (350 <= (end_d - start_d).days <= 380):
+                        continue
+                    candidates.append(e)
+                if candidates:
+                    best = min(candidates, key=lambda e: e.get("filed", "9999"))
+                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+        return None
+
+    def _q_via_ytd_diff(
+        self,
+        facts: dict,
+        concepts: list[str],
+        period_year: int,
+        quarter: str,
+        fy_end_month: int | None,
+        fy_end_day: int | None,
+        forbid_negative_diff: bool = False,
+    ) -> tuple[Decimal, str, str | None] | None:
+        """Quartal aus YTD-Differenz: Q1 = YTD1, Q2 = YTD2 - YTD1,
+        Q3 = YTD3 - YTD2, Q4 = FY (10-K) - YTD3. Beide Eintraege muessen vom
+        SELBEN Konzept und derselben Currency stammen (sonst Aepfel-Birnen).
+        forbid_negative_diff prueft PRO Konzept: negativer Diff bei
+        immer-positiven Keys = Restatement-Artefakt -> naechstes Konzept."""
+        fy_start = self._fy_start(period_year, fy_end_month, fy_end_day)
+        target_end = self._q_end_date(period_year, quarter, fy_end_month, fy_end_day)
+        if target_end is None:
+            return None
+        if quarter == "Q1":
+            for concept in concepts:
+                res = self._find_q_ytd(facts, [concept], fy_start, target_end)
+                if res is None:
+                    continue
+                if forbid_negative_diff and res[0] < 0:
+                    continue
+                return res
+            return None
+        prev_q = {"Q2": "Q1", "Q3": "Q2", "Q4": "Q3"}.get(quarter)
+        if prev_q is None:
+            return None
+        prev_end = self._q_end_date(period_year, prev_q, fy_end_month, fy_end_day)
+        if prev_end is None:
+            return None
+        for concept in concepts:
+            prev = self._find_q_ytd(facts, [concept], fy_start, prev_end)
+            if prev is None:
+                continue
+            prev_val, prev_cur, _ = prev
+            if quarter == "Q4":
+                # FY-Seite nur mit echter Jahres-Duration (350-380 Tage) —
+                # sonst kaeme z.B. ein Interim-Frame als FY-Basis durch.
+                fy = self._find_fy_duration(facts, [concept], target_end)
+                if fy is None:
+                    continue
+                fy_val, fy_cur, fy_accn = fy
+                if fy_cur != prev_cur:
+                    continue
+                diff = fy_val - prev_val
+                if forbid_negative_diff and diff < 0:
+                    continue
+                return diff, fy_cur, fy_accn
+            cur_ytd = self._find_q_ytd(facts, [concept], fy_start, target_end)
+            if cur_ytd is None or cur_ytd[1] != prev_cur:
+                continue
+            diff = cur_ytd[0] - prev_val
+            if forbid_negative_diff and diff < 0:
+                continue
+            return diff, cur_ytd[1], cur_ytd[2]
+        return None
+
+    def _q_flow(
+        self,
+        facts: dict,
+        concepts: list[str],
+        period_year: int,
+        quarter: str,
+        fy_end_month: int | None,
+        fy_end_day: int | None,
+        target_end: "date",
+        forbid_negative_diff: bool = False,
+    ) -> tuple[Decimal, str, str | None, str] | None:
+        """Quartals-Flow-Wert: Standalone-3M-Frame zuerst (manche Filer taggen
+        die), sonst YTD-Differenz. Returns (value, currency, accession, method)
+        mit method in ("standalone", "ytd_diff") oder None."""
+        res = self._find_q_standalone(facts, concepts, target_end)
+        if res is not None:
+            return res[0], res[1], res[2], "standalone"
+        # Negativ-Guard laeuft PRO Konzept in _q_via_ytd_diff — ein
+        # Restatement-Artefakt in einem Konzept blockiert nicht die anderen.
+        diff = self._q_via_ytd_diff(
+            facts, concepts, period_year, quarter, fy_end_month, fy_end_day,
+            forbid_negative_diff=forbid_negative_diff,
+        )
+        if diff is None:
+            return None
+        return diff[0], diff[1], diff[2], "ytd_diff"
+
     def fetch_quarterly(
         self,
         ticker: str,
@@ -347,15 +599,21 @@ class EdgarProvider:
         fy_end_month: int | None = None,
         fy_end_day: int | None = None,
     ) -> ProviderResult | None:
-        """Liefert einen Standalone-Q-Actual aus 10-Q-XBRL fuer US-Filer.
-        Returns None bei: nicht-US, kein CIK, kein 10-Q-Eintrag, Q4 (kommt erst
-        mit FY-10-K), nicht-supported Key, oder unbekanntem FY-Ende-Datum.
-        Q4-laufendes-FY ist sowieso noch nicht filed. Q4-abgeschlossen wird ueber
-        FY-10-K - 9M-10-Q in der Backtest-Pipeline gehandhabt.
+        """Liefert einen Q-Actual aus 10-Q/10-K-XBRL fuer US-Filer.
+
+        Drei Wege je nach Key:
+          - BALANCE_KEYS: Instant-Fact zum Q-Stichtag (Q1-Q4; Q4 aus dem 10-K).
+          - CASHFLOW_YTD_KEYS + fcf/ebitda-Komponenten: Standalone-3M-Frame,
+            sonst YTD-Differenz (Q4 = FY-10-K minus 9M-YTD) — gleiche
+            XBRL-Quelle wie das FY, Konsistenz per Konstruktion.
+          - uebrige Keys (revenue, net_income, eps_diluted, ...): Standalone-
+            Frame wie bisher, Q4 -> None (implied via FY minus Sigma Q1-Q3).
+        Vorzeichen: Payments*-Tags kommen positiv aus XBRL und werden positiv
+        durchgereicht — Sign-Normalisierung macht der zentrale Persistenz-Pfad.
+        Returns None bei: nicht-US, kein CIK, kein Eintrag, nicht-supported
+        Key, oder unbekanntem FY-Ende-Datum.
         """
-        if quarter == "Q4":
-            return None
-        if quarter not in ("Q1", "Q2", "Q3"):
+        if quarter not in ("Q1", "Q2", "Q3", "Q4"):
             return None
         if key not in self.supported_keys:
             return None
@@ -369,41 +627,104 @@ class EdgarProvider:
         if target_end is None:
             return None
 
+        form = "10-K" if quarter == "Q4" else "10-Q"
+
+        if key in BALANCE_KEYS:
+            # Bilanz-Positionen sind Instant-Facts (kein "start") — direkt
+            # Instant-Suche, Standalone-Duration greift dort nie.
+            res = self._find_q_instant(facts, CONCEPT_MAP[key], target_end)
+            if res is None:
+                return None
+            val, cur, accn = res
+            return ProviderResult(
+                value=val,
+                source_name=f"SEC EDGAR {form} ({quarter} FY{period_year}, Bilanz-Stichtag)",
+                source_link=self._filing_link(cik, accn),
+                currency=cur if key in CURRENCY_KEYS else None,
+            )
+
         if key == "fcf":
-            ocf = self._find_q_standalone(facts, FCF_OP_CASH_CONCEPTS, target_end)
-            capex = self._find_q_standalone(facts, FCF_CAPEX_CONCEPTS, target_end)
+            ocf = self._q_flow(
+                facts, FCF_OP_CASH_CONCEPTS, period_year, quarter,
+                fy_end_month, fy_end_day, target_end,
+            )
+            capex = self._q_flow(
+                facts, FCF_CAPEX_CONCEPTS, period_year, quarter,
+                fy_end_month, fy_end_day, target_end,
+                forbid_negative_diff=True,
+            )
             if ocf is None or capex is None:
                 return None
-            ocf_val, cur, accn = ocf
-            capex_val, _, _ = capex
+            ocf_val, cur, accn, ocf_method = ocf
+            capex_val, capex_cur, _, capex_method = capex
+            # Currency-Kreuzcheck: OCF und Capex muessen in derselben
+            # Waehrung kommen, sonst ist die Differenz Aepfel-Birnen.
+            if capex_cur != cur:
+                return None
+            suffix = ", YTD-Differenz" if "ytd_diff" in (ocf_method, capex_method) else ""
             return ProviderResult(
                 value=ocf_val - abs(capex_val),
-                source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year}, FCF = OCF - CapEx)",
+                source_name=f"SEC EDGAR {form} ({quarter} FY{period_year}, FCF = OCF - CapEx{suffix})",
                 source_link=self._filing_link(cik, accn),
                 currency=cur if "fcf" in CURRENCY_KEYS else None,
             )
 
         if key == "ebitda":
+            # EBIT nur standalone — Income-Statement-Facts haben 3M-Frames.
             ebit = self._find_q_standalone(facts, EBITDA_EBIT_CONCEPTS, target_end)
-            da = self._find_q_standalone(facts, EBITDA_DA_CONCEPTS, target_end)
             if ebit is None:
                 return None
             ebit_val, cur, accn = ebit
+            # D&A ist real immer positiv — negativer YTD-Diff heisst
+            # Restatement-Artefakt, dann D&A als fehlend behandeln
+            # (EBIT-only-Fallback unten greift).
+            da = self._q_flow(
+                facts, EBITDA_DA_CONCEPTS, period_year, quarter,
+                fy_end_month, fy_end_day, target_end,
+                forbid_negative_diff=True,
+            )
             if da is None:
                 return ProviderResult(
                     value=ebit_val,
-                    source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year}, EBITDA ~ EBIT, D&A nicht in XBRL)",
+                    source_name=f"SEC EDGAR {form} ({quarter} FY{period_year}, EBITDA ~ EBIT, D&A nicht in XBRL)",
                     source_link=self._filing_link(cik, accn),
                     currency=cur if "ebitda" in CURRENCY_KEYS else None,
                 )
-            da_val, _, _ = da
+            da_val, _, _, _ = da
             return ProviderResult(
                 value=ebit_val + abs(da_val),
-                source_name=f"SEC EDGAR 10-Q ({quarter} FY{period_year}, EBITDA = EBIT + D&A)",
+                source_name=f"SEC EDGAR {form} ({quarter} FY{period_year}, EBITDA = EBIT + D&A)",
                 source_link=self._filing_link(cik, accn),
                 currency=cur if "ebitda" in CURRENCY_KEYS else None,
             )
 
+        if key in CASHFLOW_YTD_KEYS:
+            res = self._q_flow(
+                facts, CONCEPT_MAP[key], period_year, quarter,
+                fy_end_month, fy_end_day, target_end,
+                forbid_negative_diff=key in ALWAYS_POSITIVE_DIFF_KEYS,
+            )
+            if res is None:
+                return None
+            val, cur, accn, method = res
+            if method == "ytd_diff":
+                if quarter == "Q4":
+                    source_name = f"SEC EDGAR 10-K (Q4 FY{period_year}, FY minus 9M-YTD)"
+                else:
+                    source_name = f"SEC EDGAR 10-Q ({quarter} FY{period_year}, YTD-Differenz)"
+            else:
+                source_name = f"SEC EDGAR {form} ({quarter} FY{period_year})"
+            return ProviderResult(
+                value=val,
+                source_name=source_name,
+                source_link=self._filing_link(cik, accn),
+                currency=cur if key in CURRENCY_KEYS else None,
+            )
+
+        # Restliche Keys (revenue, net_income, eps_diluted, ...): Standalone
+        # wie bisher; Q4 hat keine separaten 3M-Frames im 10-K -> None.
+        if quarter == "Q4":
+            return None
         concepts = CONCEPT_MAP.get(key, [])
         if not concepts:
             return None
@@ -440,8 +761,12 @@ class EdgarProvider:
 
         if key == "fcf":
             ocf, cur, accn = self._find_value(facts, FCF_OP_CASH_CONCEPTS, period_year, fy_end_month, fy_end_day)
-            capex, _, _ = self._find_value(facts, FCF_CAPEX_CONCEPTS, period_year, fy_end_month, fy_end_day)
+            capex, capex_cur, _ = self._find_value(facts, FCF_CAPEX_CONCEPTS, period_year, fy_end_month, fy_end_day)
             if ocf is None or capex is None:
+                return None
+            # Currency-Kreuzcheck wie im Quartalspfad: OCF und Capex muessen
+            # in derselben Waehrung kommen.
+            if capex_cur != cur:
                 return None
             return ProviderResult(
                 value=ocf - abs(capex),

@@ -242,3 +242,40 @@ def test_unit_scale_zero_and_normal_not_flagged(client, db):
     db.commit()
     assert _row(db, cid, "capex", "FY").consistency_flags is None
     assert _row(db, cid, "revenue", "FY").consistency_flags is None
+
+
+def test_net_debt_insert_race_does_not_clobber_manual(client, db, monkeypatch):
+    """IntegrityError-Recovery real ausloesen: die net_debt-Zeile entsteht
+    aus Writer-Sicht ZWISCHEN Row-Snapshot und Insert (Snapshot gefiltert),
+    der Insert kollidiert dann echt mit dem Unique-Index. Die Manual-Zeile
+    darf im Recovery-Zweig nicht geclobbert werden."""
+    import app.values.consistency as cons
+
+    cid = _company(client, db, "race@example.com")
+    for k, v in (("st_debt", 1000e6), ("lt_debt", 2000e6),
+                 ("cash_and_equivalents", 500e6), ("st_investments", 100e6)):
+        _seed(db, cid, k, "FY", v, is_forecast=False)
+    manual = _seed(db, cid, "net_debt", "FY", 9999e6, is_forecast=False,
+                   manually_overridden=True, primary_method="manual")
+
+    real_rows = cons._rows_for_year
+
+    def stale_snapshot(db_, company_id, year):
+        # Race-Simulation: der Writer hat die parallel committete
+        # net_debt-Zeile beim Lesen noch nicht gesehen.
+        return [r for r in real_rows(db_, company_id, year)
+                if r.value_key != "net_debt"]
+
+    monkeypatch.setattr(cons, "_rows_for_year", stale_snapshot)
+    written = derive_net_debt_from_components(db, cid, 2026)
+    db.commit()
+
+    assert written == 0
+    rows = db.query(CompanyValue).filter(
+        CompanyValue.company_id == cid, CompanyValue.value_key == "net_debt",
+    ).all()
+    assert len(rows) == 1
+    db.refresh(manual)
+    assert manual.manually_overridden is True
+    assert manual.numeric_value == Decimal("9999000000")
+    assert manual.primary_method == "manual"

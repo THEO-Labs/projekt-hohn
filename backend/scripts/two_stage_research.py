@@ -1102,6 +1102,7 @@ def stamp_attempt_and_fill_not_found(
     Zelle rot markieren kann (= manuell raussuchen).
     """
     from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
     from app.values.models import CompanyValue
     from app.values.persistence import NOT_FOUND_SOURCE
 
@@ -1121,14 +1122,25 @@ def stamp_attempt_and_fill_not_found(
     for pt in periods:
         if pt in present:
             continue
-        db.add(CompanyValue(
+        placeholder = CompanyValue(
             id=uuid4(), company_id=company_id, value_key=value_key,
             period_type=pt, period_year=year, numeric_value=None,
             source_name=NOT_FOUND_SOURCE,
             primary_method="not_found", currency=currency,
             fetched_at=now, last_refresh_attempt=now,
             manually_overridden=False, from_ir_pdf=False,
-        ))
+        )
+        # SAVEPOINT pro Insert: Unique-Index-Kollision (Race mit parallelem
+        # Writer) -> Platzhalter ueberspringen statt Transaktion zu killen.
+        try:
+            with db.begin_nested():
+                db.add(placeholder)
+                db.flush()
+        except IntegrityError:
+            logger.warning(
+                "not_found-Platzhalter %s/%s/%s FY%s existiert bereits (Race) — skip",
+                company_id, value_key, pt, year,
+            )
     db.flush()
 
 
@@ -1350,8 +1362,56 @@ def apply_to_db(
                 from_ir_pdf=False,
                 fetched_at=datetime.now(timezone.utc),
             )
-            db.add(cv)
-            written.append(cv)
+            # SAVEPOINT: Unique-Index-Kollision (Race mit parallelem Writer)
+            # -> Zeile neu abfragen und stattdessen updaten.
+            from sqlalchemy.exc import IntegrityError
+            try:
+                with db.begin_nested():
+                    db.add(cv)
+                    db.flush()
+                written.append(cv)
+            except IntegrityError:
+                row = db.execute(select(CompanyValue).where(
+                    CompanyValue.company_id == company_id,
+                    CompanyValue.value_key == value_key,
+                    CompanyValue.period_type == period_type,
+                    CompanyValue.period_year == year,
+                    CompanyValue.is_forecast == is_estimate,
+                )).scalars().first()
+                if row is None:
+                    logger.warning(
+                        "two-stage insert race %s/%s/%s FY%s: IntegrityError, "
+                        "aber keine Zeile gefunden — skip",
+                        company_id, value_key, period_type, year,
+                    )
+                    continue
+                # Gleiche Guards wie im Normalpfad: Manual-Override- und
+                # PDF-Zeilen mit Wert sind authoritative — nicht ueberschreiben,
+                # nur den Refresh-Versuch stempeln.
+                if row.manually_overridden or (row.from_ir_pdf and row.numeric_value is not None):
+                    row.last_refresh_attempt = datetime.now(timezone.utc)
+                    continue
+                if currency_conflict(value_key, row.currency, currency):
+                    logger.warning(
+                        "two-stage currency mismatch BLOCKED (race) %s/%s/%s FY%s: existing=%s new=%s",
+                        result.extract.ticker, value_key, period_type, year,
+                        row.currency, currency,
+                    )
+                    row.last_refresh_attempt = datetime.now(timezone.utc)
+                    continue
+                row.numeric_value = value
+                row.numeric_value_adjusted = adjusted_value
+                row.adjustments_note = adjustments_note
+                row.adjustments_source = adjustments_source
+                row.source_name = source_name
+                row.source_link = src_url
+                row.primary_method = verdict_tag
+                row.manually_overridden = False
+                row.is_forecast = is_estimate
+                row.fetched_at = datetime.now(timezone.utc)
+                if currency:
+                    row.currency = currency
+                written.append(row)
 
     db.flush()
     return written

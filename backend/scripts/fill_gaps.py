@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Callable
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.companies.models import Company
@@ -213,7 +214,7 @@ def write_not_found_placeholders(db: Session, portfolio_id: UUID, years: list[in
                 for period in PERIODS:
                     if (key, year, period) in existing:
                         continue
-                    db.add(CompanyValue(
+                    placeholder = CompanyValue(
                         company_id=c.id,
                         value_key=key,
                         period_year=year,
@@ -224,7 +225,15 @@ def write_not_found_placeholders(db: Session, portfolio_id: UUID, years: list[in
                         currency=c.currency,
                         fetched_at=now,
                         last_refresh_attempt=now,
-                    ))
+                    )
+                    # SAVEPOINT pro Insert: Unique-Index-Kollision (Race mit
+                    # parallelem Writer) -> Zeile ueberspringen.
+                    try:
+                        with db.begin_nested():
+                            db.add(placeholder)
+                            db.flush()
+                    except IntegrityError:
+                        continue
                     created += 1
     db.commit()
     return created

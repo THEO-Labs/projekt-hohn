@@ -17,6 +17,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
+
 from app.providers.registry import get_providers
 from app.values.models import CompanyValue
 from app.values.persistence import currency_conflict, normalize_sign
@@ -138,9 +140,44 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     if row is None:
         row = CompanyValue(
             id=uuid4(), company_id=company.id, value_key=key,
-            period_type="FY", period_year=year,
+            period_type="FY", period_year=year, is_forecast=False,
         )
-        db.add(row)
+        # SAVEPOINT: Unique-Index-Kollision (Race mit parallelem Writer) ->
+        # Slot-Zeile neu laden und mit denselben Guards wie oben behandeln.
+        try:
+            with db.begin_nested():
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            row = (
+                db.query(CompanyValue)
+                .filter(
+                    CompanyValue.company_id == company.id,
+                    CompanyValue.value_key == key,
+                    CompanyValue.period_type == "FY",
+                    CompanyValue.period_year == year,
+                    CompanyValue.is_forecast.is_(False),
+                )
+                .first()
+            )
+            if row is None:
+                logger.warning(
+                    "Provider-Anker insert race %s/%s/FY%s: IntegrityError, "
+                    "aber keine Zeile gefunden — skip",
+                    company.ticker, key, year,
+                )
+                return False
+            # Guards wie im Normalpfad: Manual/PDF sind authoritative.
+            if row.manually_overridden or row.from_ir_pdf:
+                return False
+            if currency_conflict(key, row.currency, result.currency):
+                logger.warning(
+                    "Provider-Anker currency mismatch BLOCKED (race) %s/%s/FY%s: existing=%s new=%s",
+                    company.ticker, key, year, row.currency, result.currency,
+                )
+                row.last_refresh_attempt = now
+                db.flush()
+                return False
 
     row.numeric_value = value
     row.text_value = None
