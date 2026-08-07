@@ -86,14 +86,21 @@ def create_app() -> FastAPI:
         if assets_dir.exists():
             app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
+        # index.html darf NIE gecacht werden — sonst laden Browser nach
+        # Deploys weiter die alten (content-gehashten) Bundles. Die Assets
+        # selbst sind immutable und duerfen lange gecacht werden.
+        _NO_CACHE = {"Cache-Control": "no-cache, must-revalidate"}
+
         @app.get("/{full_path:path}")
         def spa_fallback(full_path: str) -> FileResponse:
             if full_path.startswith("api/"):
                 raise HTTPException(status_code=404)
             candidate = static_dir / full_path
             if candidate.is_file() and candidate.resolve().is_relative_to(static_dir.resolve()):
+                if candidate.name == "index.html":
+                    return FileResponse(candidate, headers=_NO_CACHE)
                 return FileResponse(candidate)
-            return FileResponse(static_dir / "index.html")
+            return FileResponse(static_dir / "index.html", headers=_NO_CACHE)
 
     return app
 
