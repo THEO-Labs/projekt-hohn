@@ -227,12 +227,22 @@ def _find_exhibit_url(cik: str, period_end: date, subs: dict) -> str | None:
             item.get("name", "")
             for item in (index or {}).get("directory", {}).get("item", [])
         ]
-        ex99 = [
+        html_names = [
             n for n in names
-            if re.search(r"ex[-_]?99", n, re.IGNORECASE) and n.lower().endswith((".htm", ".html"))
+            if n.lower().endswith((".htm", ".html")) and "index" not in n.lower()
         ]
+        ex99 = [n for n in html_names if re.search(r"ex[-_]?99", n, re.IGNORECASE)]
         if ex99:
             return f"{base}/{sorted(ex99)[0]}"
+        # Viele Filer benennen das Release-Exhibit ohne "ex99"
+        # (Visa: q32026earningsrelease.htm) — Namensmuster als zweite Stufe,
+        # Primary-Doc (8-K-Deckblatt ohne Tabellen) nur als letzter Fallback.
+        named = [
+            n for n in html_names
+            if n != primary and re.search(r"(earnings|release|press)", n, re.IGNORECASE)
+        ]
+        if named:
+            return f"{base}/{sorted(named)[0]}"
         if primary and primary.lower().endswith((".htm", ".html")):
             return f"{base}/{primary}"
     return None
