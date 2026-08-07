@@ -47,10 +47,15 @@ _PERIOD_ORDER = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "FY": 5}
 # Note mit ab (source NULL), danach EIN neuer Versuch.
 NO_RECONCILIATION_NOTE = "no non-GAAP reconciliation found"
 
-# GAAP-Cross-Check-Toleranz: das vom LLM mitgelieferte GAAP-Pendant muss
-# den DB-Wert derselben Periode auf 2% treffen, sonst wurde die falsche
-# Spalte/Periode der Reconciliation-Tabelle gelesen.
-GAAP_TOLERANCE = Decimal("0.02")
+# GAAP-Cross-Check-Toleranz, gestaffelt nach Herkunft: Tabellenwerte muessen
+# praktisch exakt zum XBRL-Referenzwert passen (erzwingt die ungerundeten
+# Reconciliation-Tabellen-Werte, z.B. 5,803 statt '$5.8 billion'); Freitext-
+# Werte duerfen gerundet sein und bekommen einen Note-Zusatz.
+GAAP_TOLERANCE_TABLE = Decimal("0.005")
+GAAP_TOLERANCE_TEXT = Decimal("0.02")
+
+# Note-Zusatz fuer Freitext-Werte (gerundete '$5.8 billion'-Angaben).
+TEXT_NOTE_SUFFIX = " (aus Freitext, ggf. gerundet)"
 
 _SYSTEM_PROMPT = (
     "You extract Non-GAAP (adjusted) figures from an earnings press release "
@@ -58,24 +63,30 @@ _SYSTEM_PROMPT = (
     "return the Non-GAAP (adjusted) net income and Non-GAAP diluted EPS for "
     "the requested period.\n"
     "Rules:\n"
-    "- Values must come from the reconciliation of THIS release for the EXACT "
-    "requested period — not prior-year comparison columns, not YTD columns.\n"
+    "- Values MUST come from the GAAP-to-Non-GAAP reconciliation TABLE of "
+    "this release: the exact, unrounded figures as printed in the table "
+    "(e.g. 5,803 million, NOT the rounded '$5.8 billion' from the prose). "
+    "Set source_kind='table'.\n"
+    "- ONLY if the release contains no reconciliation table may you take "
+    "the figures from the narrative text — then set source_kind='text'.\n"
+    "- Values must come from THIS release for the EXACT requested period — "
+    "not prior-year comparison columns, not YTD columns.\n"
     "- non_gaap_net_income in absolute base units of the reporting currency "
     "(e.g. '$1,234.5 million' -> 1234500000).\n"
     "- non_gaap_diluted_eps as the per-share value.\n"
     "- gaap_net_income and gaap_diluted_eps: the GAAP values from the SAME "
-    "column/period of the reconciliation table as the Non-GAAP values. They "
+    "column/period (or the same text passage) as the Non-GAAP values. They "
     "are used as a cross-check that you read the right column — without "
     "them the Non-GAAP values will be discarded.\n"
-    "- If the release contains no GAAP-to-Non-GAAP reconciliation, or the "
-    "requested period is not covered, use null for the missing value.\n"
+    "- If the release contains no GAAP-to-Non-GAAP reconciliation at all, or "
+    "the requested period is not covered, use null for the missing value.\n"
     "- adjustment_items: short comma-separated list of the adjustment line "
     "items (e.g. 'SBC, restructuring, amortization of intangibles'); empty "
     "string if none.\n"
     "Answer with ONLY this JSON object, no prose, no markdown fences:\n"
     '{"non_gaap_net_income": number|null, "non_gaap_diluted_eps": number|null, '
     '"gaap_net_income": number|null, "gaap_diluted_eps": number|null, '
-    '"adjustment_items": string}'
+    '"source_kind": "table"|"text", "adjustment_items": string}'
 )
 
 # Negative-Cache wie im EdgarProvider: fehlgeschlagene URLs 10 Minuten
@@ -277,16 +288,31 @@ def _to_decimal(value) -> Decimal | None:
         return None
 
 
-def _matches_gaap(claimed: Decimal | None, reference: Decimal) -> bool:
-    """GAAP-Cross-Check: das vom LLM aus der Reconciliation-Spalte gelesene
-    GAAP-Pendant muss den DB-Wert derselben Periode auf 2% treffen. Ersetzt
-    das alte 0.5x-2x-Ratio-Gate, das genau die wichtigen Faelle blockierte
-    (GAAP-Verlust mit Non-GAAP-Gewinn, Impairment-Quartale)."""
+def _matches_gaap(claimed: Decimal | None, reference: Decimal,
+                  tolerance: Decimal) -> bool:
+    """GAAP-Cross-Check: das vom LLM gelesene GAAP-Pendant muss den DB-Wert
+    derselben Periode innerhalb der Toleranz treffen (table: 0.5%, text: 2%).
+    Ersetzt das alte 0.5x-2x-Ratio-Gate, das genau die wichtigen Faelle
+    blockierte (GAAP-Verlust mit Non-GAAP-Gewinn, Impairment-Quartale)."""
     if claimed is None:
         return False
     if reference == 0:
         return claimed == 0
-    return abs(claimed - reference) <= abs(reference) * GAAP_TOLERANCE
+    return abs(claimed - reference) <= abs(reference) * tolerance
+
+
+_ROUND_100M = Decimal("100000000")
+
+
+def _is_round_100m(value: Decimal | None) -> bool:
+    """True wenn der Wert glatt auf 100 Mio endet (Rundungs-Indiz: '$5.8
+    billion' aus dem Freitext statt 5,803 aus der Tabelle)."""
+    if value is None or value == 0:
+        return False
+    try:
+        return value % _ROUND_100M == 0
+    except InvalidOperation:
+        return False
 
 
 def _gaap_reference(db, company_id, key: str, ptype: str, year: int, period_rows) -> Decimal | None:
@@ -424,30 +450,76 @@ def enrich_adjusted_from_earnings_releases(
             "net_income": _to_decimal(data.get("non_gaap_net_income")),
             "eps_diluted": _to_decimal(data.get("non_gaap_diluted_eps")),
         }
+        if all(v is None for v in adj_values.values()):
+            # Bewusstes null (keine Reconciliation im Release): Werte
+            # verwerfen, Negativ-Marker persistieren.
+            for row in period_rows:
+                _mark_no_reconciliation(row)
+            db.flush()
+            continue
+
+        # source_kind ist Pflicht: ohne die Herkunftsangabe (Tabelle vs
+        # Freitext) ist keine Cross-Check-Toleranz zuordenbar — verwerfen.
+        source_kind = data.get("source_kind")
+        if source_kind not in ("table", "text"):
+            logger.warning(
+                "%s adjusted enrichment: source_kind fehlt/ungueltig (%r) "
+                "fuer %s — verworfen",
+                company.ticker, source_kind, period_label,
+            )
+            for row in period_rows:
+                _mark_no_reconciliation(row)
+            db.flush()
+            continue
+
+        gaap_ni_claimed = _to_decimal(data.get("gaap_net_income"))
+        gaap_eps_claimed = _to_decimal(data.get("gaap_diluted_eps"))
+        ni_ref = _gaap_reference(db, company.id, "net_income", ptype, year, period_rows)
+        eps_ref = _gaap_reference(db, company.id, "eps_diluted", ptype, year, period_rows)
+
+        # Rundungs-Detektor: behauptete Tabellenwerte, die glatt auf 100 Mio
+        # enden, waehrend unsere XBRL-Referenz ungerundet ist, stammen mit
+        # hoher Wahrscheinlichkeit doch aus dem Freitext ('$5.8 billion') —
+        # als text behandeln (2%-Toleranz + Freitext-Note).
+        if (
+            source_kind == "table"
+            and _is_round_100m(adj_values["net_income"])
+            and _is_round_100m(gaap_ni_claimed)
+            and ni_ref is not None
+            and not _is_round_100m(ni_ref)
+        ):
+            logger.warning(
+                "%s adjusted enrichment: Tabellen-Claim mit glatt gerundeten "
+                "Werten (non_gaap=%s, gaap=%s vs ref=%s) fuer %s — als "
+                "Freitext behandelt",
+                company.ticker, adj_values["net_income"], gaap_ni_claimed,
+                ni_ref, period_label,
+            )
+            source_kind = "text"
+
         # GAAP-Cross-Check: NI-Check gegen den DB-GAAP-Wert derselben
         # Periode ist das primaere Gate fuer BEIDE Keys; EPS zusaetzlich
         # gegen die GAAP-EPS-Zeile, falls vorhanden. Ohne bestandenen
-        # Cross-Check wird nie geschrieben.
-        ni_ref = _gaap_reference(db, company.id, "net_income", ptype, year, period_rows)
-        eps_ref = _gaap_reference(db, company.id, "eps_diluted", ptype, year, period_rows)
-        ni_ok = _matches_gaap(_to_decimal(data.get("gaap_net_income")), ni_ref) \
+        # Cross-Check wird nie geschrieben. Toleranz gestaffelt: Tabellen-
+        # werte muessen praktisch exakt passen, Freitext darf runden.
+        tolerance = GAAP_TOLERANCE_TABLE if source_kind == "table" \
+            else GAAP_TOLERANCE_TEXT
+        ni_ok = _matches_gaap(gaap_ni_claimed, ni_ref, tolerance) \
             if ni_ref is not None else None
-        eps_ok = _matches_gaap(_to_decimal(data.get("gaap_diluted_eps")), eps_ref) \
+        eps_ok = _matches_gaap(gaap_eps_claimed, eps_ref, tolerance) \
             if eps_ref is not None else None
         gate_ok = ni_ok if ni_ok is not None else eps_ok
 
-        if all(v is None for v in adj_values.values()) or not gate_ok:
-            # Bewusstes null (keine Reconciliation im Release) oder
-            # gescheiterter Cross-Check (falsche Spalte/Periode gelesen):
-            # Werte verwerfen, Negativ-Marker persistieren.
-            if not gate_ok and any(v is not None for v in adj_values.values()):
-                logger.warning(
-                    "%s adjusted enrichment: GAAP-Cross-Check fehlgeschlagen fuer %s "
-                    "(gaap_ni=%s vs ref=%s, gaap_eps=%s vs ref=%s) — verworfen",
-                    company.ticker, period_label,
-                    data.get("gaap_net_income"), ni_ref,
-                    data.get("gaap_diluted_eps"), eps_ref,
-                )
+        if not gate_ok:
+            # Gescheiterter Cross-Check (falsche Spalte/Periode gelesen oder
+            # gerundeter Tabellen-Claim): Werte verwerfen, Negativ-Marker.
+            logger.warning(
+                "%s adjusted enrichment: GAAP-Cross-Check fehlgeschlagen fuer %s "
+                "(source_kind=%s, gaap_ni=%s vs ref=%s, gaap_eps=%s vs ref=%s) — verworfen",
+                company.ticker, period_label, source_kind,
+                data.get("gaap_net_income"), ni_ref,
+                data.get("gaap_diluted_eps"), eps_ref,
+            )
             for row in period_rows:
                 _mark_no_reconciliation(row)
             db.flush()
@@ -456,6 +528,8 @@ def enrich_adjusted_from_earnings_releases(
         items = data.get("adjustment_items") or ""
         note = f"Non-GAAP (Reconciliation 8-K): {items}" if items \
             else "Non-GAAP (Reconciliation 8-K)"
+        if source_kind == "text":
+            note += TEXT_NOTE_SUFFIX
         wrote_any = False
         for row in period_rows:
             # EPS nur schreiben, wenn der EPS-Check (falls pruefbar) auch

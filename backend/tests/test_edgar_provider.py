@@ -132,3 +132,67 @@ def test_registry_lists_edgar_first_for_us_filer_keys():
     providers = get_providers("net_income")
     assert len(providers) >= 1
     assert providers[0].name == "SEC EDGAR"
+
+
+# --- Per-share-Units ("USD/shares"): EPS-Facts wurden vom reinen
+# Waehrungscode-Filter frueher NIE gefunden — Currency ist der Zaehler. ---
+
+
+def test_eps_diluted_fy_with_usd_per_share_unit(provider):
+    facts = _facts_with({
+        "EarningsPerShareDiluted": {
+            "units": {"USD/shares": [_entry("2024-09-28", 6.08, 2024)]}
+        }
+    })
+    with patch.object(provider, "_get_facts", return_value=facts):
+        result = provider.fetch("AAPL", "eps_diluted", "FY", 2024)
+    assert result is not None
+    assert result.value == Decimal("6.08")
+    assert result.currency == "USD"
+
+
+def test_eps_diluted_quarter_standalone_with_usd_per_share_unit(provider):
+    # Q1 bei FY-Ende 28.09.: Q-Ende 28.12., Standalone-3M-Frame im 10-Q.
+    facts = _facts_with({
+        "EarningsPerShareDiluted": {
+            "units": {"USD/shares": [{
+                "start": "2023-10-01", "end": "2023-12-30", "val": 2.18,
+                "form": "10-Q", "filed": "2024-02-02",
+                "accn": "0000320193-24-000006",
+            }]}
+        }
+    })
+    with patch.object(provider, "_get_facts", return_value=facts):
+        result = provider.fetch_quarterly(
+            "AAPL", "eps_diluted", 2024, "Q1", fy_end_month=9, fy_end_day=28,
+        )
+    assert result is not None
+    assert result.value == Decimal("2.18")
+    assert result.currency == "USD"
+
+
+def test_eur_per_share_unit_yields_numerator_currency(provider):
+    facts = _facts_with({
+        "EarningsPerShareDiluted": {
+            "units": {"EUR/shares": [_entry("2024-12-31", 3.41, 2024)]}
+        }
+    })
+    with patch.object(provider, "_get_facts", return_value=facts):
+        result = provider.fetch("AAPL", "eps_diluted", "FY", 2024)
+    assert result is not None
+    assert result.currency == "EUR"
+
+
+def test_non_currency_units_still_ignored(provider):
+    # "shares" und "pure" sind keine Waehrungs-Units — weiterhin skip.
+    facts = _facts_with({
+        "EarningsPerShareDiluted": {
+            "units": {
+                "shares": [_entry("2024-09-28", 123, 2024)],
+                "pure": [_entry("2024-09-28", 456, 2024)],
+            }
+        }
+    })
+    with patch.object(provider, "_get_facts", return_value=facts):
+        result = provider.fetch("AAPL", "eps_diluted", "FY", 2024)
+    assert result is None

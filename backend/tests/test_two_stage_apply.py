@@ -454,3 +454,139 @@ def test_apply_to_db_correction_gate_is_per_period(client, db):
     )
     # Q1 hat weder Quote noch eigene Korrektur -> kein Write (keine Zeile).
     assert q1 == []
+
+
+# --- EDGAR-only-Gate: berichtete GAAP-Zellen von US-Filern kommen
+# ausschliesslich aus EDGAR-XBRL, kein LLM-Fallback. -------------------------
+
+
+def _us_company(client, db, email):
+    """US-Filer: ISIN mit US-Praefix (is_us_company entscheidet am ISIN)."""
+    cid = _company(client, db, email=email)
+    from app.companies.models import Company
+    comp = db.get(Company, cid)
+    comp.isin = "US0378331005"
+    db.commit()
+    return cid
+
+
+def _row(db, cid, key, ptype, year):
+    return (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == cid,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == ptype,
+            CompanyValue.period_year == year,
+        )
+        .one()
+    )
+
+
+def test_edgar_only_suppresses_reported_us_gaap_write(client, db):
+    """US-Filer + berichtete Periode + EDGAR-Key: der Two-Stage-GAAP-Wert
+    wird unterdrueckt — statt Wert entsteht ein not_found-Platzhalter."""
+    cid = _us_company(client, db, email="ts18@example.com")
+    r = _result("net_income", Decimal("50000"))
+    r.extract.year = 2024
+    apply_to_db(db, cid, "net_income", 2024, r, currency="USD")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", 2024)
+    assert row.numeric_value is None
+    assert row.primary_method == "not_found"
+    assert row.last_refresh_attempt is not None
+
+
+def test_edgar_only_resets_stale_llm_row_to_not_found(client, db):
+    """Bestehende (nicht-authoritative) LLM-Zeile einer berichteten Periode
+    wird auf not_found zurueckgesetzt — die Zelle wird leer/rot statt einen
+    alten Two-Stage-Wert zu behalten oder einen neuen zu bekommen."""
+    cid = _us_company(client, db, email="ts19@example.com")
+    stale = CompanyValue(
+        company_id=cid, value_key="net_income", period_type="FY", period_year=2024,
+        numeric_value=Decimal("999"), primary_method="two_stage_confirmed",
+        source_name="old llm row",
+    )
+    db.add(stale)
+    db.commit()
+
+    r = _result("net_income", Decimal("50000"))
+    r.extract.year = 2024
+    apply_to_db(db, cid, "net_income", 2024, r, currency="USD")
+    db.commit()
+    db.refresh(stale)
+
+    assert stale.numeric_value is None
+    assert stale.primary_method == "not_found"
+    assert stale.last_refresh_attempt is not None
+
+
+def test_edgar_only_keeps_unreported_fy_writable(client, db):
+    """Unberichtete Periode (laufendes Geschaeftsjahr) bleibt voll
+    beschreibbar — Schaetzungen sind ausdruecklich erwuenscht."""
+    from datetime import date
+
+    cid = _us_company(client, db, email="ts20@example.com")
+    running_year = date.today().year
+    r = _result("net_income", Decimal("50000"))
+    r.extract.year = running_year
+    apply_to_db(db, cid, "net_income", running_year, r, currency="USD")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", running_year)
+    assert row.numeric_value == Decimal("50000")
+    assert row.primary_method.startswith("two_stage")
+    assert row.is_forecast is True  # FY-Ende in der Zukunft -> Forecast
+
+
+def test_edgar_only_estimate_still_writes_forecast_row(client, db):
+    """Forecast-Slot (is_estimate=True) bleibt auch fuer berichtete Perioden
+    beschreibbar — das Gate betrifft nur den Actual-Slot."""
+    cid = _us_company(client, db, email="ts21@example.com")
+    r = _result("net_income", Decimal("50000"))
+    r.extract.year = 2024
+    r.extract.fy.is_estimate = True
+    apply_to_db(db, cid, "net_income", 2024, r, currency="USD")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", 2024)
+    assert row.numeric_value == Decimal("50000")
+    assert row.is_forecast is True
+
+
+def test_edgar_only_non_us_company_unchanged(client, db):
+    """Nicht-US-Firma (keine US-ISIN): berichtete Periode bleibt per
+    Two-Stage beschreibbar wie bisher."""
+    cid = _company(client, db, email="ts22@example.com")
+    r = _result("net_income", Decimal("50000"))
+    r.extract.year = 2024
+    apply_to_db(db, cid, "net_income", 2024, r, currency="EUR")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", 2024)
+    assert row.numeric_value == Decimal("50000")
+    assert row.primary_method.startswith("two_stage")
+
+
+def test_edgar_only_existing_provider_value_untouched(client, db):
+    """Bestehender Provider-Wert (XBRL-Anker) bleibt unangetastet — nur der
+    Refresh-Versuch wird gestempelt, kein Reset auf not_found."""
+    cid = _us_company(client, db, email="ts23@example.com")
+    prov = CompanyValue(
+        company_id=cid, value_key="net_income", period_type="FY", period_year=2024,
+        numeric_value=Decimal("777"), primary_method="provider",
+        source_name="SEC EDGAR 10-K (FY2024)", currency="USD",
+    )
+    db.add(prov)
+    db.commit()
+
+    r = _result("net_income", Decimal("50000"))
+    r.extract.year = 2024
+    apply_to_db(db, cid, "net_income", 2024, r, currency="USD")
+    db.commit()
+    db.refresh(prov)
+
+    assert prov.numeric_value == Decimal("777")
+    assert prov.primary_method == "provider"
+    assert prov.last_refresh_attempt is not None

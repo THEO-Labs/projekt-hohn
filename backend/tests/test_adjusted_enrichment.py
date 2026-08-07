@@ -138,7 +138,7 @@ def test_enriches_ni_and_eps_with_one_call(db, company, monkeypatch):
         {EXHIBIT_URL_Q2: EXHIBIT_HTML},
         {"non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": 3.23,
          "gaap_net_income": 20000000000, "gaap_diluted_eps": 2.70,
-         "adjustment_items": "SBC, restructuring"},
+         "source_kind": "table", "adjustment_items": "SBC, restructuring"},
     )
 
     enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
@@ -174,7 +174,7 @@ def test_fill_only_null_keeps_existing_adjusted(db, company, monkeypatch):
         {EXHIBIT_URL_Q2: EXHIBIT_HTML},
         {"non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": 3.23,
          "gaap_net_income": 20000000000, "gaap_diluted_eps": 2.70,
-         "adjustment_items": "SBC"},
+         "source_kind": "table", "adjustment_items": "SBC"},
     )
 
     enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
@@ -234,7 +234,7 @@ def test_cross_check_rejects_wrong_column(db, company, monkeypatch):
         # gaap_net_income = Vorjahreswert, 10% daneben.
         {"non_gaap_net_income": 21000000000, "non_gaap_diluted_eps": 2.90,
          "gaap_net_income": 18000000000, "gaap_diluted_eps": 2.40,
-         "adjustment_items": "SBC"},
+         "source_kind": "table", "adjustment_items": "SBC"},
     )
 
     enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
@@ -269,7 +269,7 @@ def test_loss_gaap_profit_non_gaap_accepted(db, company, monkeypatch):
         {EXHIBIT_URL_Q2: EXHIBIT_HTML},
         {"non_gaap_net_income": 1000000000, "non_gaap_diluted_eps": None,
          "gaap_net_income": -5000000000, "gaap_diluted_eps": None,
-         "adjustment_items": "impairment, SBC"},
+         "source_kind": "table", "adjustment_items": "impairment, SBC"},
     )
 
     enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
@@ -350,7 +350,7 @@ def test_max_llm_calls_caps_periods_newest_first(db, company, monkeypatch):
         {EXHIBIT_URL_Q1: EXHIBIT_HTML, EXHIBIT_URL_Q2: EXHIBIT_HTML},
         {"non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
          "gaap_net_income": 21000000000, "gaap_diluted_eps": None,
-         "adjustment_items": "SBC"},
+         "source_kind": "table", "adjustment_items": "SBC"},
     )
 
     enriched = enrich_adjusted_from_earnings_releases(
@@ -384,7 +384,7 @@ def test_submissions_json_fetched_once_per_run(db, company, monkeypatch):
         {EXHIBIT_URL_Q1: EXHIBIT_HTML, EXHIBIT_URL_Q2: EXHIBIT_HTML},
         {"non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
          "gaap_net_income": 20000000000, "gaap_diluted_eps": None,
-         "adjustment_items": "SBC"},
+         "source_kind": "table", "adjustment_items": "SBC"},
     )
     fetch_counts: dict[str, int] = {}
 
@@ -412,3 +412,110 @@ def test_focus_text_prioritizes_reconciliation_section():
     focused = adj._focus_text(text, limit=40000)
     assert len(focused) <= 40000
     assert "Reconciliation of GAAP to Non-GAAP" in focused
+
+
+# --- Tabellen-Prioritaet: source_kind steuert die Cross-Check-Toleranz ------
+
+
+def _patch_period(monkeypatch, payload):
+    return _patch_all(
+        monkeypatch,
+        {SUB_URL: _submissions([("8-K", Q2_FILING_DATE, ACCN_Q2, "2.02,9.01")]),
+         INDEX_URL_Q2: INDEX_JSON},
+        {EXHIBIT_URL_Q2: EXHIBIT_HTML},
+        payload,
+    )
+
+
+def test_table_gate_rejects_gaap_beyond_half_percent(db, company, monkeypatch):
+    """source_kind='table' verlangt 0.5%: GAAP-Pendant 0.9% neben der
+    XBRL-Referenz (unter der Text-Toleranz von 2% noch akzeptabel) wird
+    verworfen — Tabellenwerte muessen praktisch exakt passen."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("5803000000"))
+    fake = _patch_period(monkeypatch, {
+        # 5.75e9 vs ref 5.803e9 = 0.91% daneben; bewusst NICHT glatt auf
+        # 100 Mio, damit der Rundungs-Detektor nicht greift.
+        "non_gaap_net_income": 6153000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 5750000000, "gaap_diluted_eps": None,
+        "source_kind": "table", "adjustment_items": "SBC",
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 0
+    assert len(fake.messages.calls) == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted is None
+    assert ni.adjustments_note == "no non-GAAP reconciliation found"
+
+
+def test_text_gate_accepts_2pct_and_marks_note(db, company, monkeypatch):
+    """source_kind='text': 2%-Toleranz plus Freitext-Kennzeichnung in der
+    Note (gerundete '$5.9 billion'-Angaben aus dem Fliesstext)."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("5803000000"))
+    fake = _patch_period(monkeypatch, {
+        # gaap 5.9e9 vs ref 5.803e9 = 1.67% — als text ok, als table nicht.
+        "non_gaap_net_income": 6200000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 5900000000, "gaap_diluted_eps": None,
+        "source_kind": "text", "adjustment_items": "SBC",
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    assert len(fake.messages.calls) == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted == Decimal("6200000000")
+    assert ni.adjustments_note == \
+        "Non-GAAP (Reconciliation 8-K): SBC (aus Freitext, ggf. gerundet)"
+
+
+def test_rounding_detector_downgrades_table_claim_to_text(db, company, monkeypatch):
+    """Rundungs-Detektor (Spec-Beispiel 5.8e9 vs 5.803e9): behaupteter
+    Tabellenwert, aber Non-GAAP und GAAP glatt auf 100 Mio gerundet, waehrend
+    die XBRL-Referenz ungerundet ist — wird als Freitext behandelt (Write mit
+    Freitext-Note statt Vertrauen in exakte Tabellenwerte)."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("5803000000"))
+    fake = _patch_period(monkeypatch, {
+        "non_gaap_net_income": 6200000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 5800000000, "gaap_diluted_eps": None,
+        "source_kind": "table", "adjustment_items": "SBC",
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted == Decimal("6200000000")
+    assert ni.adjustments_note.endswith(" (aus Freitext, ggf. gerundet)")
+
+
+def test_missing_source_kind_rejects(db, company, monkeypatch):
+    """source_kind fehlt: ohne Herkunftsangabe keine Toleranz zuordenbar —
+    Werte verwerfen, Negativ-Marker gegen Dauer-Retries."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    fake = _patch_period(monkeypatch, {
+        "non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 20000000000, "gaap_diluted_eps": None,
+        "adjustment_items": "SBC",
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 0
+    assert len(fake.messages.calls) == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted is None
+    assert ni.adjustments_note == "no non-GAAP reconciliation found"
+
+
+def test_prompt_schema_requires_source_kind():
+    """Das JSON-Schema im System-Prompt muss source_kind als Pflichtfeld
+    ausweisen und die Tabellen-Prioritaet anweisen."""
+    assert '"source_kind": "table"|"text"' in adj._SYSTEM_PROMPT
+    assert "reconciliation TABLE" in adj._SYSTEM_PROMPT
+    assert "source_kind='text'" in adj._SYSTEM_PROMPT

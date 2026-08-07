@@ -1206,18 +1206,49 @@ def apply_to_db(
     # Actual sein — Extractor-Fehldeklarationen (is_estimate=false) hier
     # hart korrigieren. FY-Ende aus den Company-Stammdaten, Fallback 31.12.
     fy_end_future = False
+    comp = None
+    fy_m, fy_d = 12, 31
     try:
         from datetime import date as _date
         from app.companies.models import Company
         comp = db.get(Company, company_id)
-        m = getattr(comp, "fiscal_year_end_month", None) or 12
-        d = getattr(comp, "fiscal_year_end_day", None) or 31
-        fy_end_future = _date(year, m, d) >= _date.today()
+        fy_m = getattr(comp, "fiscal_year_end_month", None) or 12
+        fy_d = getattr(comp, "fiscal_year_end_day", None) or 31
+        fy_end_future = _date(year, fy_m, fy_d) >= _date.today()
     except Exception:
         fy_end_future = year >= datetime.now(timezone.utc).year
 
+    # EDGAR-only-Gate: GAAP-Werte BERICHTETER Perioden von US-Filern kommen
+    # AUSSCHLIESSLICH aus EDGAR-XBRL (provider_anchor). Ein Two-Stage-LLM-Wert
+    # darf solche Actual-Zellen nicht beschreiben — liefert EDGAR nichts,
+    # bleibt die Zelle leer/rot (not_found) statt LLM-recherchiert.
+    # Forecast-Slots (is_estimate=True) und unberichtete Perioden bleiben
+    # voll beschreibbar (Schaetzungen); Nicht-US-Firmen unveraendert.
+    edgar_only = False
+    try:
+        from app.calculations.lock import is_us_company
+        from app.providers.edgar import EdgarProvider
+        edgar_only = (
+            comp is not None
+            and is_us_company(comp)
+            and value_key in EdgarProvider.supported_keys
+        )
+    except Exception:
+        edgar_only = False
+
+    def _period_reported(pt: str) -> bool:
+        """Berichtete Periode: Periodenende (FY = Q4-Ende) liegt mindestens
+        REPORTING_GRACE_DAYS zurueck — gleiche Konvention wie detail_page."""
+        from app.values.detail_page import REPORTING_GRACE_DAYS, quarter_end_date
+        q = "Q4" if pt == "FY" else pt
+        p_end = quarter_end_date(year, q, fy_m, fy_d)
+        if p_end is None:
+            return False
+        return (date.today() - p_end).days >= REPORTING_GRACE_DAYS
+
     written = []
     provider_skips = 0
+    edgar_only_suppressed = 0
     for period_type, value in periods:
         # Source URL and quote from the corresponding extracted quarter (if any)
         src_url = None
@@ -1298,6 +1329,27 @@ def apply_to_db(
         ):
             existing.last_refresh_attempt = datetime.now(timezone.utc)
             provider_skips += 1
+            continue
+
+        # EDGAR-only-Gate (siehe oben): berichteter GAAP-Actual eines
+        # US-Filers mit EDGAR-Key -> Two-Stage-Wert unterdruecken. Provider-/
+        # Manual-/PDF-Zeilen sind durch die Guards davor bereits geskippt;
+        # hier verbleibende Actual-Zeilen (alte LLM-Writes) werden auf das
+        # not_found-Placeholder-Verhalten zurueckgesetzt, fehlende Zeilen
+        # bekommen einen not_found-Platzhalter + Stempel.
+        if edgar_only and not is_estimate and _period_reported(period_type):
+            from app.values.persistence import NOT_FOUND_SOURCE
+            actual_row = next((r for r in existing_rows if not r.is_forecast), None)
+            if actual_row is not None:
+                actual_row.numeric_value = None
+                actual_row.primary_method = "not_found"
+                actual_row.source_name = NOT_FOUND_SOURCE
+                actual_row.last_refresh_attempt = datetime.now(timezone.utc)
+            else:
+                stamp_attempt_and_fill_not_found(
+                    db, company_id, value_key, year, [period_type], currency=currency,
+                )
+            edgar_only_suppressed += 1
             continue
 
         # Currency-Konflikt wie im Refresh-/Anker-Pfad: bestehende Zeile
@@ -1461,6 +1513,11 @@ def apply_to_db(
         logger.info(
             "two-stage apply: %d provider-Actual-Zellen uebersprungen (%s/%s FY%s)",
             provider_skips, result.extract.ticker, value_key, year,
+        )
+    if edgar_only_suppressed:
+        logger.info(
+            "edgar-only: %d GAAP-Writes unterdrueckt (%s/%s FY%s)",
+            edgar_only_suppressed, result.extract.ticker, value_key, year,
         )
     db.flush()
     return written

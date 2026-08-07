@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 
 USER_AGENT = "ProjektHohn/1.0 (mailto:till@theolabs.xyz)"
 
+# Akzeptierte Waehrungscodes fuer XBRL-Units.
+UNIT_CURRENCIES = ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD")
+
+
+def _unit_currency(unit_name: str) -> str | None:
+    """Currency eines XBRL-Unit-Namens. Monetaere Facts tragen reine
+    Waehrungscodes ("USD"), Per-Share-Facts (EPS) Units der Form
+    "<CUR>/shares" — Currency ist der Zaehler. Alles andere ("shares",
+    "pure", ...) liefert None und wird uebersprungen."""
+    if unit_name in UNIT_CURRENCIES:
+        return unit_name
+    num, sep, denom = unit_name.partition("/")
+    if sep and denom == "shares" and num in UNIT_CURRENCIES:
+        return num
+    return None
+
 # Map our value_keys to a list of XBRL concept names (us-gaap namespace).
 # Multiple concepts per key because different filers use different tags.
 CONCEPT_MAP: dict[str, list[str]] = {
@@ -35,9 +51,10 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "IncomeLossFromContinuingOperationsPerDilutedShare",
         "NetIncomeLossPerOutstandingLimitedPartnershipAndGeneralPartnershipUnitDiluted",
         # Fallback: Basic EPS if Diluted not reported (rare — small caps only).
-        # Firms like Visa report EPS via a company-specific taxonomy prefix
-        # (v:...) that our us-gaap-only scan can't reach; in that case Claude
-        # falls back and researches from the 10-Q text directly.
+        # Restluecke Visa: EPS ist dort NUR mit Class-A/B/C-Member-Dimension
+        # getaggt; die companyfacts-API liefert ausschliesslich dimensionslose
+        # Facts, daher taucht fuer Visa gar kein EarningsPerShare*-Concept auf
+        # (unabhaengig vom Unit-Handling). Zelle bleibt leer/not_found.
         "EarningsPerShareBasic",
     ],
     "operating_cash_flow": [
@@ -258,9 +275,10 @@ class EdgarProvider:
             if not concept_data:
                 continue
             units = concept_data.get("units", {})
-            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if _unit_currency(u) == "USD" else 1)
             for unit_name in unit_keys:
-                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                currency = _unit_currency(unit_name)
+                if currency is None:
                     continue
                 entries = units[unit_name]
                 yr_str = str(period_year)
@@ -285,7 +303,7 @@ class EdgarProvider:
                 pool = annual or candidates
                 if pool:
                     best = min(pool, key=lambda e: e.get("filed", "9999"))
-                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+                    return Decimal(str(best["val"])), currency, best.get("accn")
         return None, None, None
 
     def _filing_link(self, cik: str, accn: str | None) -> str:
@@ -336,9 +354,10 @@ class EdgarProvider:
             if not concept_data:
                 continue
             units = concept_data.get("units", {})
-            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if _unit_currency(u) == "USD" else 1)
             for unit_name in unit_keys:
-                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                currency = _unit_currency(unit_name)
+                if currency is None:
                     continue
                 candidates: list[tuple[dict, int]] = []
                 for e in units[unit_name]:
@@ -364,7 +383,7 @@ class EdgarProvider:
                     # Earliest filed (= original 10-Q, nicht spaetere Restatement-Amendments)
                     best = min(candidates, key=lambda c: c[0].get("filed", "9999"))
                     e = best[0]
-                    return Decimal(str(e["val"])), unit_name, e.get("accn")
+                    return Decimal(str(e["val"])), currency, e.get("accn")
         return None
 
     def _fy_start(
@@ -398,9 +417,10 @@ class EdgarProvider:
             if not concept_data:
                 continue
             units = concept_data.get("units", {})
-            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if _unit_currency(u) == "USD" else 1)
             for unit_name in unit_keys:
-                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                currency = _unit_currency(unit_name)
+                if currency is None:
                     continue
                 candidates: list[dict] = []
                 for e in units[unit_name]:
@@ -423,7 +443,7 @@ class EdgarProvider:
                     candidates.append(e)
                 if candidates:
                     best = min(candidates, key=lambda e: e.get("filed", "9999"))
-                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+                    return Decimal(str(best["val"])), currency, best.get("accn")
         return None
 
     def _find_q_instant(
@@ -441,9 +461,10 @@ class EdgarProvider:
             if not concept_data:
                 continue
             units = concept_data.get("units", {})
-            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if _unit_currency(u) == "USD" else 1)
             for unit_name in unit_keys:
-                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                currency = _unit_currency(unit_name)
+                if currency is None:
                     continue
                 candidates: list[dict] = []
                 for e in units[unit_name]:
@@ -464,7 +485,7 @@ class EdgarProvider:
                     candidates.append(e)
                 if candidates:
                     best = min(candidates, key=lambda e: e.get("filed", "9999"))
-                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+                    return Decimal(str(best["val"])), currency, best.get("accn")
         return None
 
     def _find_fy_duration(
@@ -485,9 +506,10 @@ class EdgarProvider:
             if not concept_data:
                 continue
             units = concept_data.get("units", {})
-            unit_keys = sorted(units.keys(), key=lambda u: 0 if u == "USD" else 1)
+            unit_keys = sorted(units.keys(), key=lambda u: 0 if _unit_currency(u) == "USD" else 1)
             for unit_name in unit_keys:
-                if unit_name not in ("USD", "EUR", "GBP", "CHF", "JPY", "CAD", "AUD"):
+                currency = _unit_currency(unit_name)
+                if currency is None:
                     continue
                 candidates: list[dict] = []
                 for e in units[unit_name]:
@@ -510,7 +532,7 @@ class EdgarProvider:
                     candidates.append(e)
                 if candidates:
                     best = min(candidates, key=lambda e: e.get("filed", "9999"))
-                    return Decimal(str(best["val"])), unit_name, best.get("accn")
+                    return Decimal(str(best["val"])), currency, best.get("accn")
         return None
 
     def _q_via_ytd_diff(
