@@ -56,6 +56,8 @@ const METRIC_KEYS = [
   "pe_ratio",
   "fcf_yield",
   "ev_ebitda",
+  "ps_ratio",
+  "net_debt_to_ocf",
 ];
 
 type Variant = "gaap" | "adjusted";
