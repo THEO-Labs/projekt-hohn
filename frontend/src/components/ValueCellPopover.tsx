@@ -142,7 +142,10 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
   );
 
   const handleStartEdit = () => {
-    setEditValue(cell.value != null ? String(cell.value) : "");
+    // Adjusted-Zelle, die nur den GAAP-Fallback anzeigt: leer starten —
+    // sonst wird der GAAP-Wert versehentlich als Manual-Adjusted dupliziert.
+    const isGaapFallback = cell.variant === "adjusted" && cell.is_gaap_fallback;
+    setEditValue(!isGaapFallback && cell.value != null ? String(cell.value) : "");
     setEditing(true);
   };
 
@@ -160,7 +163,9 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
       await overrideValue(
         companyId,
         cell.value_key,
-        { numeric_value: absolute, source_name: "Manual" },
+        // variant steuert, ob GAAP (numeric_value) oder Adjusted
+        // (numeric_value_adjusted) ueberschrieben wird.
+        { numeric_value: absolute, source_name: "Manual", variant: cell.variant ?? "gaap" },
         cell.period_type,
         cell.period_year ?? undefined,
       );
@@ -253,18 +258,25 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
       {/* Big value */}
       <div className="flex items-end justify-between gap-2 border-b border-border/40 px-3 pb-2.5">
         {editing ? (
-          <input
-            autoFocus
-            type="text"
-            className="w-full rounded border border-primary bg-background px-1.5 py-1 font-mono text-sm text-foreground outline-none"
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSave();
-              if (e.key === "Escape") setEditing(false);
-            }}
-            disabled={saving}
-          />
+          <div className="flex w-full items-center gap-1.5">
+            {cell.variant === "adjusted" && (
+              <span className="shrink-0 rounded-full bg-violet-100 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-violet-800">
+                Adjusted
+              </span>
+            )}
+            <input
+              autoFocus
+              type="text"
+              className="w-full rounded border border-primary bg-background px-1.5 py-1 font-mono text-sm text-foreground outline-none"
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSave();
+                if (e.key === "Escape") setEditing(false);
+              }}
+              disabled={saving}
+            />
+          </div>
         ) : (
           <div className="text-[18px] font-semibold tabular-nums leading-none">{displayValue}</div>
         )}

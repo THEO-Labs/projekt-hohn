@@ -308,6 +308,60 @@ def test_apply_to_db_never_touches_manual_override(client, db):
     assert manual.last_refresh_attempt is not None
 
 
+def test_apply_to_db_preserves_manual_adjusted_fields(client, db):
+    """C1-Regression: Zeile mit manuellem Adjusted-Wert (adjustments_source
+    ='Manual', GAAP-Teil NICHT manually_overridden) — der Two-Stage-Write
+    aktualisiert den GAAP-Wert, laesst die Adjusted-Felder aber
+    byte-identisch stehen."""
+    cid = _company(client, db, email="ts16@example.com")
+    row = CompanyValue(
+        company_id=cid, value_key="net_income", period_type="FY", period_year=2025,
+        numeric_value=Decimal("999"), source_name="old row",
+        numeric_value_adjusted=Decimal("1234"),
+        adjustments_note="Manuell ueberschrieben",
+        adjustments_source="Manual",
+    )
+    db.add(row)
+    db.commit()
+
+    apply_to_db(db, cid, "net_income", 2025, _result("net_income", Decimal("50000")),
+                currency="EUR")
+    db.commit()
+    db.refresh(row)
+
+    assert row.numeric_value == Decimal("50000")
+    assert row.primary_method.startswith("two_stage")
+    assert row.numeric_value_adjusted == Decimal("1234")
+    assert row.adjustments_note == "Manuell ueberschrieben"
+    assert row.adjustments_source == "Manual"
+
+
+def test_apply_to_db_preserves_enrichment_adjusted_fields(client, db):
+    """8-K-Enrichment-Adjusted (SEC-URL) ist wie Manual geschuetzt —
+    Two-Stage ueberschreibt nur den GAAP-Teil."""
+    cid = _company(client, db, email="ts17@example.com")
+    url = "https://www.sec.gov/Archives/edgar/data/1/000000000100000001/ex991.htm"
+    row = CompanyValue(
+        company_id=cid, value_key="net_income", period_type="FY", period_year=2025,
+        numeric_value=Decimal("999"), source_name="old row",
+        numeric_value_adjusted=Decimal("1500"),
+        adjustments_note="Non-GAAP (Reconciliation 8-K): SBC",
+        adjustments_source=url,
+    )
+    db.add(row)
+    db.commit()
+
+    apply_to_db(db, cid, "net_income", 2025, _result("net_income", Decimal("50000")),
+                currency="EUR")
+    db.commit()
+    db.refresh(row)
+
+    assert row.numeric_value == Decimal("50000")
+    assert row.numeric_value_adjusted == Decimal("1500")
+    assert row.adjustments_note == "Non-GAAP (Reconciliation 8-K): SBC"
+    assert row.adjustments_source == url
+
+
 def test_apply_to_db_never_touches_ir_pdf_row(client, db):
     """Punkt 3: from_ir_pdf-Zeilen sind authoritative (Invariante wie
     provider_anchor/routes)."""

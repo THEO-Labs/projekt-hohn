@@ -224,6 +224,54 @@ def test_creates_row_and_normalizes_sign(db, company):
     assert row.is_forecast is False
 
 
+def test_anchor_clears_unprotected_adjusted_but_keeps_protected(db, company):
+    """Stale-Schutz differenziert (adjusted_is_protected): unbelegte
+    Adjusted-Werte UND Two-Stage-Sources werden abgeraeumt (Enrichment
+    fuellt nach), nur Manual und 8-K-Enrichment (SEC-URL) ueberleben."""
+    unsourced = _seed_q_row(db, company, "net_income", "Q1", YEAR, Decimal("100"),
+                            numeric_value_adjusted=Decimal("120"),
+                            adjustments_note="LLM-Altwert ohne Quelle")
+    sourced = _seed_q_row(db, company, "net_income", "Q2", YEAR, Decimal("100"),
+                          numeric_value_adjusted=Decimal("130"),
+                          adjustments_note="Non-GAAP (Reconciliation 8-K): SBC",
+                          adjustments_source="https://www.sec.gov/Archives/ex991.htm")
+    two_stage = _seed_q_row(db, company, "net_income", "Q3", YEAR, Decimal("100"),
+                            numeric_value_adjusted=Decimal("140"),
+                            adjustments_note="Excludes SBC",
+                            adjustments_source="Adjusted net income was... | https://ir.example/pr")
+    manual = _seed_q_row(db, company, "net_income", "Q4", YEAR, Decimal("100"),
+                         numeric_value_adjusted=Decimal("150"),
+                         adjustments_note="Manuell ueberschrieben",
+                         adjustments_source="Manual")
+    results = {
+        ("net_income", YEAR, q): ProviderResult(
+            value=Decimal("110") + i, source_name="EDGAR", currency="USD")
+        for i, q in enumerate(("Q1", "Q2", "Q3", "Q4"))
+    }
+    written, _ = _run(db, company, results)
+
+    assert written == 4
+    db.refresh(unsourced)
+    db.refresh(sourced)
+    db.refresh(two_stage)
+    db.refresh(manual)
+    assert unsourced.numeric_value_adjusted is None
+    assert unsourced.adjustments_note is None
+    assert unsourced.adjustments_source is None
+    # 8-K-Enrichment (www.sec.gov) bleibt stehen.
+    assert sourced.numeric_value_adjusted == Decimal("130")
+    assert sourced.adjustments_note == "Non-GAAP (Reconciliation 8-K): SBC"
+    assert sourced.adjustments_source == "https://www.sec.gov/Archives/ex991.htm"
+    # Two-Stage-Source (quote | url) wird abgeraeumt — sonst klebt der
+    # stale LLM-Adjusted-Wert dauerhaft neben dem frischen GAAP-Wert.
+    assert two_stage.numeric_value_adjusted is None
+    assert two_stage.adjustments_note is None
+    assert two_stage.adjustments_source is None
+    # Manual bleibt stehen.
+    assert manual.numeric_value_adjusted == Decimal("150")
+    assert manual.adjustments_source == "Manual"
+
+
 def test_non_us_company_skips_without_provider_call(db, company):
     company.isin = "DE0001234567"
     db.commit()

@@ -186,6 +186,7 @@ function cvToMetricCell(
     formula: FORMULAS[valueKey] ?? null,
     value_key: valueKey,
     period_label: periodLabel,
+    ...(variant === "adjusted" ? { variant: "adjusted" as const } : {}),
   };
 }
 

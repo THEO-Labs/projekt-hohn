@@ -206,7 +206,13 @@ export const twoStageRefresh = (
 export const overrideValue = (
   companyId: string,
   valueKey: string,
-  payload: { numeric_value?: number; text_value?: string; source_name: string },
+  payload: {
+    numeric_value?: number;
+    text_value?: string;
+    source_name: string;
+    // "adjusted" schreibt numeric_value_adjusted statt numeric_value.
+    variant?: "gaap" | "adjusted";
+  },
   periodType: string = "SNAPSHOT",
   periodYear?: number,
 ) => {

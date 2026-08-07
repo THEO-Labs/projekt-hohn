@@ -48,6 +48,9 @@ export type Cell = {
   // Override multipliziert der Popover die Eingabe damit zurueck auf
   // absolute Werte (Tobi-Bug: 357 eingetippt -> 357 EUR gespeichert).
   scale?: number;
+  // Welche Wertvariante die Zelle zeigt: Overrides auf Adjusted-Zellen
+  // schreiben numeric_value_adjusted statt numeric_value. Default: gaap.
+  variant?: "gaap" | "adjusted";
 };
 
 export const emptyCell = (): Cell => ({ value: null });
@@ -283,6 +286,7 @@ function refToCell(
     consistency_flags: r?.consistency_flags ?? null,
     status: r?.status ?? null,
     scale: scaleFactor,
+    ...(variant === "adj" ? { variant: "adjusted" as const } : {}),
   };
 }
 
@@ -434,6 +438,7 @@ export function detailToBalanceSheet(detail: CompanyDetailOut, fx: FxContext): B
       is_gaap_fallback,
       consistency_flags: ref.consistency_flags ?? null,
       scale: isPct ? 1 : 1_000_000,
+      ...(variant === "adj" ? { variant: "adjusted" as const } : {}),
     };
   };
 

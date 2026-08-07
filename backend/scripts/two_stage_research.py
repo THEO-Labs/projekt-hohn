@@ -1175,7 +1175,7 @@ def apply_to_db(
     """
     from sqlalchemy import select
     from app.values.models import CompanyValue
-    from app.values.persistence import currency_conflict, normalize_sign
+    from app.values.persistence import adjusted_is_protected, currency_conflict, normalize_sign
 
     # Fill in a missing quarter if FY + 3 quarters are present.
     _derive_missing_quarter(result)
@@ -1356,9 +1356,12 @@ def apply_to_db(
         # writes in the UI.
         if existing:
             existing.numeric_value = value
-            existing.numeric_value_adjusted = adjusted_value
-            existing.adjustments_note = adjustments_note
-            existing.adjustments_source = adjustments_source
+            # Geschuetzte Adjusted-Werte (Manual, 8-K-Enrichment) nicht
+            # anfassen — nur der GAAP-Teil der Zeile wird aktualisiert.
+            if not adjusted_is_protected(existing.adjustments_source):
+                existing.numeric_value_adjusted = adjusted_value
+                existing.adjustments_note = adjustments_note
+                existing.adjustments_source = adjustments_source
             existing.source_name = source_name
             existing.source_link = src_url
             existing.primary_method = verdict_tag
@@ -1439,9 +1442,11 @@ def apply_to_db(
                     row.last_refresh_attempt = datetime.now(timezone.utc)
                     continue
                 row.numeric_value = value
-                row.numeric_value_adjusted = adjusted_value
-                row.adjustments_note = adjustments_note
-                row.adjustments_source = adjustments_source
+                # Guard wie im Normalpfad: geschuetzte Adjusted-Werte bleiben.
+                if not adjusted_is_protected(row.adjustments_source):
+                    row.numeric_value_adjusted = adjusted_value
+                    row.adjustments_note = adjustments_note
+                    row.adjustments_source = adjustments_source
                 row.source_name = source_name
                 row.source_link = src_url
                 row.primary_method = verdict_tag

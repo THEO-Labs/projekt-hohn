@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, model_validator
@@ -92,3 +93,6 @@ class OverrideRequest(BaseModel):
     numeric_value: Decimal | None = None
     text_value: str | None = None
     source_name: str | None = None
+    # "gaap" schreibt numeric_value (Default), "adjusted" schreibt
+    # numeric_value_adjusted; andere Werte -> 422.
+    variant: Literal["gaap", "adjusted"] = "gaap"

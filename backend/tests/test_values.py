@@ -370,13 +370,19 @@ def test_company_values_other_user_is_404(client, db):
     assert response.status_code == 404
 
 
-def _seed_value(db, cid, key, period_type, period_year, value, manually_overridden=False):
+def _seed_value(
+    db, cid, key, period_type, period_year, value, manually_overridden=False,
+    adjusted=None, adjustments_note=None, adjustments_source=None,
+):
     cv = CompanyValue(
         company_id=cid,
         value_key=key,
         period_type=period_type,
         period_year=period_year,
         numeric_value=Decimal(str(value)),
+        numeric_value_adjusted=Decimal(str(adjusted)) if adjusted is not None else None,
+        adjustments_note=adjustments_note,
+        adjustments_source=adjustments_source,
         source_name="Test",
         manually_overridden=manually_overridden,
     )
@@ -504,3 +510,221 @@ def test_old_calc_key_with_stale_lock_gets_overwritten(client, db):
     assert ng is not None
     assert Decimal(ng["numeric_value"]) == Decimal("100")
     assert ng["manually_overridden"] is False
+
+
+def test_override_adjusted_variant_writes_adjusted_only(client, db):
+    """variant=adjusted schreibt numeric_value_adjusted auf der bestehenden
+    Zeile; GAAP-Felder bleiben unangetastet."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="adj@example.com")
+
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "175", "variant": "adjusted"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert Decimal(data["numeric_value"]) == Decimal("150")
+    assert Decimal(data["numeric_value_adjusted"]) == Decimal("175")
+    assert data["adjustments_note"] == "Manuell ueberschrieben"
+    assert data["adjustments_source"] == "Manual"
+    assert data["manually_overridden"] is False
+    assert data["source_name"] == "Test"
+    assert data["primary_method"] is None
+    assert data["is_forecast"] is False
+    assert data["from_ir_pdf"] is False
+
+
+def test_override_adjusted_without_base_row_404(client, db):
+    """variant=adjusted ohne bestehende Zeile darf keine neue Zeile anlegen."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="adj404@example.com")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "175", "variant": "adjusted"},
+    )
+    assert response.status_code == 404
+    assert "Kein Basiswert" in response.json()["detail"]
+    rows = client.get(f"/api/companies/{cid}/values?period_type=FY&period_year=2024").json()
+    assert rows == []
+
+
+def test_override_invalid_variant_422(client, db):
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="adj422@example.com")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "175", "variant": "non_gaap"},
+    )
+    assert response.status_code == 422
+
+
+def test_override_adjusted_text_value_400(client, db):
+    """Adjusted gibt es nur numerisch — text_value mit variant=adjusted -> 400."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="adjtxt@example.com")
+
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"text_value": "abc", "variant": "adjusted"},
+    )
+    assert response.status_code == 400
+
+
+def test_override_adjusted_triggers_recalc(client, db):
+    """Adjusted-Override stoesst denselben Recalc an wie der GAAP-Pfad."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="adjcalc@example.com")
+
+    _seed_value(db, cid, "market_cap", "SNAPSHOT", None, "1000")
+    _seed_value(db, cid, "net_income", "FY", 2023, "100")
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "200", "variant": "adjusted"},
+    )
+    assert response.status_code == 200
+    # GAAP-basierter ni_growth existiert nach dem Recalc (150 vs 100 = 50%).
+    ng = _get_row(client, cid, "ni_growth", "FY", 2024)
+    assert ng is not None
+    assert Decimal(ng["numeric_value"]) == Decimal("50")
+
+
+def test_override_gaap_default_leaves_adjusted_untouched(client, db):
+    """Regression: Default-Override (ohne variant) schreibt weiterhin nur
+    numeric_value und laesst ein vorhandenes Adjusted-Feld stehen."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="gaapreg@example.com")
+
+    _seed_value(db, cid, "net_income", "FY", 2024, "150")
+    client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "175", "variant": "adjusted"},
+    )
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "160", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert Decimal(data["numeric_value"]) == Decimal("160")
+    assert Decimal(data["numeric_value_adjusted"]) == Decimal("175")
+    assert data["adjustments_note"] == "Manuell ueberschrieben"
+    assert data["adjustments_source"] == "Manual"
+    assert data["manually_overridden"] is True
+    assert data["primary_method"] == "manual"
+
+
+def test_override_gaap_leaves_research_adjusted_untouched(client, db):
+    """Regression: GAAP-Override auf einer Zeile mit Research-Adjusted
+    (adjustments_source gesetzt) laesst alle Adjusted-Felder unveraendert."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="gaapresearch@example.com")
+
+    _seed_value(
+        db, cid, "net_income", "FY", 2024, "150",
+        adjusted="140", adjustments_note="Excludes restructuring",
+        adjustments_source="SEC 10-K",
+    )
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=FY&period_year=2024",
+        json={"numeric_value": "160", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert Decimal(data["numeric_value"]) == Decimal("160")
+    assert Decimal(data["numeric_value_adjusted"]) == Decimal("140")
+    assert data["adjustments_note"] == "Excludes restructuring"
+    assert data["adjustments_source"] == "SEC 10-K"
+
+
+def test_q_override_recalc_preserves_sourced_fy_adjusted(client, db):
+    """Q-GAAP-Override loest den FY-Derive aus — der darf sourced Adjusted
+    (Manual oder Research) auf der FY-Zeile weder ueberschreiben noch nullen."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadj@example.com")
+
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "net_income", q, 2024, "25")
+    _seed_value(
+        db, cid, "net_income", "FY", 2024, "100",
+        adjusted="120", adjustments_note="Manuell ueberschrieben",
+        adjustments_source="Manual",
+    )
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=Q1&period_year=2024",
+        json={"numeric_value": "40", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "net_income", "FY", 2024)
+    assert fy is not None
+    # GAAP-FY wurde neu abgeleitet (40+25+25+25), Adjusted blieb stehen.
+    assert Decimal(fy["numeric_value"]) == Decimal("115")
+    assert Decimal(fy["numeric_value_adjusted"]) == Decimal("120")
+    assert fy["adjustments_note"] == "Manuell ueberschrieben"
+    assert fy["adjustments_source"] == "Manual"
+
+
+def test_q_override_recalc_rederives_unsourced_fy_adjusted(client, db):
+    """Gegenprobe: selbst abgeleitetes FY-Adjusted (adjustments_source NULL)
+    wird beim Q-Derive weiterhin neu berechnet (Summe der Q-Adjusted)."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadjnull@example.com")
+
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "net_income", q, 2024, "25", adjusted="30")
+    _seed_value(db, cid, "net_income", "FY", 2024, "100", adjusted="999")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=Q1&period_year=2024",
+        json={"numeric_value": "40", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "net_income", "FY", 2024)
+    assert fy is not None
+    assert Decimal(fy["numeric_value"]) == Decimal("115")
+    # Q1-Adjusted (30) + Q2-Q4 (je 30) = 120 — der stale FY-Adjusted (999)
+    # ohne Source wird neu abgeleitet.
+    assert Decimal(fy["numeric_value_adjusted"]) == Decimal("120")
+
+
+def test_q_override_recalc_rederives_two_stage_fy_adjusted(client, db):
+    """Two-Stage-Adjusted (source im 'quote | url'-Format) ist NICHT
+    geschuetzt: der FY-Derive ueberschreibt den stale LLM-Adjusted-Wert
+    und raeumt den nicht mehr passenden Beleg ab (adjusted_is_protected
+    schuetzt nur Manual und SEC-8-K-URLs)."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadjts@example.com")
+
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "net_income", q, 2024, "25", adjusted="30")
+    _seed_value(
+        db, cid, "net_income", "FY", 2024, "100",
+        adjusted="999", adjustments_note="Excludes SBC",
+        adjustments_source="Adjusted net income was... | https://ir.example/pr",
+    )
+
+    response = client.post(
+        f"/api/companies/{cid}/values/net_income/override?period_type=Q1&period_year=2024",
+        json={"numeric_value": "40", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "net_income", "FY", 2024)
+    assert fy is not None
+    assert Decimal(fy["numeric_value"]) == Decimal("115")
+    assert Decimal(fy["numeric_value_adjusted"]) == Decimal("120")
+    assert fy["adjustments_note"] is None
+    assert fy["adjustments_source"] is None

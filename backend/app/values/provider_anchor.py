@@ -21,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.providers.registry import get_providers
 from app.values.models import CompanyValue
-from app.values.persistence import currency_conflict, normalize_sign
+from app.values.persistence import adjusted_is_protected, currency_conflict, normalize_sign
 
 logger = logging.getLogger(__name__)
 
@@ -199,10 +199,13 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     row.manually_overridden = False
     # Stale LLM-Adjusted-Werte abraeumen: der apply_to_db-Guard fasst
     # provider-Actuals nie wieder an, sonst friert ein alter Adjusted-Wert
-    # neben dem frischen GAAP-Wert ein.
-    row.numeric_value_adjusted = None
-    row.adjustments_note = None
-    row.adjustments_source = None
+    # neben dem frischen GAAP-Wert ein. Geschuetzt sind nur Manual-Eintraege
+    # und 8-K-Enrichment (SEC-URL) — Two-Stage-Sources werden abgeraeumt,
+    # das Enrichment fuellt danach billiger/besser nach.
+    if not adjusted_is_protected(row.adjustments_source):
+        row.numeric_value_adjusted = None
+        row.adjustments_note = None
+        row.adjustments_source = None
     row.consistency_flags = None
     row.fetched_at = now
     row.last_refresh_attempt = now
@@ -330,10 +333,12 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
             row.is_forecast = False
             row.from_ir_pdf = False
             row.manually_overridden = False
-            # Stale LLM-Adjusted-Werte abraeumen (siehe FY-Anker).
-            row.numeric_value_adjusted = None
-            row.adjustments_note = None
-            row.adjustments_source = None
+            # Stale LLM-Adjusted-Werte abraeumen (siehe FY-Anker): nur
+            # Manual/8-K-Enrichment (SEC-URL) sind geschuetzt.
+            if not adjusted_is_protected(row.adjustments_source):
+                row.numeric_value_adjusted = None
+                row.adjustments_note = None
+                row.adjustments_source = None
             row.consistency_flags = None
             row.fetched_at = now
             row.last_refresh_attempt = now

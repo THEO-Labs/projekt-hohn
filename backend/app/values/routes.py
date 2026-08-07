@@ -1434,6 +1434,32 @@ def refresh_company_values(
             except Exception as e:
                 logger.warning("quarter anchor failed for %s: %s", ticker, e)
                 db.rollback()
+            # Non-GAAP-Anreicherung aus 8-K-Earnings-Releases: der Provider-
+            # first-Skip ueberspringt die Two-Stage-Recherche, die frueher
+            # die Adjusted-Werte mitbrachte. Fill-only-NULL; Fehler brechen
+            # den Refresh nie ab.
+            try:
+                from app.values.adjusted_enrichment import (
+                    enrich_adjusted_from_earnings_releases,
+                )
+                from scripts.two_stage_research import CostTracker
+                # Der Refresh-Flow hat keinen flowweiten CostTracker (die
+                # Two-Stage-Keys nutzen lokale Tracker ohne Budget, siehe
+                # _process_one_key_via_two_stage) — eigener Tracker fuer
+                # das Kosten-Logging der Enrichment-Calls.
+                adj_tracker = CostTracker()
+                enrich_adjusted_from_earnings_releases(
+                    db, company, consistency_years, cost_tracker=adj_tracker,
+                )
+                db.commit()
+                if adj_tracker.calls:
+                    logger.info(
+                        "adjusted enrichment %s: %d Claude-Calls, %.4f USD",
+                        ticker, adj_tracker.calls, adj_tracker.spent_usd,
+                    )
+            except Exception as e:
+                logger.warning("adjusted enrichment failed for %s: %s", ticker, e)
+                db.rollback()
             for cons_year in consistency_years:
                 try:
                     derive_net_debt_from_components(db, company_id, cons_year)
@@ -2116,7 +2142,17 @@ def _refresh_fy_from_quarters(
         if existing_fy.manually_overridden:
             return
         existing_fy.numeric_value = fy_value
-        existing_fy.numeric_value_adjusted = fy_adj
+        # Geschuetzte Adjusted-Werte (Manual, 8-K-Enrichment mit SEC-URL)
+        # nie ueberschreiben oder nullen — alle anderen (source NULL oder
+        # Two-Stage) werden aus den Quartalen neu abgeleitet.
+        from app.values.persistence import adjusted_is_protected
+        if not adjusted_is_protected(existing_fy.adjustments_source):
+            existing_fy.numeric_value_adjusted = fy_adj
+            # Stale Beleg eines ueberschriebenen LLM-Adjusted passt nicht
+            # mehr zum abgeleiteten Wert.
+            if existing_fy.adjustments_source is not None:
+                existing_fy.adjustments_note = None
+                existing_fy.adjustments_source = None
         existing_fy.source_name = source_name
         existing_fy.fetched_at = fy_latest_ts or datetime.now(timezone.utc)
         existing_fy.primary_method = method_summary
@@ -2224,7 +2260,33 @@ def override_company_value(
     from app.values.persistence import normalize_sign
     override_value = normalize_sign(value_key, payload.numeric_value, context="manual override")
 
-    if existing:
+    if payload.variant == "adjusted":
+        # Adjusted-Override: schreibt NUR numeric_value_adjusted auf der
+        # bestehenden Zeile. GAAP-Felder (numeric_value, primary_method,
+        # manually_overridden, source_name, is_forecast, from_ir_pdf)
+        # bleiben unangetastet. adjustments_source='Manual' schuetzt den
+        # Wert vor Anker-/Two-Stage-Cleanup (adjusted_is_protected) und
+        # vor dem Adjusted-Enrichment (fuellt nur NULL-Felder).
+        if payload.text_value is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Adjusted-Overrides gibt es nur numerisch (kein text_value).",
+            )
+        if payload.numeric_value is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="numeric_value ist fuer variant=adjusted erforderlich.",
+            )
+        if existing is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Kein Basiswert vorhanden — erst GAAP-Wert anlegen.",
+            )
+        existing.numeric_value_adjusted = override_value
+        existing.adjustments_note = "Manuell ueberschrieben"
+        existing.adjustments_source = "Manual"
+        result_cv = existing
+    elif existing:
         if override_value is not None:
             existing.numeric_value = override_value
         if payload.text_value is not None:
