@@ -229,7 +229,13 @@ EXTRACTOR_SYSTEM = (
     "CONTAMINATION RULE: the metric guidance in the user message contains "
     "illustrative example numbers — they are NOT data. Every number you "
     "output must come from your own web_search results for THIS company and "
-    "period, never from examples in the instructions."
+    "period, never from examples in the instructions. "
+    "GUIDANCE RECENCY RULE: estimates for the running fiscal year MUST "
+    "reflect the company's MOST RECENT guidance. Check for guidance "
+    "updates/raises/cuts published AFTER the latest quarterly report "
+    "(ad-hoc releases, press releases). If guidance was updated mid-year, "
+    "the newer guidance supersedes older estimates and prior consensus. "
+    "Never carry forward an estimate that predates a guidance change."
 )
 
 
@@ -664,6 +670,12 @@ VERIFIER_SYSTEM = (
     "unit scale, per-share confusion, temporal mislabeling. A third-party "
     "source showing a DIFFERENT forecast is never grounds for correction: "
     "forecasts legitimately differ.\n\n"
+    "GUIDANCE RECENCY RULE: estimates for the running fiscal year MUST "
+    "reflect the company's MOST RECENT guidance. Check for guidance "
+    "updates/raises/cuts published AFTER the latest quarterly report "
+    "(ad-hoc releases, press releases). If guidance was updated mid-year, "
+    "the newer guidance supersedes older estimates and prior consensus. "
+    "Never carry forward an estimate that predates a guidance change.\n\n"
     "Bias toward 'confirm'. Only downgrade when you have a specific, "
     "citable reason — from the source_quote itself or from your own "
     "web_search evidence. If your independent search contradicts the "

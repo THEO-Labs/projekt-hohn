@@ -36,3 +36,21 @@ def test_keeps_definition_and_anti_confusion():
 
 def test_missing_key_returns_empty():
     assert load_metric_prompt("does_not_exist") == ""
+
+
+def test_spinoff_rule_loads_in_core_metrics():
+    for key in ("revenue", "net_income", "operating_cash_flow", "eps_diluted"):
+        text = load_metric_prompt(key)
+        assert "Spin-offs / Abspaltungen im Berichtsjahr" in text
+        assert "Output-Format" not in text
+        assert "Query-Template" not in text
+
+
+def test_ocf_forbids_fcf_backcalculation():
+    text = load_metric_prompt("operating_cash_flow")
+    assert "NIEMALS aus FCF + Capex rueckrechnen" in text
+
+
+def test_eps_group_reported_rule_loads():
+    text = load_metric_prompt("eps_diluted")
+    assert "IAS-33" in text

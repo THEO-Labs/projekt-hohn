@@ -41,6 +41,22 @@ unit: Berichtswaehrung der Firma (absolute Einheiten)
 - VW: OCF Total-Konzern (Automotive + FS), nicht nur Automotive
 - MBG analog
 
+**FCF-Rueckrechnung (verboten)**:
+- Der Wert MUSS die Zeile "Cashflow aus laufender Geschaeftstaetigkeit"
+  (net cash provided by operating activities) der KONZERN-Kapitalflussrechnung
+  sein — Group level, inkl. Financial-Services-Segmenten
+- NIEMALS aus FCF + Capex rueckrechnen
+- NIEMALS Segment-Werte verwenden (z.B. "Industrial Business")
+- NIEMALS mit dem FCF verwechseln
+- Wenn nur der FCF auffindbar ist: not_found statt Rueckrechnung
+
+**Spin-offs / Abspaltungen im Berichtsjahr**:
+- Nach Spin-offs/Abspaltungen im Berichtsjahr gelten die Zahlen der
+  FORTGEFUEHRTEN Aktivitaeten, wie im Geschaeftsbericht restated
+  (z.B. Continental nach der Aumovio-Abspaltung 2025) — nicht die alte
+  Konzernstruktur
+- Quartale muessen auf derselben restateten Basis liegen wie das FY
+
 ## Cross-References
 1. **fcf = ocf - capex**
 2. **Q-Sum = FY**

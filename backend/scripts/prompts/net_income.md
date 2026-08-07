@@ -46,8 +46,15 @@ Bei Konzernen mit Minderheiten (VOW3, DBK, RWE): **Net income attributable to sh
   listet die Bereinigungen.
 
 **Continuing vs Total Operations**:
-- Continental 2025: reported ist Total inkl. Aumovio-Zeit
-- Konvention: **Total** (fuer Konsistenz mit revenue)
+- Konvention: **Total** (fuer Konsistenz mit revenue) — AUSSER nach
+  Spin-off im Berichtsjahr, dann gilt die Spin-off-Regel unten
+
+**Spin-offs / Abspaltungen im Berichtsjahr**:
+- Nach Spin-offs/Abspaltungen im Berichtsjahr gelten die Zahlen der
+  FORTGEFUEHRTEN Aktivitaeten, wie im Geschaeftsbericht restated
+  (z.B. Continental nach der Aumovio-Abspaltung 2025) — nicht die alte
+  Konzernstruktur
+- Quartale muessen auf derselben restateten Basis liegen wie das FY
 
 **Parent vs Total inkl. NCI**:
 - VW: 2024 Net income 15 Mrd Total, 12 Mrd shareholders-of-parent
@@ -59,7 +66,7 @@ Bei Konzernen mit Minderheiten (VOW3, DBK, RWE): **Net income attributable to sh
 - (dilution ist bei eps_diluted relevant)
 
 **Non-recurring items**:
-- Gewinn aus Spin-off (Continental/Aumovio 2025): Teil des reported NI
+- One-off Gewinne (Verkaeufe, Impairment-Reversals): Teil des reported NI
 - One-off tax gains: Teil des reported NI
 - Konvention: **wie reported, nicht bereinigt**
 

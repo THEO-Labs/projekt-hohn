@@ -25,8 +25,17 @@ _Q_TYPES = ("Q1", "Q2", "Q3", "Q4")
 _QSUM_TOL = Decimal("0.05")
 _FCF_TOL = Decimal("0.10")
 _EPS_NI_TOL = Decimal("0.20")
+_EST_JUMP_TOL = Decimal("0.5")
+_EST_MIN_BASE = Decimal("1000000")
 
 _NET_DEBT_COMPONENTS = ("st_debt", "lt_debt", "cash_and_equivalents", "st_investments")
+
+# Keys, die per LLM-Recherche befuellt werden — Ziel der Vorjahres-Kopie-
+# und Schaetzungs-Plausibilitaets-Checks. eps_diluted explizit dabei.
+_RESEARCH_KEYS = tuple(sorted(set(SUMMABLE_QUARTERLY_KEYS) | {"eps_diluted"}))
+
+# Nicht-LLM-Herkunft: bewusste Werte, kein prior_year_copy-Verdacht.
+_NON_LLM_METHODS = ("provider", "manual", "calculated")
 
 
 def _rows_for_year(db: Session, company_id: UUID, year: int) -> list[CompanyValue]:
@@ -183,6 +192,85 @@ def validate_cross_metrics(db: Session, company_id: UUID, year: int) -> list[str
             _set_flag(row, "unit_scale_suspect", suspect)
             if suspect:
                 active.append(f"unit_scale_suspect:{key}:{pt}")
+
+    # 6. Vorjahres-Kopie-Detektor: FY-Wert des Jahres N EXAKT gleich FY N-1
+    #    ist bei LLM-Zeilen (two_stage/web_guidance) fast immer ein Kopier-
+    #    fehler der Recherche. Manual/Provider/Calculated-Zeilen sind
+    #    bewusste Werte und bleiben flag-frei. N-1 wird selbst nachgeladen,
+    #    weil validate_cross_metrics nur den Jahres-Snapshot N sieht.
+    prev_rows = _rows_for_year(db, company_id, year - 1)
+    for key in _RESEARCH_KEYS:
+        # dividends/buybacks koennen legitim exakt gleich bleiben (stabile
+        # Ausschuettungspolitik, fixe Jahrestranchen) — vom Kopie-Check
+        # ausgenommen, sonst Dauerrauschen.
+        if key in ("dividends", "buyback_volume"):
+            continue
+        prev_val = _value_of(prev_rows, key, "FY")
+        if prev_val is None:
+            continue
+        for row in rows:
+            if row.value_key != key or row.period_type != "FY":
+                continue
+            if row.numeric_value is None:
+                continue
+            is_llm = (
+                not row.manually_overridden
+                and not row.from_ir_pdf
+                and (row.primary_method or "") not in _NON_LLM_METHODS
+            )
+            copied = is_llm and row.numeric_value != 0 and row.numeric_value == prev_val
+            _set_flag(row, "prior_year_copy", copied)
+            if copied:
+                active.append(f"prior_year_copy:{key}")
+
+    # 7. Schaetzungs-Plausibilitaet: Forecast-FY vs Actual-FY des Vorjahres.
+    #    >50% Abweichung ist fast immer eine grob falsche/veraltete
+    #    Schaetzung — ausser bei Vorzeichenwechsel (bei Cashflows legitim).
+    #    Umsatz-Schaetzung DEUTLICH unter dem letzten Ist (>3%) ist meist
+    #    veraltet gegenueber neuer Guidance. Manuelle Zeilen ausgenommen.
+    #    Bekannte False-Positives (advisory, manuell zu quittieren):
+    #    Spin-off-Jahre — der konventionskonforme restatete Forecast liegt
+    #    zwangslaeufig unter dem Alt-Struktur-Actual des Vorjahres.
+    #    Per-Share-Keys (eps) liegen unter _EST_MIN_BASE und sind bewusst
+    #    ausgenommen — deren Konsistenz sichert der eps_ni-Check.
+    for key in _RESEARCH_KEYS:
+        prev_actual = None
+        for r in prev_rows:
+            if r.value_key == key and r.period_type == "FY" and not r.is_forecast:
+                prev_actual = r
+                break
+        if (
+            prev_actual is None or prev_actual.numeric_value is None
+            or abs(prev_actual.numeric_value) <= _EST_MIN_BASE
+        ):
+            continue
+        for row in rows:
+            if (
+                row.value_key != key or row.period_type != "FY"
+                or not row.is_forecast or row.numeric_value is None
+            ):
+                continue
+            manual = bool(row.manually_overridden)
+            sign_flip = (
+                (row.numeric_value > 0 and prev_actual.numeric_value < 0)
+                or (row.numeric_value < 0 and prev_actual.numeric_value > 0)
+            )
+            jump = (
+                not manual and not sign_flip
+                and abs(row.numeric_value / prev_actual.numeric_value - 1) > _EST_JUMP_TOL
+            )
+            _set_flag(row, "estimate_jump", jump)
+            if jump:
+                active.append(f"estimate_jump:{key}")
+            if key == "revenue":
+                below = (
+                    not manual
+                    and row.numeric_value
+                    < prev_actual.numeric_value * Decimal("0.97")
+                )
+                _set_flag(row, "estimate_below_prior", below)
+                if below:
+                    active.append("estimate_below_prior:revenue")
 
     if active:
         logger.warning("consistency: %s/%s flags: %s", company_id, year, ",".join(active))

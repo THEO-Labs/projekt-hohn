@@ -12,8 +12,17 @@ Flow:
   3. Filing fuer Ziel-FY auswaehlen (period_end matches)
   4. JSON-Download + IFRS-Taxonomy-Facts parsen
   5. Concept-Map auf unsere value_keys anwenden
+
+Fact-Matching (xBRL-JSON/OIM):
+  - Duration-Facts: period "start/end", end ist EXKLUSIV = period_end + 1 Tag
+    (FY2025 mit Ende 2025-12-31 -> "2025-01-01T00:00:00/2026-01-01T00:00:00").
+  - Instant-Facts (Bilanz): dateTime = period_end + 1 Tag (Mitternacht NACH
+    dem Stichtag), z.B. "2026-01-01T00:00:00" fuer den Stichtag 2025-12-31.
+  - Facts mit Zusatz-Dimensionen (Segment-/Equity-Achsen) sind Teilwerte —
+    dimensionslose Facts werden bevorzugt.
 """
 import logging
+from datetime import date, timedelta
 from decimal import Decimal
 
 import httpx
@@ -32,9 +41,35 @@ USER_AGENT = "ProjektHohn/1.0 (mailto:till@theolabs.xyz)"
 # ohne Namespace (z.B. 'X') = suffix-match (deckt firm-extensions wie
 # 'airbus:X', 'siemens:X' etc. ab).
 CONCEPT_MAP: dict[str, list[str]] = {
+    # Konvention: attributable (Anteil der Mutter-Aktionaere) VOR Konzern-
+    # ProfitLoss — konsistent mit der EDGAR-Praeferenz.
+    # Konvention (wie EDGAR): net_income = attributable to shareholders —
+    # passt zur EPS-Basis und zum eps_ni-Check. Bei EU-Filern mit
+    # Minderheiten verschiebt ein Anker-Lauf bestehende Total-Werte nach
+    # unten; das ist beabsichtigt, nicht ein Bug.
     "net_income": [
-        "ifrs-full:ProfitLoss",
         "ifrs-full:ProfitLossAttributableToOwnersOfParent",
+        "ifrs-full:ProfitLoss",
+    ],
+    "revenue": [
+        "ifrs-full:Revenue",
+        "ifrs-full:RevenueFromContractsWithCustomers",
+        "Revenue",
+        "RevenueFromContractsWithCustomers",
+    ],
+    "eps_diluted": [
+        "ifrs-full:DilutedEarningsLossPerShare",
+        "ifrs-full:BasicEarningsLossPerShare",
+    ],
+    "st_debt": [
+        "ifrs-full:CurrentBorrowings",
+        "ifrs-full:CurrentInterestbearingLoansAndBorrowings",
+        "CurrentInterestbearingLoansAndBorrowings",
+        "CurrentFinancialLiabilities",
+    ],
+    "st_investments": [
+        "ifrs-full:CurrentInvestments",
+        "ifrs-full:OtherCurrentFinancialAssets",
     ],
     "sbc": [
         "ifrs-full:ExpenseFromShareBasedPaymentTransactionsWithEmployees",
@@ -56,7 +91,7 @@ CONCEPT_MAP: dict[str, list[str]] = {
     "cash_and_equivalents": [
         "ifrs-full:CashAndCashEquivalents",
     ],
-    "long_term_debt": [
+    "lt_debt": [
         "ifrs-full:NoncurrentBorrowings",
         "ifrs-full:NoncurrentInterestbearingLoansAndBorrowings",
         "NoncurrentFinancialLiabilities",
@@ -117,6 +152,12 @@ class ESEFProvider:
         self._isin_lei_cache: TTLCache = TTLCache(maxsize=500, ttl=86400)  # 24h
         self._lei_filings_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
         self._filing_json_cache: TTLCache = TTLCache(maxsize=100, ttl=3600)
+        # Negative-Cache fuer Fetch-FEHLER (Ausfall/HTTP>=400/Parse) — Muster
+        # aus edgar._facts_fail_cache: ohne ihn wuerde JEDE Anker-Zelle die
+        # volle Retry-Kette mit Backoff-Sleeps durchlaufen. Genuin leere
+        # Ergebnisse (keine LEI, keine Filings) landen weiter in den
+        # positiven Caches oben.
+        self._fail_cache: TTLCache = TTLCache(maxsize=300, ttl=600)
         self._client = httpx.Client(
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
             timeout=15.0,
@@ -147,8 +188,12 @@ class ESEFProvider:
         isin = isin.strip().upper()
         if isin in self._isin_lei_cache:
             return self._isin_lei_cache[isin]
+        fail_key = f"gleif:{isin}"
+        if fail_key in self._fail_cache:
+            return None
         r = self._retried_get(f"{self.GLEIF_BASE}/lei-records?filter[isin]={isin}&page[size]=1")
         if r is None or r.status_code >= 400:
+            self._fail_cache[fail_key] = True
             return None
         try:
             data = r.json()
@@ -161,6 +206,7 @@ class ESEFProvider:
             return lei
         except Exception as e:
             logger.warning("ESEF GLEIF parse failed for %s: %s", isin, e)
+            self._fail_cache[fail_key] = True
             return None
 
     def _list_filings(self, lei: str) -> list[dict]:
@@ -169,9 +215,13 @@ class ESEFProvider:
             return []
         if lei in self._lei_filings_cache:
             return self._lei_filings_cache[lei]
+        fail_key = f"filings:{lei}"
+        if fail_key in self._fail_cache:
+            return []
         r = self._retried_get(f"{self.ESEF_BASE}/api/entities/{lei}/filings?page[size]=50")
         if r is None or r.status_code >= 400:
-            self._lei_filings_cache[lei] = []
+            # Fehler nur kurz negativ cachen — NICHT als "genuin leer" 1h.
+            self._fail_cache[fail_key] = True
             return []
         try:
             data = r.json()
@@ -180,6 +230,7 @@ class ESEFProvider:
             return filings
         except Exception as e:
             logger.warning("ESEF filings parse failed for LEI %s: %s", lei, e)
+            self._fail_cache[fail_key] = True
             return []
 
     def _pick_filing_for_year(
@@ -190,20 +241,22 @@ class ESEFProvider:
         fy_end_day: int | None,
     ) -> dict | None:
         """Waehlt das Filing dessen period_end zum target FY-Ende passt.
-        Default: Kalenderjahr (12-31). Sonst fy_end_month/day."""
+        Default: Kalenderjahr (12-31). Sonst fy_end_month/day.
+
+        Bei mehreren Treffern fuer dasselbe period_end (Doppel-Filing in
+        mehreren Laendern, Amendments mit Revision-Suffix im fxo_id):
+        deterministisch das Filing MIT json_url und juengstem date_added."""
         target_month = fy_end_month or 12
         target_day = fy_end_day or 31
         target = f"{period_year:04d}-{target_month:02d}-{target_day:02d}"
-        # Exact-Match bevorzugt; sonst innerhalb +-15 Tage; sonst hoechstes
-        # period_end <= target
-        from datetime import date
         try:
             target_d = date(period_year, target_month, target_day)
         except ValueError:
             target_d = None
         exact = [f for f in filings if f.get("attributes", {}).get("period_end") == target]
         if exact:
-            return exact[0]
+            return self._pick_best_filing(exact)
+        # Sonst innerhalb +-15 Tage (Filer mit leicht abweichendem Stichtag)
         if target_d:
             candidates = []
             for f in filings:
@@ -216,9 +269,22 @@ class ESEFProvider:
                 if diff <= 15:
                     candidates.append((diff, f))
             if candidates:
-                candidates.sort(key=lambda x: x[0])
-                return candidates[0][1]
+                best_diff = min(d for d, _ in candidates)
+                return self._pick_best_filing([f for d, f in candidates if d == best_diff])
         return None
+
+    @staticmethod
+    def _pick_best_filing(filings: list[dict]) -> dict:
+        """Deterministische Wahl unter gleichwertigen Filings:
+        json_url vorhanden > juengstes date_added > hoechste Revision."""
+        def sort_key(f: dict):
+            a = f.get("attributes", {})
+            return (
+                bool(a.get("json_url")),
+                a.get("date_added") or "",
+                a.get("fxo_id") or "",
+            )
+        return sorted(filings, key=sort_key, reverse=True)[0]
 
     def _load_filing_facts(self, filing: dict) -> dict | None:
         """Laedt das JSON-File des Filings und gibt das parsed dict zurueck.
@@ -230,8 +296,12 @@ class ESEFProvider:
         full_url = f"{self.ESEF_BASE}{json_url}"
         if full_url in self._filing_json_cache:
             return self._filing_json_cache[full_url]
+        fail_key = f"json:{full_url}"
+        if fail_key in self._fail_cache:
+            return None
         r = self._retried_get(full_url)
         if r is None or r.status_code >= 400:
+            self._fail_cache[fail_key] = True
             return None
         try:
             data = r.json()
@@ -239,6 +309,7 @@ class ESEFProvider:
             return data
         except Exception as e:
             logger.warning("ESEF JSON parse failed %s: %s", full_url, e)
+            self._fail_cache[fail_key] = True
             return None
 
     @staticmethod
@@ -251,46 +322,85 @@ class ESEFProvider:
             return actual.split(":", 1)[1] == pattern
         return actual == pattern
 
+    # Standard-Dimensionen jedes OIM-Facts; alles darueber hinaus sind
+    # Taxonomy-Achsen (Segmente, Equity-Komponenten, ...) = Teilwerte.
+    _CORE_DIMS = frozenset({"concept", "entity", "period", "unit", "language", "noteId"})
+
     def _find_fact_for_period(
         self,
         facts: dict,
         concepts: list[str],
-        period_year: int,
+        period_end: date,
     ) -> tuple[Decimal | None, str | None]:
-        """Sucht den Fact-Value fuer ein IFRS-Concept im Ziel-Jahr.
-        Returns (value, currency)."""
-        period_start = f"{period_year:04d}-01-01"
-        period_end = f"{period_year + 1:04d}-01-01"
-        for concept in concepts:
-            for _fid, fact in facts.items():
-                dims = fact.get("dimensions") or {}
-                if not self._concept_matches(dims.get("concept", ""), concept):
-                    continue
-                period = dims.get("period") or ""
-                # Period-Format: "2024-01-01T00:00:00/2025-01-01T00:00:00"
-                # ODER instant "2024-12-31T00:00:00" fuer Bilanz-Posten.
-                if "/" in period:
-                    start, end = period.split("/", 1)
-                    if not start.startswith(period_start) or not end.startswith(period_end):
+        """Sucht den Fact-Value fuer ein IFRS-Concept im FY mit dem
+        gegebenen Bilanzstichtag (period_end aus dem Filing).
+
+        OIM-Perioden: Duration-Ende und Instant sind EXKLUSIV kodiert,
+        d.h. Mitternacht des Folgetags (FY-Ende 2025-12-31 ->
+        end/instant "2026-01-01T00:00:00"). Duration muss ~1 Jahr lang
+        sein (schliesst Quartals-/Mehrjahres-Facts aus). Facts ohne
+        Zusatz-Dimensionen werden bevorzugt (Pass 1), sonst Fallback auf
+        dimensionierte Facts (Pass 2). Returns (value, currency)."""
+        duration_end = (period_end + timedelta(days=1)).isoformat()
+        # Manche Generatoren serialisieren den Instant als Stichtag selbst.
+        instant_ok = (duration_end, period_end.isoformat())
+        for allow_extra_dims in (False, True):
+            for concept in concepts:
+                # Pass 2: unter den dimensionierten Facts gewinnt der mit den
+                # WENIGSTEN Zusatz-Dimensionen — sonst kann ein willkuerlicher
+                # Segment-Teilwert dauerhaft als Provider-Actual verankert
+                # werden (Teilwert-Falle).
+                best: tuple[int, Decimal, str | None] | None = None
+                for fact in facts.values():
+                    dims = fact.get("dimensions") or {}
+                    if not self._concept_matches(dims.get("concept", ""), concept):
                         continue
-                else:
-                    # Instant — match exactly the year-end
-                    if not period.startswith(f"{period_year:04d}-12-31"):
+                    extra_dims = sum(1 for k in dims if k not in self._CORE_DIMS)
+                    if not allow_extra_dims and extra_dims:
                         continue
-                value_str = fact.get("value")
-                if value_str is None:
-                    continue
-                try:
-                    value = Decimal(str(value_str))
-                except Exception:
-                    continue
-                unit = dims.get("unit") or ""
-                currency = unit.split(":")[-1] if ":" in unit else None
-                return value, currency
+                    period = dims.get("period") or ""
+                    if "/" in period:
+                        start, end = period.split("/", 1)
+                        if not end.startswith(duration_end):
+                            continue
+                        try:
+                            start_d = date.fromisoformat(start[:10])
+                            end_d = date.fromisoformat(end[:10])
+                        except ValueError:
+                            continue
+                        # ~1 Jahr: deckt 52/53-Wochen-FYs und Rumpf-Monate ab
+                        if not 330 <= (end_d - start_d).days <= 400:
+                            continue
+                    else:
+                        if not period.startswith(instant_ok):
+                            continue
+                    value_str = fact.get("value")
+                    if value_str is None:
+                        continue
+                    try:
+                        value = Decimal(str(value_str))
+                    except Exception:
+                        continue
+                    currency = self._unit_currency(dims.get("unit") or "")
+                    if not allow_extra_dims:
+                        return value, currency
+                    if best is None or extra_dims < best[0]:
+                        best = (extra_dims, value, currency)
+                if best is not None:
+                    return best[1], best[2]
         return None, None
 
+    @staticmethod
+    def _unit_currency(unit: str) -> str | None:
+        """Extrahiert die Waehrung aus einer OIM-Unit. Bei Quotienten wie
+        'iso4217:EUR/xbrli:shares' (EPS) zaehlt der Zaehler."""
+        numerator = unit.split("/", 1)[0]
+        if ":" in numerator:
+            return numerator.split(":")[-1]
+        return None
+
     def _derive_capex(
-        self, facts: dict, period_year: int
+        self, facts: dict, period_end: date
     ) -> tuple[Decimal | None, str | None, str]:
         """Gemeinsame CapEx-Ableitung fuer die Keys 'capex' und 'fcf':
         kombiniertes Concept hat Vorrang (deckt PP&E + Intangibles ab),
@@ -301,13 +411,13 @@ class ESEFProvider:
         Returns (value, currency, note); value None wenn kein PP&E-/
         Combined-Concept getaggt ist.
         """
-        combined, cur = self._find_fact_for_period(facts, CAPEX_COMBINED_CONCEPTS, period_year)
+        combined, cur = self._find_fact_for_period(facts, CAPEX_COMBINED_CONCEPTS, period_end)
         if combined is not None:
             return abs(combined), cur, "kombiniertes Concept (PP&E + Intangibles)"
-        ppe, cur = self._find_fact_for_period(facts, CAPEX_PPE_CONCEPTS, period_year)
+        ppe, cur = self._find_fact_for_period(facts, CAPEX_PPE_CONCEPTS, period_end)
         if ppe is None:
             return None, None, ""
-        intang, _ = self._find_fact_for_period(facts, CAPEX_INTANGIBLES_CONCEPTS, period_year)
+        intang, _ = self._find_fact_for_period(facts, CAPEX_INTANGIBLES_CONCEPTS, period_end)
         if intang is not None:
             return abs(ppe) + abs(intang), cur, "PP&E + Intangibles"
         return abs(ppe), cur, "PP&E (Intangibles nicht getaggt)"
@@ -345,12 +455,18 @@ class ESEFProvider:
         attrs = filing.get("attributes", {})
         viewer_url = attrs.get("viewer_url") or ""
         source_link = f"{self.ESEF_BASE}{viewer_url}" if viewer_url else None
+        # Fact-Matching laeuft ueber den ECHTEN Bilanzstichtag des Filings —
+        # nicht ueber die Kalenderjahr-Annahme (Filer mit abweichendem FY).
+        try:
+            period_end = date.fromisoformat(attrs.get("period_end") or "")
+        except ValueError:
+            period_end = date(period_year, fy_end_month or 12, fy_end_day or 31)
 
         if key == "fcf":
             # DIESELBE CapEx-Ableitung wie beim capex-Key — sonst verletzt
             # der Provider selbst die Identitaet fcf = ocf - abs(capex).
-            ocf, cur = self._find_fact_for_period(facts, FCF_OCF_CONCEPTS, period_year)
-            capex, _, _ = self._derive_capex(facts, period_year)
+            ocf, cur = self._find_fact_for_period(facts, FCF_OCF_CONCEPTS, period_end)
+            capex, _, _ = self._derive_capex(facts, period_end)
             if ocf is None or capex is None:
                 return None
             return ProviderResult(
@@ -361,7 +477,7 @@ class ESEFProvider:
             )
 
         if key == "capex":
-            value, cur, note = self._derive_capex(facts, period_year)
+            value, cur, note = self._derive_capex(facts, period_end)
             if value is None:
                 return None
             return ProviderResult(
@@ -372,8 +488,8 @@ class ESEFProvider:
             )
 
         if key == "ebitda":
-            ebit, cur = self._find_fact_for_period(facts, EBITDA_EBIT_CONCEPTS, period_year)
-            da, _ = self._find_fact_for_period(facts, EBITDA_DA_CONCEPTS, period_year)
+            ebit, cur = self._find_fact_for_period(facts, EBITDA_EBIT_CONCEPTS, period_end)
+            da, _ = self._find_fact_for_period(facts, EBITDA_DA_CONCEPTS, period_end)
             if ebit is None:
                 return None
             value = ebit + abs(da) if da is not None else ebit
@@ -388,7 +504,7 @@ class ESEFProvider:
         concepts = CONCEPT_MAP.get(key, [])
         if not concepts:
             return None
-        value, cur = self._find_fact_for_period(facts, concepts, period_year)
+        value, cur = self._find_fact_for_period(facts, concepts, period_end)
         if value is None:
             return None
         return ProviderResult(

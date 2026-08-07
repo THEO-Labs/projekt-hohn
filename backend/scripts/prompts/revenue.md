@@ -32,8 +32,15 @@ Q ~= FY / 4 (mit Saisonalitaet ±20%). Wenn Q > FY oder Q < 0 = red flag.
 ## Anti-Confusion (typische Fehler)
 
 **Continuing vs Discontinued Operations**:
-- Continental 2025: continuing (nach Aumovio-Spin-off) vs Total (mit Aumovio-Zeit bis 18.09.)
-- Konvention: **Total inklusive discontinued** fuer die betreffende Periode wo discontinued noch drin war
+- Continental 2025: continuing restated (nach Aumovio-Spin-off) vs Total (mit Aumovio-Zeit bis 18.09.)
+- Konvention: bei Spin-off im Berichtsjahr gilt die Spin-off-Regel unten (restatete fortgefuehrte Aktivitaeten)
+
+**Spin-offs / Abspaltungen im Berichtsjahr**:
+- Nach Spin-offs/Abspaltungen im Berichtsjahr gelten die Zahlen der
+  FORTGEFUEHRTEN Aktivitaeten, wie im Geschaeftsbericht restated
+  (z.B. Continental nach der Aumovio-Abspaltung 2025) — nicht die alte
+  Konzernstruktur
+- Quartale muessen auf derselben restateten Basis liegen wie das FY
 
 **Reported vs Organic**:
 - "Organic revenue growth" = FX-neutral + acquisition-neutral
@@ -91,14 +98,14 @@ Q ~= FY / 4 (mit Saisonalitaet ±20%). Wenn Q > FY oder Q < 0 = red flag.
 | SAP.DE | 2025 | FY | 36.800 Mio EUR | 36.800 Mio USD (Waehrung) |
 | ALV.DE | 2025 | FY | ~180 Mrd EUR (Insurance Revenue IFRS 17) | 100 Mrd (nur Life ohne P&C) |
 | DTE.DE | 2025 | Q1 | ~29 Mrd EUR (inkl. T-Mobile US in USD-EUR-konvertiert) | 15 Mrd (nur Deutschland) |
-| CON.DE | 2025 | FY | **~39,7 Mrd EUR** (Total inkl. Aumovio-Zeit bis 18.09.2025) | 20 Mrd (nur continuing post-Spin-off) |
+| CON.DE | 2025 | FY | **fortgefuehrte Aktivitaeten restated** (ohne Aumovio) | ~39,7 Mrd (alte Konzernstruktur inkl. Aumovio) |
 
 ## Query-Template fuer Agent
 ```
 Fuer {ticker} in Periode {period_year} {period_type}:
 1. Konzern-GuV -> erste Umsatz-Zeile (Revenue/Sales/Net revenues/Insurance revenue)
 2. IFRS reported (nicht adjusted, nicht organic)
-3. Total Group (inkl. Financial Services bei Auto, inkl. discontinued bis Spin-off-Datum)
+3. Total Group (inkl. Financial Services bei Auto; nach Spin-off im Berichtsjahr: fortgefuehrte Aktivitaeten restated)
 4. Fuer Fiskaljahr-Firmen (IFX/SIE/SHL/ENR): Kal-Q1 2025 = FQ2 FY25 etc.
 5. Bei Q: Sum von Q1-Q4 sollte FY exakt matchen (Sanity-Check)
 6. Gib absolute Berichtswaehrung (nicht Mio), Vorzeichen positiv

@@ -52,6 +52,21 @@ unit: Berichtswaehrung per share — pro Aktie, NIEMALS absolute Total
 - Wenn Preferred und Common unterschiedliche EPS haben (rare in DE): Preferred nutzen
 - Bei Merck KGaA: einheitliches EPS fuer beide Klassen (Winst dividend Alignment)
 
+**Berichtete Konzern-Groesse (verbindlich)**:
+- IMMER das VERWAESSERTE (diluted) EPS des GESAMTKONZERNS nach IFRS/GAAP,
+  wie in der GuV berichtet
+- Nicht basic, nicht "core"/"adjusted", nicht nur fortgefuehrte
+  Aktivitaeten (ausser der Konzern weist nur das aus)
+- Banken: die berichtete IAS-33-Groesse (nach AT1-Kupons), keine eigene
+  Pro-forma-Rechnung
+
+**Spin-offs / Abspaltungen im Berichtsjahr**:
+- Nach Spin-offs/Abspaltungen im Berichtsjahr gelten die Zahlen der
+  FORTGEFUEHRTEN Aktivitaeten, wie im Geschaeftsbericht restated
+  (z.B. Continental nach der Aumovio-Abspaltung 2025) — nicht die alte
+  Konzernstruktur
+- Quartale muessen auf derselben restateten Basis liegen wie das FY
+
 ## Cross-References
 1. **eps_diluted ≈ net_income / shares_outstanding_avg** (approximativ, weil diluted shares abweichen)
 2. **pe_ratio = stock_price / eps_diluted** (wenn beide > 0)
