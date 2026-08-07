@@ -225,7 +225,14 @@ EXTRACTOR_SYSTEM = (
     "ESTIMATES are allowed ONLY where the task protocol explicitly asks for "
     "them (not-yet-reported periods of an in-progress fiscal year); they must "
     "be marked is_estimate=true and their source_quote must document the "
-    "guidance/consensus/derivation basis. "
+    "guidance/consensus basis. "
+    "ESTIMATE BASIS RULE (hard): estimates may ONLY come from (a) company "
+    "guidance published in official reports/releases or (b) named analyst "
+    "consensus. YoY/trend/run-rate extrapolation is FORBIDDEN as an estimate "
+    "basis. If neither guidance nor consensus exists for a period, set the "
+    "value to null — an empty cell is correct, an invented trend number is "
+    "not. (Carrying forward the last reported balance-sheet snapshot is not "
+    "an extrapolation and stays allowed.) "
     "CONTAMINATION RULE: the metric guidance in the user message contains "
     "illustrative example numbers — they are NOT data. Every number you "
     "output must come from your own web_search results for THIS company and "
@@ -302,11 +309,11 @@ Availability rules — CRITICAL:
     * `is_estimate: false` = value from a published company report
       (interim, quarterly, annual, press release with hard numbers).
       source_quote MUST be a sentence from that publication.
-    * `is_estimate: true` = value from company FY guidance, analyst
-      consensus (MarketScreener, Refinitiv, Bloomberg, TipRanks), or
-      Q1-YTD run-rate × prior-year seasonal factor.
-      source_quote MUST cite the guidance / consensus / model basis
-      verbatim.
+    * `is_estimate: true` = value from company FY guidance or analyst
+      consensus (MarketScreener, Refinitiv, Bloomberg, TipRanks).
+      source_quote MUST cite the guidance / consensus basis verbatim.
+      NO other estimate basis is allowed — YoY/trend/run-rate
+      extrapolation is FORBIDDEN.
 
 - INTERIM REPORTS ARE PRIMARY SOURCES for closed quarters even if the
   annual report is not out yet. If Q1 report is published: Q1 value
@@ -336,15 +343,20 @@ Availability rules — CRITICAL:
 
 - If the annual report for FY {year} is NOT YET PUBLISHED (in-progress fiscal year):
     * Already-reported quarter: extract the reported value, `is_estimate: false`.
-    * NOT-yet-reported quarter: YOU MUST PROVIDE A NUMERIC ESTIMATE.
-      Priority order for FLOW metrics (revenue, net_income, ebitda,
-      operating_cash_flow, capex, sbc, buyback_volume, dividends):
+    * NOT-yet-reported quarter: provide an estimate ONLY from guidance
+      or consensus. Priority order for FLOW metrics (revenue,
+      net_income, ebitda, operating_cash_flow, capex, sbc,
+      buyback_volume, dividends):
         1. Analyst consensus for that specific quarter (search
            MarketScreener / TipRanks / Bloomberg summary pages).
         2. Company Q-guidance if issued.
-        3. Extrapolation: prior-year same-quarter value × (Q1 YoY growth
-           observed). Document the calculation in source_quote as
-           "Q1 YTD growth X% × prior-year Qn value Y = estimated Z".
+        3. If a company FY guidance / FY consensus exists and all other
+           quarters of the year are reported: the remaining quarter =
+           FY figure minus sum of reported quarters. Document the
+           arithmetic in source_quote.
+      YoY/trend/run-rate extrapolation is FORBIDDEN. If neither
+      guidance nor consensus (nor the FY-minus-reported derivation)
+      exists: set the quarter to null.
       Priority order for DERIVED metrics (`fcf`, `net_debt`):
         1. If component metrics for the same period are known:
            - fcf = operating_cash_flow − capex (per period).
@@ -352,7 +364,8 @@ Availability rules — CRITICAL:
            Compute it. source_quote = "Derived: OCF X − CapEx Y = Z" or
            equivalent. is_estimate matches whether the components are
            estimated.
-        2. Otherwise fall back to consensus / extrapolation as above.
+        2. Otherwise fall back to consensus / guidance as above (never
+           trend extrapolation).
       Priority order for BALANCE-SHEET metrics (`cash_and_equivalents`,
       `st_investments`, `st_debt`, `lt_debt`):
         These do not change quarter-to-quarter as fast as flows. If no
@@ -362,14 +375,15 @@ Availability rules — CRITICAL:
         must say so explicitly, e.g. "Carried forward from FY{year-1}
         year-end balance sheet — no new disclosure in QN {year} interim".
         is_estimate = true.
-      Never null out any period just because you didn't find a
-      consensus quickly — every method above ALWAYS produces a value.
-    * FY total: MUST BE POPULATED. Priority:
+    * FY total: Priority:
         1. Company FY guidance midpoint.
         2. Analyst consensus FY.
-        3. Sum-of-parts: Q1 actual + estimated Q2 + Q3 + Q4.
+        3. Sum-of-parts: reported quarters + guidance/consensus-based
+           quarter estimates (never trend-extrapolated ones).
         4. For balance-sheet metrics: FY = Q4 = latest known value.
       source_quote cites the guidance / consensus / sum-of-parts basis.
+      If neither company guidance nor analyst consensus exists for the
+      FY: set it to null — do NOT invent a trend-based projection.
 
 - If the annual report IS published: extract all Q1..Q4 + FY from it,
   `is_estimate: false` throughout.
@@ -670,6 +684,14 @@ VERIFIER_SYSTEM = (
     "unit scale, per-share confusion, temporal mislabeling. A third-party "
     "source showing a DIFFERENT forecast is never grounds for correction: "
     "forecasts legitimately differ.\n\n"
+    "ESTIMATE BASIS RULE (hard): estimates are legitimate ONLY when based "
+    "on (a) company guidance from official reports/releases or (b) named "
+    "analyst consensus. An estimate whose source_quote documents a "
+    "YoY/trend/run-rate extrapolation ('prior-year quarter × growth rate', "
+    "'run-rate annualised') has NO valid basis — verdict="
+    "'insufficient_evidence' with a reason naming the missing "
+    "guidance/consensus. Carrying forward the last reported balance-sheet "
+    "snapshot is not an extrapolation and stays legitimate.\n\n"
     "GUIDANCE RECENCY RULE: estimates for the running fiscal year MUST "
     "reflect the company's MOST RECENT guidance. Check for guidance "
     "updates/raises/cuts published AFTER the latest quarterly report "

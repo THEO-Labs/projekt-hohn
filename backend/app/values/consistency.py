@@ -397,6 +397,111 @@ def derive_missing_ocf(db: Session, company_id: UUID, year: int) -> int:
     return written
 
 
+def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: int) -> int:
+    """Offenes Rest-Quartal deterministisch aus dem FY-Estimate ableiten:
+    Q_offen = FY_est (Guidance/Konsens) - Summe(berichtete Quartale).
+
+    Greift pro summierbarem Key, wenn ein FY-Forecast mit Wert existiert
+    und GENAU EIN Quartal noch keinen berichteten Actual hat. Ersetzt die
+    LLM-Schaetzung des offenen Quartals durch Arithmetik (kein LLM-Call,
+    kein Trend-Drift). Manuelle und PDF-Zeilen bleiben unangetastet.
+    Rueckgabe: Anzahl geschriebener Quartals-Zellen.
+    """
+    from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
+
+    rows = _rows_for_year(db, company_id, year)
+    written = 0
+    for key in sorted(SUMMABLE_QUARTERLY_KEYS):
+        # FY-Estimate (Guidance/Konsens): Forecast-Zeile mit Wert. Ein
+        # FY-Actual mit Wert heisst Jahr abgeschlossen — nichts abzuleiten.
+        fy_actual = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and not r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+        if fy_actual is not None:
+            continue
+        fy_est = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+        if fy_est is None:
+            continue
+        reported: dict[str, Decimal] = {}
+        open_qs: list[str] = []
+        for q in _Q_TYPES:
+            actual = next(
+                (r for r in rows
+                 if r.value_key == key and r.period_type == q
+                 and not r.is_forecast and r.numeric_value is not None),
+                None,
+            )
+            if actual is not None:
+                reported[q] = actual.numeric_value
+            else:
+                open_qs.append(q)
+        if len(open_qs) != 1:
+            continue
+        target_q = open_qs[0]
+        derived = fy_est.numeric_value - sum(reported.values(), Decimal("0"))
+        # Negatives Residuum bei Always-Positive-Keys = stale/inkonsistente
+        # FY-Guidance — nicht persistieren.
+        if key in ALWAYS_POSITIVE_KEYS and derived < 0:
+            logger.warning(
+                "open-quarter derive implausibel %s/%s/FY%s: fy_est=%s "
+                "reported_sum=%s -> %s negativ — skip",
+                company_id, key, year, fy_est.numeric_value,
+                sum(reported.values(), Decimal("0")), derived,
+            )
+            continue
+        # Zielzeile: Forecast-Slot des offenen Quartals. Manuelle Overrides
+        # und PDF-Guidance mit Wert sind authoritative.
+        slot_rows = [
+            r for r in rows
+            if r.value_key == key and r.period_type == target_q
+        ]
+        if any(
+            r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None)
+            for r in slot_rows
+        ):
+            continue
+        target = next((r for r in slot_rows if r.is_forecast), None)
+        now = datetime.now(timezone.utc)
+        if target is None:
+            target = CompanyValue(
+                id=uuid4(), company_id=company_id, value_key=key,
+                period_type=target_q, period_year=year, is_forecast=True,
+            )
+            # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+            # Guards erneut anwenden.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(db, company_id, key, target_q, year, True)
+                if target is None or target.manually_overridden:
+                    continue
+        reported_sum = sum(reported.values(), Decimal("0"))
+        target.numeric_value = derived
+        target.source_name = (
+            f"FY-Guidance minus berichtete Quartale: FY {fy_est.numeric_value} "
+            f"- Sigma({'+'.join(sorted(reported))}) {reported_sum} = {derived}"
+        )[:4096]
+        target.source_link = None
+        target.primary_method = "calculated"
+        target.is_forecast = True
+        target.currency = fy_est.currency or target.currency
+        target.fetched_at = now
+        target.last_refresh_attempt = now
+        written += 1
+    db.flush()
+    return written
+
+
 def derive_sbc_quarters(db: Session, company_id: UUID, year: int) -> int:
     """SBC-Quartale fuer Annual-only-Reporter: FY gleichmaessig auf Q1-Q4
     verteilen (FY/4). Kunden-Feedback: leere SBC-Quartale bei vorhandenem

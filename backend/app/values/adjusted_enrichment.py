@@ -80,13 +80,18 @@ _SYSTEM_PROMPT = (
     "them the Non-GAAP values will be discarded.\n"
     "- If the release contains no GAAP-to-Non-GAAP reconciliation at all, or "
     "the requested period is not covered, use null for the missing value.\n"
+    "- period_end_date: the period-end date of the COLUMN you read the "
+    "values from, exactly as stated in the table header (e.g. 'Three Months "
+    "Ended June 30, 2026' -> '2026-06-30'). ISO format YYYY-MM-DD; null if "
+    "the header states no date.\n"
     "- adjustment_items: short comma-separated list of the adjustment line "
     "items (e.g. 'SBC, restructuring, amortization of intangibles'); empty "
     "string if none.\n"
     "Answer with ONLY this JSON object, no prose, no markdown fences:\n"
     '{"non_gaap_net_income": number|null, "non_gaap_diluted_eps": number|null, '
     '"gaap_net_income": number|null, "gaap_diluted_eps": number|null, '
-    '"source_kind": "table"|"text", "adjustment_items": string}'
+    '"source_kind": "table"|"text", "period_end_date": "YYYY-MM-DD"|null, '
+    '"adjustment_items": string}'
 )
 
 # Negative-Cache wie im EdgarProvider: fehlgeschlagene URLs 10 Minuten
@@ -275,6 +280,28 @@ def _extract_via_claude(
                        ticker, period_label, e)
         return None
     return data if isinstance(data, dict) else None
+
+
+# Toleranz fuer die Tabellenkopf-Datumspruefung: 52/53-Wochen-Kalender
+# enden nicht exakt am Monatsletzten ('quarter ended June 28'). Ein
+# falsches Quartal liegt ~90 Tage daneben und wird sicher erkannt.
+PERIOD_END_TOLERANCE_DAYS = 21
+
+
+def _period_end_matches(claimed, expected: date) -> bool:
+    """Tabellenkopf-Datum gegen das Zielquartalsende pruefen. Fehlende oder
+    unparsebare Angabe ist lenient True (aeltere Releases ohne klares
+    Header-Datum); ein angegebenes Datum muss innerhalb der Toleranz am
+    erwarteten Periodenende liegen — sonst hat das Modell die falsche
+    Spalte gelesen (Q1 bekommt Q4-Wert), was der GAAP-Cross-Check bei nahe
+    beieinanderliegenden Quartalswerten nicht fangen kann."""
+    if not isinstance(claimed, str) or not claimed.strip():
+        return True
+    try:
+        claimed_date = date.fromisoformat(claimed.strip())
+    except ValueError:
+        return True
+    return abs((claimed_date - expected).days) <= PERIOD_END_TOLERANCE_DAYS
 
 
 def _to_decimal(value) -> Decimal | None:
@@ -466,6 +493,20 @@ def enrich_adjusted_from_earnings_releases(
                 "%s adjusted enrichment: source_kind fehlt/ungueltig (%r) "
                 "fuer %s — verworfen",
                 company.ticker, source_kind, period_label,
+            )
+            for row in period_rows:
+                _mark_no_reconciliation(row)
+            db.flush()
+            continue
+
+        # Perioden-Verifikation aus dem Tabellenkopf: falsche Spalte gelesen
+        # -> verwerfen (Negativ-Marker wie beim Cross-Check-Fail).
+        if not _period_end_matches(data.get("period_end_date"), period_end):
+            logger.warning(
+                "%s adjusted enrichment: period_end_date %r passt nicht zu %s "
+                "(erwartet %s) — verworfen",
+                company.ticker, data.get("period_end_date"), period_label,
+                period_end.isoformat(),
             )
             for row in period_rows:
                 _mark_no_reconciliation(row)

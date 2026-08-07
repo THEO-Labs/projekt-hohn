@@ -188,7 +188,9 @@ def calculate_fy(
         results_adjusted["ev_ebitda"] = ev / ebitda_adj_raw
 
     # Margins + PS Ratio Adjusted. Nutzen Adjusted-Revenue wenn vorhanden
-    # (Organic/Constant-Currency), sonst Fallback auf Reported.
+    # (Organic/Constant-Currency), sonst GAAP-Umsatz als Nenner —
+    # Standard-Konvention: Non-GAAP-Revenue ist selten, Adjusted-Margen
+    # werden ueblicherweise auf den berichteten Umsatz bezogen.
     revenue_adj_raw = ca.get("revenue")
     ocf_adj_raw = ca.get("operating_cash_flow")
     revenue_adj_eff = revenue_adj_raw if revenue_adj_raw is not None else revenue
@@ -199,9 +201,10 @@ def calculate_fy(
             results_adjusted["ocf_margin"] = ocf_adj_raw / revenue_adj_eff * Decimal("100")
         if fcf_adj_raw is not None:
             results_adjusted["fcf_margin"] = fcf_adj_raw / revenue_adj_eff * Decimal("100")
-        if market_cap is not None and revenue_adj_raw is not None:
-            # Nur setzen wenn revenue_adj_raw echt vorhanden — sonst identisch mit ps_ratio Reported.
-            results_adjusted["ps_ratio"] = market_cap / revenue_adj_raw
+        if market_cap is not None:
+            # Gleicher Fallback-Nenner wie bei den Margen: ohne Adjusted-
+            # Umsatz entspricht ps_ratio adjusted dem Reported-Wert.
+            results_adjusted["ps_ratio"] = market_cap / revenue_adj_eff
     # Fuer NI-Growth + Hohn-Rendite-Adj brauchen wir Fallback (sonst kaskadieren
     # Forecast-Years die nur Adj-Prev haben aber kein Adj-Current ins Leere).
     ni_adj = ni_adj_raw if ni_adj_raw is not None else ni_for_pe

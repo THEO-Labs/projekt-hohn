@@ -231,3 +231,38 @@ def test_net_debt_to_ocf_requires_positive_ocf():
         {},
     )
     assert result.get("net_debt_to_ocf") is None
+
+
+def test_adjusted_margins_fall_back_to_gaap_revenue():
+    """Standard-Konvention: ohne Adjusted-Umsatz werden Adjusted-Margen und
+    PS-Ratio auf den GAAP-Umsatz bezogen (Non-GAAP-Revenue ist selten)."""
+    _result, adj = calculate_fy(
+        {
+            "revenue": Decimal("1000"),
+            "net_income": Decimal("100"),
+            "operating_cash_flow": Decimal("300"),
+            "fcf": Decimal("200"),
+        },
+        None,
+        {"market_cap": Decimal("5000")},
+        current_adjusted={
+            "net_income": Decimal("120"),
+            "operating_cash_flow": Decimal("330"),
+            "fcf": Decimal("220"),
+        },
+    )
+    assert adj["ni_margin"] == Decimal("12")
+    assert adj["ocf_margin"] == Decimal("33")
+    assert adj["fcf_margin"] == Decimal("22")
+    # ps_ratio adjusted mit GAAP-Nenner = Reported-Wert.
+    assert adj["ps_ratio"] == Decimal("5")
+
+
+def test_adjusted_ps_ratio_uses_adjusted_revenue_when_present():
+    _result, adj = calculate_fy(
+        {"revenue": Decimal("1000")},
+        None,
+        {"market_cap": Decimal("5000")},
+        current_adjusted={"revenue": Decimal("1250")},
+    )
+    assert adj["ps_ratio"] == Decimal("4")

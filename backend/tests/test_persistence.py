@@ -7,7 +7,7 @@ Currency-Konflikt-Erkennung fuer CURRENCY_KEYS.
 
 from decimal import Decimal
 
-from app.values.persistence import currency_conflict, normalize_sign
+from app.values.persistence import adjusted_is_protected, currency_conflict, normalize_sign
 
 
 class TestNormalizeSign:
@@ -46,3 +46,29 @@ class TestCurrencyConflict:
 
     def test_non_currency_key_never_conflicts(self):
         assert currency_conflict("shares_outstanding", "USD", "EUR") is False
+
+
+class TestAdjustedIsProtected:
+    """Belegte Quellen (Manual + jede https-URL) schuetzen die Adjusted-
+    Felder; unbelegt sind nur NULL und das Two-Stage-Format ('quote | url')."""
+
+    def test_manual_protected(self):
+        assert adjusted_is_protected("Manual") is True
+
+    def test_sec_8k_url_protected(self):
+        assert adjusted_is_protected("https://www.sec.gov/Archives/ex991.htm") is True
+
+    def test_ir_press_release_url_protected(self):
+        assert adjusted_is_protected("https://investor.example.com/press/q3.htm") is True
+
+    def test_null_unprotected(self):
+        assert adjusted_is_protected(None) is False
+
+    def test_two_stage_quote_pipe_url_unprotected(self):
+        assert adjusted_is_protected(
+            "Adjusted net income was... | https://ir.example/pr"
+        ) is False
+
+    def test_http_plaintext_unprotected(self):
+        # Nur https zaehlt als belegte Quelle.
+        assert adjusted_is_protected("http://ir.example.com/pr") is False

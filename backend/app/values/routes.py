@@ -1412,6 +1412,7 @@ def refresh_company_values(
             from app.values.consistency import (
                 derive_missing_ocf,
                 derive_net_debt_from_components,
+                derive_open_quarter_from_fy_estimate,
                 derive_sbc_quarters,
                 validate_cross_metrics,
             )
@@ -1433,6 +1434,26 @@ def refresh_company_values(
                 db.commit()
             except Exception as e:
                 logger.warning("quarter anchor failed for %s: %s", ticker, e)
+                db.rollback()
+            # GAAP-Bruecke fuer das Release-zu-10-Q-Fenster: Zahlen aus dem
+            # 8-K-Earnings-Release fuellen not_found/Estimate-Zellen, bis
+            # das 10-Q-XBRL in der companyfacts-API ankommt und der Anker
+            # die provider-Zeilen ueberschreibt. Fehler brechen nie ab.
+            try:
+                from app.values.gaap_bridge import bridge_gaap_from_earnings_releases
+                from scripts.two_stage_research import CostTracker
+                bridge_tracker = CostTracker()
+                bridge_gaap_from_earnings_releases(
+                    db, company, consistency_years, cost_tracker=bridge_tracker,
+                )
+                db.commit()
+                if bridge_tracker.calls:
+                    logger.info(
+                        "gaap bridge %s: %d Claude-Calls, %.4f USD",
+                        ticker, bridge_tracker.calls, bridge_tracker.spent_usd,
+                    )
+            except Exception as e:
+                logger.warning("gaap bridge failed for %s: %s", ticker, e)
                 db.rollback()
             # Non-GAAP-Anreicherung aus 8-K-Earnings-Releases: der Provider-
             # first-Skip ueberspringt die Two-Stage-Recherche, die frueher
@@ -1465,6 +1486,9 @@ def refresh_company_values(
                     derive_net_debt_from_components(db, company_id, cons_year)
                     derive_missing_ocf(db, company_id, cons_year)
                     derive_sbc_quarters(db, company_id, cons_year)
+                    # Offenes Rest-Quartal deterministisch aus dem FY-
+                    # Estimate (Guidance/Konsens) statt LLM-Schaetzung.
+                    derive_open_quarter_from_fy_estimate(db, company_id, cons_year)
                     validate_cross_metrics(db, company_id, cons_year)
                     db.commit()
                 except Exception as e:

@@ -367,7 +367,10 @@ export function detailToQuarterlySections(detail: CompanyDetailOut, fx: FxContex
   const nativeCurrency = detail.company.currency;
 
   return detail.quarterly.map((s) => {
-    const showAnnual = s.value_key !== "net_buyback";
+    // net_buyback liefert das Backend inkl. abgeleiteter FY-Zelle
+    // (Buyback-Volumen FY − SBC FY, GAAP + adjusted) — Jahresspalte
+    // fuer alle Sektionen anzeigen.
+    const showAnnual = true;
     const factor = scaleFor(s);
     const extras_gaap: ExtraRow[] = [];
     const extras_adj: ExtraRow[] = [];

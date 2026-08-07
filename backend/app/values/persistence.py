@@ -47,16 +47,14 @@ def currency_conflict(key: str, existing_currency: str | None, new_currency: str
     )
 
 
-# 8-K-Enrichment-Quellen (adjusted_enrichment.py) sind SEC-Archiv-URLs.
-ADJUSTED_PROTECTED_URL_PREFIX = "https://www.sec.gov/"
-
-
 def adjusted_is_protected(source: str | None) -> bool:
     """True wenn die Adjusted-Felder einer Zeile authoritative sind und von
     Anker/Two-Stage/Derive nicht angefasst werden duerfen: manueller
-    Adjusted-Override ('Manual') oder 8-K-Enrichment (SEC-URL). Alle
-    anderen Sources (Two-Stage 'quote | url', NULL) sind ueberschreibbar —
-    sonst kleben stale LLM-Adjusted-Werte dauerhaft."""
+    Adjusted-Override ('Manual') oder eine belegte Quelle — jede reine
+    https-URL (SEC-8-K-Enrichment, IR-/Press-Release-Links). Unbelegt und
+    damit ueberschreibbar sind nur NULL und das Two-Stage-Format
+    ('quote | url', beginnt mit dem Zitat) — sonst kleben stale
+    LLM-Adjusted-Werte dauerhaft."""
     if source is None:
         return False
-    return source == "Manual" or source.startswith(ADJUSTED_PROTECTED_URL_PREFIX)
+    return source == "Manual" or source.startswith("https://")

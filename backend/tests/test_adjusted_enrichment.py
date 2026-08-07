@@ -519,3 +519,70 @@ def test_prompt_schema_requires_source_kind():
     assert '"source_kind": "table"|"text"' in adj._SYSTEM_PROMPT
     assert "reconciliation TABLE" in adj._SYSTEM_PROMPT
     assert "source_kind='text'" in adj._SYSTEM_PROMPT
+
+
+# --- period_end_date-Verifikation (Tabellenkopf) ---------------------------
+
+
+def test_prompt_schema_requires_period_end_date():
+    assert '"period_end_date": "YYYY-MM-DD"|null' in adj._SYSTEM_PROMPT
+
+
+def test_period_end_mismatch_rejects(db, company, monkeypatch):
+    """Falsche Spalte gelesen (Q4-Datum statt Q2): auch wenn der GAAP-
+    Cross-Check zufaellig passen wuerde, wird die Periode verworfen —
+    Negativ-Marker gegen Dauer-Retries."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    fake = _patch_period(monkeypatch, {
+        "non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 20000000000, "gaap_diluted_eps": None,
+        "source_kind": "table", "adjustment_items": "SBC",
+        "period_end_date": f"{YEAR}-12-31",
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 0
+    assert len(fake.messages.calls) == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted is None
+    assert ni.adjustments_note == "no non-GAAP reconciliation found"
+
+
+def test_period_end_match_accepts_with_tolerance(db, company, monkeypatch):
+    """Passendes Datum inkl. 52/53-Wochen-Toleranz (28.06. statt 30.06.)
+    laesst den Write durch."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    _patch_period(monkeypatch, {
+        "non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 20000000000, "gaap_diluted_eps": None,
+        "source_kind": "table", "adjustment_items": "SBC",
+        "period_end_date": f"{YEAR}-06-28",
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted == Decimal("24000000000")
+
+
+def test_period_end_missing_stays_lenient(db, company, monkeypatch):
+    """Fehlendes/unparsebares Header-Datum bleibt lenient (aeltere Releases
+    ohne klares Spalten-Datum) — der GAAP-Cross-Check gilt weiterhin."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    _patch_period(monkeypatch, {
+        "non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
+        "gaap_net_income": 20000000000, "gaap_diluted_eps": None,
+        "source_kind": "table", "adjustment_items": "SBC",
+        "period_end_date": None,
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted == Decimal("24000000000")
