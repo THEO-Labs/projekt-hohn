@@ -1323,6 +1323,22 @@ def refresh_company_values(
         and payload.period_year is not None
     )
 
+    # US-Filer + laufendes (nicht abgeschlossenes) FY: die Estimate-Keys
+    # ueberspringt der Key-Loop (analog Provider-first-Skip) — EIN
+    # fetch_guidance_estimates-Call vor dem Konsistenz-Pass ersetzt die
+    # Two-Stage-Recherche fuers laufende Jahr komplett. Nicht-US und
+    # abgeschlossene Jahre: unveraendert Two-Stage.
+    us_guidance_fy = False
+    if use_two_stage_fy:
+        try:
+            from app.values.provider_anchor import _fy_is_closed
+            us_guidance_fy = is_us_company(company) and not _fy_is_closed(
+                company, payload.period_year
+            )
+        except Exception as e:
+            logger.warning("guidance-estimate gate failed for %s: %s", ticker, e)
+            us_guidance_fy = False
+
     # Precompute prev-year backfill list: for a two-stage FY N refresh we
     # also fill FY N-1 for each key that has no two-stage row yet. Skip
     # already-verified rows so a second Refresh full click stays cheap.
@@ -1342,8 +1358,15 @@ def refresh_company_values(
         # Pro Key committen: ein Fehler (und der zugehoerige Rollback) in
         # Key N darf die bereits erfolgreich geschriebenen Keys 1..N-1
         # nicht mit verwerfen. mark_success erst NACH erfolgreichem Commit.
+        from app.values.guidance_estimates import GUIDANCE_ESTIMATE_KEYS
         for key in effective_keys:
             update_job(company_id, key)
+            # US-Filer, laufendes FY: Estimate-Keys nicht einzeln per
+            # Two-Stage recherchieren — der gebuendelte Guidance-Call
+            # (unten, vor dem Konsistenz-Pass) deckt sie ab. Berichtete
+            # Quartale ankert der Quartals-Anker im Konsistenz-Block.
+            if us_guidance_fy and key in GUIDANCE_ESTIMATE_KEYS:
+                continue
             updated_before = len(updated)
             try:
                 if (
@@ -1481,6 +1504,32 @@ def refresh_company_values(
             except Exception as e:
                 logger.warning("adjusted enrichment failed for %s: %s", ticker, e)
                 db.rollback()
+            # FY-Guidance-Estimates fuer US-Filer (laufendes FY): EIN
+            # Claude-Call ersetzt die uebersprungenen Two-Stage-Keys.
+            # Muss VOR dem Konsistenz-Pass laufen, damit
+            # derive_open_quarter_from_fy_estimate die frischen
+            # FY-Forecasts sieht. Fehler brechen den Refresh nie ab.
+            if us_guidance_fy:
+                try:
+                    from app.values.guidance_estimates import fetch_guidance_estimates
+                    from scripts.two_stage_research import CostTracker
+                    set_phase(
+                        company_id, "guidance_estimates",
+                        f"FY-Guidance-Schaetzungen (FY{payload.period_year})",
+                    )
+                    guid_tracker = CostTracker()
+                    wrote_est = fetch_guidance_estimates(
+                        db, company, payload.period_year, cost_tracker=guid_tracker,
+                    )
+                    db.commit()
+                    if guid_tracker.calls:
+                        logger.info(
+                            "guidance estimates %s: %d FY-Werte, %d Claude-Calls, %.4f USD",
+                            ticker, wrote_est, guid_tracker.calls, guid_tracker.spent_usd,
+                        )
+                except Exception as e:
+                    logger.warning("guidance estimates failed for %s: %s", ticker, e)
+                    db.rollback()
             for cons_year in consistency_years:
                 try:
                     derive_net_debt_from_components(db, company_id, cons_year)
