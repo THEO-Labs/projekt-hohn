@@ -98,9 +98,12 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "LongTermDebtCurrent",
         "CommercialPaper",
     ],
+    # lt_debt: NUR LongTermDebtNoncurrent — bewusst KEINE Fallback-Kaskade
+    # auf LongTermDebt/DebtInstrument-Konzepte: LongTermDebt ist bei vielen
+    # Filern der Total Carrying Value INKLUSIVE Current Maturities (der
+    # historische lt_debt-Fehler). Lieber leer als falsch.
     "lt_debt": [
         "LongTermDebtNoncurrent",
-        "LongTermDebt",
     ],
     # Legacy keys (nicht mehr im Catalog, aber Code kann darauf referenzieren):
     "marketable_securities_st": [
@@ -149,10 +152,12 @@ FCF_CAPEX_CONCEPTS = [
 
 # Bilanz-Keys: US-Filer taggen die als Instant-Facts (ohne "start") — die
 # Standalone-Duration-Suche greift dort nie. Q4-Instant steht im 10-K.
-# st_debt/lt_debt bewusst NICHT dabei: st_debt braucht das Sum-Handling des
-# FY-Pfads (DebtCurrent-Total vs Einzelkomponenten, siehe fetch) — ein
-# nackter Instant-Lookup wuerde Teilwerte liefern. Kommt spaeter.
-BALANCE_KEYS = {"cash_and_equivalents", "st_investments"}
+# lt_debt dabei: der Instant-Lookup nutzt STRIKT LongTermDebtNoncurrent
+# (siehe CONCEPT_MAP) — kein Teilwert-Risiko. st_debt bewusst NICHT dabei:
+# braucht das Sum-Handling des FY-Pfads (DebtCurrent-Total vs Einzel-
+# komponenten, siehe fetch) — ein nackter Instant-Lookup wuerde Teilwerte
+# liefern; Quartale kommen nur ueber die 8-K-Bruecke.
+BALANCE_KEYS = {"cash_and_equivalents", "st_investments", "lt_debt"}
 
 # Cashflow-Keys: 10-Qs taggen die meist nur als YTD-Duration. Quartal via
 # YTD-Differenz aus derselben XBRL-Quelle wie das FY — Konsistenz per

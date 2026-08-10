@@ -47,21 +47,21 @@ def _payload(**overrides):
             "url": "https://example.com/ir/guidance",
         },
         "net_income": {
-            "value": 20_000_000_000, "source": "consensus",
+            "value": 20_000_000_000, "source": "consensus", "basis": "gaap",
             "quote": "Consensus GAAP net income of $20.0B",
             "url": "https://stockanalysis.com/tst",
         },
         "eps_diluted": {
-            "value": 4.0, "source": "consensus",
+            "value": 4.0, "source": "consensus", "basis": "gaap",
             "quote": "Consensus GAAP diluted EPS of $4.00", "url": None,
         },
         "eps_diluted_non_gaap": {
-            "value": 5.0, "source": "consensus",
+            "value": 5.0, "source": "consensus", "basis": "non_gaap",
             "quote": "Non-GAAP EPS consensus $5.00",
             "url": "https://zacks.com/tst",
         },
         "net_income_non_gaap": {
-            "value": 25_000_000_000, "source": "consensus",
+            "value": 25_000_000_000, "source": "consensus", "basis": "non_gaap",
             "quote": "Adjusted net income consensus $25B", "url": None,
         },
         "operating_cash_flow": {
@@ -202,11 +202,12 @@ def test_prev_year_gate_discards_outlier_allows_sign_flip(db, company, monkeypat
 
 
 def test_eps_ni_consistency_gate(db, company, monkeypatch):
-    """eps x shares weicht >20% von net_income ab: beide Werte werden
-    verworfen, die uebrigen Keys geschrieben."""
+    """eps x shares weicht >20% von net_income ab: beide GAAP-Werte werden
+    verworfen, die uebrigen Keys geschrieben. Die Non-GAAP-Sidecars
+    ueberleben auf Traeger-Zeilen mit leerem GAAP-Slot."""
     payload = _payload(
         eps_diluted={
-            "value": 10.0, "source": "consensus",
+            "value": 10.0, "source": "consensus", "basis": "gaap",
             "quote": "EPS consensus", "url": None,
         },
     )
@@ -216,8 +217,14 @@ def test_eps_ni_consistency_gate(db, company, monkeypatch):
     ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
     db.commit()
 
-    assert _fy_rows(db, company, "eps_diluted") == []
-    assert _fy_rows(db, company, "net_income") == []
+    eps = _fy_rows(db, company, "eps_diluted")
+    assert len(eps) == 1
+    assert eps[0].numeric_value is None
+    assert eps[0].numeric_value_adjusted == Decimal("5.0")
+    ni = _fy_rows(db, company, "net_income")
+    assert len(ni) == 1
+    assert ni[0].numeric_value is None
+    assert ni[0].numeric_value_adjusted == Decimal("25000000000")
     assert len(_fy_rows(db, company, "revenue")) == 1
     assert len(_fy_rows(db, company, "operating_cash_flow")) == 1
 

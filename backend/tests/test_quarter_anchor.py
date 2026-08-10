@@ -337,13 +337,15 @@ def test_non_us_company_skips_without_provider_call(db, company):
 
 
 def test_excluded_keys_never_fetched(db, company):
-    """st_debt/lt_debt/shares_outstanding sind ausgenommen (quartalsweise
-    Teilkomponenten bzw. kein Quartalspfad)."""
+    """st_debt/shares_outstanding sind ausgenommen (quartalsweise
+    Teilkomponenten bzw. kein Quartalspfad). lt_debt ist seit dem strikten
+    EDGAR-Instant-Pfad (nur LongTermDebtNoncurrent) zugelassen."""
     written, provider = _run(db, company, {})
     fetched_keys = {c[0] for c in provider.calls}
     assert written == 0
-    assert fetched_keys.isdisjoint({"st_debt", "lt_debt", "shares_outstanding"})
+    assert fetched_keys.isdisjoint({"st_debt", "shares_outstanding"})
     assert "net_income" in fetched_keys
+    assert "lt_debt" in fetched_keys
 
 
 def test_refresh_endpoint_invokes_quarter_anchor_before_consistency(client, db, monkeypatch):

@@ -38,12 +38,32 @@ from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
 logger = logging.getLogger(__name__)
 
 # Keys, die in den Standard-Statements eines US-Earnings-Releases stehen
-# (Statements of Operations + Cash Flows). capex/fcf bewusst nicht —
-# capex-Zeilenbenennungen sind uneinheitlich, fcf ist non-GAAP.
+# (Statements of Operations + Cash Flows + Condensed Balance Sheet).
+# fcf bewusst nicht — non-GAAP, wird im Konsistenz-Pass aus OCF - Capex
+# berechnet.
 BRIDGE_KEYS = (
     "revenue", "net_income", "eps_diluted",
-    "operating_cash_flow", "sbc", "dividends", "buyback_volume",
+    "operating_cash_flow", "capex", "sbc", "dividends", "buyback_volume",
+    "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
 )
+
+# capex steht im Cash-Flow-Statement negativ, die DB-Konvention ist ein
+# positiver Betrag. capex ist bewusst NICHT in ALWAYS_POSITIVE_KEYS
+# (normalize_sign laesst es durch) — die Bruecke normalisiert selbst.
+_FORCE_ABS_KEYS = frozenset({"capex"})
+
+# Bilanz-Keys (Condensed Consolidated Balance Sheet): Instant-Werte zum
+# Bilanzstichtag — keine YTD-Logik, kein Quartals-Differenzieren. Eigenes,
+# engeres Stichtags-Gate (siehe _balance_date_ok). Q4-Stichtag == FY-Ende:
+# der Wert gilt fuer beide Slots (gleiche Verteilung wie EDGAR-Instants,
+# fetch_quarterly Q4 aus dem 10-K + FY-fetch liefern denselben Stichtag).
+_INSTANT_KEYS = frozenset(
+    {"cash_and_equivalents", "st_investments", "st_debt", "lt_debt"}
+)
+
+# Bilanzstichtag muss exakt zur Zielperiode passen — enger als die 21 Tage
+# der Statement-Header (52/53-Wochen-Kalender braucht dort mehr Spiel).
+_BALANCE_PERIOD_END_TOLERANCE_DAYS = 7
 
 # Anzeige-Quelle; der XBRL-Anker ersetzt die Zeile beim naechsten Refresh.
 BRIDGE_SOURCE_NAME = "SEC EDGAR 8-K Earnings Release (bis 10-Q-XBRL)"
@@ -70,7 +90,8 @@ _PERIOD_ORDER = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "FY": 5}
 _SYSTEM_PROMPT = (
     "You extract GAAP figures from the FINANCIAL STATEMENT TABLES of an "
     "earnings press release (8-K Exhibit 99): the condensed consolidated "
-    "statements of operations and statements of cash flows.\n"
+    "statements of operations, statements of cash flows and the condensed "
+    "consolidated balance sheet.\n"
     "Rules:\n"
     "- Values MUST come from the financial statement tables: the exact, "
     "unrounded figures as printed (e.g. 5,803 million -> 5803000000). "
@@ -87,9 +108,28 @@ _SYSTEM_PROMPT = (
     "    net_income: GAAP net income\n"
     "    eps_diluted: GAAP diluted earnings per share\n"
     "    operating_cash_flow: net cash provided by operating activities\n"
+    "    capex: purchases of property, equipment and technology / purchases "
+    "of property and equipment (investing activities line of the condensed "
+    "cash flow statement)\n"
     "    sbc: share-based compensation (cash flow statement)\n"
     "    dividends: dividends paid (financing activities)\n"
     "    buyback_volume: repurchases of common stock (financing activities)\n"
+    "    cash_and_equivalents: cash and cash equivalents (balance sheet)\n"
+    "    st_investments: short-term investment securities / short-term "
+    "investments (balance sheet; null if not shown as a separate line)\n"
+    "    st_debt: current maturities of long-term debt / current portion "
+    "of long-term debt (balance sheet)\n"
+    "    lt_debt: STRICTLY the balance sheet line 'Long-term debt' "
+    "(noncurrent). WARNING: NEVER use a 'total carrying value of debt' or "
+    "any debt total from footnotes or prose — those include current "
+    "maturities and are WRONG here.\n"
+    "- Balance sheet keys are point-in-time as of the balance sheet date: "
+    "never year-to-date, report them under values only. If a line is not "
+    "shown in the balance sheet, use null — do not guess.\n"
+    "- balance_sheet_date: the as-of date of the condensed balance sheet "
+    "column used (current period, not the prior fiscal-year-end "
+    "comparison column), ISO YYYY-MM-DD; null if the release has no "
+    "balance sheet.\n"
     "- Cash-flow tables in releases are often YEAR-TO-DATE ('Six/Nine "
     "Months Ended'): report such figures under ytd_values and set the "
     "same key in values to null UNLESS the table also shows a standalone "
@@ -100,13 +140,16 @@ _SYSTEM_PROMPT = (
     "- Use null for anything not printed in the tables. Do not estimate.\n"
     "Answer with ONLY this JSON object, no prose, no markdown fences:\n"
     '{"period_end_date": "YYYY-MM-DD"|null, '
+    '"balance_sheet_date": "YYYY-MM-DD"|null, '
     '"values": {"revenue": number|null, "net_income": number|null, '
     '"eps_diluted": number|null, "operating_cash_flow": number|null, '
-    '"sbc": number|null, "dividends": number|null, '
-    '"buyback_volume": number|null}, '
+    '"capex": number|null, "sbc": number|null, "dividends": number|null, '
+    '"buyback_volume": number|null, "cash_and_equivalents": number|null, '
+    '"st_investments": number|null, "st_debt": number|null, '
+    '"lt_debt": number|null}, '
     '"ytd_values": {"revenue": number|null, "net_income": number|null, '
     '"eps_diluted": number|null, "operating_cash_flow": number|null, '
-    '"sbc": number|null, "dividends": number|null, '
+    '"capex": number|null, "sbc": number|null, "dividends": number|null, '
     '"buyback_volume": number|null}}'
 )
 
@@ -290,6 +333,19 @@ def _period_end_ok(claimed, expected: date) -> bool:
         return False
     tol = release_fetch.PERIOD_END_TOLERANCE_DAYS
     return abs((claimed_date - expected).days) <= tol
+
+
+def _balance_date_ok(claimed, expected: date) -> bool:
+    """Stichtags-Gate der Bilanz-Keys: der As-of-Header der Bilanzspalte
+    muss dem Periodenende der Zielperiode entsprechen (±7 Tage) — sonst
+    ist es die Vorjahres-Vergleichsspalte."""
+    if not isinstance(claimed, str) or not claimed.strip():
+        return False
+    try:
+        claimed_date = date.fromisoformat(claimed.strip())
+    except ValueError:
+        return False
+    return abs((claimed_date - expected).days) <= _BALANCE_PERIOD_END_TOLERANCE_DAYS
 
 
 def _write_bridge_value(
@@ -480,12 +536,49 @@ def bridge_gaap_from_earnings_releases(
 
         values = data.get("values") or {}
         ytd_values = data.get("ytd_values") or {}
+        balance_ok = _balance_date_ok(data.get("balance_sheet_date"), period_end)
         for key in missing:
             v = _to_decimal(values.get(key))
+            if key in _INSTANT_KEYS:
+                # Bilanz-Keys: Instant-Semantik, kein YTD-Pfad. Eigenes
+                # engeres Gate auf den Bilanzstichtag; fehlende Zeile
+                # bleibt null (kein Raten laut Prompt).
+                if v is None:
+                    continue
+                if not balance_ok:
+                    logger.warning(
+                        "%s gaap bridge: balance_sheet_date %r passt nicht "
+                        "zu %s (erwartet %s ±%dd) — Bilanz-Key %s verworfen",
+                        company.ticker, data.get("balance_sheet_date"),
+                        period_label, period_end.isoformat(),
+                        _BALANCE_PERIOD_END_TOLERANCE_DAYS, key,
+                    )
+                    continue
+                # Q4-Stichtag == FY-Ende: derselbe Instant-Wert gehoert in
+                # beide Slots (Verteilung wie beim EDGAR-Instant-Pfad).
+                targets = [ptype]
+                if ptype == "Q4":
+                    targets.append("FY")
+                elif ptype == "FY":
+                    targets.append("Q4")
+                for tp in targets:
+                    if tp != ptype and not _cell_needs_bridge(
+                        _cell_rows(db, company.id, key, tp, year)
+                    ):
+                        continue
+                    try:
+                        if _write_bridge_value(db, company, key, tp, year, v,
+                                               exhibit_url):
+                            written += 1
+                    except InvalidOperation:
+                        break
+                continue
             ytd = _to_decimal(ytd_values.get(key))
             # Outflow-Keys frueh auf die DB-Konvention (positiv) bringen,
             # damit Cross-Check und Ableitung vorzeichenkonsistent rechnen.
-            if key in ALWAYS_POSITIVE_KEYS:
+            # capex explizit dabei (nicht in ALWAYS_POSITIVE_KEYS, weil
+            # normalize_sign es sonst in allen Pfaden abs-en wuerde).
+            if key in ALWAYS_POSITIVE_KEYS or key in _FORCE_ABS_KEYS:
                 v = abs(v) if v is not None else None
                 ytd = abs(ytd) if ytd is not None else None
             note = None

@@ -97,6 +97,24 @@ def _reload_slot(
     )
 
 
+def _derivation_replaceable(row: CompanyValue) -> bool:
+    """Lock-Konvention der deterministischen Ableitungen: ersetzbar sind
+    leere Zeilen, not_found-Platzhalter, alte LLM-Werte (two_stage_*/web_*)
+    und fruehere Ableitungen (calculated). Manuelle, PDF- und Provider-
+    Zeilen mit Wert sind authoritative (Guards wie provider_anchor/
+    gaap_bridge)."""
+    if row.manually_overridden or (row.from_ir_pdf and row.numeric_value is not None):
+        return False
+    if row.numeric_value is None:
+        return True
+    pm = row.primary_method or ""
+    return (
+        pm in ("not_found", "calculated")
+        or pm.startswith("two_stage")
+        or pm.startswith("web")
+    )
+
+
 def _rel_diff(a: Decimal, b: Decimal) -> Decimal:
     denom = max(abs(a), abs(b))
     if denom == 0:
@@ -397,6 +415,162 @@ def derive_missing_ocf(db: Session, company_id: UUID, year: int) -> int:
     return written
 
 
+def derive_missing_fcf(db: Session, company_id: UUID, years: list[int]) -> int:
+    """fcf = operating_cash_flow - |capex| als berechneter Wert, pro Periode.
+
+    Beschlossene Umstellung: fcf wird nicht mehr recherchiert (EDGAR-only-
+    Gate), sondern deterministisch aus den beiden Inputs berechnet, sobald
+    beide vorhanden sind. not_found-Platzhalter und alte LLM-Werte werden
+    ersetzt (_derivation_replaceable); manuelle, PDF- und Provider-Zeilen
+    bleiben unangetastet. Adjusted-Spur analog, wenn BEIDE Inputs adjusted-
+    Werte haben. Rueckgabe: Anzahl geschriebener Perioden.
+    """
+    from app.values.persistence import adjusted_is_protected
+
+    written = 0
+    for year in years:
+        rows = _rows_for_year(db, company_id, year)
+        for pt in ("FY",) + _Q_TYPES:
+            ocf_row = _row_of(rows, "operating_cash_flow", pt)
+            capex_row = _row_of(rows, "capex", pt)
+            if (ocf_row is None or ocf_row.numeric_value is None
+                    or capex_row is None or capex_row.numeric_value is None):
+                continue
+            slot_rows = [
+                r for r in rows
+                if r.value_key == "fcf" and r.period_type == pt
+            ]
+            if any(not _derivation_replaceable(r) for r in slot_rows):
+                continue
+            derived = ocf_row.numeric_value - abs(capex_row.numeric_value)
+            is_forecast = bool(ocf_row.is_forecast or capex_row.is_forecast)
+            # Adjusted nur wenn beide Inputs eine adjusted-Spur haben.
+            derived_adj: Decimal | None = None
+            if (ocf_row.numeric_value_adjusted is not None
+                    and capex_row.numeric_value_adjusted is not None):
+                derived_adj = (
+                    ocf_row.numeric_value_adjusted
+                    - abs(capex_row.numeric_value_adjusted)
+                )
+            # Zielzeile: Slot mit passendem is_forecast bevorzugt, sonst
+            # den einzigen anderen Slot umziehen (kein Kollisionsrisiko,
+            # der passende Slot existiert dann nicht).
+            target = next(
+                (r for r in slot_rows if bool(r.is_forecast) == is_forecast),
+                None,
+            )
+            if target is None:
+                target = next(iter(slot_rows), None)
+            now = datetime.now(timezone.utc)
+            if target is None:
+                target = CompanyValue(
+                    id=uuid4(), company_id=company_id, value_key="fcf",
+                    period_type=pt, period_year=year, is_forecast=is_forecast,
+                )
+                # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+                # Guards erneut anwenden.
+                try:
+                    with db.begin_nested():
+                        db.add(target)
+                        db.flush()
+                except IntegrityError:
+                    target = _reload_slot(db, company_id, "fcf", pt, year, is_forecast)
+                    if target is None or not _derivation_replaceable(target):
+                        continue
+            target.numeric_value = derived
+            target.source_name = (
+                f"Berechnet: OCF - Capex ({ocf_row.numeric_value} - "
+                f"{abs(capex_row.numeric_value)} = {derived})"
+            )[:4096]
+            target.source_link = None
+            target.primary_method = "calculated"
+            target.is_forecast = is_forecast
+            target.currency = ocf_row.currency or target.currency
+            target.fetched_at = now
+            target.last_refresh_attempt = now
+            if derived_adj is not None and not adjusted_is_protected(
+                target.adjustments_source
+            ):
+                target.numeric_value_adjusted = derived_adj
+                target.adjustments_note = "Berechnet: OCF - Capex (adjusted)"
+                target.adjustments_source = None
+            written += 1
+        db.flush()
+    return written
+
+
+def derive_ebitda_q4_from_fy(db: Session, company_id: UUID, year: int) -> int:
+    """ebitda Q4 = FY - Q1 - Q2 - Q3 aus berichteten Actuals.
+
+    EDGAR kann EBIT fuer Q4 strukturell nicht liefern (kein 3M-Frame im
+    10-K, providers/edgar sucht nur standalone) — der Restwert schliesst
+    die Luecke deterministisch. Negativer Rest gilt bei den Zielfirmen als
+    Dateninkonsistenz und wird nicht geschrieben (Verhalten wie
+    derive_open_quarter bei ALWAYS_POSITIVE_KEYS). Lock-Guards wie
+    _derivation_replaceable. Rueckgabe: 1 wenn geschrieben, sonst 0.
+    """
+    rows = _rows_for_year(db, company_id, year)
+
+    def _actual(pt: str) -> CompanyValue | None:
+        return next(
+            (r for r in rows
+             if r.value_key == "ebitda" and r.period_type == pt
+             and not r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+
+    fy_row = _actual("FY")
+    if fy_row is None:
+        return 0
+    q_rows = [_actual(q) for q in ("Q1", "Q2", "Q3")]
+    if any(r is None for r in q_rows):
+        return 0
+    slot_rows = [
+        r for r in rows
+        if r.value_key == "ebitda" and r.period_type == "Q4"
+    ]
+    if any(not _derivation_replaceable(r) for r in slot_rows):
+        return 0
+    q_sum = sum((r.numeric_value for r in q_rows), Decimal("0"))
+    derived = fy_row.numeric_value - q_sum
+    if derived < 0:
+        logger.warning(
+            "ebitda-q4 residual implausibel %s/FY%s: fy=%s q1-q3=%s -> %s "
+            "negativ — skip",
+            company_id, year, fy_row.numeric_value, q_sum, derived,
+        )
+        return 0
+    target = next((r for r in slot_rows if not r.is_forecast), None)
+    now = datetime.now(timezone.utc)
+    if target is None:
+        target = CompanyValue(
+            id=uuid4(), company_id=company_id, value_key="ebitda",
+            period_type="Q4", period_year=year, is_forecast=False,
+        )
+        # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+        # Guards erneut anwenden.
+        try:
+            with db.begin_nested():
+                db.add(target)
+                db.flush()
+        except IntegrityError:
+            target = _reload_slot(db, company_id, "ebitda", "Q4", year, False)
+            if target is None or not _derivation_replaceable(target):
+                return 0
+    target.numeric_value = derived
+    target.source_name = (
+        f"Berechnet: FY minus Q1-Q3 ({fy_row.numeric_value} - {q_sum} = {derived})"
+    )[:4096]
+    target.source_link = None
+    target.primary_method = "calculated"
+    target.is_forecast = False
+    target.currency = fy_row.currency or target.currency
+    target.fetched_at = now
+    target.last_refresh_attempt = now
+    db.flush()
+    return 1
+
+
 def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: int) -> int:
     """Offenes Rest-Quartal deterministisch aus dem FY-Estimate ableiten:
     Q_offen = FY_est (Guidance/Konsens) - Summe(berichtete Quartale).
@@ -412,6 +586,7 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
     Quartals-Zellen.
     """
     from app.companies.models import Company
+    from app.values.persistence import adjusted_is_protected
     from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
 
     rows = _rows_for_year(db, company_id, year)
@@ -476,7 +651,7 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
         )
         if fy_est is None:
             continue
-        reported: dict[str, Decimal] = {}
+        reported: dict[str, CompanyValue] = {}
         open_qs: list[str] = []
         for q in _Q_TYPES:
             actual = next(
@@ -486,7 +661,7 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
                 None,
             )
             if actual is not None:
-                reported[q] = actual.numeric_value
+                reported[q] = actual
             else:
                 open_qs.append(q)
         if len(open_qs) != 1:
@@ -497,7 +672,10 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
         # Ableitung ueber echte, gleich eintreffende Zahlen legen.
         if _quarter_already_reported(target_q):
             continue
-        derived = fy_est.numeric_value - sum(reported.values(), Decimal("0"))
+        reported_sum = sum(
+            (r.numeric_value for r in reported.values()), Decimal("0")
+        )
+        derived = fy_est.numeric_value - reported_sum
         # Negatives Residuum bei Always-Positive-Keys = stale/inkonsistente
         # FY-Guidance — nicht persistieren.
         if key in ALWAYS_POSITIVE_KEYS and derived < 0:
@@ -505,9 +683,27 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
                 "open-quarter derive implausibel %s/%s/FY%s: fy_est=%s "
                 "reported_sum=%s -> %s negativ — skip",
                 company_id, key, year, fy_est.numeric_value,
-                sum(reported.values(), Decimal("0")), derived,
+                reported_sum, derived,
             )
             continue
+        # Adjusted-Spur analog: nur wenn der FY-Forecast UND alle
+        # berichteten Quartale adjusted-Werte haben. Negatives Residuum
+        # bei Always-Positive-Keys wie im GAAP-Pfad nicht persistieren.
+        derived_adj: Decimal | None = None
+        if fy_est.numeric_value_adjusted is not None:
+            adj_vals = [r.numeric_value_adjusted for r in reported.values()]
+            if all(v is not None for v in adj_vals):
+                adj_sum = sum(adj_vals, Decimal("0"))
+                candidate = fy_est.numeric_value_adjusted - adj_sum
+                if key in ALWAYS_POSITIVE_KEYS and candidate < 0:
+                    logger.warning(
+                        "open-quarter derive adjusted implausibel %s/%s/FY%s: "
+                        "fy_adj=%s reported_adj_sum=%s -> %s negativ — skip",
+                        company_id, key, year, fy_est.numeric_value_adjusted,
+                        adj_sum, candidate,
+                    )
+                else:
+                    derived_adj = candidate
         # Zielzeile: Forecast-Slot des offenen Quartals. Manuelle Overrides
         # und PDF-Guidance mit Wert sind authoritative.
         slot_rows = [
@@ -536,7 +732,6 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
                 target = _reload_slot(db, company_id, key, target_q, year, True)
                 if target is None or target.manually_overridden:
                     continue
-        reported_sum = sum(reported.values(), Decimal("0"))
         target.numeric_value = derived
         target.source_name = (
             f"FY-Guidance minus berichtete Quartale: FY {fy_est.numeric_value} "
@@ -548,6 +743,16 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
         target.currency = fy_est.currency or target.currency
         target.fetched_at = now
         target.last_refresh_attempt = now
+        # Adjusted nur setzen, wenn ableitbar und die vorhandenen Adjusted-
+        # Felder nicht authoritative sind (Manual/URL-belegt).
+        if derived_adj is not None and not adjusted_is_protected(
+            target.adjustments_source
+        ):
+            target.numeric_value_adjusted = derived_adj
+            target.adjustments_note = (
+                "Abgeleitet: FY-Schaetzung minus berichtete Quartale"
+            )
+            target.adjustments_source = None
         written += 1
     db.flush()
     return written

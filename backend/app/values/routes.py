@@ -1433,6 +1433,8 @@ def refresh_company_values(
         # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
         if use_two_stage_fy and payload.period_year is not None:
             from app.values.consistency import (
+                derive_ebitda_q4_from_fy,
+                derive_missing_fcf,
                 derive_missing_ocf,
                 derive_net_debt_from_components,
                 derive_open_quarter_from_fy_estimate,
@@ -1535,9 +1537,16 @@ def refresh_company_values(
                     derive_net_debt_from_components(db, company_id, cons_year)
                     derive_missing_ocf(db, company_id, cons_year)
                     derive_sbc_quarters(db, company_id, cons_year)
+                    # EBITDA-Q4-Restwert: EDGAR liefert Q4-EBIT strukturell
+                    # nicht (kein 3M-Frame im 10-K).
+                    derive_ebitda_q4_from_fy(db, company_id, cons_year)
                     # Offenes Rest-Quartal deterministisch aus dem FY-
                     # Estimate (Guidance/Konsens) statt LLM-Schaetzung.
                     derive_open_quarter_from_fy_estimate(db, company_id, cons_year)
+                    # fcf = OCF - Capex als berechneter Wert — VOR
+                    # validate_cross_metrics, damit der fcf-Check die
+                    # frischen Werte sieht.
+                    derive_missing_fcf(db, company_id, [cons_year])
                     validate_cross_metrics(db, company_id, cons_year)
                     db.commit()
                 except Exception as e:

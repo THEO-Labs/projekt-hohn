@@ -27,11 +27,14 @@ from app.values.persistence import adjusted_is_protected, currency_conflict, nor
 
 logger = logging.getLogger(__name__)
 
-# Quartals-Anker: st_debt/lt_debt bewusst ausgenommen — die liefern
-# quartalsweise nur Teilkomponenten (kein Sum-Handling wie im FY-Pfad,
-# siehe edgar.py BALANCE_KEYS). shares_outstanding ist ein Stammdaten-Key
-# ohne Quartalspfad.
-QUARTER_ANCHOR_EXCLUDED_KEYS = frozenset({"st_debt", "lt_debt", "shares_outstanding"})
+# Quartals-Anker: st_debt bewusst ausgenommen — liefert quartalsweise nur
+# Teilkomponenten (kein Sum-Handling wie im FY-Pfad, siehe edgar.py
+# BALANCE_KEYS); Quartale kommen nur ueber die 8-K-Bruecke. lt_debt ist
+# seit dem strikten Instant-Pfad (nur LongTermDebtNoncurrent, edgar.py
+# BALANCE_KEYS) wieder zugelassen — der alte unsichere Weg (Fallback auf
+# LongTermDebt inkl. Current Maturities) existiert nicht mehr.
+# shares_outstanding ist ein Stammdaten-Key ohne Quartalspfad.
+QUARTER_ANCHOR_EXCLUDED_KEYS = frozenset({"st_debt", "shares_outstanding"})
 
 
 def _fy_is_closed(company, year: int) -> bool:

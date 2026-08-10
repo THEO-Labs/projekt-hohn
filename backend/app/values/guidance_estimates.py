@@ -12,7 +12,16 @@ consistency.derive_open_quarter_from_fy_estimate deterministisch ab
 Schreib-Invarianten wie in den uebrigen Pfaden: normalize_sign,
 currency_conflict, Manual-/PDF-Zeilen bleiben unangetastet. Vor jedem
 Write laufen deterministische Plausibilitaets-Gates (60%-Vorjahres-Gate,
-eps x shares vs net_income, Einheiten-Check).
+eps x shares vs net_income, Einheiten-Check, GAAP <= Non-GAAP + 1%).
+
+GAAP vs Non-GAAP: US-Analystenkonsens fuer EPS/Net-Income ist fast immer
+NON-GAAP. Jeder Wert traegt deshalb ein basis-Feld (gaap|non_gaap|unclear);
+GAAP-Slots (eps_diluted, net_income) werden nur bei explizit ausgewiesener
+GAAP-Basis befuellt, sonst in die adjusted-Sidecars umgebucht. Fehlt ein
+direkter NI-Konsens, wird net_income adjusted deterministisch als
+eps_adj x shares_outstanding (SNAPSHOT) abgeleitet — GAAP-Slots bleiben
+dann bewusst leer (keine Rueckrechnung ueber historische Spreads, das
+waere verkappte Extrapolation).
 """
 import logging
 from datetime import date, datetime, timezone
@@ -47,18 +56,27 @@ _NON_GAAP_SIDECARS = {
     "eps_diluted_non_gaap": "eps_diluted",
 }
 
+# GAAP-Slot -> zugehoeriger Non-GAAP-Sidecar-Key (fuer basis-Umbuchung
+# und das GAAP<=Non-GAAP-Gate).
+_GAAP_ADJ_PAIRS = (
+    ("eps_diluted", "eps_diluted_non_gaap"),
+    ("net_income", "net_income_non_gaap"),
+)
+
 # Per-Share-Keys sind vom Einheiten-Check (> 1 Mio) ausgenommen.
 _PER_SHARE_KEYS = frozenset({"eps_diluted", "eps_diluted_non_gaap"})
 
 _PREV_DEVIATION_TOL = Decimal("0.60")
 _EPS_NI_TOL = Decimal("0.20")
 _UNIT_MIN = Decimal("1000000")
+# US-Standard: adjusted >= GAAP (SBC/Amortisations-Addbacks). 1% Toleranz.
+_GAAP_ADJ_TOL = Decimal("0.01")
 
 # Reihenfolge + Kurzbeschreibung fuer den Prompt.
 _METRIC_SPECS = (
     ("revenue", "total revenue"),
-    ("net_income", "GAAP net income"),
-    ("eps_diluted", "GAAP diluted EPS (per share)"),
+    ("net_income", "GAAP net income (only if the source explicitly labels it GAAP/reported)"),
+    ("eps_diluted", "GAAP diluted EPS (per share; only if the source explicitly labels it GAAP/reported)"),
     ("eps_diluted_non_gaap", "Non-GAAP / adjusted diluted EPS (per share)"),
     ("net_income_non_gaap", "Non-GAAP / adjusted net income"),
     ("operating_cash_flow", "operating cash flow"),
@@ -92,6 +110,15 @@ def _build_system_prompt(company, year: int) -> str:
         "consensus (Zacks, Visible Alpha, stockanalysis.com, "
         "Bloomberg-cited figures). Consensus counts as a fully valid "
         "source. FORBIDDEN: your own YoY/trend/run-rate extrapolation. "
+        "GAAP vs non-GAAP rules: (a) analyst consensus EPS and net income "
+        "figures are by default NON-GAAP ('adjusted EPS', 'adjusted net "
+        "income') and belong in the non-GAAP fields (eps_diluted_non_gaap, "
+        "net_income_non_gaap); (b) fill the GAAP fields (eps_diluted, "
+        "net_income) ONLY if the source EXPLICITLY labels the figure as "
+        "GAAP or 'reported' (e.g. 'GAAP EPS guidance'); (c) when in doubt, "
+        "leave the GAAP field null; (d) for every value set 'basis' to "
+        "'gaap' or 'non_gaap' exactly as the source labels it, or "
+        "'unclear' if the source does not say. "
         "Return null only if neither guidance nor consensus exists for a "
         "metric. Absolute values in absolute "
         f"{getattr(company, 'currency', None) or 'USD'} base units "
@@ -110,6 +137,7 @@ def _build_user_prompt(company, year: int) -> str:
         lines.append(f"- {key}: {desc}")
     fields = ",\n".join(
         f'  "{key}": {{"value": <number|null>, "source": "guidance"|"consensus"|null, '
+        f'"basis": "gaap"|"non_gaap"|"unclear", '
         f'"quote": <string|null>, "url": <string|null>}}'
         for key, _ in _METRIC_SPECS
     )
@@ -199,13 +227,43 @@ def _parse_payload(data: dict, ticker: str, year: int) -> dict[str, dict]:
             continue
         quote = entry.get("quote")
         url = entry.get("url")
+        basis = entry.get("basis")
         parsed[key] = {
             "value": value,
             "source": source,
+            # Fehlend/unbekannt konservativ als "unclear" behandeln.
+            "basis": basis if basis in ("gaap", "non_gaap") else "unclear",
             "quote": quote.strip() if isinstance(quote, str) else None,
             "url": url if isinstance(url, str) and url.startswith(("http://", "https://")) else None,
         }
     return parsed
+
+
+def _rebook_by_basis(parsed: dict[str, dict], ticker: str, year: int) -> None:
+    """GAAP-Slots nur bei explizit ausgewiesener GAAP-Basis zulassen.
+
+    basis != "gaap" (non_gaap oder unclear) im GAAP-Slot -> in den
+    adjusted-Sidecar umbuchen statt verwerfen; ist der Sidecar schon
+    belegt, wird der GAAP-Slot-Wert verworfen. Fuer Keys ohne
+    GAAP/Non-GAAP-Paar (revenue, capex, ...) ist basis informativ.
+    """
+    for gaap_key, adj_key in _GAAP_ADJ_PAIRS:
+        info = parsed.get(gaap_key)
+        if info is None or info["basis"] == "gaap":
+            continue
+        del parsed[gaap_key]
+        if adj_key in parsed:
+            logger.warning(
+                "guidance estimates %s/FY%s: %s ohne explizite GAAP-Basis "
+                "(basis=%s), %s bereits belegt — verworfen",
+                ticker, year, gaap_key, info["basis"], adj_key,
+            )
+            continue
+        logger.info(
+            "guidance estimates %s/FY%s: %s basis=%s — in %s umgebucht",
+            ticker, year, gaap_key, info["basis"], adj_key,
+        )
+        parsed[adj_key] = info
 
 
 def _prev_fy_actual(db, company_id, key: str, year: int) -> Decimal | None:
@@ -246,6 +304,9 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict]) -> None:
        Vorzeichenwechsel ist erlaubt (Turnaround-Jahre).
     3. eps x shares_outstanding vs net_income (20%) wenn beide geliefert —
        welcher der beiden falsch ist, ist nicht entscheidbar: beide skippen.
+    4. GAAP <= Non-GAAP + 1% wenn beide fuer denselben Key geliefert
+       (US-Standard: adjusted >= GAAP durch SBC/Amortisations-Addbacks) —
+       sonst beide verwerfen.
     """
     ticker = company.ticker
     for key in list(parsed):
@@ -289,6 +350,46 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict]) -> None:
                 )
                 del parsed["eps_diluted"]
                 del parsed["net_income"]
+
+    for gaap_key, adj_key in _GAAP_ADJ_PAIRS:
+        g = parsed.get(gaap_key)
+        a = parsed.get(adj_key)
+        if g is None or a is None:
+            continue
+        if g["value"] > a["value"] + abs(a["value"]) * _GAAP_ADJ_TOL:
+            logger.warning(
+                "guidance estimates %s/FY%s: %s=%s > %s=%s + 1%% "
+                "(adjusted muss >= GAAP sein) — beide skip",
+                ticker, year, gaap_key, g["value"], adj_key, a["value"],
+            )
+            del parsed[gaap_key]
+            del parsed[adj_key]
+
+
+def _derive_adjusted_net_income(db, company, year: int, parsed: dict[str, dict]) -> None:
+    """Fehlt ein direkter NI-adj-Konsens, aber es gibt Non-GAAP-EPS:
+    net_income adjusted deterministisch als eps_adj x diluted shares
+    (SNAPSHOT-Stammdaten) ableiten. Kein Modell-Schaetzwert — reine
+    Multiplikation, als solche in der Quelle ausgewiesen."""
+    if "net_income_non_gaap" in parsed:
+        return
+    eps = parsed.get("eps_diluted_non_gaap")
+    if eps is None:
+        return
+    shares = _snapshot_shares(db, company.id)
+    if not shares:
+        return
+    parsed["net_income_non_gaap"] = {
+        "value": eps["value"] * shares,
+        "source": eps["source"],
+        "basis": "non_gaap",
+        "quote": "Abgeleitet: EPS-Konsens x Aktienzahl",
+        "url": eps.get("url"),
+    }
+    logger.info(
+        "guidance estimates %s/FY%s: net_income adjusted abgeleitet "
+        "(eps_adj %s x shares %s)", company.ticker, year, eps["value"], shares,
+    )
 
 
 def _compose_source_name(info: dict) -> str:
@@ -394,6 +495,53 @@ def _forecast_row(db, company_id, key: str, year: int) -> CompanyValue | None:
     )
 
 
+def _ensure_sidecar_slot(db, company, key: str, year: int, now) -> CompanyValue | None:
+    """Traeger-Zeile fuer einen adjusted-Sidecar sicherstellen.
+
+    Existiert keine GAAP-Quelle, bleibt der GAAP-Slot (numeric_value)
+    bewusst leer — die Zeile wird trotzdem angelegt, damit die
+    adjusted-Spur die Schaetzung tragen kann. Manual-/PDF-Zeilen sind
+    authoritative -> None."""
+    rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == year,
+        )
+        .order_by(CompanyValue.is_forecast.asc())
+        .all()
+    )
+    if any(
+        r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None)
+        for r in rows
+    ):
+        return None
+    target = next((r for r in rows if r.is_forecast), None)
+    if target is not None:
+        return target
+
+    target = CompanyValue(
+        id=uuid4(), company_id=company.id, value_key=key,
+        period_type="FY", period_year=year, is_forecast=True,
+    )
+    if key in CURRENCY_KEYS:
+        target.currency = company.currency
+    target.fetched_at = now
+    target.last_refresh_attempt = now
+    # SAVEPOINT: Race mit parallelem Writer wie in _upsert_fy_forecast.
+    try:
+        with db.begin_nested():
+            db.add(target)
+            db.flush()
+    except IntegrityError:
+        target = _forecast_row(db, company.id, key, year)
+        if target is None or target.manually_overridden or target.from_ir_pdf:
+            return None
+    return target
+
+
 def fetch_guidance_estimates(db, company, year: int, cost_tracker=None) -> int:
     """Alle FY-Schaetzwerte des laufenden Geschaeftsjahres mit EINEM
     Claude-Websuche-Call holen und als FY-Forecasts persistieren.
@@ -424,7 +572,9 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None) -> int:
         return 0
 
     parsed = _parse_payload(data, company.ticker, year)
+    _rebook_by_basis(parsed, company.ticker, year)
     _apply_gates(db, company, year, parsed)
+    _derive_adjusted_net_income(db, company, year, parsed)
     if not parsed:
         return 0
 
@@ -447,7 +597,9 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None) -> int:
         info = parsed.get(ngaap_key)
         if info is None:
             continue
-        row = fy_rows.get(base_key) or _forecast_row(db, company.id, base_key, year)
+        # Ohne GAAP-Quelle existiert kein GAAP-Write — Traeger-Zeile mit
+        # leerem numeric_value anlegen, die adjusted-Spur traegt den Wert.
+        row = fy_rows.get(base_key) or _ensure_sidecar_slot(db, company, base_key, year, now)
         if row is None:
             continue
         if row.manually_overridden or row.from_ir_pdf:
