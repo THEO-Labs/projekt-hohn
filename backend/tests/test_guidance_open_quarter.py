@@ -141,15 +141,17 @@ def test_open_quarter_block_written_to_q_slots(db, company, monkeypatch):
     assert q_rev[0].source_link == "https://example.com/q4"
     assert q_rev[0].currency == "USD"
 
+    # eps_diluted GAAP wird im Q-Block verworfen (Streuungs-Schutz) —
+    # Traeger-Zeile mit leerem GAAP-Slot, Sidecar bleibt.
     q_eps = _q_rows(db, company, "eps_diluted")[0]
-    assert q_eps.numeric_value == Decimal("1.1")
+    assert q_eps.numeric_value is None
     assert q_eps.numeric_value_adjusted == Decimal("1.3")
     assert "Q4 adjusted EPS consensus" in q_eps.adjustments_source
     assert "zacks.com" in q_eps.adjustments_source
     assert q_eps.adjustments_note == "Non-GAAP Q4-Estimate (consensus)"
 
-    # 2x FY (revenue, eps) + 2x Q4 (revenue, eps); Sidecars zaehlen nicht
-    assert written == 4
+    # 2x FY (revenue, eps) + 1x Q4 (revenue); Sidecars/Traeger zaehlen nicht
+    assert written == 3
 
 
 def test_open_quarter_sidecar_without_gaap_and_ni_derivation(db, company, monkeypatch):
@@ -257,11 +259,11 @@ def test_q_band_gate_skipped_without_prev_quarter(db, company, monkeypatch):
 def test_q_gaap_above_non_gaap_discards_both(db, company, monkeypatch):
     """GAAP > Non-GAAP + 1% gilt auch im Q-Block: beide verwerfen."""
     _mock_claude(monkeypatch, {
-        "eps_diluted": {
-            "open_quarter": _entry(1.5, basis="gaap"),
+        "net_income": {
+            "open_quarter": _entry(1_500_000_000, basis="gaap"),
         },
-        "eps_diluted_non_gaap": {
-            "open_quarter": _entry(1.2, basis="non_gaap"),
+        "net_income_non_gaap": {
+            "open_quarter": _entry(1_200_000_000, basis="non_gaap"),
         },
         "revenue": {
             "open_quarter": _entry(30_000_000_000),
@@ -271,7 +273,7 @@ def test_q_gaap_above_non_gaap_discards_both(db, company, monkeypatch):
     ge.fetch_guidance_estimates(db, company, RUNNING_YEAR, open_quarter="Q4")
     db.commit()
 
-    assert _q_rows(db, company, "eps_diluted") == []
+    assert _q_rows(db, company, "net_income") == []
     assert len(_q_rows(db, company, "revenue")) == 1
 
 

@@ -726,6 +726,14 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
         return 0
 
     fy_parsed, q_parsed = _parse_payload(data, company.ticker, year, open_quarter)
+    # Quartals-Antworten, bei denen das Modell nachweislich streut, werden
+    # verworfen — dort uebernimmt die Arithmetik im Konsistenz-Pass:
+    # operating_cash_flow (Runrate/FY-Residuum; Modell lieferte z.B. 9.4 Mrd
+    # bei 5-6.5 plausibel) und der GAAP-Slot von eps_diluted (Spread-
+    # Ableitung aus dem Non-GAAP-Konsens; der Non-GAAP-Sidecar bleibt).
+    q_parsed.pop("operating_cash_flow", None)
+    if "eps_diluted" in q_parsed:
+        q_parsed.pop("eps_diluted")
     blocks: list[tuple[str, dict[str, dict]]] = [("FY", fy_parsed)]
     if open_quarter is not None:
         blocks.append((open_quarter, q_parsed))
