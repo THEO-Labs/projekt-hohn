@@ -461,8 +461,11 @@ export function cellColorClass(cell: Cell | undefined): string {
   if (cell?.primary_method === "not_found" && cell.value === null) return "text-red-600 font-semibold";
   if (!cell || cell.value === null) return "text-muted-foreground/60";
   if (cell.is_gaap_fallback) return "text-muted-foreground/70";
+  // Farbe zeigt den CHARAKTER des Werts, nicht den Eingabeweg: Schaetzungen
+  // bleiben blau, auch wenn manuell ueberschrieben. Amber nur fuer manuell
+  // ueberschriebene BERICHTETE Werte.
+  if (cell.is_forecast) return "text-sky-700";
   if (cell.manually_overridden || cell.primary_method === "manual") return "text-amber-700";
   if (cell.primary_method === "calculated") return "text-violet-700";
-  if (cell.is_forecast) return "text-sky-700";
   return "text-foreground";
 }
