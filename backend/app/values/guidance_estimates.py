@@ -385,6 +385,9 @@ def _derive_adjusted_net_income(db, company, year: int, parsed: dict[str, dict])
         "basis": "non_gaap",
         "quote": "Abgeleitet: EPS-Konsens x Aktienzahl",
         "url": eps.get("url"),
+        # Schwaechste Quelle: darf nur leere adjusted-Slots fuellen,
+        # nie eine vorhandene Quartalssumme oder direkten Konsens ersetzen.
+        "derived": True,
     }
     logger.info(
         "guidance estimates %s/FY%s: net_income adjusted abgeleitet "
@@ -606,6 +609,17 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None) -> int:
             continue
         if adjusted_is_protected(row.adjustments_source):
             continue
+        if info.get("derived") and row.numeric_value_adjusted is not None:
+            continue
+        if (
+            base_key not in parsed
+            and row.primary_method == "web_guidance"
+            and row.numeric_value is not None
+        ):
+            # Dieser Lauf hat keinen GAAP-Konsens geliefert: den eigenen
+            # alten GAAP-Wert raeumen (mutmasslich Non-GAAP-kontaminiert,
+            # Stand vor der basis-Trennung) — adjusted traegt die Schaetzung.
+            row.numeric_value = None
         # Quote-first-Format ('quote | url'): beginnt nie mit https —
         # bleibt damit fuer den naechsten Guidance-Lauf ueberschreibbar
         # (adjusted_is_protected schuetzt nur 'Manual' und reine URLs).
