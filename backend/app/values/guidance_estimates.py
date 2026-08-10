@@ -128,7 +128,9 @@ def _build_system_prompt(company, year: int) -> str:
     return (
         f"What are the current fiscal year {year} (ending {fy_end}) "
         f"estimates for {company.name} ({company.ticker})? Base them on "
-        "the company's guidance and analyst consensus. For each value, "
+        "the company's guidance and analyst consensus. Estimates must be "
+        f"forward-looking full-year FY{year} figures, not "
+        "trailing-twelve-month actuals. For each value, "
         "give a one-to-two-sentence reasoning (which guidance/consensus "
         "figure it rests on). Report absolute amounts in "
         f"{currency} base units (e.g. '$5.8 billion' -> 5800000000) and "
