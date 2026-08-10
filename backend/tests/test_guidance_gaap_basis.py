@@ -16,9 +16,10 @@ from tests.test_guidance_estimates import (  # noqa: F401 - company ist Fixture
 )
 
 
-def _entry(value, source="consensus", basis="unclear", quote="q", url=None):
+def _entry(value, source="consensus", basis="unclear", quote="q", url=None,
+           reasoning=None):
     return {"value": value, "source": source, "basis": basis,
-            "quote": quote, "url": url}
+            "quote": quote, "url": url, "reasoning": reasoning}
 
 
 def test_basis_non_gaap_rebooks_gaap_slot_to_adjusted(db, company, monkeypatch):
@@ -45,11 +46,14 @@ def test_basis_non_gaap_rebooks_gaap_slot_to_adjusted(db, company, monkeypatch):
     assert ni[0].numeric_value_adjusted == Decimal("20000000000")
 
 
-def test_basis_unclear_never_lands_in_gaap(db, company, monkeypatch):
-    """basis=unclear (oder fehlend) im GAAP-Slot: nur adjusted zulaessig."""
+def test_basis_unclear_written_to_gaap_slot(db, company, monkeypatch):
+    """Regel-Lockerung: basis=unclear (oder fehlend) ist kein
+    Umbuchungsgrund mehr — der Wert bleibt im GAAP-Slot, solange das
+    GAAP<=NonGAAP-Gate nicht anschlaegt (Modell darf GAAP herleiten)."""
     _mock_claude(monkeypatch, {
         "eps_diluted": _entry(4.0, basis="unclear"),
-        # basis fehlt komplett -> wie unclear behandeln
+        "eps_diluted_non_gaap": _entry(5.0, basis="non_gaap"),
+        # basis fehlt komplett -> wie unclear: bleibt GAAP
         "net_income": {"value": 20_000_000_000, "source": "consensus",
                        "quote": "q", "url": None},
     })
@@ -58,18 +62,18 @@ def test_basis_unclear_never_lands_in_gaap(db, company, monkeypatch):
     db.commit()
 
     eps = _fy_rows(db, company, "eps_diluted")[0]
-    assert eps.numeric_value is None
-    assert eps.numeric_value_adjusted == Decimal("4.0")
+    assert eps.numeric_value == Decimal("4.0")
+    assert eps.numeric_value_adjusted == Decimal("5.0")
     ni = _fy_rows(db, company, "net_income")[0]
-    assert ni.numeric_value is None
-    assert ni.numeric_value_adjusted == Decimal("20000000000")
+    assert ni.numeric_value == Decimal("20000000000")
 
 
 def test_rebook_with_occupied_sidecar_discards_gaap_slot_value(db, company, monkeypatch):
-    """GAAP-Slot ohne explizite GAAP-Basis, Sidecar schon geliefert:
-    der gelieferte Sidecar-Wert gewinnt, der GAAP-Slot-Wert wird verworfen."""
+    """Offensichtliche Fehlbelegung (basis=non_gaap im GAAP-Slot) bei schon
+    geliefertem Sidecar: der gelieferte Sidecar-Wert gewinnt, der
+    GAAP-Slot-Wert wird verworfen."""
     _mock_claude(monkeypatch, {
-        "eps_diluted": _entry(3.9, basis="unclear"),
+        "eps_diluted": _entry(3.9, basis="non_gaap"),
         "eps_diluted_non_gaap": _entry(4.1, basis="non_gaap",
                                        quote="Non-GAAP EPS consensus $4.10"),
     })
@@ -191,11 +195,12 @@ def test_explicit_gaap_basis_lands_in_gaap_slot(db, company, monkeypatch):
     assert eps.primary_method == "web_guidance"
 
 
-def test_prompt_asks_for_basis_and_stays_short(db, company):
-    """Schlanker Prompt: fragt GAAP/Non-GAAP-Kennzeichnung ab, das
-    basis-Schema bleibt im User-Prompt — die Regeln a-d selbst leben
-    als Code-Gates (_rebook_by_basis, GAAP<=NonGAAP), nicht im Prompt."""
+def test_prompt_keeps_basis_schema_without_rules(db, company):
+    """Chat-simpler Prompt: keine GAAP-Regeln a-d mehr im System-Prompt,
+    das basis-Schema bleibt im User-Prompt (informativ + fuers Gate) —
+    Qualitaet sichern die Code-Gates."""
     sys_prompt = ge._build_system_prompt(company, RUNNING_YEAR)
-    assert "GAAP or" in sys_prompt and "non-GAAP" in sys_prompt
+    assert "GAAP" not in sys_prompt
+    assert "FORBIDDEN" not in sys_prompt and "ONLY if" not in sys_prompt
     user_prompt = ge._build_user_prompt(company, RUNNING_YEAR)
     assert '"basis": "gaap"|"non_gaap"|"unclear"' in user_prompt

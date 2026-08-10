@@ -1373,8 +1373,13 @@ def estimate_fy_via_quarterly_sum(
             logger.info("Q-Estimate FY-Sum %s/%s/FY%s: nur %d/4 Quartale verfuegbar — partial sum",
                         company.ticker, key, target_fy, len(q_values))
         fy_value = sum(q_values.values(), Decimal("0"))
-        adj_complete = all(q in q_adj_values for q in q_values.keys())
-        fy_adj_value = sum(q_adj_values.values(), Decimal("0")) if adj_complete and q_adj_values else None
+        # Mischsumme sobald mindestens ein Q einen echten Adjusted-Wert hat:
+        # adjusted wenn vorhanden, sonst GAAP je Quartal. Ohne jedes
+        # Q-Adjusted bleibt FY-Adjusted NULL (GAAP-Fallback-Marker).
+        fy_adj_value = (
+            sum((q_adj_values.get(q, q_values[q]) for q in q_values.keys()), Decimal("0"))
+            if q_adj_values else None
+        )
         mode_label = "Summe Q1-Q4"
     elif key in POINT_IN_TIME_QUARTERLY_KEYS:
         q4_val = q_values.get("Q4")

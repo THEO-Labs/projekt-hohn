@@ -298,10 +298,21 @@ def _derive_annual(
     # Case 1 — SUMMABLE and all 4 Q present: sum them.
     if is_summable and all(r is not None and r.numeric_value is not None for r in q_rows):
         total = sum((r.numeric_value for r in q_rows if r is not None and r.numeric_value is not None), Decimal("0"))
+        # Adjusted-Jahressumme: sobald mindestens ein Quartal einen echten
+        # Adjusted-Wert hat, Mischsumme (adjusted wenn vorhanden, sonst GAAP
+        # je Quartal) — sonst zeigte die Adjusted-Annual-Spalte nach einem
+        # Q-Adjusted-Override weiter die reine GAAP-Summe. Ohne jedes
+        # Q-Adjusted bleibt sie NULL (GAAP-Fallback-Marker im UI).
         total_adj: Decimal | None
-        if all(r is not None and r.numeric_value_adjusted is not None for r in q_rows):
+        if any(r is not None and r.numeric_value_adjusted is not None for r in q_rows):
             total_adj = sum(
-                (r.numeric_value_adjusted for r in q_rows if r is not None and r.numeric_value_adjusted is not None),
+                (
+                    r.numeric_value_adjusted
+                    if r.numeric_value_adjusted is not None
+                    else r.numeric_value
+                    for r in q_rows
+                    if r is not None
+                ),
                 Decimal("0"),
             )
         else:

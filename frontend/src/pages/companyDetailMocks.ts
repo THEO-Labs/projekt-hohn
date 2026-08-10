@@ -345,18 +345,30 @@ function mapMargin(
   };
   const num = section.current;
   const den = denominatorSection.current;
-  const numVal = (q: keyof QuarterlyRowRefs) => refValue(num[q], variant);
-  const denVal = (q: keyof QuarterlyRowRefs) => refValue(den[q], variant);
+  // Adjusted-Marge: pro Zelle adjusted wenn vorhanden, sonst GAAP-Fallback —
+  // gleiche Konvention wie die Fundamental-Zellen. Sonst bleibt z.B. die
+  // OCF-Marge (OCF hat nie ein Adjusted) in der Non-GAAP-Ansicht leer,
+  // obwohl der GAAP-Wert existiert. Faellt der Zaehler auf GAAP zurueck,
+  // wird die Zelle als Fallback markiert ("≈").
+  const withFallback = (r: ValueRef | undefined): number | null =>
+    variant === "adj" ? refValue(r, "adj") ?? refValue(r, "gaap") : refValue(r, "gaap");
   const y = section.current_year ?? 0;
   const label = `${section.label_en} Margin`;
   const formula = `${section.label_en} / Revenue × 100`;
+  const cellFor = (q: keyof QuarterlyRowRefs, periodLabel: string): Cell => {
+    const cell = computedCell(ratio(withFallback(num[q]), withFallback(den[q])), formula, periodLabel);
+    if (variant === "adj" && cell.value !== null && refValue(num[q], "adj") === null) {
+      cell.is_gaap_fallback = true;
+    }
+    return cell;
+  };
   return {
     label: "Margin",
-    q1: computedCell(ratio(numVal("q1"), denVal("q1")), formula, `${label} Q1 ${y}`),
-    q2: computedCell(ratio(numVal("q2"), denVal("q2")), formula, `${label} Q2 ${y}`),
-    q3: computedCell(ratio(numVal("q3"), denVal("q3")), formula, `${label} Q3 ${y}`),
-    q4: computedCell(ratio(numVal("q4"), denVal("q4")), formula, `${label} Q4 ${y}`),
-    annual: computedCell(ratio(numVal("annual"), denVal("annual")), formula, `${label} FY ${y}`),
+    q1: cellFor("q1", `${label} Q1 ${y}`),
+    q2: cellFor("q2", `${label} Q2 ${y}`),
+    q3: cellFor("q3", `${label} Q3 ${y}`),
+    q4: cellFor("q4", `${label} Q4 ${y}`),
+    annual: cellFor("annual", `${label} FY ${y}`),
     format: asPct,
   };
 }

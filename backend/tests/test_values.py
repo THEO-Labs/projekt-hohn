@@ -728,3 +728,139 @@ def test_q_override_recalc_rederives_two_stage_fy_adjusted(client, db):
     assert Decimal(fy["numeric_value_adjusted"]) == Decimal("120")
     assert fy["adjustments_note"] is None
     assert fy["adjustments_source"] is None
+
+
+def test_q_adjusted_override_derives_mixed_fy_adjusted_sum(client, db):
+    """User-Bug: Q4-Adjusted-Override — FY-Adjusted muss als Mischsumme
+    (adjusted wenn vorhanden, sonst GAAP je Quartal) neu abgeleitet werden.
+    Vorher: Summe nur bei 4/4 echten Adjusted-Werten -> FY-Adjusted blieb
+    NULL und die Annual-Spalte zeigte weiter die reine GAAP-Summe."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadjmix@example.com")
+
+    for q, v in (("Q1", "10901"), ("Q2", "11230"), ("Q3", "11633"), ("Q4", "12000")):
+        _seed_value(db, cid, "revenue", q, 2024, v)
+    _seed_value(db, cid, "revenue", "FY", 2024, "45764")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/revenue/override?period_type=Q4&period_year=2024",
+        json={"numeric_value": "12100", "variant": "adjusted"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "revenue", "FY", 2024)
+    assert fy is not None
+    # GAAP-Summe unveraendert, Adjusted = 10901+11230+11633+12100 (Q1-Q3 GAAP-Fallback).
+    assert Decimal(fy["numeric_value"]) == Decimal("45764")
+    assert Decimal(fy["numeric_value_adjusted"]) == Decimal("45864")
+    assert fy["adjustments_note"] == "Summe der Quartale (adjusted, GAAP-Fallback je Quartal)"
+    assert fy["adjustments_source"] is None
+
+
+def test_q_override_without_any_adjusted_keeps_fy_adjusted_null(client, db):
+    """Haben ALLE Quartale kein Adjusted, bleibt FY-Adjusted NULL
+    (Fallback-Marker fuers UI) — keine GAAP-Kopie in die Adjusted-Spalte."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadjnone@example.com")
+
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "revenue", q, 2024, "100")
+    _seed_value(db, cid, "revenue", "FY", 2024, "400")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/revenue/override?period_type=Q1&period_year=2024",
+        json={"numeric_value": "110", "source_name": "Manual"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "revenue", "FY", 2024)
+    assert fy is not None
+    assert Decimal(fy["numeric_value"]) == Decimal("410")
+    assert fy["numeric_value_adjusted"] is None
+    assert fy["adjustments_note"] is None
+
+
+def test_q_adjusted_override_respects_protected_fy_adjusted(client, db):
+    """Geschuetzte FY-Adjusted (adjustments_source='Manual') bleiben auch
+    beim Adjusted-Q-Override-Refresh unangetastet."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadjprot@example.com")
+
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "revenue", q, 2024, "100")
+    _seed_value(
+        db, cid, "revenue", "FY", 2024, "400",
+        adjusted="999", adjustments_note="Manuell ueberschrieben",
+        adjustments_source="Manual",
+    )
+
+    response = client.post(
+        f"/api/companies/{cid}/values/revenue/override?period_type=Q4&period_year=2024",
+        json={"numeric_value": "120", "variant": "adjusted"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "revenue", "FY", 2024)
+    assert fy is not None
+    assert Decimal(fy["numeric_value_adjusted"]) == Decimal("999")
+    assert fy["adjustments_note"] == "Manuell ueberschrieben"
+    assert fy["adjustments_source"] == "Manual"
+
+
+def test_q_adjusted_override_full_coverage_sum_without_fallback_note(client, db):
+    """4/4 echte Q-Adjusted: reine Adjusted-Summe, keine Fallback-Note."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="qadjfull@example.com")
+
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "revenue", q, 2024, "100", adjusted="110")
+    _seed_value(db, cid, "revenue", "FY", 2024, "400")
+
+    response = client.post(
+        f"/api/companies/{cid}/values/revenue/override?period_type=Q4&period_year=2024",
+        json={"numeric_value": "120", "variant": "adjusted"},
+    )
+    assert response.status_code == 200
+
+    fy = _get_row(client, cid, "revenue", "FY", 2024)
+    assert fy is not None
+    # 110+110+110+120 — alle Quartale echt adjusted, kein Fallback-Hinweis.
+    assert Decimal(fy["numeric_value_adjusted"]) == Decimal("450")
+    assert fy["adjustments_note"] is None
+
+
+def test_detail_annual_adjusted_shows_mixed_quarter_sum(client, db):
+    """Serve-Pfad (_derive_annual): die Annual-Zelle der Adjusted-Ansicht
+    liefert die Mischsumme, sobald mindestens ein Quartal echt adjusted ist."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="detailmix@example.com")
+
+    _seed_value(db, cid, "hohn_return_detailed", "FY", 2024, "8")
+    for q, v in (("Q1", "10901"), ("Q2", "11230"), ("Q3", "11633")):
+        _seed_value(db, cid, "revenue", q, 2024, v)
+    _seed_value(db, cid, "revenue", "Q4", 2024, "12000", adjusted="12100")
+
+    detail = client.get(f"/api/companies/{cid}/detail")
+    assert detail.status_code == 200
+    section = next(s for s in detail.json()["quarterly"] if s["value_key"] == "revenue")
+    annual = section["current"]["annual"]
+    assert Decimal(annual["value"]) == Decimal("45764")
+    assert Decimal(annual["adjusted"]) == Decimal("45864")
+
+
+def test_detail_annual_adjusted_null_without_any_quarter_adjusted(client, db):
+    """Serve-Pfad-Gegenprobe: ohne jedes Q-Adjusted bleibt die Annual-
+    Adjusted-Zelle NULL (UI rendert den GAAP-Fallback-Marker)."""
+    _seed_catalog(db)
+    _user, _pid, cid = _login_with_company(client, db, email="detailnull@example.com")
+
+    _seed_value(db, cid, "hohn_return_detailed", "FY", 2024, "8")
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        _seed_value(db, cid, "revenue", q, 2024, "100")
+
+    detail = client.get(f"/api/companies/{cid}/detail")
+    assert detail.status_code == 200
+    section = next(s for s in detail.json()["quarterly"] if s["value_key"] == "revenue")
+    annual = section["current"]["annual"]
+    assert Decimal(annual["value"]) == Decimal("400")
+    assert annual["adjusted"] is None

@@ -2203,6 +2203,7 @@ def _refresh_fy_from_quarters(
 
     fy_value: Decimal | None = None
     fy_adj: Decimal | None = None
+    fy_adj_note: str | None = None
     fy_source_parts: list[str] = []
     fy_latest_ts: datetime | None = None
     method_summary = "provider"
@@ -2211,8 +2212,23 @@ def _refresh_fy_from_quarters(
         if not all(q in q_rows and q_rows[q].numeric_value is not None for q in ("Q1", "Q2", "Q3", "Q4")):
             return
         fy_value = sum((q_rows[q].numeric_value for q in ("Q1", "Q2", "Q3", "Q4")), Decimal("0"))
-        if all(q_rows[q].numeric_value_adjusted is not None for q in ("Q1", "Q2", "Q3", "Q4")):
-            fy_adj = sum((q_rows[q].numeric_value_adjusted for q in ("Q1", "Q2", "Q3", "Q4")), Decimal("0"))
+        # Adjusted-Spur: sobald MINDESTENS EIN Quartal einen echten
+        # Adjusted-Wert hat, Mischsumme (adjusted wenn vorhanden, sonst
+        # GAAP je Quartal). Haben alle Quartale kein Adjusted, bleibt
+        # FY-Adjusted NULL (Fallback-Marker fuers UI).
+        adj_present = [q for q in ("Q1", "Q2", "Q3", "Q4") if q_rows[q].numeric_value_adjusted is not None]
+        if adj_present:
+            fy_adj = sum(
+                (
+                    q_rows[q].numeric_value_adjusted
+                    if q_rows[q].numeric_value_adjusted is not None
+                    else q_rows[q].numeric_value
+                    for q in ("Q1", "Q2", "Q3", "Q4")
+                ),
+                Decimal("0"),
+            )
+            if len(adj_present) < 4:
+                fy_adj_note = "Summe der Quartale (adjusted, GAAP-Fallback je Quartal)"
         methods: set[str] = set()
         for q in ("Q1", "Q2", "Q3", "Q4"):
             r = q_rows[q]
@@ -2261,11 +2277,11 @@ def _refresh_fy_from_quarters(
         from app.values.persistence import adjusted_is_protected
         if not adjusted_is_protected(existing_fy.adjustments_source):
             existing_fy.numeric_value_adjusted = fy_adj
-            # Stale Beleg eines ueberschriebenen LLM-Adjusted passt nicht
-            # mehr zum abgeleiteten Wert.
-            if existing_fy.adjustments_source is not None:
-                existing_fy.adjustments_note = None
-                existing_fy.adjustments_source = None
+            # Note/Source konsistent zum abgeleiteten Wert setzen: stale
+            # Belege eines ueberschriebenen LLM-Adjusted passen nicht mehr;
+            # bei Mischsumme dokumentiert die Note den GAAP-Fallback.
+            existing_fy.adjustments_note = fy_adj_note
+            existing_fy.adjustments_source = None
         existing_fy.source_name = source_name
         existing_fy.fetched_at = fy_latest_ts or datetime.now(timezone.utc)
         existing_fy.primary_method = method_summary
@@ -2281,6 +2297,7 @@ def _refresh_fy_from_quarters(
                 period_year=year,
                 numeric_value=fy_value,
                 numeric_value_adjusted=fy_adj,
+                adjustments_note=fy_adj_note,
                 source_name=source_name,
                 fetched_at=fy_latest_ts or datetime.now(timezone.utc),
                 primary_method=method_summary,

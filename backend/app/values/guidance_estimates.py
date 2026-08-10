@@ -15,27 +15,27 @@ Write laufen deterministische Plausibilitaets-Gates (60%-Vorjahres-Gate,
 eps x shares vs net_income, Einheiten-Check, GAAP <= Non-GAAP + 1%,
 fcf <= ocf).
 
-Der Prompt ist bewusst schlank (natuerliche Analystenfrage) — die
-Qualitaetssicherung liegt in den deterministischen Code-Gates, nicht in
-Promptregeln. Gate statt Promptregel:
-- Quellen-Hierarchie/Aggregator-Aufzaehlung/Suchbudget-Anweisung ->
-  source-Gate in _parse_payload (nur guidance|consensus wird akzeptiert).
-- basis-Regeln a-d (Konsens=Non-GAAP, GAAP nur bei explizitem Label,
-  im Zweifel null) -> _rebook_by_basis (non_gaap/unclear landet nie im
-  GAAP-Slot) plus GAAP <= Non-GAAP + 1%-Gate.
-- Einheiten-Detailanweisungen -> Einheiten-Check (< 1 Mio verworfen);
-  im Prompt bleibt EIN Satz zu Basiseinheiten/EPS-per-share.
-- "Return null only if ..."-Abwehrformeln -> 60%-Vorjahres-Gate,
-  eps x shares- und fcf <= ocf-Gate verwerfen Ausreisser deterministisch.
+Der Prompt ist eine natuerliche Chat-Frage OHNE Verbots- und Regellisten
+(User-Entscheid) — die deterministischen Code-Gates sind damit die
+EINZIGE Verteidigung und entsprechend wichtig:
+- source-Gate in _parse_payload (nur guidance|consensus wird akzeptiert),
+- Einheiten-Check (< 1 Mio verworfen),
+- 60%-Vorjahres-Gate, eps x shares vs net_income,
+- GAAP <= Non-GAAP + 1%, fcf <= ocf.
+Pro Wert liefert das Modell ein 1-2-Satz-reasoning; das ist der sichtbare
+Quellentext der Zelle (source_name/adjustments_source, reasoning-first,
+Fallback quote).
 
-GAAP vs Non-GAAP: US-Analystenkonsens fuer EPS/Net-Income ist fast immer
-NON-GAAP. Jeder Wert traegt deshalb ein basis-Feld (gaap|non_gaap|unclear);
-GAAP-Slots (eps_diluted, net_income) werden nur bei explizit ausgewiesener
-GAAP-Basis befuellt, sonst in die adjusted-Sidecars umgebucht. Fehlt ein
-direkter NI-Konsens, wird net_income adjusted deterministisch als
-eps_adj x shares_outstanding (SNAPSHOT) abgeleitet — GAAP-Slots bleiben
-dann bewusst leer (keine Rueckrechnung ueber historische Spreads, das
-waere verkappte Extrapolation).
+GAAP vs Non-GAAP (Regel-Lockerung, User-Entscheid): Das Modell DARF
+GAAP-Schaetzungen selbst herleiten (z.B. Non-GAAP-Konsens minus typischem
+Abstand) — das fruehere "GAAP nur bei explizitem GAAP-Label, sonst
+umbuchen/null" entfaellt. Das basis-Feld (gaap|non_gaap|unclear) bleibt
+informativ und fuers Gate; _rebook_by_basis korrigiert nur noch
+OFFENSICHTLICHE Fehlbelegung (basis='non_gaap' im GAAP-Slot), 'unclear'
+ist kein Umbuchungsgrund mehr. Unplausible Paare (GAAP > Non-GAAP + 1%)
+verwirft das Gate. Fehlt ein direkter NI-adj-Konsens, wird net_income
+adjusted weiterhin deterministisch als eps_adj x shares_outstanding
+(SNAPSHOT) abgeleitet (Fallback wenn das Modell null liefert).
 
 FCF/OCF: Analysten publizieren FCF-Konsens haeufig (Aggregator-Tabellen),
 daher ist fcf abfragbar und wird als web_guidance-Forecast geschrieben.
@@ -126,17 +126,15 @@ def _build_system_prompt(company, year: int) -> str:
     fy_end = _fy_end_date(company, year).isoformat()
     currency = getattr(company, "currency", None) or "USD"
     return (
-        f"You are an equity analyst. What are the current full-year "
-        f"estimates for {company.name} ({company.ticker}), fiscal year "
-        f"{year} (ending {fy_end})? Use the company's latest official "
-        "guidance and the analyst consensus (you find consensus estimates "
-        "on financial and estimate sites) — no projections of your own. "
-        "For each figure state whether the source labels it GAAP or "
-        "non-GAAP, and give the source with a short quote. Report "
-        f"absolute amounts in {currency} base units "
-        "(e.g. '$5.8 billion' -> 5800000000) and EPS per share. "
-        "Answer with ONLY one JSON object matching the schema in the "
-        "user message — no prose, no markdown fences."
+        f"What are the current fiscal year {year} (ending {fy_end}) "
+        f"estimates for {company.name} ({company.ticker})? Base them on "
+        "the company's guidance and analyst consensus. For each value, "
+        "give a one-to-two-sentence reasoning (which guidance/consensus "
+        "figure it rests on). Report absolute amounts in "
+        f"{currency} base units (e.g. '$5.8 billion' -> 5800000000) and "
+        "EPS per share. Answer with ONLY one JSON object matching the "
+        "schema in the user message — no prose outside the JSON, no "
+        "markdown fences."
     )
 
 
@@ -150,14 +148,14 @@ def _build_user_prompt(company, year: int) -> str:
     fields = ",\n".join(
         f'  "{key}": {{"value": <number|null>, "source": "guidance"|"consensus"|null, '
         f'"basis": "gaap"|"non_gaap"|"unclear", '
-        f'"quote": <string|null>, "url": <string|null>}}'
+        f'"reasoning": <string|null>, "url": <string|null>}}'
         for key, _ in _METRIC_SPECS
     )
     lines += [
         "",
         "value = latest guidance (midpoint of a range) or analyst "
-        "consensus; quote = one short verbatim source sentence; "
-        "url = source URL.",
+        "consensus; reasoning = one to two sentences on which guidance/"
+        "consensus figure the value rests; url = source URL.",
         "",
         "Return JSON matching exactly this schema:",
         "",
@@ -237,13 +235,15 @@ def _parse_payload(data: dict, ticker: str, year: int) -> dict[str, dict]:
             )
             continue
         quote = entry.get("quote")
+        reasoning = entry.get("reasoning")
         url = entry.get("url")
         basis = entry.get("basis")
         parsed[key] = {
             "value": value,
             "source": source,
-            # Fehlend/unbekannt konservativ als "unclear" behandeln.
+            # Fehlend/unbekannt als "unclear" behandeln (nur informativ).
             "basis": basis if basis in ("gaap", "non_gaap") else "unclear",
+            "reasoning": reasoning.strip() if isinstance(reasoning, str) and reasoning.strip() else None,
             "quote": quote.strip() if isinstance(quote, str) else None,
             "url": url if isinstance(url, str) and url.startswith(("http://", "https://")) else None,
         }
@@ -251,16 +251,18 @@ def _parse_payload(data: dict, ticker: str, year: int) -> dict[str, dict]:
 
 
 def _rebook_by_basis(parsed: dict[str, dict], ticker: str, year: int) -> None:
-    """GAAP-Slots nur bei explizit ausgewiesener GAAP-Basis zulassen.
+    """Nur OFFENSICHTLICHE Fehlbelegung korrigieren (Regel-Lockerung).
 
-    basis != "gaap" (non_gaap oder unclear) im GAAP-Slot -> in den
-    adjusted-Sidecar umbuchen statt verwerfen; ist der Sidecar schon
-    belegt, wird der GAAP-Slot-Wert verworfen. Fuer Keys ohne
-    GAAP/Non-GAAP-Paar (revenue, capex, ...) ist basis informativ.
+    basis="non_gaap" im GAAP-Slot -> in den adjusted-Sidecar umbuchen;
+    ist der Sidecar schon belegt, wird der GAAP-Slot-Wert verworfen.
+    basis="unclear" ist KEIN Umbuchungsgrund mehr — das Modell darf
+    GAAP selbst herleiten; unplausible Paare (GAAP > Non-GAAP + 1%)
+    verwirft das nachgelagerte Gate. Fuer Keys ohne GAAP/Non-GAAP-Paar
+    (revenue, capex, ...) ist basis informativ.
     """
     for gaap_key, adj_key in _GAAP_ADJ_PAIRS:
         info = parsed.get(gaap_key)
-        if info is None or info["basis"] == "gaap":
+        if info is None or info["basis"] != "non_gaap":
             continue
         del parsed[gaap_key]
         if adj_key in parsed:
@@ -409,7 +411,8 @@ def _derive_adjusted_net_income(db, company, year: int, parsed: dict[str, dict])
         "value": eps["value"] * shares,
         "source": eps["source"],
         "basis": "non_gaap",
-        "quote": "Abgeleitet: EPS-Konsens x Aktienzahl",
+        "reasoning": "Abgeleitet: EPS-Konsens x Aktienzahl",
+        "quote": None,
         "url": eps.get("url"),
         # Schwaechste Quelle: darf nur leere adjusted-Slots fuellen,
         # nie eine vorhandene Quartalssumme oder direkten Konsens ersetzen.
@@ -450,9 +453,17 @@ def _derive_ocf_from_fcf_capex(company, year: int, parsed: dict[str, dict]) -> N
 
 
 def _compose_source_name(info: dict) -> str:
-    parts = [f"FY-Guidance ({info['source']})"]
-    if info.get("quote"):
-        parts.append(f"quote={info['quote'][:400]}")
+    """reasoning-first: das 1-2-Satz-Reasoning des Modells ist der
+    sichtbare Quellentext der Zelle (menschlich lesbar); Fallback quote,
+    dann generisches Label. URL wird angehaengt."""
+    text = (
+        info.get("reasoning")
+        or info.get("quote")
+        or f"FY-Guidance ({info['source']})"
+    )
+    parts = [text[:1000]]
+    if info.get("url"):
+        parts.append(info["url"])
     return " | ".join(parts)[:4096]
 
 
@@ -676,10 +687,12 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None) -> int:
             # alten GAAP-Wert raeumen (mutmasslich Non-GAAP-kontaminiert,
             # Stand vor der basis-Trennung) — adjusted traegt die Schaetzung.
             row.numeric_value = None
-        # Quote-first-Format ('quote | url'): beginnt nie mit https —
-        # bleibt damit fuer den naechsten Guidance-Lauf ueberschreibbar
-        # (adjusted_is_protected schuetzt nur 'Manual' und reine URLs).
-        src_parts = [info["quote"][:400] if info.get("quote") else info["source"]]
+        # Reasoning-first ('reasoning | url', Fallback quote): beginnt nie
+        # mit https — bleibt damit fuer den naechsten Guidance-Lauf
+        # ueberschreibbar (adjusted_is_protected schuetzt nur 'Manual'
+        # und reine URLs).
+        text = info.get("reasoning") or info.get("quote") or info["source"]
+        src_parts = [text[:400]]
         if info.get("url"):
             src_parts.append(info["url"])
         row.numeric_value_adjusted = info["value"]
