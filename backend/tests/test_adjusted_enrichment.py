@@ -117,7 +117,8 @@ def _patch_all(monkeypatch, url_json, url_text, claude_payload):
 
 def _seed_row(db, comp, key, quarter, value, **kw):
     row = CompanyValue(
-        company_id=comp.id, value_key=key, period_type=quarter, period_year=YEAR,
+        company_id=comp.id, value_key=key, period_type=quarter,
+        period_year=kw.pop("year", YEAR),
         numeric_value=value, source_name="SEC EDGAR 10-Q",
         primary_method="provider", currency=kw.pop("currency", "USD"), **kw,
     )
@@ -616,6 +617,312 @@ def test_period_end_match_accepts_with_tolerance(db, company, monkeypatch):
     assert enriched == 1
     db.refresh(ni)
     assert ni.numeric_value_adjusted == Decimal("24000000000")
+
+
+# --- Vorjahres-Vergleichsspalte (prior_period-Block) -----------------------
+
+
+PRIOR_YEAR = YEAR - 1
+
+# Basis-Payload der aktuellen Q2-Spalte (Happy Path); prior_period wird
+# pro Test ergaenzt.
+_CURRENT_Q2 = {
+    "non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": 3.23,
+    "gaap_net_income": 20000000000, "gaap_diluted_eps": 2.70,
+    "source_kind": "table", "adjustment_items": "SBC",
+}
+
+
+def _prior_block(**overrides):
+    block = {
+        "non_gaap_net_income": 21500000000, "non_gaap_diluted_eps": 2.88,
+        "gaap_net_income": 18000000000, "gaap_diluted_eps": 2.40,
+        "source_kind": "table", "period_end_date": f"{PRIOR_YEAR}-06-30",
+    }
+    block.update(overrides)
+    return block
+
+
+def _seed_q2_pair_with_prior(db, company):
+    """Aktuelle Q2-Zeilen plus GAAP-Zeilen des Vorjahres-Q2 (adjusted NULL)."""
+    cur_ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    cur_eps = _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.70"))
+    pr_ni = _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+                      year=PRIOR_YEAR)
+    pr_eps = _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.40"),
+                       year=PRIOR_YEAR)
+    return cur_ni, cur_eps, pr_ni, pr_eps
+
+
+def test_prior_period_fills_prior_year_quarter(db, company, monkeypatch):
+    """prior_period-Block wird geparst und in die Vorjahres-Zeilen (Q2)
+    geschrieben — beide Keys, mit Vergleichsspalten-Note und Exhibit-URL."""
+    cur_ni, cur_eps, pr_ni, pr_eps = _seed_q2_pair_with_prior(db, company)
+    fake = _patch_period(monkeypatch, {**_CURRENT_Q2, "prior_period": _prior_block()})
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    # Aktuelle Periode + Vorjahres-Periode = 2, aber nur EIN Claude-Call.
+    assert enriched == 2
+    assert len(fake.messages.calls) == 1
+    db.refresh(cur_ni)
+    db.refresh(pr_ni)
+    db.refresh(pr_eps)
+    assert cur_ni.numeric_value_adjusted == Decimal("24000000000")
+    assert pr_ni.numeric_value == Decimal("18000000000")
+    assert pr_ni.numeric_value_adjusted == Decimal("21500000000")
+    assert pr_ni.adjustments_note == \
+        f"Vorjahres-Vergleichsspalte aus Q2 FY{YEAR}-Release"
+    assert pr_ni.adjustments_source == EXHIBIT_URL_Q2
+    assert pr_eps.numeric_value_adjusted == Decimal("2.88")
+    assert pr_eps.adjustments_source == EXHIBIT_URL_Q2
+
+
+def test_prior_period_fills_prior_fy(db, company, monkeypatch):
+    """FY-Variante: die FY-Vergleichsspalte des Vorjahres wird in die
+    FY-Zeile des Vorjahres geschrieben (MSFT-Muster: FY-Release mit
+    restateten FY-Comparatives)."""
+    _seed_row(db, company, "net_income", "FY", Decimal("80000000000"))
+    pr_fy = _seed_row(db, company, "net_income", "FY", Decimal("70000000000"),
+                      year=PRIOR_YEAR)
+    fy_filing = date(YEAR + 1, 1, 25).isoformat()  # nach FY-Ende 31.12.
+    fake = _patch_all(
+        monkeypatch,
+        {SUB_URL: _submissions([("8-K", fy_filing, ACCN_Q2, "2.02,9.01")]),
+         INDEX_URL_Q2: INDEX_JSON},
+        {EXHIBIT_URL_Q2: EXHIBIT_HTML},
+        {"non_gaap_net_income": 88000000000, "non_gaap_diluted_eps": None,
+         "gaap_net_income": 80000000000, "gaap_diluted_eps": None,
+         "source_kind": "table", "adjustment_items": "SBC",
+         "prior_period": {
+             "non_gaap_net_income": 74500000000, "non_gaap_diluted_eps": None,
+             "gaap_net_income": 70000000000, "gaap_diluted_eps": None,
+             "source_kind": "table", "period_end_date": f"{PRIOR_YEAR}-12-31",
+         }},
+    )
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 2
+    assert len(fake.messages.calls) == 1
+    db.refresh(pr_fy)
+    assert pr_fy.numeric_value_adjusted == Decimal("74500000000")
+    assert pr_fy.adjustments_note == \
+        f"Vorjahres-Vergleichsspalte aus FY{YEAR}-Release"
+
+
+def test_prior_period_end_gate_rejects_wrong_column(db, company, monkeypatch):
+    """period_end_date des prior-Blocks passt nicht zum Vorjahres-Ende
+    (Modell hat z.B. die aktuelle Spalte doppelt gelesen): prior wird
+    verworfen, die aktuelle Periode wird trotzdem geschrieben, die
+    Vorjahres-Zeile bleibt unangetastet (kein Negativ-Marker)."""
+    _, _, pr_ni, pr_eps = _seed_q2_pair_with_prior(db, company)
+    fake = _patch_period(monkeypatch, {
+        **_CURRENT_Q2,
+        "prior_period": _prior_block(period_end_date=f"{YEAR}-06-30"),
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    assert len(fake.messages.calls) == 1
+    db.refresh(pr_ni)
+    db.refresh(pr_eps)
+    assert pr_ni.numeric_value_adjusted is None
+    assert pr_ni.adjustments_note is None
+    assert pr_eps.numeric_value_adjusted is None
+
+
+def test_prior_gaap_cross_check_rejects_mismatch(db, company, monkeypatch):
+    """GAAP-Pendant des prior-Blocks trifft die Vorjahres-GAAP-Spur der DB
+    nicht (falsche Spalte): prior verworfen, aktuelle Periode bleibt ok."""
+    _, _, pr_ni, _ = _seed_q2_pair_with_prior(db, company)
+    fake = _patch_period(monkeypatch, {
+        **_CURRENT_Q2,
+        # 19.5e9 vs Vorjahres-Referenz 18e9 = 8.3% daneben.
+        "prior_period": _prior_block(gaap_net_income=19500000000,
+                                     gaap_diluted_eps=2.60),
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    assert len(fake.messages.calls) == 1
+    db.refresh(pr_ni)
+    assert pr_ni.numeric_value_adjusted is None
+    assert pr_ni.adjustments_note is None
+
+
+def test_prior_period_text_source_kind_rejected(db, company, monkeypatch):
+    """Comparatives nur aus echten Tabellenspalten: prior-Block mit
+    source_kind='text' wird verworfen."""
+    _, _, pr_ni, _ = _seed_q2_pair_with_prior(db, company)
+    _patch_period(monkeypatch, {
+        **_CURRENT_Q2,
+        "prior_period": _prior_block(source_kind="text"),
+    })
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    db.refresh(pr_ni)
+    assert pr_ni.numeric_value_adjusted is None
+
+
+def test_prior_restatement_overwrites_own_enrichment(db, company, monkeypatch):
+    """Restatement schlaegt Alt-Anreicherung: eigener frueherer Enrichment-
+    Wert (8-K-Note + https-Quelle) wird bei abweichendem Comparative
+    ueberschrieben; identischer Wert behaelt seine Original-Note."""
+    _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.70"))
+    # NI: alter eigener Enrichment-Wert weicht vom Restatement ab.
+    pr_ni = _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+                      year=PRIOR_YEAR,
+                      numeric_value_adjusted=Decimal("20900000000"),
+                      adjustments_note="Non-GAAP (Reconciliation 8-K): SBC",
+                      adjustments_source="https://www.sec.gov/Archives/old-ex99.htm")
+    # EPS: eigener Enrichment-Wert identisch zum Comparative — bleibt.
+    pr_eps = _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.40"),
+                       year=PRIOR_YEAR,
+                       numeric_value_adjusted=Decimal("2.88"),
+                       adjustments_note="Non-GAAP (Reconciliation 8-K): SBC",
+                       adjustments_source="https://www.sec.gov/Archives/old-ex99.htm")
+    _patch_period(monkeypatch, {**_CURRENT_Q2, "prior_period": _prior_block()})
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 2
+    db.refresh(pr_ni)
+    db.refresh(pr_eps)
+    assert pr_ni.numeric_value_adjusted == Decimal("21500000000")
+    assert pr_ni.adjustments_note == \
+        f"Restatete Vorjahres-Vergleichsspalte aus Q2 FY{YEAR}-Release"
+    assert pr_ni.adjustments_source == EXHIBIT_URL_Q2
+    assert pr_eps.numeric_value_adjusted == Decimal("2.88")
+    assert pr_eps.adjustments_note == "Non-GAAP (Reconciliation 8-K): SBC"
+    assert pr_eps.adjustments_source == "https://www.sec.gov/Archives/old-ex99.htm"
+
+
+def test_prior_manual_and_foreign_url_protected(db, company, monkeypatch):
+    """'Manual' und fremde https-Quellen der Vorjahres-Zeile bleiben —
+    das Comparative fuellt nur die ungeschuetzten Zeilen."""
+    _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.70"))
+    pr_ni = _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+                      year=PRIOR_YEAR,
+                      numeric_value_adjusted=Decimal("25000000000"),
+                      adjustments_note="Manuell ueberschrieben",
+                      adjustments_source="Manual")
+    pr_eps = _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.40"),
+                       year=PRIOR_YEAR,
+                       numeric_value_adjusted=Decimal("3.10"),
+                       adjustments_note="IR-Release",
+                       adjustments_source="https://ir.example/pr")
+    _patch_period(monkeypatch, {**_CURRENT_Q2, "prior_period": _prior_block()})
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    # Nur die aktuelle Periode zaehlt — beide Vorjahres-Zeilen geschuetzt.
+    assert enriched == 1
+    db.refresh(pr_ni)
+    db.refresh(pr_eps)
+    assert pr_ni.numeric_value_adjusted == Decimal("25000000000")
+    assert pr_ni.adjustments_source == "Manual"
+    assert pr_eps.numeric_value_adjusted == Decimal("3.10")
+    assert pr_eps.adjustments_source == "https://ir.example/pr"
+
+
+def test_prior_fills_row_with_negative_marker(db, company, monkeypatch):
+    """MSFT-Muster: die Vorjahres-Zeile traegt den Negativ-Marker (eigenes
+    Release ohne Reconciliation) — das Comparative aus dem juengeren
+    Release fuellt sie trotzdem."""
+    _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.70"))
+    pr_ni = _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+                      year=PRIOR_YEAR,
+                      adjustments_note="no non-GAAP reconciliation found")
+    _patch_period(monkeypatch, {**_CURRENT_Q2, "prior_period": _prior_block()})
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 2
+    db.refresh(pr_ni)
+    assert pr_ni.numeric_value_adjusted == Decimal("21500000000")
+    assert pr_ni.adjustments_note == \
+        f"Vorjahres-Vergleichsspalte aus Q2 FY{YEAR}-Release"
+
+
+def test_missing_prior_period_behaves_like_today(db, company, monkeypatch):
+    """Kein prior_period-Block in der Antwort: Verhalten exakt wie heute —
+    aktuelle Periode wird geschrieben, die Vorjahres-Zeile bleibt NULL und
+    unmarkiert."""
+    _, _, pr_ni, _ = _seed_q2_pair_with_prior(db, company)
+    fake = _patch_period(monkeypatch, dict(_CURRENT_Q2))
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    assert len(fake.messages.calls) == 1
+    db.refresh(pr_ni)
+    assert pr_ni.numeric_value_adjusted is None
+    assert pr_ni.adjustments_note is None
+    assert pr_ni.adjustments_source is None
+
+
+def test_prior_write_survives_own_older_release(db, company, monkeypatch):
+    """Beide Jahre im Lauf: das juengere Release schreibt das Comparative in
+    die Vorjahres-Zeile; die eigene (aeltere) Periode macht danach keinen
+    Claude-Call mehr und kippt das Restatement nicht."""
+    cur_ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"))
+    pr_ni = _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+                      year=PRIOR_YEAR)
+    prior_filing = date(PRIOR_YEAR, 7, 25).isoformat()
+    fake = _patch_all(
+        monkeypatch,
+        {SUB_URL: _submissions([
+            ("8-K", prior_filing, ACCN_Q1, "2.02,9.01"),
+            ("8-K", Q2_FILING_DATE, ACCN_Q2, "2.02,9.01"),
+        ]),
+         INDEX_URL_Q1: INDEX_JSON, INDEX_URL_Q2: INDEX_JSON},
+        {EXHIBIT_URL_Q1: EXHIBIT_HTML, EXHIBIT_URL_Q2: EXHIBIT_HTML},
+        {**_CURRENT_Q2,
+         "prior_period": _prior_block(non_gaap_diluted_eps=None,
+                                      gaap_diluted_eps=None)},
+    )
+
+    enriched = enrich_adjusted_from_earnings_releases(
+        db, company, [PRIOR_YEAR, YEAR],
+    )
+    db.commit()
+
+    assert enriched == 2
+    # Nur EIN Claude-Call: die Vorjahres-Periode ist nach dem Comparative-
+    # Write komplett gefuellt und wird uebersprungen.
+    assert len(fake.messages.calls) == 1
+    db.refresh(cur_ni)
+    db.refresh(pr_ni)
+    assert cur_ni.numeric_value_adjusted == Decimal("24000000000")
+    assert pr_ni.numeric_value_adjusted == Decimal("21500000000")
+    assert pr_ni.adjustments_note == \
+        f"Vorjahres-Vergleichsspalte aus Q2 FY{YEAR}-Release"
+    assert pr_ni.adjustments_source == EXHIBIT_URL_Q2
+
+
+def test_prompt_schema_includes_prior_period():
+    """Das JSON-Schema im System-Prompt muss den prior_period-Block
+    ausweisen und ihn auf echte Tabellenspalten beschraenken."""
+    assert '"prior_period": {' in adj._SYSTEM_PROMPT
+    assert "prior-year comparison column" in adj._SYSTEM_PROMPT
+    assert "never narrative text" in adj._SYSTEM_PROMPT
 
 
 def test_period_end_missing_stays_lenient(db, company, monkeypatch):

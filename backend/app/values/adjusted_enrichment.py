@@ -13,6 +13,12 @@ Fill-only-NULL fuer belegte Adjusted-Werte (Manual oder URL-belegt, siehe
 persistence.adjusted_is_protected) — idempotent, begrenzt LLM-Kosten.
 Unbelegte Two-Stage-Adjusted-Werte (Format 'quote | url') duerfen
 ueberschrieben werden: tabellenstrikte 8-K-Werte schlagen Freitext-LLM.
+
+Zusaetzlich wird die Vorjahres-Vergleichsspalte derselben Reconciliation-
+Tabelle miterfasst (prior_period-Block): sie fuellt die Vorjahres-Zeile
+fill-only-NULL und darf eigene fruehere Enrichment-Werte bei Restatements
+ueberschreiben (z.B. restatete Comparatives in Folge-Releases) — Manual/
+fremde https-Quellen bleiben geschuetzt.
 """
 import json
 import logging
@@ -59,6 +65,16 @@ GAAP_TOLERANCE_TEXT = Decimal("0.02")
 # Note-Zusatz fuer Freitext-Werte (gerundete '$5.8 billion'-Angaben).
 TEXT_NOTE_SUFFIX = " (aus Freitext, ggf. gerundet)"
 
+# Note-Praefixe, die dieses Modul selbst schreibt. Nur solche Adjusted-
+# Werte darf die Restatement-Logik der Vorjahres-Vergleichsspalte
+# ueberschreiben — 'Manual' und fremde https-Quellen bleiben geschuetzt.
+ENRICHMENT_NOTE_PREFIX = "Non-GAAP (Reconciliation 8-K)"
+PRIOR_NOTE_PREFIX = "Vorjahres-Vergleichsspalte aus"
+PRIOR_RESTATED_NOTE_PREFIX = "Restatete Vorjahres-Vergleichsspalte aus"
+_OWN_NOTE_PREFIXES = (
+    ENRICHMENT_NOTE_PREFIX, PRIOR_NOTE_PREFIX, PRIOR_RESTATED_NOTE_PREFIX,
+)
+
 _SYSTEM_PROMPT = (
     "You extract Non-GAAP (adjusted) figures from an earnings press release "
     "(8-K Exhibit 99). Read the GAAP-to-Non-GAAP reconciliation table and "
@@ -73,6 +89,13 @@ _SYSTEM_PROMPT = (
     "the figures from the narrative text — then set source_kind='text'.\n"
     "- Values must come from THIS release for the EXACT requested period — "
     "not prior-year comparison columns, not YTD columns.\n"
+    "- prior_period: if the SAME reconciliation table ALSO contains a "
+    "prior-year comparison column, additionally return that column's "
+    "figures in the prior_period object — strictly the printed table "
+    "values, never narrative text (its source_kind is always 'table'). Its "
+    "period_end_date is the prior-year column's period end as stated in "
+    "the table header. Set prior_period to null if the table shows no "
+    "prior-year column.\n"
     "- non_gaap_net_income in absolute base units of the reporting currency "
     "(e.g. '$1,234.5 million' -> 1234500000).\n"
     "- non_gaap_diluted_eps as the per-share value.\n"
@@ -93,7 +116,11 @@ _SYSTEM_PROMPT = (
     '{"non_gaap_net_income": number|null, "non_gaap_diluted_eps": number|null, '
     '"gaap_net_income": number|null, "gaap_diluted_eps": number|null, '
     '"source_kind": "table"|"text", "period_end_date": "YYYY-MM-DD"|null, '
-    '"adjustment_items": string}'
+    '"adjustment_items": string, '
+    '"prior_period": {"non_gaap_net_income": number|null, '
+    '"non_gaap_diluted_eps": number|null, "gaap_net_income": number|null, '
+    '"gaap_diluted_eps": number|null, "source_kind": "table", '
+    '"period_end_date": "YYYY-MM-DD"|null}|null}'
 )
 
 # Negative-Cache wie im EdgarProvider: fehlgeschlagene URLs 10 Minuten
@@ -382,6 +409,127 @@ def _mark_no_reconciliation(row: CompanyValue) -> None:
     row.adjustments_note = NO_RECONCILIATION_NOTE
 
 
+def _apply_prior_period(
+    db, company, ptype: str, year: int, prior: dict,
+    exhibit_url: str, release_label: str,
+) -> list[CompanyValue]:
+    """Vorjahres-Vergleichsspalte derselben Reconciliation-Tabelle in die
+    Vorjahres-Zeilen schreiben (z.B. restatete Comparatives wie MSFT FY2025
+    ex-OpenAI im FY2026-Release). Gleiche Gate-Kette wie die aktuelle
+    Periode: nur echte Tabellenspalten, period_end_date-Gate (+-21d) gegen
+    das VORJAHRES-Periodenende, GAAP-Cross-Check gegen die Vorjahres-GAAP-
+    Spur der DB (Tabellen-Toleranz), Rundungs-Detektor. Fill-only-NULL plus
+    Restatement-Ueberschreiben eigener Enrichment-Werte; 'Manual' und
+    fremde https-Quellen bleiben. Gate-Fails setzen KEINEN Negativ-Marker
+    (der gehoert der eigenen Periode der Zeile). Rueckgabe: die
+    geschriebenen Zeilen."""
+    from app.values.persistence import adjusted_is_protected
+
+    prior_year = year - 1
+    adj_values = {
+        "net_income": _to_decimal(prior.get("non_gaap_net_income")),
+        "eps_diluted": _to_decimal(prior.get("non_gaap_diluted_eps")),
+    }
+    if all(v is None for v in adj_values.values()):
+        return []
+    # Kein Freitext fuer Comparatives: nur die echte Tabellenspalte zaehlt.
+    if prior.get("source_kind") != "table":
+        logger.info(
+            "%s adjusted enrichment: prior_period ohne source_kind='table' "
+            "(%r) im %s-Release — verworfen",
+            company.ticker, prior.get("source_kind"), release_label,
+        )
+        return []
+    prior_end = _period_end(company, ptype, prior_year)
+    if prior_end is None:
+        return []
+    if not _period_end_matches(prior.get("period_end_date"), prior_end):
+        logger.warning(
+            "%s adjusted enrichment: prior_period period_end_date %r passt "
+            "nicht zum Vorjahres-Ende %s (%s-Release) — verworfen",
+            company.ticker, prior.get("period_end_date"),
+            prior_end.isoformat(), release_label,
+        )
+        return []
+    prior_rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key.in_(ADJUSTED_KEYS),
+            CompanyValue.period_type == ptype,
+            CompanyValue.period_year == prior_year,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .all()
+    )
+    if not prior_rows:
+        return []
+
+    gaap_ni = _to_decimal(prior.get("gaap_net_income"))
+    gaap_eps = _to_decimal(prior.get("gaap_diluted_eps"))
+    ni_ref = _gaap_reference(db, company.id, "net_income", ptype, prior_year, prior_rows)
+    eps_ref = _gaap_reference(db, company.id, "eps_diluted", ptype, prior_year, prior_rows)
+
+    # Rundungs-Detektor: fuer Comparatives gibt es keinen Freitext-Downgrade
+    # — glatt gerundete Claims bei ungerundeter Referenz werden verworfen.
+    if (
+        _is_round_100m(adj_values["net_income"])
+        and _is_round_100m(gaap_ni)
+        and ni_ref is not None
+        and not _is_round_100m(ni_ref)
+    ):
+        logger.warning(
+            "%s adjusted enrichment: prior_period mit glatt gerundeten "
+            "Werten (non_gaap=%s, gaap=%s vs ref=%s, %s-Release) — verworfen",
+            company.ticker, adj_values["net_income"], gaap_ni, ni_ref,
+            release_label,
+        )
+        return []
+
+    # GAAP-Cross-Check gegen die Vorjahres-GAAP-Spur. Achtung: die GAAP-
+    # Spalte der Comparatives ist bei Restatements NICHT restatet — sie
+    # muss weiterhin unseren XBRL-Wert des Vorjahres treffen.
+    ni_ok = _matches_gaap(gaap_ni, ni_ref, GAAP_TOLERANCE_TABLE) \
+        if ni_ref is not None else None
+    eps_ok = _matches_gaap(gaap_eps, eps_ref, GAAP_TOLERANCE_TABLE) \
+        if eps_ref is not None else None
+    gate_ok = ni_ok if ni_ok is not None else eps_ok
+    if not gate_ok:
+        logger.warning(
+            "%s adjusted enrichment: prior_period GAAP-Cross-Check "
+            "fehlgeschlagen (%s-Release, gaap_ni=%s vs ref=%s, gaap_eps=%s "
+            "vs ref=%s) — verworfen",
+            company.ticker, release_label, gaap_ni, ni_ref, gaap_eps, eps_ref,
+        )
+        return []
+
+    written: list[CompanyValue] = []
+    for row in prior_rows:
+        if row.value_key == "eps_diluted" and eps_ok is False:
+            continue
+        new_val = adj_values.get(row.value_key)
+        if new_val is None:
+            continue
+        own = (row.adjustments_note or "").startswith(_OWN_NOTE_PREFIXES)
+        if row.numeric_value_adjusted is not None:
+            # Geschuetzte fremde Werte (Manual/https) bleiben; eigene
+            # Enrichment-Werte ueberschreibt nur ein echtes Restatement
+            # (Wert weicht ab) — identische Werte behalten ihre Note.
+            if adjusted_is_protected(row.adjustments_source) and not own:
+                continue
+            if own and row.numeric_value_adjusted == new_val:
+                continue
+        restated = own and row.numeric_value_adjusted is not None \
+            and row.numeric_value_adjusted != new_val
+        prefix = PRIOR_RESTATED_NOTE_PREFIX if restated else PRIOR_NOTE_PREFIX
+        row.numeric_value_adjusted = new_val
+        row.adjustments_note = f"{prefix} {release_label}-Release"
+        row.adjustments_source = exhibit_url
+        written.append(row)
+    return written
+
+
 def enrich_adjusted_from_earnings_releases(
     db, company, years: list[int], max_llm_calls: int = 8, cost_tracker=None,
 ) -> int:
@@ -435,6 +583,11 @@ def enrich_adjusted_from_earnings_releases(
     subs: dict | None = None
     llm_calls = 0
     enriched = 0
+    # Zeilen, die in DIESEM Lauf bereits aus der Vorjahres-Vergleichsspalte
+    # eines juengeren Releases geschrieben wurden: die eigene (aeltere)
+    # Periode darf sie weder ueberschreiben noch mit Negativ-Markern
+    # versehen — Restatement schlaegt Original-Release.
+    prior_written: set[int] = set()
     # Absteigend nach Periode (juengste zuerst): der max_llm_calls-Deckel
     # soll die relevantesten Perioden zuerst nehmen.
     for (year, ptype), period_rows in sorted(
@@ -442,6 +595,10 @@ def enrich_adjusted_from_earnings_releases(
         key=lambda kv: (kv[0][0], _PERIOD_ORDER.get(kv[0][1], 9)),
         reverse=True,
     ):
+        if all(r.id in prior_written for r in period_rows):
+            # Alle Zeilen der Periode schon per Comparative gefuellt —
+            # kein eigener Claude-Call mehr noetig.
+            continue
         if llm_calls >= max_llm_calls:
             logger.info(
                 "%s adjusted enrichment: max_llm_calls=%d erreicht — Rest uebersprungen",
@@ -504,7 +661,8 @@ def enrich_adjusted_from_earnings_releases(
             # Bewusstes null (keine Reconciliation im Release): Werte
             # verwerfen, Negativ-Marker persistieren.
             for row in period_rows:
-                _mark_no_reconciliation(row)
+                if row.id not in prior_written:
+                    _mark_no_reconciliation(row)
             db.flush()
             continue
 
@@ -518,7 +676,8 @@ def enrich_adjusted_from_earnings_releases(
                 company.ticker, source_kind, period_label,
             )
             for row in period_rows:
-                _mark_no_reconciliation(row)
+                if row.id not in prior_written:
+                    _mark_no_reconciliation(row)
             db.flush()
             continue
 
@@ -532,7 +691,8 @@ def enrich_adjusted_from_earnings_releases(
                 period_end.isoformat(),
             )
             for row in period_rows:
-                _mark_no_reconciliation(row)
+                if row.id not in prior_written:
+                    _mark_no_reconciliation(row)
             db.flush()
             continue
 
@@ -585,17 +745,22 @@ def enrich_adjusted_from_earnings_releases(
                 data.get("gaap_diluted_eps"), eps_ref,
             )
             for row in period_rows:
-                _mark_no_reconciliation(row)
+                if row.id not in prior_written:
+                    _mark_no_reconciliation(row)
             db.flush()
             continue
 
         items = data.get("adjustment_items") or ""
-        note = f"Non-GAAP (Reconciliation 8-K): {items}" if items \
-            else "Non-GAAP (Reconciliation 8-K)"
+        note = f"{ENRICHMENT_NOTE_PREFIX}: {items}" if items \
+            else ENRICHMENT_NOTE_PREFIX
         if source_kind == "text":
             note += TEXT_NOTE_SUFFIX
         wrote_any = False
         for row in period_rows:
+            # Bereits per Comparative eines juengeren Releases geschrieben:
+            # der (aeltere) Original-Wert darf das Restatement nicht kippen.
+            if row.id in prior_written:
+                continue
             # EPS nur schreiben, wenn der EPS-Check (falls pruefbar) auch
             # bestanden ist — sonst Marker gegen Dauer-Retries.
             if row.value_key == "eps_diluted" and eps_ok is False:
@@ -613,8 +778,23 @@ def enrich_adjusted_from_earnings_releases(
             row.adjustments_note = note
             row.adjustments_source = exhibit_url
             wrote_any = True
+
+        # Vorjahres-Vergleichsspalte derselben Reconciliation-Tabelle
+        # (falls geliefert) in die Vorjahres-Zeilen uebernehmen — eigene
+        # Gate-Kette in _apply_prior_period. Nur wenn die aktuelle Spalte
+        # alle Gates bestanden hat (sonst ist der ganze Read suspekt).
+        prior = data.get("prior_period")
+        prior_rows_written: list[CompanyValue] = []
+        if isinstance(prior, dict):
+            prior_rows_written = _apply_prior_period(
+                db, company, ptype, year, prior, exhibit_url, period_label,
+            )
+            prior_written.update(r.id for r in prior_rows_written)
+
         db.flush()
         if wrote_any:
+            enriched += 1
+        if prior_rows_written:
             enriched += 1
 
     logger.info(
