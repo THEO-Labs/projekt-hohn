@@ -1444,6 +1444,7 @@ def refresh_company_values(
                 derive_balance_carry_forward,
                 derive_declared_dividend_quarter,
                 derive_ebitda_q4_from_fy,
+                derive_gaap_from_adjusted_spread,
                 derive_missing_fcf,
                 derive_missing_ocf,
                 derive_net_debt_from_components,
@@ -1560,6 +1561,10 @@ def refresh_company_values(
                     # Offenes Rest-Quartal deterministisch aus dem FY-
                     # Estimate (Guidance/Konsens) statt LLM-Schaetzung.
                     derive_open_quarter_from_fy_estimate(db, company_id, cons_year)
+                    # GAAP-EPS/NI aus dem beobachteten GAAP/Non-GAAP-
+                    # Abstand: braucht die adjusted-Residuen der Zeile
+                    # darueber, VOR derive_missing_fcf/validate.
+                    derive_gaap_from_adjusted_spread(db, company_id, cons_year)
                     # Deklarierte Dividendenrate NACH der Guidance-Ableitung:
                     # die Fortschreibung des zuletzt berichteten Quartals
                     # schlaegt das FY-Guidance-Residuum (calculated ist

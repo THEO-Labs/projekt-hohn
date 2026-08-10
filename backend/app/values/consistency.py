@@ -983,6 +983,169 @@ def derive_declared_dividend_quarter(db: Session, company_id: UUID, year: int) -
     return 1
 
 
+_SPREAD_KEYS = ("eps_diluted", "net_income")
+_SPREAD_QUANT = {"eps_diluted": Decimal("0.01"), "net_income": Decimal("1")}
+# Herkuenfte, die als exakte berichtete Werte fuer die Spread-Basis zaehlen.
+_SPREAD_REPORTED_METHODS = ("provider", "manual", "pdf")
+
+
+def derive_gaap_from_adjusted_spread(db: Session, company_id: UUID, year: int) -> int:
+    """GAAP-EPS/NI-Schaetzung aus der Non-GAAP-Schaetzung ableiten — via
+    beobachtetem GAAP/Non-GAAP-Abstand der berichteten Quartale.
+
+    User-Entscheidung: adjusted-only-Forecast-Slots (numeric_value=None,
+    numeric_value_adjusted gesetzt) bleiben nicht mehr leer, sondern
+    bekommen deterministisch gaap = adjusted - Spread, wobei Spread der
+    Durchschnitt von (adjusted - gaap) ueber die berichteten Quartale
+    (beide Spuren, provider/manual/PDF) ist — reine Arithmetik, klar
+    gekennzeichnet. Ersetzt NICHT die Regel, dass der Guidance-Call
+    unklaren Konsens nie in GAAP-Slots schreibt. FY = Summe der
+    berichteten GAAP-Quartale + abgeleitete offene Quartale (die
+    berichteten Quartale sind exakt — kein FY_adj - 4x Spread).
+    Rundung: eps 2 Nachkommastellen, net_income ganzzahlig.
+    Plausibilitaet: 0 < gaap < adjusted, sonst skip + Warnung.
+    Rueckgabe: Anzahl geschriebener Zellen.
+    """
+    from decimal import ROUND_HALF_UP
+
+    rows = _rows_for_year(db, company_id, year)
+    now = datetime.now(timezone.utc)
+    written = 0
+    for key in _SPREAD_KEYS:
+        quant = _SPREAD_QUANT[key]
+        # Berichtete Quartale: exakte Actuals; fuer die Spread-Basis
+        # brauchen sie BEIDE Spuren.
+        reported_gaap: dict[str, CompanyValue] = {}
+        both_tracks: dict[str, CompanyValue] = {}
+        for qt in _Q_TYPES:
+            actual = next(
+                (r for r in rows
+                 if r.value_key == key and r.period_type == qt
+                 and not r.is_forecast and r.numeric_value is not None
+                 and ((r.primary_method or "") in _SPREAD_REPORTED_METHODS
+                      or r.manually_overridden or r.from_ir_pdf)),
+                None,
+            )
+            if actual is not None:
+                reported_gaap[qt] = actual
+                if actual.numeric_value_adjusted is not None:
+                    both_tracks[qt] = actual
+        if len(both_tracks) < 2:
+            continue
+        spread = sum(
+            (r.numeric_value_adjusted - r.numeric_value
+             for r in both_tracks.values()),
+            Decimal("0"),
+        ) / Decimal(len(both_tracks))
+        if spread < 0:
+            logger.warning(
+                "gaap-spread %s/%s/FY%s: mittlerer Abstand %s negativ "
+                "(adjusted < GAAP) — Ableitung liefert wegen des "
+                "0<gaap<adjusted-Gates keine Werte",
+                company_id, key, year, spread,
+            )
+        spread_disp = spread.quantize(quant, rounding=ROUND_HALF_UP)
+        source_name = (
+            "Abgeleitet: Non-GAAP-Schaetzung minus mittlerer "
+            f"GAAP/Non-GAAP-Abstand der berichteten Quartale ({spread_disp})"
+        )[:4096]
+
+        derived_q: dict[str, Decimal] = {}
+        for qt in _Q_TYPES:
+            if qt in reported_gaap:
+                continue
+            # Konservativ: irgendein Actual mit GAAP-Wert (auch two_stage)
+            # blockt — hier nicht gegen bestehende Actuals anschreiben.
+            if any(
+                r.value_key == key and r.period_type == qt
+                and not r.is_forecast and r.numeric_value is not None
+                for r in rows
+            ):
+                continue
+            fc = next(
+                (r for r in rows
+                 if r.value_key == key and r.period_type == qt
+                 and r.is_forecast and r.numeric_value_adjusted is not None),
+                None,
+            )
+            if fc is None:
+                continue
+            # Nur adjusted-only-Slots (GAAP leer) bzw. die eigene fruehere
+            # Ableitung (calculated, Idempotenz) — einen echten GAAP-
+            # Konsens (web_guidance mit Wert) nicht ueberschreiben.
+            if fc.numeric_value is not None and fc.primary_method != "calculated":
+                continue
+            slot_rows = [
+                r for r in rows
+                if r.value_key == key and r.period_type == qt
+            ]
+            if any(not _derivation_replaceable(r) for r in slot_rows):
+                continue
+            gaap_q = (fc.numeric_value_adjusted - spread).quantize(
+                quant, rounding=ROUND_HALF_UP
+            )
+            if not (0 < gaap_q < fc.numeric_value_adjusted):
+                logger.warning(
+                    "gaap-spread %s/%s/%s FY%s: gaap %s ausserhalb "
+                    "(0, adjusted %s) — skip",
+                    company_id, key, qt, year, gaap_q,
+                    fc.numeric_value_adjusted,
+                )
+                continue
+            fc.numeric_value = gaap_q
+            fc.source_name = source_name
+            fc.source_link = None
+            fc.primary_method = "calculated"
+            fc.is_forecast = True
+            fc.fetched_at = now
+            fc.last_refresh_attempt = now
+            derived_q[qt] = gaap_q
+            written += 1
+
+        # FY nur wenn alle 4 Quartale GAAP tragen (exakt berichtete +
+        # abgeleitete) — sonst waere die Summe nicht belegbar.
+        if not derived_q or len(reported_gaap) + len(derived_q) != 4:
+            continue
+        fy_fc = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and r.is_forecast and r.numeric_value_adjusted is not None),
+            None,
+        )
+        if fy_fc is None:
+            continue
+        if fy_fc.numeric_value is not None and fy_fc.primary_method != "calculated":
+            continue
+        fy_slot_rows = [
+            r for r in rows
+            if r.value_key == key and r.period_type == "FY"
+        ]
+        if any(not _derivation_replaceable(r) for r in fy_slot_rows):
+            continue
+        gaap_fy = sum(
+            (r.numeric_value for r in reported_gaap.values()),
+            Decimal("0"),
+        ) + sum(derived_q.values(), Decimal("0"))
+        gaap_fy = gaap_fy.quantize(quant, rounding=ROUND_HALF_UP)
+        if not (0 < gaap_fy < fy_fc.numeric_value_adjusted):
+            logger.warning(
+                "gaap-spread %s/%s/FY FY%s: gaap %s ausserhalb "
+                "(0, adjusted %s) — skip",
+                company_id, key, year, gaap_fy, fy_fc.numeric_value_adjusted,
+            )
+            continue
+        fy_fc.numeric_value = gaap_fy
+        fy_fc.source_name = source_name
+        fy_fc.source_link = None
+        fy_fc.primary_method = "calculated"
+        fy_fc.is_forecast = True
+        fy_fc.fetched_at = now
+        fy_fc.last_refresh_attempt = now
+        written += 1
+    db.flush()
+    return written
+
+
 _RUNRATE_KEYS = ("sbc", "buyback_volume")
 
 

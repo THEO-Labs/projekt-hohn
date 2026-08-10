@@ -12,7 +12,21 @@ consistency.derive_open_quarter_from_fy_estimate deterministisch ab
 Schreib-Invarianten wie in den uebrigen Pfaden: normalize_sign,
 currency_conflict, Manual-/PDF-Zeilen bleiben unangetastet. Vor jedem
 Write laufen deterministische Plausibilitaets-Gates (60%-Vorjahres-Gate,
-eps x shares vs net_income, Einheiten-Check, GAAP <= Non-GAAP + 1%).
+eps x shares vs net_income, Einheiten-Check, GAAP <= Non-GAAP + 1%,
+fcf <= ocf).
+
+Der Prompt ist bewusst schlank (natuerliche Analystenfrage) — die
+Qualitaetssicherung liegt in den deterministischen Code-Gates, nicht in
+Promptregeln. Gate statt Promptregel:
+- Quellen-Hierarchie/Aggregator-Aufzaehlung/Suchbudget-Anweisung ->
+  source-Gate in _parse_payload (nur guidance|consensus wird akzeptiert).
+- basis-Regeln a-d (Konsens=Non-GAAP, GAAP nur bei explizitem Label,
+  im Zweifel null) -> _rebook_by_basis (non_gaap/unclear landet nie im
+  GAAP-Slot) plus GAAP <= Non-GAAP + 1%-Gate.
+- Einheiten-Detailanweisungen -> Einheiten-Check (< 1 Mio verworfen);
+  im Prompt bleibt EIN Satz zu Basiseinheiten/EPS-per-share.
+- "Return null only if ..."-Abwehrformeln -> 60%-Vorjahres-Gate,
+  eps x shares- und fcf <= ocf-Gate verwerfen Ausreisser deterministisch.
 
 GAAP vs Non-GAAP: US-Analystenkonsens fuer EPS/Net-Income ist fast immer
 NON-GAAP. Jeder Wert traegt deshalb ein basis-Feld (gaap|non_gaap|unclear);
@@ -81,17 +95,17 @@ _UNIT_MIN = Decimal("1000000")
 # US-Standard: adjusted >= GAAP (SBC/Amortisations-Addbacks). 1% Toleranz.
 _GAAP_ADJ_TOL = Decimal("0.01")
 
-# Reihenfolge + Kurzbeschreibung fuer den Prompt.
+# Reihenfolge + Kurzbeschreibung fuer den Prompt (je 2-4 Worte).
 _METRIC_SPECS = (
     ("revenue", "total revenue"),
-    ("net_income", "GAAP net income (only if the source explicitly labels it GAAP/reported)"),
-    ("eps_diluted", "GAAP diluted EPS (per share; only if the source explicitly labels it GAAP/reported)"),
-    ("eps_diluted_non_gaap", "Non-GAAP / adjusted diluted EPS (per share)"),
-    ("net_income_non_gaap", "Non-GAAP / adjusted net income"),
+    ("net_income", "GAAP net income"),
+    ("eps_diluted", "GAAP diluted EPS"),
+    ("eps_diluted_non_gaap", "adjusted diluted EPS"),
+    ("net_income_non_gaap", "adjusted net income"),
     ("operating_cash_flow", "operating cash flow"),
     ("capex", "capital expenditures"),
-    ("fcf", "free cash flow (analyst consensus for FCF is widely published on estimate aggregators)"),
-    ("sbc", "stock-based compensation expense"),
+    ("fcf", "free cash flow"),
+    ("sbc", "stock-based compensation"),
     ("dividends", "total dividends paid"),
     ("buyback_volume", "share repurchase volume"),
     ("ebitda", "EBITDA"),
@@ -110,38 +124,19 @@ def _fy_end_date(company, year: int) -> date:
 
 def _build_system_prompt(company, year: int) -> str:
     fy_end = _fy_end_date(company, year).isoformat()
+    currency = getattr(company, "currency", None) or "USD"
     return (
-        f"You are an equity analyst. For {company.name} ({company.ticker}) "
-        f"fiscal year {year} (ending {fy_end}), find the company's CURRENT "
-        "official guidance and the analyst consensus estimates for the full "
-        "fiscal year. Sources in this order: (1) guidance from the latest "
-        "earnings release, (2) guidance updates published after that "
-        "(ad-hoc/press releases, guidance raises/cuts), (3) analyst "
-        "consensus. Consensus counts as a fully valid source, and it is "
-        "published on aggregator sites: MarketScreener, StockAnalysis.org, "
-        "Zacks, TipRanks, Simply Wall St, WSJ and Yahoo Finance analyst "
-        "estimates, Visible Alpha, Bloomberg-cited figures. These sites "
-        "carry consensus estimate TABLES that go beyond revenue/EPS — "
-        "including free cash flow, capex, and often operating cash flow "
-        "and EBITDA. Spend your web search budget actively looking for "
-        "these estimate tables instead of giving up early on the "
-        "non-headline metrics. "
-        "FORBIDDEN: your own YoY/trend/run-rate extrapolation. "
-        "GAAP vs non-GAAP rules: (a) analyst consensus EPS and net income "
-        "figures are by default NON-GAAP ('adjusted EPS', 'adjusted net "
-        "income') and belong in the non-GAAP fields (eps_diluted_non_gaap, "
-        "net_income_non_gaap); (b) fill the GAAP fields (eps_diluted, "
-        "net_income) ONLY if the source EXPLICITLY labels the figure as "
-        "GAAP or 'reported' (e.g. 'GAAP EPS guidance'); (c) when in doubt, "
-        "leave the GAAP field null; (d) for every value set 'basis' to "
-        "'gaap' or 'non_gaap' exactly as the source labels it, or "
-        "'unclear' if the source does not say. "
-        "Return null only if neither guidance nor consensus exists for a "
-        "metric. Absolute values in absolute "
-        f"{getattr(company, 'currency', None) or 'USD'} base units "
-        "(e.g. '$5.8 billion' -> 5800000000); EPS metrics as per-share "
-        "values. Answer with ONLY one JSON object matching the schema in "
-        "the user message — no prose, no markdown fences."
+        f"You are an equity analyst. What are the current full-year "
+        f"estimates for {company.name} ({company.ticker}), fiscal year "
+        f"{year} (ending {fy_end})? Use the company's latest official "
+        "guidance and the analyst consensus (you find consensus estimates "
+        "on financial and estimate sites) — no projections of your own. "
+        "For each figure state whether the source labels it GAAP or "
+        "non-GAAP, and give the source with a short quote. Report "
+        f"absolute amounts in {currency} base units "
+        "(e.g. '$5.8 billion' -> 5800000000) and EPS per share. "
+        "Answer with ONLY one JSON object matching the schema in the "
+        "user message — no prose, no markdown fences."
     )
 
 
@@ -160,10 +155,9 @@ def _build_user_prompt(company, year: int) -> str:
     )
     lines += [
         "",
-        "For each metric: value from the most recent guidance (midpoint of a "
-        "range) or, if no guidance exists for it, from analyst consensus. "
-        "quote = one short verbatim sentence documenting the guidance/"
-        "consensus basis; url = source URL.",
+        "value = latest guidance (midpoint of a range) or analyst "
+        "consensus; quote = one short verbatim source sentence; "
+        "url = source URL.",
         "",
         "Return JSON matching exactly this schema:",
         "",

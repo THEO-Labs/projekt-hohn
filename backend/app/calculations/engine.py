@@ -258,33 +258,33 @@ def calculate_fy(
     net_buyback_yield = results.get("net_buyback_yield")
 
     # Einfache Hohn-Rendite = FCF Yield + NI Growth − SBC/MCap + ΔND/MCap
-    # Partial: summiere verfügbare Komponenten, mind. eine muss da sein.
+    # Nur bei VOLLSTAENDIGEN Komponenten: eine Partial-Summe sieht aus wie
+    # eine echte H-Rendite und fuehrt in die Irre. exclude_net_debt_change
+    # (Financials) ist bewusster Ausschluss, kein fehlender Input.
     simple_parts = [
         ("+", fcf_yield),
         ("+", ni_growth),
         ("-", sbc_yield),
-        ("+", nd_change_pct),
     ]
-    available_simple = [(s, v) for s, v in simple_parts if v is not None]
-    if available_simple:
-        total = Decimal("0")
-        for sign, val in available_simple:
-            total += -val if sign == "-" else val
-        results["hohn_return_simple"] = total
+    if not exclude_net_debt_change:
+        simple_parts.append(("+", nd_change_pct))
+    if all(v is not None for _, v in simple_parts):
+        results["hohn_return_simple"] = sum(
+            ((-v if s == "-" else v) for s, v in simple_parts), Decimal("0")
+        )
 
     # Detailed Hohn-Rendite = Div Yield + NI Growth + Net Buyback/MCap + ΔND/MCap
     detailed_parts = [
         ("+", div_yield),
         ("+", ni_growth),
         ("+", net_buyback_yield),
-        ("+", nd_change_pct),
     ]
-    available_detailed = [(s, v) for s, v in detailed_parts if v is not None]
-    if available_detailed:
-        total_d = Decimal("0")
-        for sign, val in available_detailed:
-            total_d += -val if sign == "-" else val
-        results["hohn_return_detailed"] = total_d
+    if not exclude_net_debt_change:
+        detailed_parts.append(("+", nd_change_pct))
+    if all(v is not None for _, v in detailed_parts):
+        results["hohn_return_detailed"] = sum(
+            ((-v if s == "-" else v) for s, v in detailed_parts), Decimal("0")
+        )
 
     # Hohn-Rendite Adjusted: gleiche Formeln aber mit Adjusted-Komponenten
     # (fcf_yield_adj, ni_growth_adj). sbc/buyback/dividends/net-debt-change
@@ -295,26 +295,24 @@ def calculate_fy(
         ("+", fcf_yield_adj if fcf_yield_adj is not None else fcf_yield),
         ("+", ni_growth_adj if ni_growth_adj is not None else ni_growth),
         ("-", sbc_yield),
-        ("+", nd_change_pct),
     ]
-    available_simple_adj = [(s, v) for s, v in simple_parts_adj if v is not None]
-    if available_simple_adj:
-        total_adj = Decimal("0")
-        for sign, val in available_simple_adj:
-            total_adj += -val if sign == "-" else val
-        results_adjusted["hohn_return_simple"] = total_adj
+    if not exclude_net_debt_change:
+        simple_parts_adj.append(("+", nd_change_pct))
+    if all(v is not None for _, v in simple_parts_adj):
+        results_adjusted["hohn_return_simple"] = sum(
+            ((-v if s == "-" else v) for s, v in simple_parts_adj), Decimal("0")
+        )
     detailed_parts_adj = [
         ("+", div_yield),
         ("+", ni_growth_adj if ni_growth_adj is not None else ni_growth),
         ("+", net_buyback_yield),
-        ("+", nd_change_pct),
     ]
-    available_detailed_adj = [(s, v) for s, v in detailed_parts_adj if v is not None]
-    if available_detailed_adj:
-        total_d_adj = Decimal("0")
-        for sign, val in available_detailed_adj:
-            total_d_adj += -val if sign == "-" else val
-        results_adjusted["hohn_return_detailed"] = total_d_adj
+    if not exclude_net_debt_change:
+        detailed_parts_adj.append(("+", nd_change_pct))
+    if all(v is not None for _, v in detailed_parts_adj):
+        results_adjusted["hohn_return_detailed"] = sum(
+            ((-v if s == "-" else v) for s, v in detailed_parts_adj), Decimal("0")
+        )
 
     # H-PEG = PE Ratio / H-Return (detailed, in %). Analog zum klassischen
     # PEG = PE / Growth. Nur sinnvoll bei positivem H-Return. In der Kunden-

@@ -191,11 +191,11 @@ def test_explicit_gaap_basis_lands_in_gaap_slot(db, company, monkeypatch):
     assert eps.primary_method == "web_guidance"
 
 
-def test_prompt_mentions_basis_and_gaap_rules(db, company):
-    """Prompts enthalten basis-Schema und die GAAP/Non-GAAP-Regeln."""
+def test_prompt_asks_for_basis_and_stays_short(db, company):
+    """Schlanker Prompt: fragt GAAP/Non-GAAP-Kennzeichnung ab, das
+    basis-Schema bleibt im User-Prompt — die Regeln a-d selbst leben
+    als Code-Gates (_rebook_by_basis, GAAP<=NonGAAP), nicht im Prompt."""
     sys_prompt = ge._build_system_prompt(company, RUNNING_YEAR)
-    assert "NON-GAAP" in sys_prompt
-    assert "'basis'" in sys_prompt
-    assert "EXPLICITLY" in sys_prompt
+    assert "GAAP or" in sys_prompt and "non-GAAP" in sys_prompt
     user_prompt = ge._build_user_prompt(company, RUNNING_YEAR)
     assert '"basis": "gaap"|"non_gaap"|"unclear"' in user_prompt

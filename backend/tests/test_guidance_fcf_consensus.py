@@ -14,17 +14,16 @@ from tests.test_guidance_estimates import (  # noqa: F401 - company ist Fixture
 from tests.test_guidance_gaap_basis import _entry
 
 
-def test_prompt_names_aggregators_and_fcf(db, company):
-    """System-Prompt nennt die Aggregator-Seiten und die
-    FCF/Capex/OCF/EBITDA-Konsens-Tabellen; User-Prompt fragt fcf ab."""
+def test_prompt_slim_but_asks_fcf(db, company):
+    """Schlanker Prompt (User-Feedback): keine Aggregator-Aufzaehlung
+    mehr, nur der Konsens-Halbsatz — fcf bleibt abgefragt. Laengen-Budget
+    schuetzt vor erneutem Aufblaehen."""
     sys_prompt = ge._build_system_prompt(company, RUNNING_YEAR)
-    for site in ("MarketScreener", "StockAnalysis.org", "Zacks", "TipRanks",
-                 "Simply Wall St", "Yahoo Finance"):
-        assert site in sys_prompt
-    assert "free cash flow" in sys_prompt
-    assert "estimate tables" in sys_prompt
+    assert "consensus" in sys_prompt
+    assert "MarketScreener" not in sys_prompt
+    assert len(sys_prompt) < 900
     user_prompt = ge._build_user_prompt(company, RUNNING_YEAR)
-    assert "- fcf:" in user_prompt
+    assert "- fcf: free cash flow" in user_prompt
     assert "fcf" in ge.GUIDANCE_ESTIMATE_KEYS
 
 

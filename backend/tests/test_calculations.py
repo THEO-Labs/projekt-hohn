@@ -83,13 +83,15 @@ def test_financial_excludes_net_debt_change_from_hohn():
     """Banken/Versicherer: net_debt_change_pct fliegt aus der H-Return raus
     (DBK -2036%-Klasse) — der Wert selbst bleibt aber gespeichert."""
     result, _adj = calculate_fy(
-        {"net_income": Decimal("150"), "net_debt": Decimal("50000"), "dividends": Decimal("20")},
+        {"net_income": Decimal("150"), "net_debt": Decimal("50000"),
+         "dividends": Decimal("20"), "buyback_volume": Decimal("0"), "sbc": Decimal("0")},
         {"net_income": Decimal("100"), "net_debt": Decimal("10000")},
         {"market_cap": Decimal("1000")},
         exclude_net_debt_change=True,
     )
     assert result["net_debt_change_pct"] is not None
-    # detailed = div_yield 2 + ni_growth 50 (OHNE nd-Komponente -4000)
+    # detailed = div_yield 2 + ni_growth 50 + net_buyback 0 (OHNE nd-Komponente
+    # -4000; der bewusste Financial-Ausschluss zaehlt nicht als fehlender Input)
     assert result["hohn_return_detailed"] == Decimal("52")
 
 
@@ -161,11 +163,18 @@ def test_hohn_return_detailed_requires_dividends():
     previous = {"net_income": Decimal("1425")}
     stammdaten = {"market_cap": Decimal("101100")}
     result, _adj = calculate_fy(current, previous, stammdaten)
+    # Ohne net_debt fehlt die ΔND-Komponente: keine Partial-Summe mehr —
+    # eine unvollstaendige H-Rendite waere irrefuehrend.
+    assert result["hohn_return_detailed"] is None
+
+    current["net_debt"] = Decimal("-7764")
+    previous["net_debt"] = Decimal("-6023")
+    result, _adj = calculate_fy(current, previous, stammdaten)
     # div_yield = 0, ni_growth ≈ 22.67, net_buyback = 1840-1900 = -60
-    # net_buyback_yield = -60/101100*100 ≈ -0.06
-    # detailed = 0 + 22.67 - 0.06 ≈ 22.6
+    # net_buyback_yield ≈ -0.06, nd_change_pct ≈ 1.722
+    # detailed = 0 + 22.67 - 0.06 + 1.722 ≈ 24.3
     assert result["hohn_return_detailed"] is not None
-    assert abs(result["hohn_return_detailed"] - Decimal("22.6")) < Decimal("0.1")
+    assert abs(result["hohn_return_detailed"] - Decimal("24.3")) < Decimal("0.1")
 
 
 def test_zero_market_cap_safe():
