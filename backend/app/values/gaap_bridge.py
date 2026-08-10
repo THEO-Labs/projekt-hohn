@@ -190,10 +190,14 @@ def _cell_rows(db, company_id, key: str, ptype: str, year: int) -> list[CompanyV
 def _cell_needs_bridge(rows: list[CompanyValue]) -> bool:
     """True wenn die Zelle not_found/leer, nur eine Schaetzung oder ein
     Freitext-LLM-Actual (two_stage_*) ist — tabellenstrikte 8-K-Werte
-    schlagen Freitext-LLM-Werte. Manual/PDF-Zeilen und Provider-Actuals
-    (XBRL-Anker) sind authoritative — kein Bridge-Write."""
+    schlagen Freitext-LLM-Werte. Manuelle ACTUAL-Zeilen, gefuellte
+    PDF-Zeilen und Provider-Actuals (XBRL-Anker) sind authoritative —
+    kein Bridge-Write. Manuelle FORECAST-Zeilen sperren nur Schaetz-
+    Writer: berichtete 8-K-Zahlen duerfen sie ersetzen."""
     for r in rows:
-        if r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None):
+        if (r.manually_overridden and not r.is_forecast) or (
+            r.from_ir_pdf and r.numeric_value is not None
+        ):
             return False
     actual = next((r for r in rows if not r.is_forecast), None)
     if actual is not None and actual.numeric_value is not None:
@@ -299,6 +303,11 @@ def _write_bridge_value(
     row = next((r for r in rows if not r.is_forecast), None)
     if row is None:
         row = next(iter(rows), None)
+    # Vor der Mutation festhalten: ersetzt dieser Write eine manuelle
+    # Forecast-Zeile? Dann werden unten auch Manual-Adjusted-Felder geleert.
+    replacing_manual_forecast = bool(
+        row is not None and row.manually_overridden and row.is_forecast
+    )
     if row is not None and currency_conflict(key, row.currency, currency):
         logger.warning(
             "gaap bridge currency mismatch BLOCKED %s/%s/%s FY%s: existing=%s new=%s",
@@ -346,8 +355,12 @@ def _write_bridge_value(
             row.manually_overridden = False
             # Stale LLM-Adjusted-Werte abraeumen wie der XBRL-Anker; das
             # 8-K-Enrichment fuellt danach nach. Geschuetzte (Manual/URL-
-            # belegte) Adjusted bleiben.
-            if not adjusted_is_protected(row.adjustments_source):
+            # belegte) Adjusted bleiben. Ausnahme: beim Ersetzen einer
+            # manuellen Forecast-Zeile faellt auch Manual-Adjusted
+            # (Schaetz-Ableger, Enrichment fuellt neu).
+            if replacing_manual_forecast or not adjusted_is_protected(
+                row.adjustments_source
+            ):
                 row.numeric_value_adjusted = None
                 row.adjustments_note = None
                 row.adjustments_source = None

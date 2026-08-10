@@ -54,7 +54,10 @@ def adjusted_is_protected(source: str | None) -> bool:
     https-URL (SEC-8-K-Enrichment, IR-/Press-Release-Links). Unbelegt und
     damit ueberschreibbar sind nur NULL und das Two-Stage-Format
     ('quote | url', beginnt mit dem Zitat) — sonst kleben stale
-    LLM-Adjusted-Werte dauerhaft."""
+    LLM-Adjusted-Werte dauerhaft. Einzige Ausnahme (liegt beim Writer):
+    ersetzt ein Actual-Writer (XBRL-Anker/8-K-Bruecke) eine manuelle
+    FORECAST-Zeile durch berichtete Zahlen, wird auch 'Manual'-Adjusted
+    geleert — er war nur ein Schaetz-Ableger."""
     if source is None:
         return False
     return source == "Manual" or source.startswith("https://")

@@ -200,7 +200,7 @@ def test_bridges_empty_and_not_found_cells(db, company, monkeypatch):
 
 
 def test_reported_actual_and_manual_cells_skipped(db, company, monkeypatch):
-    """Berichtete Actuals (provider) und Manual-Zeilen sind keine
+    """Berichtete Actuals (provider) und manuelle ACTUAL-Zeilen sind keine
     Kandidaten — der Bridge-Lauf schreibt sie nicht um."""
     anchored = _seed_row(db, company, "net_income", "Q2", Decimal("5100000000"))
     manual = _seed_row(db, company, "revenue", "Q2", Decimal("999"),
@@ -244,6 +244,39 @@ def test_bridge_overwrites_two_stage_actual(db, company, monkeypatch):
     assert llm.primary_method == "provider"
     assert llm.source_name == BRIDGE_SOURCE_NAME
     assert llm.source_link == EXHIBIT_URL_Q2
+
+
+def test_bridge_replaces_manual_forecast_row(db, company, monkeypatch):
+    """Lock-Kontrakt: eine manuelle FORECAST-Zeile (Schaetz-Override) weicht
+    dem berichteten 8-K-Wert — Umzug auf Actual, Lock-Flag weg,
+    Manual-Adjusted (Schaetz-Ableger) geleert."""
+    manual_fc = _seed_row(
+        db, company, "revenue", "Q2", Decimal("999"),
+        primary_method="manual", is_forecast=True, manually_overridden=True,
+        numeric_value_adjusted=Decimal("1050"),
+        adjustments_note="Manuell geschaetzt",
+        adjustments_source="Manual",
+    )
+    _patch_q2(monkeypatch, {
+        "period_end_date": f"{YEAR}-06-30",
+        "values": _values(revenue=9200000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert written == 1
+    db.refresh(manual_fc)
+    assert manual_fc.numeric_value == Decimal("9200000000")
+    assert manual_fc.primary_method == "provider"
+    assert manual_fc.is_forecast is False
+    assert manual_fc.manually_overridden is False
+    assert manual_fc.source_name == BRIDGE_SOURCE_NAME
+    assert manual_fc.source_link == EXHIBIT_URL_Q2
+    assert manual_fc.numeric_value_adjusted is None
+    assert manual_fc.adjustments_note is None
+    assert manual_fc.adjustments_source is None
 
 
 def test_bridge_never_overwrites_pdf_row(db, company, monkeypatch):

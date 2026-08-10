@@ -151,6 +151,64 @@ def test_manually_overridden_row_untouched(db, company):
     assert row.manually_overridden is True
 
 
+def test_anchor_replaces_manual_forecast_row(db, company):
+    """Lock-Kontrakt: eine manuelle FORECAST-Zeile (Schaetz-Override) weicht
+    berichteten XBRL-Zahlen — Flip auf Actual, Lock-Flag weg, Manual-
+    Adjusted (Schaetz-Ableger) geleert."""
+    seeded = _seed_fy_row(
+        db, company, "net_income", CLOSED_YEAR, Decimal("100"),
+        is_forecast=True, manually_overridden=True,
+        numeric_value_adjusted=Decimal("110"),
+        adjustments_note="Manuell geschaetzt",
+        adjustments_source="Manual",
+    )
+    result = ProviderResult(
+        value=Decimal("120"), source_name="EDGAR 10-K FY",
+        source_link="https://sec.gov/x", currency="EUR",
+    )
+    with patch("app.values.provider_anchor.get_providers",
+               return_value=[_mock_provider(result)]):
+        wrote = anchor_fy_with_provider(db, company, "net_income", CLOSED_YEAR)
+    db.commit()
+
+    assert wrote is True
+    row = _fy_row(db, company, "net_income", CLOSED_YEAR)
+    assert row.id == seeded.id
+    assert row.numeric_value == Decimal("120")
+    assert row.primary_method == "provider"
+    assert row.is_forecast is False
+    assert row.manually_overridden is False
+    assert row.numeric_value_adjusted is None
+    assert row.adjustments_note is None
+    assert row.adjustments_source is None
+
+
+def test_manual_actual_row_with_manual_adjusted_stays_locked(db, company):
+    """Gegenprobe: manuelle ACTUAL-Zeile bleibt komplett unangetastet —
+    inkl. Manual-Adjusted, kein Provider-Call."""
+    _seed_fy_row(
+        db, company, "net_income", CLOSED_YEAR, Decimal("100"),
+        manually_overridden=True,
+        numeric_value_adjusted=Decimal("110"),
+        adjustments_note="Manuell ueberschrieben",
+        adjustments_source="Manual",
+    )
+    with patch("app.values.provider_anchor.get_providers") as gp:
+        wrote = anchor_fy_with_provider(db, company, "net_income", CLOSED_YEAR)
+    db.commit()
+
+    assert wrote is False
+    gp.assert_not_called()
+    row = _fy_row(db, company, "net_income", CLOSED_YEAR)
+    assert row.numeric_value == Decimal("100")
+    assert row.manually_overridden is True
+    assert row.is_forecast is False
+    assert row.primary_method == "two_stage_verified"
+    assert row.numeric_value_adjusted == Decimal("110")
+    assert row.adjustments_note == "Manuell ueberschrieben"
+    assert row.adjustments_source == "Manual"
+
+
 def test_from_ir_pdf_row_untouched(db, company):
     _seed_fy_row(db, company, "net_income", CLOSED_YEAR, Decimal("100"), from_ir_pdf=True)
     with patch("app.values.provider_anchor.get_providers") as gp:

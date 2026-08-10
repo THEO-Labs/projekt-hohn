@@ -116,7 +116,8 @@ def test_two_stage_quarter_row_overwritten(db, company):
 
 
 def test_manually_overridden_row_untouched(db, company):
-    """Manual-Override ist Hard-Lock — die Zelle wird gar nicht erst gefetcht."""
+    """Manual-Override auf einer ACTUAL-Zeile ist Hard-Lock — die Zelle
+    wird gar nicht erst gefetcht."""
     _seed_q_row(db, company, "net_income", "Q2", YEAR, Decimal("100"),
                 manually_overridden=True)
     result = ProviderResult(value=Decimal("120"), source_name="EDGAR", currency="USD")
@@ -128,6 +129,56 @@ def test_manually_overridden_row_untouched(db, company):
     assert row.numeric_value == Decimal("100")
     assert row.manually_overridden is True
     assert row.primary_method == "two_stage_verified"
+
+
+def test_manual_forecast_quarter_replaced_by_anchor(db, company):
+    """Lock-Kontrakt: manuelle FORECAST-Zeile weicht dem berichteten
+    XBRL-Wert — Umzug auf Actual, Lock-Flag weg, Manual-Adjusted
+    (Schaetz-Ableger) geleert."""
+    seeded = _seed_q_row(
+        db, company, "net_income", "Q2", YEAR, Decimal("100"),
+        is_forecast=True, manually_overridden=True,
+        numeric_value_adjusted=Decimal("110"),
+        adjustments_note="Manuell geschaetzt",
+        adjustments_source="Manual",
+    )
+    result = ProviderResult(
+        value=Decimal("120"), source_name="SEC EDGAR 10-Q (Q2)",
+        source_link="https://sec.gov/q2", currency="USD",
+    )
+    written, _ = _run(db, company, {("net_income", YEAR, "Q2"): result})
+
+    assert written == 1
+    rows = _q_rows(db, company, "net_income", "Q2", YEAR)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id == seeded.id
+    assert row.numeric_value == Decimal("120")
+    assert row.primary_method == "provider"
+    assert row.is_forecast is False
+    assert row.manually_overridden is False
+    assert row.numeric_value_adjusted is None
+    assert row.adjustments_note is None
+    assert row.adjustments_source is None
+
+
+def test_manual_forecast_untouched_when_actual_slot_exists(db, company):
+    """Actual+Manual-Forecast-Paar: der Anker schreibt in den actual-Slot,
+    die manuelle Forecast-Zeile bleibt stehen (Slot-Wahl bevorzugt actual)."""
+    manual_fc = _seed_q_row(db, company, "net_income", "Q2", YEAR, Decimal("50"),
+                            is_forecast=True, manually_overridden=True)
+    actual = _seed_q_row(db, company, "net_income", "Q2", YEAR, Decimal("100"))
+    result = ProviderResult(value=Decimal("120"), source_name="EDGAR", currency="USD")
+    written, _ = _run(db, company, {("net_income", YEAR, "Q2"): result})
+
+    assert written == 1
+    db.refresh(actual)
+    db.refresh(manual_fc)
+    assert actual.numeric_value == Decimal("120")
+    assert actual.primary_method == "provider"
+    assert manual_fc.numeric_value == Decimal("50")
+    assert manual_fc.is_forecast is True
+    assert manual_fc.manually_overridden is True
 
 
 def test_filled_pdf_row_untouched(db, company):

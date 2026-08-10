@@ -9,8 +9,10 @@ Provider-Kette einen liefert.
 
 Invarianten wie im Refresh-Schreibpfad (routes._process_one_key):
 Sign-Normalisierung via persistence.normalize_sign, Currency-Konflikt
-blockt den Write (nur last_refresh_attempt wird gestempelt),
-manually_overridden/from_ir_pdf-Zeilen bleiben unangetastet.
+blockt den Write (nur last_refresh_attempt wird gestempelt). Lock-
+Kontrakt: manuelle ACTUAL-Zeilen und from_ir_pdf bleiben unangetastet;
+manuelle FORECAST-Zeilen (Schaetz-Override) duerfen durch berichtete
+XBRL-Zahlen ersetzt werden.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -105,10 +107,19 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     # aus der Zeit existiert, als das Jahr noch lief.
     row = next((r for r in rows if not r.is_forecast), rows[0] if rows else None)
 
-    # Manual-Override und PDF-Werte sind authoritative — nicht anfassen,
-    # auch keinen Provider-Call verschwenden.
-    if row is not None and (row.manually_overridden or row.from_ir_pdf):
+    # Lock-Kontrakt: manuelle ACTUAL-Zeilen und PDF-Werte sind authoritative —
+    # nicht anfassen, auch keinen Provider-Call verschwenden. Eine manuelle
+    # FORECAST-Zeile war nur ein Schaetz-Override: liegen jetzt berichtete
+    # XBRL-Zahlen vor, darf der Anker sie ersetzen.
+    if row is not None and (
+        (row.manually_overridden and not row.is_forecast) or row.from_ir_pdf
+    ):
         return False
+    # Vor der Mutation festhalten: ersetzt dieser Write eine manuelle
+    # Forecast-Zeile? Dann werden unten auch Manual-Adjusted-Felder geleert.
+    replacing_manual_forecast = bool(
+        row is not None and row.manually_overridden and row.is_forecast
+    )
 
     result = _fetch_from_chain(company, key, year)
     if result is None or not isinstance(result.value, Decimal):
@@ -173,8 +184,9 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
                     company.ticker, key, year,
                 )
                 return False
-            # Guards wie im Normalpfad: Manual/PDF sind authoritative.
-            if row.manually_overridden or row.from_ir_pdf:
+            # Guards wie im Normalpfad; die neu geladene Zeile ist per
+            # Filter der actual-Slot — Manual dort ist Hard-Lock.
+            if (row.manually_overridden and not row.is_forecast) or row.from_ir_pdf:
                 return False
             if currency_conflict(key, row.currency, result.currency):
                 logger.warning(
@@ -201,8 +213,10 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     # provider-Actuals nie wieder an, sonst friert ein alter Adjusted-Wert
     # neben dem frischen GAAP-Wert ein. Geschuetzt sind nur Manual-Eintraege
     # und 8-K-Enrichment (SEC-URL) — Two-Stage-Sources werden abgeraeumt,
-    # das Enrichment fuellt danach billiger/besser nach.
-    if not adjusted_is_protected(row.adjustments_source):
+    # das Enrichment fuellt danach billiger/besser nach. Ausnahme: beim
+    # Ersetzen einer manuellen Forecast-Zeile wird auch Manual-Adjusted
+    # geleert — er war nur ein Schaetz-Ableger, das Enrichment fuellt neu.
+    if replacing_manual_forecast or not adjusted_is_protected(row.adjustments_source):
         row.numeric_value_adjusted = None
         row.adjustments_note = None
         row.adjustments_source = None
@@ -239,10 +253,13 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
         )
         .all()
     )
-    # Locks: Manual-Override und gefuellte PDF-Zeilen sind authoritative —
-    # egal in welchem is_forecast-Slot sie liegen.
+    # Locks: manuelle ACTUAL-Zeilen und gefuellte PDF-Zeilen sind
+    # authoritative. Manuelle FORECAST-Zeilen sperren nur Schaetz-Writer —
+    # berichtete XBRL-Zahlen duerfen sie ersetzen.
     for r in rows:
-        if r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None):
+        if (r.manually_overridden and not r.is_forecast) or (
+            r.from_ir_pdf and r.numeric_value is not None
+        ):
             return False
 
     fy_end_month = getattr(company, "fiscal_year_end_month", None)
@@ -272,6 +289,11 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
     row = next((r for r in rows if not r.is_forecast), None)
     if row is None:
         row = next(iter(rows), None)
+    # Vor der Mutation festhalten: ersetzt dieser Write eine manuelle
+    # Forecast-Zeile? Dann werden unten auch Manual-Adjusted-Felder geleert.
+    replacing_manual_forecast = bool(
+        row is not None and row.manually_overridden and row.is_forecast
+    )
 
     if row is not None and currency_conflict(key, row.currency, result.currency):
         logger.warning(
@@ -334,8 +356,12 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
             row.from_ir_pdf = False
             row.manually_overridden = False
             # Stale LLM-Adjusted-Werte abraeumen (siehe FY-Anker): nur
-            # Manual/8-K-Enrichment (SEC-URL) sind geschuetzt.
-            if not adjusted_is_protected(row.adjustments_source):
+            # Manual/8-K-Enrichment (SEC-URL) sind geschuetzt. Ausnahme:
+            # beim Ersetzen einer manuellen Forecast-Zeile faellt auch
+            # Manual-Adjusted (Schaetz-Ableger, Enrichment fuellt neu).
+            if replacing_manual_forecast or not adjusted_is_protected(
+                row.adjustments_source
+            ):
                 row.numeric_value_adjusted = None
                 row.adjustments_note = None
                 row.adjustments_source = None
