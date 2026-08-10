@@ -35,9 +35,9 @@ def company(db):
     return comp
 
 
-def _seed(db, comp, key, ptype, value, is_forecast=False, **kw):
+def _seed(db, comp, key, ptype, value, is_forecast=False, year=YEAR, **kw):
     row = CompanyValue(
-        company_id=comp.id, value_key=key, period_type=ptype, period_year=YEAR,
+        company_id=comp.id, value_key=key, period_type=ptype, period_year=year,
         numeric_value=Decimal(str(value)) if value is not None else None,
         is_forecast=is_forecast, source_name=kw.pop("source_name", "seed"),
         primary_method=kw.pop("primary_method", "provider"),
@@ -155,6 +155,141 @@ def test_negative_residual_for_always_positive_key_skipped(db, company):
 
     assert derive_open_quarter_from_fy_estimate(db, company.id, YEAR) == 0
     assert _open_q_row(db, company, "dividends", "Q4") is None
+
+
+# --- Berichtet-Kriterium fuer US-Filer: ein beendetes Quartal mit
+# Item-2.02-8-K (bzw. abgelaufener Karenz) gilt nicht als offen. ------------
+
+
+CIK = "0000789019"
+SUB_URL = f"https://data.sec.gov/submissions/CIK{CIK}.json"
+
+
+def _submissions(filing_date, items="2.02,9.01"):
+    return {"filings": {"recent": {
+        "form": ["8-K"],
+        "filingDate": [filing_date.isoformat()],
+        "accessionNumber": ["0000789019-90-000001"],
+        "primaryDocument": ["doc0.htm"],
+        "items": [items],
+    }}}
+
+
+def _in_grace_setup(db, company, days_back=20):
+    """FY-Ende so setzen, dass Q4 vor `days_back` Tagen endete (beendet,
+    Karenz nicht um), plus Q1-Q3-Actuals, Q4-LLM-Forecast und FY-Estimate."""
+    from datetime import date, timedelta
+
+    p_end = date.today() - timedelta(days=days_back)
+    company.fiscal_year_end_month = p_end.month
+    company.fiscal_year_end_day = p_end.day
+    db.commit()
+    year = p_end.year
+    for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
+        _seed(db, company, "net_income", q, v, year=year)
+    est = _seed(db, company, "net_income", "Q4", 999, is_forecast=True,
+                primary_method="web_guidance", year=year)
+    _seed(db, company, "net_income", "FY", 460, is_forecast=True,
+          primary_method="two_stage_confirmed", year=year)
+    return year, p_end, est
+
+
+def test_quarter_with_8k_not_treated_as_open(db, company, monkeypatch):
+    """Q4 beendet, Karenz nicht um, Item-2.02-8-K existiert: das Quartal
+    gilt als berichtet — die FY-Guidance-Ableitung ueberschreibt die
+    Zelle NICHT (Actual kommt gleich per Bruecke/XBRL)."""
+    from datetime import timedelta
+
+    import app.values.adjusted_enrichment as adj
+
+    year, p_end, est = _in_grace_setup(db, company)
+    subs = _submissions(p_end + timedelta(days=5))
+    monkeypatch.setattr(adj, "_resolve_cik", lambda ticker: CIK)
+    monkeypatch.setattr(adj, "_fetch_json",
+                        lambda url: subs if url == SUB_URL else None)
+
+    written = derive_open_quarter_from_fy_estimate(db, company.id, year)
+    db.commit()
+
+    assert written == 0
+    db.refresh(est)
+    assert est.numeric_value == Decimal("999")
+    assert est.primary_method == "web_guidance"
+
+
+def test_quarter_without_8k_still_derived(db, company, monkeypatch):
+    """Q4 beendet, Karenz nicht um, KEIN Item-2.02-8-K (nur 5.02): das
+    Quartal ist offen — die Ableitung laeuft wie bisher."""
+    from datetime import timedelta
+
+    import app.values.adjusted_enrichment as adj
+
+    year, p_end, est = _in_grace_setup(db, company)
+    subs = _submissions(p_end + timedelta(days=5), items="5.02")
+    monkeypatch.setattr(adj, "_resolve_cik", lambda ticker: CIK)
+    monkeypatch.setattr(adj, "_fetch_json",
+                        lambda url: subs if url == SUB_URL else None)
+
+    written = derive_open_quarter_from_fy_estimate(db, company.id, year)
+    db.commit()
+
+    assert written == 1
+    db.refresh(est)
+    assert est.numeric_value == Decimal("130")
+    assert est.primary_method == "calculated"
+
+
+def test_fetch_error_falls_back_to_grace_rule(db, company, monkeypatch):
+    """Submissions-Fetch schlaegt fehl (CIK None, conftest-Default):
+    konservativ gilt die Karenz-Regel — Karenz nicht um -> Quartal offen,
+    Ableitung laeuft."""
+    year, _, est = _in_grace_setup(db, company)
+
+    written = derive_open_quarter_from_fy_estimate(db, company.id, year)
+    db.commit()
+
+    assert written == 1
+    db.refresh(est)
+    assert est.numeric_value == Decimal("130")
+
+
+def test_grace_passed_quarter_not_treated_as_open(db, company, monkeypatch):
+    """Karenz abgelaufen (Q4-Ende 60 Tage her): das Quartal gilt fuer
+    US-Filer als berichtet — kein Netz-Call noetig, keine Ableitung."""
+    import app.values.adjusted_enrichment as adj
+
+    year, _, est = _in_grace_setup(db, company, days_back=60)
+
+    def _boom(ticker):
+        raise AssertionError("Karenz abgelaufen — kein Submissions-Fetch noetig")
+
+    monkeypatch.setattr(adj, "_resolve_cik", _boom)
+    written = derive_open_quarter_from_fy_estimate(db, company.id, year)
+    db.commit()
+
+    assert written == 0
+    db.refresh(est)
+    assert est.numeric_value == Decimal("999")
+
+
+def test_non_us_ended_quarter_still_derived(db, company, monkeypatch):
+    """Nicht-US-Firma: beendetes Quartal bleibt wie bisher offen — keine
+    EDGAR-Anfrage, Ableitung unveraendert."""
+    import app.values.adjusted_enrichment as adj
+
+    company.isin = "DE0001234567"
+    year, _, est = _in_grace_setup(db, company)
+
+    def _boom(ticker):
+        raise AssertionError("non-US darf EDGAR nicht anfragen")
+
+    monkeypatch.setattr(adj, "_resolve_cik", _boom)
+    written = derive_open_quarter_from_fy_estimate(db, company.id, year)
+    db.commit()
+
+    assert written == 1
+    db.refresh(est)
+    assert est.numeric_value == Decimal("130")
 
 
 def test_negative_residual_for_net_income_allowed(db, company):

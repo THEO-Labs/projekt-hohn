@@ -1258,15 +1258,31 @@ def apply_to_db(
     except Exception:
         edgar_only = False
 
+    # Submissions-Cache fuers 8-K-Kriterium: pro apply_to_db-Aufruf genau
+    # EIN Fetch pro Ticker; Fetch-Fehler landen als None im Cache.
+    subs_cache: dict = {}
+
     def _period_reported(pt: str) -> bool:
         """Berichtete Periode: Periodenende (FY = Q4-Ende) liegt mindestens
-        REPORTING_GRACE_DAYS zurueck — gleiche Konvention wie detail_page."""
+        REPORTING_GRACE_DAYS zurueck (Konvention wie detail_page) ODER ein
+        Item-2.02-8-K nach Periodenende existiert (Visa-Fall: Earnings-
+        Release da, Karenz noch nicht um — die KI darf trotzdem nicht
+        schreiben). Der 8-K-Check laeuft nur, wenn er entscheidet (Periode
+        beendet, Karenz noch nicht um) — sonst kein Netz-Call; bei
+        Fetch-Fehlern greift konservativ die reine Karenz-Regel."""
         from app.values.detail_page import REPORTING_GRACE_DAYS, quarter_end_date
         q = "Q4" if pt == "FY" else pt
         p_end = quarter_end_date(year, q, fy_m, fy_d)
         if p_end is None:
             return False
-        return (date.today() - p_end).days >= REPORTING_GRACE_DAYS
+        today = date.today()
+        if p_end >= today:
+            return False
+        if (today - p_end).days >= REPORTING_GRACE_DAYS:
+            return True
+        from app.values.gaap_bridge import has_reported_8k
+        ticker = getattr(comp, "ticker", None) or result.extract.ticker
+        return has_reported_8k(ticker, p_end, subs_cache)
 
     written = []
     provider_skips = 0

@@ -569,6 +569,148 @@ def test_edgar_only_non_us_company_unchanged(client, db):
     assert row.primary_method.startswith("two_stage")
 
 
+# --- EDGAR-only-Gate innerhalb der Karenz: ein Item-2.02-8-K nach
+# Periodenende zaehlt als "berichtet" (Visa-Fall) — Submissions gemockt. ----
+
+
+_8K_CIK = "0000789019"
+_8K_SUB_URL = f"https://data.sec.gov/submissions/CIK{_8K_CIK}.json"
+
+
+def _8k_submissions(filing_date, items="2.02,9.01"):
+    return {"filings": {"recent": {
+        "form": ["8-K"],
+        "filingDate": [filing_date.isoformat()],
+        "accessionNumber": ["0000789019-90-000001"],
+        "primaryDocument": ["doc0.htm"],
+        "items": [items],
+    }}}
+
+
+def _us_company_in_grace(client, db, email):
+    """US-Filer, dessen FY (= Q4) vor 20 Tagen endete: Periode beendet,
+    Karenz (45 Tage) noch nicht um — das 8-K-Kriterium entscheidet."""
+    from datetime import date, timedelta
+
+    from app.companies.models import Company
+
+    cid = _company(client, db, email=email)
+    p_end = date.today() - timedelta(days=20)
+    comp = db.get(Company, cid)
+    comp.isin = "US0378331005"
+    comp.fiscal_year_end_month = p_end.month
+    comp.fiscal_year_end_day = p_end.day
+    db.commit()
+    return cid, p_end
+
+
+def _patch_submissions(monkeypatch, subs):
+    """Submissions-Fetch der 8-K-Pruefung mocken (gaap_bridge nutzt die
+    Fetch-Helfer aus adjusted_enrichment)."""
+    import app.values.adjusted_enrichment as adj
+
+    monkeypatch.setattr(adj, "_resolve_cik", lambda ticker: _8K_CIK)
+    monkeypatch.setattr(
+        adj, "_fetch_json",
+        lambda url: subs if url == _8K_SUB_URL else None,
+    )
+
+
+def test_edgar_only_within_grace_with_8k_suppresses_write(client, db, monkeypatch):
+    """Karenz nicht um, aber Item-2.02-8-K existiert: die Periode gilt als
+    berichtet — der Two-Stage-Wert wird unterdrueckt (Visa Q3 FY2026)."""
+    from datetime import timedelta
+
+    cid, p_end = _us_company_in_grace(client, db, email="ts24@example.com")
+    _patch_submissions(monkeypatch, _8k_submissions(p_end + timedelta(days=5)))
+
+    r = _result("net_income", Decimal("6300000000"))
+    r.extract.year = p_end.year
+    apply_to_db(db, cid, "net_income", p_end.year, r, currency="USD")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", p_end.year)
+    assert row.numeric_value is None
+    assert row.primary_method == "not_found"
+
+
+def test_edgar_only_within_grace_without_8k_allows_write(client, db, monkeypatch):
+    """Karenz nicht um und KEIN Item-2.02-8-K (nur 5.02): die Periode gilt
+    als unberichtet — die Schaetzung darf geschrieben werden."""
+    from datetime import timedelta
+
+    cid, p_end = _us_company_in_grace(client, db, email="ts25@example.com")
+    _patch_submissions(
+        monkeypatch, _8k_submissions(p_end + timedelta(days=5), items="5.02"),
+    )
+
+    r = _result("net_income", Decimal("6300000000"))
+    r.extract.year = p_end.year
+    apply_to_db(db, cid, "net_income", p_end.year, r, currency="USD")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", p_end.year)
+    assert row.numeric_value == Decimal("6300000000")
+    assert row.primary_method.startswith("two_stage")
+
+
+def test_edgar_only_within_grace_fetch_error_falls_back_to_grace_rule(
+    client, db, monkeypatch,
+):
+    """Submissions-Fetch schlaegt fehl: konservativ gilt die Karenz-Regel
+    — Karenz nicht um -> unberichtet -> Write erlaubt (kein Hard-Block
+    durch Netzprobleme)."""
+    import app.values.adjusted_enrichment as adj
+
+    cid, p_end = _us_company_in_grace(client, db, email="ts26@example.com")
+    monkeypatch.setattr(adj, "_resolve_cik", lambda ticker: _8K_CIK)
+    monkeypatch.setattr(adj, "_fetch_json", lambda url: None)
+
+    r = _result("net_income", Decimal("6300000000"))
+    r.extract.year = p_end.year
+    apply_to_db(db, cid, "net_income", p_end.year, r, currency="USD")
+    db.commit()
+
+    row = _row(db, cid, "net_income", "FY", p_end.year)
+    assert row.numeric_value == Decimal("6300000000")
+    assert row.primary_method.startswith("two_stage")
+
+
+def test_edgar_only_submissions_fetched_once_per_apply(client, db, monkeypatch):
+    """Q4- und FY-Periode brauchen beide den 8-K-Check — das Submissions-
+    JSON wird pro apply_to_db-Aufruf genau EINMAL geholt."""
+    from datetime import timedelta
+
+    import app.values.adjusted_enrichment as adj
+    from scripts.two_stage_research import QuarterValue
+
+    cid, p_end = _us_company_in_grace(client, db, email="ts27@example.com")
+    subs = _8k_submissions(p_end + timedelta(days=5))
+    fetch_counts: dict[str, int] = {}
+
+    def _counting_fetch(url):
+        fetch_counts[url] = fetch_counts.get(url, 0) + 1
+        return subs if url == _8K_SUB_URL else None
+
+    monkeypatch.setattr(adj, "_resolve_cik", lambda ticker: _8K_CIK)
+    monkeypatch.setattr(adj, "_fetch_json", _counting_fetch)
+
+    r = _result("net_income", Decimal("6300000000"))
+    r.extract.year = p_end.year
+    r.extract.q4 = QuarterValue(
+        value=Decimal("1600000000"), source_quote="Q4 quote",
+        source_url=None, is_estimate=False,
+    )
+    apply_to_db(db, cid, "net_income", p_end.year, r, currency="USD")
+    db.commit()
+
+    assert fetch_counts.get(_8K_SUB_URL) == 1
+    for pt in ("Q4", "FY"):
+        row = _row(db, cid, "net_income", pt, p_end.year)
+        assert row.numeric_value is None
+        assert row.primary_method == "not_found"
+
+
 def test_edgar_only_existing_provider_value_untouched(client, db):
     """Bestehender Provider-Wert (XBRL-Anker) bleibt unangetastet — nur der
     Refresh-Versuch wird gestempelt, kein Reset auf not_found."""

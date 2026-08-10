@@ -190,6 +190,55 @@ def test_fill_only_null_keeps_existing_adjusted(db, company, monkeypatch):
     assert eps.numeric_value_adjusted == Decimal("3.23")
 
 
+def test_overwrites_unprotected_two_stage_adjusted(db, company, monkeypatch):
+    """Adjusted-Wert aus der Two-Stage-Recherche (Quelle 'quote | url', per
+    adjusted_is_protected unbelegt): der tabellenstrikte 8-K-Wert darf ihn
+    ueberschreiben (Visa-Fall: gerundete 6.300 statt Tabelle 6.296)."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"),
+                   numeric_value_adjusted=Decimal("23900000000"),
+                   adjustments_note="Non-GAAP net income was $23.9 billion",
+                   adjustments_source="Non-GAAP net income was $23.9 billion | https://ir.example/pr")
+    fake = _patch_all(
+        monkeypatch,
+        {SUB_URL: _submissions([("8-K", Q2_FILING_DATE, ACCN_Q2, "2.02,9.01")]),
+         INDEX_URL_Q2: INDEX_JSON},
+        {EXHIBIT_URL_Q2: EXHIBIT_HTML},
+        {"non_gaap_net_income": 24000000000, "non_gaap_diluted_eps": None,
+         "gaap_net_income": 20000000000, "gaap_diluted_eps": None,
+         "source_kind": "table", "adjustment_items": "SBC"},
+    )
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert enriched == 1
+    assert len(fake.messages.calls) == 1
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted == Decimal("24000000000")
+    assert ni.adjustments_note == "Non-GAAP (Reconciliation 8-K): SBC"
+    assert ni.adjustments_source == EXHIBIT_URL_Q2
+
+
+def test_manual_adjusted_never_overwritten(db, company, monkeypatch):
+    """adjustments_source='Manual' ist geschuetzt: die Zeile ist kein
+    Kandidat — kein EDGAR-Zugriff, kein Claude-Call, Wert bleibt."""
+    ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"),
+                   numeric_value_adjusted=Decimal("25000000000"),
+                   adjustments_note="Manuell ueberschrieben",
+                   adjustments_source="Manual")
+
+    def _boom(ticker):
+        raise AssertionError("geschuetzte Adjusted-Zeile darf EDGAR nicht anfragen")
+
+    monkeypatch.setattr(adj, "_resolve_cik", _boom)
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+
+    assert enriched == 0
+    db.refresh(ni)
+    assert ni.numeric_value_adjusted == Decimal("25000000000")
+    assert ni.adjustments_source == "Manual"
+
+
 def test_all_periods_filled_makes_no_llm_call(db, company, monkeypatch):
     """Idempotenz: sind alle Adjusted-Werte belegt, gibt es keine Kandidaten
     und damit weder EDGAR- noch Claude-Calls."""

@@ -130,7 +130,7 @@ def _focus_statements(text: str, limit: int = _TEXT_CAP_CHARS) -> str:
     return text[start:start + limit]
 
 
-def _has_item_202_8k(subs: dict, period_end: date) -> bool:
+def has_item_202_8k(subs: dict, period_end: date) -> bool:
     """True wenn im Fenster [Periodenende, +RELEASE_WINDOW_DAYS] ein 8-K
     mit Item 2.02 (Results of Operations) gefiled wurde."""
     recent = subs.get("filings", {}).get("recent", {})
@@ -153,6 +153,26 @@ def _has_item_202_8k(subs: dict, period_end: date) -> bool:
     return False
 
 
+def has_reported_8k(ticker: str, period_end: date, cache: dict) -> bool:
+    """Gemeinsames Berichtet-Kriterium innerhalb der Karenzfrist: existiert
+    ein Item-2.02-8-K nach dem Periodenende? Das Submissions-JSON wird pro
+    Ticker genau EINMAL in den uebergebenen Cache geholt (Caller haelt den
+    Cache pro Aufruf). Fetch-Fehler liefern False — der Caller faellt damit
+    konservativ auf die reine Karenz-Regel zurueck."""
+    if ticker not in cache:
+        subs = None
+        cik = release_fetch._resolve_cik(ticker)
+        if cik is not None:
+            subs = release_fetch._fetch_json(
+                f"https://data.sec.gov/submissions/CIK{cik}.json"
+            )
+        cache[ticker] = subs or None
+    subs = cache[ticker]
+    if not subs:
+        return False
+    return has_item_202_8k(subs, period_end)
+
+
 def _cell_rows(db, company_id, key: str, ptype: str, year: int) -> list[CompanyValue]:
     return (
         db.query(CompanyValue)
@@ -168,15 +188,16 @@ def _cell_rows(db, company_id, key: str, ptype: str, year: int) -> list[CompanyV
 
 
 def _cell_needs_bridge(rows: list[CompanyValue]) -> bool:
-    """True wenn die Zelle not_found/leer oder nur eine Schaetzung ist.
-    Manual/PDF-Zeilen und berichtete Actuals (provider oder aeltere
-    LLM-Actuals) sind authoritative — kein Bridge-Write."""
+    """True wenn die Zelle not_found/leer, nur eine Schaetzung oder ein
+    Freitext-LLM-Actual (two_stage_*) ist — tabellenstrikte 8-K-Werte
+    schlagen Freitext-LLM-Werte. Manual/PDF-Zeilen und Provider-Actuals
+    (XBRL-Anker) sind authoritative — kein Bridge-Write."""
     for r in rows:
         if r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None):
             return False
     actual = next((r for r in rows if not r.is_forecast), None)
     if actual is not None and actual.numeric_value is not None:
-        return False
+        return (actual.primary_method or "").startswith("two_stage")
     return True
 
 
@@ -347,9 +368,9 @@ def bridge_gaap_from_earnings_releases(
     db, company, years: list[int], max_llm_calls: int = 8, cost_tracker=None,
 ) -> int:
     """Fuellt not_found/Estimate-Zellen berichteter Perioden mit den
-    GAAP-Werten aus dem 8-K-Earnings-Release. Nur US-Filer. Ein Claude-
-    Call pro Periode deckt alle fehlenden Keys. Rueckgabe: Anzahl
-    geschriebener Zellen."""
+    GAAP-Werten aus dem 8-K-Earnings-Release und ueberschreibt Freitext-
+    LLM-Actuals (two_stage_*). Nur US-Filer. Ein Claude-Call pro Periode
+    deckt alle fehlenden Keys. Rueckgabe: Anzahl geschriebener Zellen."""
     from app.calculations.lock import is_us_company
     from app.values.detail_page import REPORTING_GRACE_DAYS
     if not is_us_company(company):
@@ -403,7 +424,7 @@ def bridge_gaap_from_earnings_releases(
         # Berichtet-Gate: Grace-Frist vorbei ODER ein Item-2.02-8-K nach
         # Periodenende existiert (Release da, 10-Q-XBRL noch nicht).
         grace_passed = (today - period_end).days >= REPORTING_GRACE_DAYS
-        if not grace_passed and not _has_item_202_8k(subs, period_end):
+        if not grace_passed and not has_item_202_8k(subs, period_end):
             continue
         exhibit_url = _find_exhibit_url(cik, period_end, subs)
         if exhibit_url is None:

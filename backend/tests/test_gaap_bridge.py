@@ -222,6 +222,49 @@ def test_reported_actual_and_manual_cells_skipped(db, company, monkeypatch):
     assert manual.manually_overridden is True
 
 
+def test_bridge_overwrites_two_stage_actual(db, company, monkeypatch):
+    """Freitext-LLM-Actuals (two_stage_*) sind KEINE authoritative Werte:
+    der tabellenstrikte 8-K-Wert darf sie ueberschreiben (Visa-Fall:
+    gerundeter Freitext-Umsatz 11.630 statt Tabelle 11.633)."""
+    llm = _seed_row(db, company, "revenue", "Q2", Decimal("9100000000"),
+                    primary_method="two_stage_confirmed",
+                    source_name="Two-Stage two_stage_confirmed | quote=...")
+    _patch_q2(monkeypatch, {
+        "period_end_date": f"{YEAR}-06-30",
+        "values": _values(revenue=9200000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert written == 1
+    db.refresh(llm)
+    assert llm.numeric_value == Decimal("9200000000")
+    assert llm.primary_method == "provider"
+    assert llm.source_name == BRIDGE_SOURCE_NAME
+    assert llm.source_link == EXHIBIT_URL_Q2
+
+
+def test_bridge_never_overwrites_pdf_row(db, company, monkeypatch):
+    """from_ir_pdf-Zeilen mit Wert sind authoritative — kein Bridge-Write."""
+    pdf = _seed_row(db, company, "revenue", "Q2", Decimal("777"),
+                    primary_method="pdf", from_ir_pdf=True)
+    _patch_q2(monkeypatch, {
+        "period_end_date": f"{YEAR}-06-30",
+        "values": _values(revenue=9200000000),
+        "ytd_values": _values(),
+    })
+
+    bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    db.refresh(pdf)
+    assert pdf.numeric_value == Decimal("777")
+    assert pdf.primary_method == "pdf"
+    assert pdf.from_ir_pdf is True
+
+
 def test_non_us_company_skips(db, company, monkeypatch):
     company.isin = "DE0001234567"
     db.commit()

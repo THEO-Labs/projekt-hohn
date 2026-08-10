@@ -9,8 +9,10 @@ dort nach: EIN Claude-Call pro Periode fuellt net_income und eps_diluted
 zusammen (das Non-GAAP-Kernpaar; ebitda/fcf bewusst nicht — US-Releases
 sind da uneinheitlich).
 
-Fill-only-NULL: bestehende Adjusted-Werte (manuell oder frueher
-angereichert) werden nie ueberschrieben — idempotent, begrenzt LLM-Kosten.
+Fill-only-NULL fuer belegte Adjusted-Werte (Manual oder URL-belegt, siehe
+persistence.adjusted_is_protected) — idempotent, begrenzt LLM-Kosten.
+Unbelegte Two-Stage-Adjusted-Werte (Format 'quote | url') duerfen
+ueberschrieben werden: tabellenstrikte 8-K-Werte schlagen Freitext-LLM.
 """
 import json
 import logging
@@ -384,13 +386,17 @@ def enrich_adjusted_from_earnings_releases(
     db, company, years: list[int], max_llm_calls: int = 8, cost_tracker=None,
 ) -> int:
     """Fuellt numeric_value_adjusted fuer net_income/eps_diluted aus den
-    8-K-Earnings-Releases (Fill-only-NULL). Ein Claude-Call pro Periode
+    8-K-Earnings-Releases. Fill-only-NULL fuer geschuetzte Adjusted-Werte
+    (adjusted_is_protected: Manual/URL-belegt); unbelegte Two-Stage-
+    Adjusted-Werte werden ueberschrieben. Ein Claude-Call pro Periode
     deckt beide Keys. Rueckgabe: Anzahl angereicherter Perioden."""
     from app.calculations.lock import is_us_company
     if not is_us_company(company):
         return 0
 
     from sqlalchemy import or_
+
+    from app.values.persistence import adjusted_is_protected
 
     rows = (
         db.query(CompanyValue)
@@ -401,7 +407,6 @@ def enrich_adjusted_from_earnings_releases(
             CompanyValue.period_type.in_(("FY", "Q1", "Q2", "Q3", "Q4")),
             CompanyValue.is_forecast.is_(False),
             CompanyValue.numeric_value.isnot(None),
-            CompanyValue.numeric_value_adjusted.is_(None),
             # Negativ-Marker: bereits als "keine Reconciliation" markierte
             # Zeilen nicht erneut versuchen (keine Dauer-Retries).
             or_(
@@ -411,6 +416,14 @@ def enrich_adjusted_from_earnings_releases(
         )
         .all()
     )
+    # Kandidaten: Adjusted leer ODER unbelegt (Two-Stage-Format 'quote |
+    # url' bzw. ohne Quelle) — tabellenstrikte 8-K-Werte duerfen Freitext-
+    # LLM-Adjusted ersetzen. Manual/URL-belegte Adjusted bleiben tabu.
+    rows = [
+        r for r in rows
+        if r.numeric_value_adjusted is None
+        or not adjusted_is_protected(r.adjustments_source)
+    ]
     by_period: dict[tuple[int, str], list[CompanyValue]] = {}
     for row in rows:
         by_period.setdefault((row.period_year, row.period_type), []).append(row)

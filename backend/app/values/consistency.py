@@ -6,7 +6,7 @@ neu gesetzt und geloescht, wenn der Check wieder besteht.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -405,12 +405,58 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
     und GENAU EIN Quartal noch keinen berichteten Actual hat. Ersetzt die
     LLM-Schaetzung des offenen Quartals durch Arithmetik (kein LLM-Call,
     kein Trend-Drift). Manuelle und PDF-Zeilen bleiben unangetastet.
-    Rueckgabe: Anzahl geschriebener Quartals-Zellen.
+    US-Filer: ein bereits berichtetes Quartal (Karenz abgelaufen ODER
+    Item-2.02-8-K nach Quartalsende) gilt NICHT als offen — sonst
+    ueberschreibt die FY-Guidance ein Quartal, dessen Actual gleich per
+    8-K-Bruecke/XBRL-Anker kommt. Rueckgabe: Anzahl geschriebener
+    Quartals-Zellen.
     """
+    from app.companies.models import Company
     from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
 
     rows = _rows_for_year(db, company_id, year)
     written = 0
+
+    company = db.get(Company, company_id)
+    reported_memo: dict[str, bool] = {}
+    subs_cache: dict = {}
+
+    def _quarter_already_reported(q: str) -> bool:
+        """Berichtet-Kriterium wie im apply_to_db-Gate (nur US-Filer).
+        Der 8-K-Check (Netz) laeuft nur fuer beendete Quartale innerhalb
+        der Karenz; Fetch-Fehler fallen auf die Karenz-Regel zurueck."""
+        if q in reported_memo:
+            return reported_memo[q]
+        reported = False
+        try:
+            from app.calculations.lock import is_us_company
+            if company is not None and is_us_company(company):
+                from app.values.detail_page import (
+                    REPORTING_GRACE_DAYS,
+                    quarter_end_date,
+                )
+                p_end = quarter_end_date(
+                    year, q,
+                    getattr(company, "fiscal_year_end_month", None),
+                    getattr(company, "fiscal_year_end_day", None),
+                )
+                today = date.today()
+                if p_end is not None and p_end < today:
+                    if (today - p_end).days >= REPORTING_GRACE_DAYS:
+                        reported = True
+                    else:
+                        from app.values.gaap_bridge import has_reported_8k
+                        reported = has_reported_8k(company.ticker, p_end, subs_cache)
+        except Exception as e:
+            logger.warning(
+                "open-quarter reported-check failed %s/%s FY%s: %s — "
+                "Karenz-Regel greift nicht, Quartal gilt als offen",
+                company_id, q, year, e,
+            )
+            reported = False
+        reported_memo[q] = reported
+        return reported
+
     for key in sorted(SUMMABLE_QUARTERLY_KEYS):
         # FY-Estimate (Guidance/Konsens): Forecast-Zeile mit Wert. Ein
         # FY-Actual mit Wert heisst Jahr abgeschlossen — nichts abzuleiten.
@@ -446,6 +492,11 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
         if len(open_qs) != 1:
             continue
         target_q = open_qs[0]
+        # Berichtetes Quartal ohne DB-Actual (8-K existiert, XBRL/Bruecke
+        # noch nicht durch): nicht als offen behandeln — keine Guidance-
+        # Ableitung ueber echte, gleich eintreffende Zahlen legen.
+        if _quarter_already_reported(target_q):
+            continue
         derived = fy_est.numeric_value - sum(reported.values(), Decimal("0"))
         # Negatives Residuum bei Always-Positive-Keys = stale/inkonsistente
         # FY-Guidance — nicht persistieren.
