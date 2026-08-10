@@ -138,7 +138,9 @@ export function ValueCellPopover({ cell, displayValue, onClose, anchorRect, comp
     && cell.value_key
     && cell.period_type
     && cell.period_year != null
-    && cell.primary_method !== "calculated"
+    // Abgeleitete SCHAETZUNGEN (z.B. Q4 = FY minus Quartale) sind editierbar —
+    // nur echte Formel-Kennzahlen nicht (Backend blockt CALCULATED_KEYS ohnehin).
+    && (cell.primary_method !== "calculated" || cell.is_forecast)
   );
 
   const handleStartEdit = () => {

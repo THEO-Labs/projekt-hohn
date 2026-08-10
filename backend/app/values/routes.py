@@ -2287,6 +2287,34 @@ def _recalc_after_override(
     db.flush()
 
 
+def _is_period_reported(
+    company: Company, period_type: str, period_year: int | None
+) -> bool:
+    """Geteiltes Berichtet-Kriterium der Pipeline (detail_page/gaap_bridge):
+    Periodenende + REPORTING_GRACE_DAYS abgelaufen ODER (US-Filer) ein
+    Item-2.02-8-K nach dem Periodenende. SNAPSHOT gilt immer als berichtet.
+    Der Submissions-Fetch laeuft nur, wenn er wirklich entscheidet (US-Filer,
+    Periode beendet, Karenz nicht um); Fetch-Fehler fallen in has_reported_8k
+    konservativ auf die reine Karenz-Regel zurueck (-> nicht berichtet)."""
+    if period_type == "SNAPSHOT" or period_year is None:
+        return True
+    from app.values import gaap_bridge
+    from app.values.adjusted_enrichment import _period_end
+    from app.values.detail_page import REPORTING_GRACE_DAYS
+
+    period_end = _period_end(company, period_type, period_year)
+    if period_end is None:
+        # Kein bestimmbares Periodenende (unbekannter period_type) ->
+        # Verhalten wie bisher (Actual-Slot).
+        return True
+    today = datetime.now(timezone.utc).date()
+    if (today - period_end).days >= REPORTING_GRACE_DAYS:
+        return True
+    if period_end >= today or not is_us_company(company):
+        return False
+    return gaap_bridge.has_reported_8k(company.ticker, period_end, cache={})
+
+
 @values_router.post("/{company_id}/values/{value_key}/override", response_model=CompanyValueOut)
 def override_company_value(
     company_id: UUID,
@@ -2323,10 +2351,44 @@ def override_company_value(
         oq = oq.filter(CompanyValue.period_year == effective_period_year)
     else:
         oq = oq.filter(CompanyValue.period_year.is_(None))
-    # Wenn fuer ein Jahr sowohl Forecast als auch Actual existieren, bevorzugt
-    # der Override den Actual-Eintrag (is_forecast=False sortiert vorne).
-    # Fuer Forecast-only Jahre wird nur der Forecast gefunden.
-    existing = oq.order_by(CompanyValue.is_forecast.asc()).first()
+    rows = oq.order_by(CompanyValue.is_forecast.asc()).all()
+
+    # Slot-Wahl: fuer BERICHTETE Perioden zielt der Override wie bisher auf
+    # den Actual-Eintrag (is_forecast=False sortiert vorne). Fuer noch NICHT
+    # berichtete Perioden ist ein manueller Wert eine Schaetzung — er gehoert
+    # in den FORECAST-Slot. Sonst landete er als manueller ACTUAL auf der
+    # not_found-Platzhalterzeile: falsche Farbe und per Lock-Kontrakt
+    # dauerhaft gegen die Actual-Writer (Anker/Bruecke) gesperrt, obwohl
+    # berichtete Zahlen ihn spaeter ersetzen sollen. Text-Overrides behalten
+    # das alte Verhalten (nur der numerische Pfad ist betroffen).
+    target_is_forecast = (
+        payload.numeric_value is not None
+        and not _is_period_reported(company, effective_period_type, effective_period_year)
+    )
+    if target_is_forecast:
+        forecast_row = next((r for r in rows if r.is_forecast), None)
+        actual_row = next((r for r in rows if not r.is_forecast), None)
+        if forecast_row is not None:
+            existing = forecast_row
+            # Leere Actual-Platzhalterzeile (not_found) abraeumen — sie
+            # bliebe sonst als leerer Actual neben dem manuellen Forecast.
+            if (
+                actual_row is not None
+                and actual_row.numeric_value is None
+                and actual_row.text_value is None
+            ):
+                db.delete(actual_row)
+                db.flush()
+        elif actual_row is not None:
+            # Nur der Actual-Slot existiert (not_found-Platzhalter): auf
+            # Forecast flippen. Unique-Index bleibt gewahrt, weil kein
+            # Forecast-Slot existiert.
+            actual_row.is_forecast = True
+            existing = actual_row
+        else:
+            existing = None
+    else:
+        existing = rows[0] if rows else None
 
     inherit_currency = company.currency if value_key in CURRENCY_KEYS else None
 
@@ -2380,6 +2442,7 @@ def override_company_value(
             value_key=value_key,
             period_type=effective_period_type,
             period_year=effective_period_year,
+            is_forecast=target_is_forecast,
             numeric_value=override_value,
             text_value=payload.text_value,
             source_name=payload.source_name,
