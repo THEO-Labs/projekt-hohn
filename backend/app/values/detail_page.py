@@ -26,7 +26,7 @@ from app.db import get_db
 from app.portfolios.models import Portfolio
 from app.values.currency_keys import CURRENCY_KEYS
 from app.values.models import CompanyValue, ValueDefinition
-from app.values.quarterly_estimates import SUMMABLE_QUARTERLY_KEYS
+from app.values.period_keys import SUMMABLE_QUARTERLY_KEYS
 
 
 detail_router = APIRouter(prefix="/api/companies", tags=["detail-page"])
@@ -550,9 +550,9 @@ def get_company_detail(
         ))
 
     # 4) Balance sheet — POINT_IN_TIME keys (net_debt, cash_and_equivalents, …).
-    # estimate_fy_via_quarterly_sum persists an FY row with Q4-Endstand; falls
-    # der Refresh nur die Q-Rows hat (kein FY roll-up gelaufen), fallen wir auf
-    # die Q4 Row zurueck. Beides gleichwertig — es ist der Bilanzstichtag.
+    # Der Refresh persistiert eine FY-Row mit Q4-Endstand; falls nur die
+    # Q-Rows da sind (kein FY roll-up gelaufen), fallen wir auf die Q4 Row
+    # zurueck. Beides gleichwertig — es ist der Bilanzstichtag.
     bs_keys = ["cash_and_equivalents", "st_investments", "st_debt", "lt_debt", "net_debt", "market_cap"]
     bs_rows = _load_rows(
         db, company_id,

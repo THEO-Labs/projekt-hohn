@@ -14,17 +14,15 @@ Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
     DE-Filer (Munich Re, Allianz, ...) sind NICHT in ESEF -> Claude-Web only.
 
   FY-ESTIMATES (laufendes FY, period_year >= current_year)
-    Per-Q-Aggregation in quarterly_estimates.estimate_fy_via_quarterly_sum:
-      1. Q-Actual aus DB (alt-PDF oder Manual-Override) uebernehmen
-      2. EDGAR-Q-XBRL Fallback (US-Filer, Q1/Q2/Q3 -- Q4 nie verfuegbar)
-      3. Claude-Q-Call mit Pflicht-Ankern (Q-Actuals + prev_fy_val)
-      4. FY = Sigma Q1-Q4 (summable) oder Q4-Endstand (point-in-time: net_debt)
+    US-Filer: EIN gebuendelter Guidance-Call (guidance_estimates) +
+    deterministische Ableitungen (Carry-Forward, Residuen) — keine
+    LLM-Recherche pro Key. Non-US: Two-Stage bzw. Web-Recherche.
 
   CALCULATED FELDER (FCF-Yield, EV/EBITDA, Hohn-Return, ...)
     calculation_engine.calculate_fy nach Werte-Refresh.
 
   ADJUSTED-WERTE (NI/EBITDA/FCF non-GAAP)
-    Default OFF (Cost-Optimierung). Env-Flag ADJUSTED_AUTOFETCH=true.
+    US: 8-K-Reconciliation (adjusted_enrichment) + Guidance-Sidecars.
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -400,38 +398,10 @@ def _try_web_guidance(
     )
     prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
 
-    # Neue Pipeline fuer die 7 Forward-Estimate-Keys (NI, EBITDA, FCF, SBC,
-    # Buyback, Dividends, Net Debt): pro Quartal entweder Actual aus DB
-    # uebernehmen oder Claude-Q-Call fuer das fehlende Quartal. Dann
-    # mathematische Aggregation (Summe oder Q4-Endstand). Eliminiert
-    # FY-LLM-Sum-Drift und nutzt vorhandene 10-Q-Actuals exakt.
-    from app.values.quarterly_estimates import (
-        QUARTERLY_ESTIMATE_KEYS,
-        estimate_fy_via_quarterly_sum,
-    )
-    if key in QUARTERLY_ESTIMATE_KEYS:
-        result = estimate_fy_via_quarterly_sum(
-            db, company=company, key=key,
-            target_fy=target_fy, prev_fy_val=prev_fy_val,
-        )
-        if result is None:
-            return None
-        fy_value, fy_source, fy_url, fy_adj, fy_adj_note, fy_adj_source = result
-        return ProviderResult(
-            value=fy_value,
-            source_name=f"Web-Guidance: {fy_source}",
-            source_link=fy_url,
-            currency=company.currency if key in CURRENCY_KEYS else None,
-            extras={
-                "is_forecast": True,
-                "guidance_method": "quarterly_aggregation",
-                "value_adjusted": str(fy_adj) if fy_adj is not None else None,
-                "adjustments_note": fy_adj_note,
-                "adjustments_source": fy_adj_source,
-            },
-        )
-
-    # Fallback: alte FY-monolith Pipeline fuer Keys ausserhalb der 7 Estimate-Keys.
+    # FY-monolith Web-Recherche (Dual). Die fruehere Per-Q-Estimate-Pipeline
+    # (quarterly_estimates.py) ist entfernt — dieser minimale Fallback traegt
+    # nur noch Non-US-Luecken (v.a. FY-N-1-Backfill via
+    # _ensure_previous_year_inputs); US-Filer erreichen ihn nicht mehr.
     try:
         dual = research_value_dual(
             company.name, company.ticker, label, company.currency,
@@ -644,6 +614,55 @@ def _anchor_fy_after_apply(db: Session, company, key: str, year: int, updated: l
     return anchored
 
 
+def _anchor_us_key_periods(
+    db: Session,
+    key: str,
+    company,
+    company_id: UUID,
+    updated: list,
+    year: int,
+) -> bool:
+    """US-Filer: EDGAR-XBRL-Anker statt LLM-Recherche.
+
+    Ersetzt _process_one_key_via_two_stage im Refresh-Key-Loop fuer
+    US-Firmen komplett: FY + Q1-Q4 des Jahres aus XBRL ankern; Luecken
+    schliessen 8-K-Bruecke und Residuum-/Carry-Forward-Ableitungen im
+    Konsistenz-Pass — sonst bleibt die Zelle leer (Strich). Keys ohne
+    EDGAR-Konzept (z.B. net_debt) sind No-op. Returns True wenn der
+    Anker mindestens eine Periode gedeckt hat.
+    """
+    from app.providers.edgar import EdgarProvider
+    from app.values.provider_anchor import anchor_key_periods_with_provider
+
+    if key not in EdgarProvider.supported_keys:
+        return False
+    try:
+        covered = anchor_key_periods_with_provider(db, company, key, year)
+    except Exception as e:
+        logger.warning(
+            "EDGAR-Anker failed for %s/%s/FY%s: %s",
+            company.ticker, key, year, e,
+        )
+        db.rollback()
+        return False
+    if not covered:
+        return False
+    for row in (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_year == year,
+            CompanyValue.period_type.in_(("FY", "Q1", "Q2", "Q3", "Q4")),
+            CompanyValue.is_forecast.is_(False),
+        )
+        .all()
+    ):
+        if row not in updated:
+            updated.append(row)
+    return True
+
+
 def _prev_year_needs_backfill(
     db: Session, company_id: UUID, key: str, prev_year: int
 ) -> bool:
@@ -774,71 +793,10 @@ def _process_one_key(
             getattr(company, "fiscal_year_end_day", None),
             isin=getattr(company, "isin", None),
         )
-        # US-Filer + adjustable-Key (NI/EBITDA/FCF): EDGAR liefert nur Reported.
-        # Adjusted/Non-GAAP via Dual-Web-Research nachholen — strukturell, weil
-        # XBRL keine Standard-Tags fuer Non-GAAP hat. Kosten: 1 Web-Call pro
-        # Key pro Refresh, nur fuer adjustable-Keys, nur fuer FY-Mode.
-        # Standardmaessig DEAKTIVIERT (Kostenoptimierung) — Aktivierung via
-        # Env-Flag ADJUSTED_AUTOFETCH=true wenn Adjusted-Werte fuer historische
-        # FY in der Tabelle gebraucht werden.
-        import os
-        _adjusted_autofetch = os.getenv("ADJUSTED_AUTOFETCH", "false").lower() == "true"
-        if (
-            _adjusted_autofetch
-            and result is not None
-            and isinstance(result.value, Decimal)
-            and is_us_company(company)
-            and key in {"net_income", "ebitda", "fcf"}
-            and payload.period_type == "FY"
-            and payload.period_year is not None
-        ):
-            try:
-                from app.llm.research import research_value_dual
-                from app.providers.base import ProviderResult
-                # Vorjahres-Anker fuer YoY-Cap-Sanity. Hier kann es 2 Rows
-                # geben (Forecast + Actual fuers gleiche Year) — Actual bevorzugen.
-                prev_row = (
-                    db.query(CompanyValue)
-                    .filter(
-                        CompanyValue.company_id == company_id,
-                        CompanyValue.value_key == key,
-                        CompanyValue.period_type == "FY",
-                        CompanyValue.period_year == payload.period_year - 1,
-                    )
-                    .order_by(CompanyValue.is_forecast.asc())
-                    .first()
-                )
-                prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
-                vd_for_lbl = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
-                label = f"{vd_for_lbl.label_en} ({vd_for_lbl.label_de})" if vd_for_lbl else key
-                dual_adj = research_value_dual(
-                    company.name, ticker, label, company.currency,
-                    period_type="FY", period_year=payload.period_year, value_key=key,
-                    prev_fy_val=prev_fy_val,
-                )
-                if dual_adj.value_adjusted is not None:
-                    # Adjusted-Felder in result.extras mergen — _apply_update
-                    # liest sie da raus und persistiert sie parallel zu Reported.
-                    extras_merged = dict(result.extras or {})
-                    extras_merged["value_adjusted"] = str(dual_adj.value_adjusted)
-                    extras_merged["adjustments_note"] = dual_adj.adjustments_note
-                    extras_merged["adjustments_source"] = dual_adj.adjustments_source
-                    result = ProviderResult(
-                        value=result.value,
-                        source_name=result.source_name,
-                        source_link=result.source_link,
-                        currency=result.currency,
-                        extras=extras_merged,
-                    )
-                    logger.info("EDGAR + Web-Adjusted Merge fuer %s/%s/FY%s: reported=%s adjusted=%s",
-                                ticker, key, payload.period_year, result.value, dual_adj.value_adjusted)
-            except Exception as e:
-                logger.warning("Web-Adjusted-Lookup nach EDGAR fehlgeschlagen %s/%s/FY%s: %s",
-                               ticker, key, payload.period_year, e)
-    if result is None and not is_stammdaten:
-        # Universeller Fallback fuer FY-Werte ohne Provider-Treffer:
-        # Web-Recherche (Claude-Recherche). Greift sowohl bei historischen
-        # FY (Non-US ohne PDF-Treffer) als auch bei Estimates (laufendes FY).
+    if result is None and not is_stammdaten and not is_us_company(company):
+        # Fallback fuer FY-Werte ohne Provider-Treffer: Web-Recherche
+        # (Claude-Recherche). NUR Non-US — fuer US-Filer gilt EDGAR/
+        # 8-K-Bruecke oder Strich, keine Web-Recherche mehr.
         target_fy = effective_period_year if effective_period_year is not None else 0
         if target_fy > 0:
             result = _try_web_guidance(db, company, company_id, key, target_fy)
@@ -1323,16 +1281,19 @@ def refresh_company_values(
         and payload.period_year is not None
     )
 
+    # US-Filer laufen NIE mehr durch die Two-Stage-Recherche: abgeschlossene
+    # Jahre deckt EDGAR-Anker + 8-K-Bruecke + Residuum, das laufende FY der
+    # gebuendelte Guidance-Call + deterministische Ableitungen.
+    us_filer = is_us_company(company)
+
     # US-Filer + laufendes (nicht abgeschlossenes) FY: die Estimate-Keys
-    # ueberspringt der Key-Loop (analog Provider-first-Skip) — EIN
-    # fetch_guidance_estimates-Call vor dem Konsistenz-Pass ersetzt die
-    # Two-Stage-Recherche fuers laufende Jahr komplett. Nicht-US und
-    # abgeschlossene Jahre: unveraendert Two-Stage.
+    # ueberspringt der Key-Loop komplett — EIN fetch_guidance_estimates-Call
+    # vor dem Konsistenz-Pass deckt sie ab.
     us_guidance_fy = False
     if use_two_stage_fy:
         try:
             from app.values.provider_anchor import _fy_is_closed
-            us_guidance_fy = is_us_company(company) and not _fy_is_closed(
+            us_guidance_fy = us_filer and not _fy_is_closed(
                 company, payload.period_year
             )
         except Exception as e:
@@ -1382,10 +1343,19 @@ def refresh_company_values(
                     and key not in ALWAYS_CURRENT_KEYS
                     and key not in CALCULATED_KEYS
                 ):
-                    wrote = _process_one_key_via_two_stage(
-                        db=db, key=key, company=company,
-                        company_id=company_id, payload=payload, updated=updated,
-                    )
+                    if us_filer:
+                        # US: nur EDGAR-XBRL ankern — keine LLM-Recherche.
+                        # Luecken schliessen 8-K-Bruecke + Residuum-Pass.
+                        wrote = _anchor_us_key_periods(
+                            db=db, key=key, company=company,
+                            company_id=company_id, updated=updated,
+                            year=payload.period_year,
+                        )
+                    else:
+                        wrote = _process_one_key_via_two_stage(
+                            db=db, key=key, company=company,
+                            company_id=company_id, payload=payload, updated=updated,
+                        )
                 else:
                     wrote = _process_one_key(
                         db=db,
@@ -1421,11 +1391,19 @@ def refresh_company_values(
                 update_job(company_id, f"{key} (FY{prev_year})")
                 updated_before = len(updated)
                 try:
-                    wrote = _process_one_key_via_two_stage(
-                        db=db, key=key, company=company,
-                        company_id=company_id, payload=payload,
-                        updated=updated, target_year=prev_year,
-                    )
+                    if us_filer:
+                        # US: Vorjahres-Backfill nur via EDGAR-Anker.
+                        wrote = _anchor_us_key_periods(
+                            db=db, key=key, company=company,
+                            company_id=company_id, updated=updated,
+                            year=prev_year,
+                        )
+                    else:
+                        wrote = _process_one_key_via_two_stage(
+                            db=db, key=key, company=company,
+                            company_id=company_id, payload=payload,
+                            updated=updated, target_year=prev_year,
+                        )
                     db.commit()
                     if wrote:
                         mark_success(company_id)
@@ -1443,12 +1421,12 @@ def refresh_company_values(
             from app.values.consistency import (
                 derive_balance_carry_forward,
                 derive_declared_dividend_quarter,
-                derive_ebitda_q4_from_fy,
                 derive_gaap_from_adjusted_spread,
                 derive_missing_fcf,
                 derive_missing_ocf,
                 derive_net_debt_from_components,
                 derive_open_quarter_from_fy_estimate,
+                derive_q4_residual_from_fy,
                 derive_runrate_quarter,
                 derive_sbc_quarters,
                 validate_cross_metrics,
@@ -1532,8 +1510,24 @@ def refresh_company_values(
                         f"FY-Guidance-Schaetzungen (FY{payload.period_year})",
                     )
                     guid_tracker = CostTracker()
+                    # Offenes Quartal mitgeben: der Call fragt das Modell
+                    # direkt danach, statt Q-Werte als FY-Residuum zu bauen.
+                    # Nur bei GENAU EINEM offenen Quartal eindeutig.
+                    open_q = None
+                    try:
+                        from app.values.consistency import _quarter_reported_us
+                        _subs: dict = {}
+                        _open = [
+                            q for q in ("Q1", "Q2", "Q3", "Q4")
+                            if not _quarter_reported_us(company, payload.period_year, q, _subs)
+                        ]
+                        if len(_open) == 1:
+                            open_q = _open[0]
+                    except Exception:
+                        open_q = None
                     wrote_est = fetch_guidance_estimates(
                         db, company, payload.period_year, cost_tracker=guid_tracker,
+                        open_quarter=open_q,
                     )
                     db.commit()
                     if guid_tracker.calls:
@@ -1554,10 +1548,14 @@ def refresh_company_values(
                     derive_balance_carry_forward(db, company_id, cons_year)
                     derive_net_debt_from_components(db, company_id, cons_year)
                     derive_missing_ocf(db, company_id, cons_year)
-                    derive_sbc_quarters(db, company_id, cons_year)
-                    # EBITDA-Q4-Restwert: EDGAR liefert Q4-EBIT strukturell
-                    # nicht (kein 3M-Frame im 10-K).
-                    derive_ebitda_q4_from_fy(db, company_id, cons_year)
+                    # SBC-FY/4-Verteilung ist ein DE-Muster (Annual-only-
+                    # Reporter) — US-Filer taggen SBC quartalsweise in XBRL.
+                    if not us_filer:
+                        derive_sbc_quarters(db, company_id, cons_year)
+                    # Q4-Restwert (ebitda/revenue/net_income): EDGAR liefert
+                    # Q4 fuer Income-Keys strukturell nicht (kein 3M-Frame
+                    # im 10-K).
+                    derive_q4_residual_from_fy(db, company_id, cons_year)
                     # Offenes Rest-Quartal deterministisch aus dem FY-
                     # Estimate (Guidance/Konsens) statt LLM-Schaetzung.
                     derive_open_quarter_from_fy_estimate(db, company_id, cons_year)
@@ -1578,7 +1576,7 @@ def refresh_company_values(
                     # validate_cross_metrics, damit der fcf-Check die
                     # frischen Werte sieht.
                     derive_missing_fcf(db, company_id, [cons_year])
-                    validate_cross_metrics(db, company_id, cons_year)
+                    validate_cross_metrics(db, company_id, cons_year, is_us=us_filer)
                     db.commit()
                 except Exception as e:
                     logger.error("consistency pass failed for %s FY%s: %s", ticker, cons_year, e)
@@ -2179,7 +2177,7 @@ def _refresh_fy_from_quarters(
     No-op if the key is not a QUARTERLY_ESTIMATE_KEY or if the required Q
     rows are missing.
     """
-    from app.values.quarterly_estimates import (
+    from app.values.period_keys import (
         QUARTERLY_ESTIMATE_KEYS,
         SUMMABLE_QUARTERLY_KEYS,
         POINT_IN_TIME_QUARTERLY_KEYS,

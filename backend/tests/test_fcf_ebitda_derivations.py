@@ -1,5 +1,6 @@
 """derive_missing_fcf (fcf = OCF - |Capex| als berechneter Wert) und
-derive_ebitda_q4_from_fy (Q4 = FY - Q1 - Q2 - Q3 Restwert).
+derive_q4_residual_from_fy (Q4 = FY - Q1 - Q2 - Q3 Restwert fuer
+ebitda/net_income/revenue).
 
 Lock-Konvention: not_found-Platzhalter und alte LLM-Werte (two_stage_*/
 web_*) werden ersetzt, manual/PDF/provider-Zeilen mit Wert bleiben.
@@ -12,7 +13,7 @@ from app.auth.models import User
 from app.auth.security import hash_password
 from app.companies.models import Company
 from app.portfolios.models import Portfolio
-from app.values.consistency import derive_ebitda_q4_from_fy, derive_missing_fcf
+from app.values.consistency import derive_missing_fcf, derive_q4_residual_from_fy
 from app.values.models import CompanyValue
 
 YEAR = 2026
@@ -211,7 +212,7 @@ def test_fcf_protected_adjusted_not_overwritten(db, company):
     assert old.adjustments_source == "Manual"
 
 
-# --- derive_ebitda_q4_from_fy ------------------------------------------------
+# --- derive_q4_residual_from_fy ----------------------------------------------
 
 
 def test_ebitda_q4_residual_happy_path(db, company):
@@ -219,7 +220,7 @@ def test_ebitda_q4_residual_happy_path(db, company):
     for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
         _seed(db, company, "ebitda", q, v)
 
-    written = derive_ebitda_q4_from_fy(db, company.id, YEAR)
+    written = derive_q4_residual_from_fy(db, company.id, YEAR)
     db.commit()
 
     assert written == 1
@@ -238,7 +239,7 @@ def test_ebitda_q4_negative_residual_not_written(db, company):
     for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
         _seed(db, company, "ebitda", q, v)
 
-    assert derive_ebitda_q4_from_fy(db, company.id, YEAR) == 0
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 0
     assert _rows(db, company, "ebitda", "Q4") == []
 
 
@@ -249,7 +250,7 @@ def test_ebitda_q4_existing_value_stays(db, company):
         _seed(db, company, "ebitda", q, v)
     q4 = _seed(db, company, "ebitda", "Q4", 128)
 
-    assert derive_ebitda_q4_from_fy(db, company.id, YEAR) == 0
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 0
     db.commit()
     db.refresh(q4)
     assert q4.numeric_value == Decimal("128")
@@ -262,7 +263,7 @@ def test_ebitda_q4_replaces_not_found_placeholder(db, company):
         _seed(db, company, "ebitda", q, v)
     nf = _seed(db, company, "ebitda", "Q4", None, primary_method="not_found")
 
-    assert derive_ebitda_q4_from_fy(db, company.id, YEAR) == 1
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 1
     db.commit()
     db.refresh(nf)
     assert nf.numeric_value == Decimal("130")
@@ -274,10 +275,49 @@ def test_ebitda_q4_requires_actuals(db, company):
     _seed(db, company, "ebitda", "FY", 460, is_forecast=True)
     for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
         _seed(db, company, "ebitda", q, v)
-    assert derive_ebitda_q4_from_fy(db, company.id, YEAR) == 0
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 0
 
     # FY-Actual, aber Q3 fehlt.
     _seed(db, company, "ebitda", "FY", 460, year=YEAR - 1)
     for q, v in (("Q1", 100), ("Q2", 110)):
         _seed(db, company, "ebitda", q, v, year=YEAR - 1)
-    assert derive_ebitda_q4_from_fy(db, company.id, YEAR - 1) == 0
+    assert derive_q4_residual_from_fy(db, company.id, YEAR - 1) == 0
+
+
+def test_net_income_q4_negative_residual_written(db, company):
+    """net_income ist NICHT always-positive: ein Verlust-Q4 (FY unter der
+    Q1-Q3-Summe) ist legitim und wird geschrieben."""
+    _seed(db, company, "net_income", "FY", 250)
+    for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
+        _seed(db, company, "net_income", q, v)
+
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 1
+    db.commit()
+    (q4,) = _rows(db, company, "net_income", "Q4")
+    assert q4.numeric_value == Decimal("-80")
+    assert q4.primary_method == "calculated"
+
+
+def test_revenue_q4_negative_residual_not_written(db, company):
+    """revenue ist always-positive: negativer Rest = Datenfehler, skip."""
+    _seed(db, company, "revenue", "FY", 300)
+    for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
+        _seed(db, company, "revenue", q, v)
+
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 0
+    assert _rows(db, company, "revenue", "Q4") == []
+
+
+def test_q4_residual_all_keys_in_one_pass(db, company):
+    """Ein Aufruf deckt alle Residuum-Keys (ebitda, net_income, revenue)."""
+    for key in ("ebitda", "net_income", "revenue"):
+        _seed(db, company, key, "FY", 460)
+        for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
+            _seed(db, company, key, q, v)
+
+    assert derive_q4_residual_from_fy(db, company.id, YEAR) == 3
+    db.commit()
+    for key in ("ebitda", "net_income", "revenue"):
+        (q4,) = _rows(db, company, key, "Q4")
+        assert q4.numeric_value == Decimal("130")
+        assert q4.primary_method == "calculated"

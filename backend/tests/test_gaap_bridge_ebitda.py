@@ -272,7 +272,7 @@ def test_ytd_cross_check_rejects_inconsistent_columns(db, company, monkeypatch):
 
 
 def test_calculated_ebitda_actual_not_overwritten(db, company, monkeypatch):
-    """calculated-Restwerte (derive_ebitda_q4_from_fy) sind wie andere
+    """calculated-Restwerte (derive_q4_residual_from_fy) sind wie andere
     Nicht-two_stage-Actuals kein Bruecken-Kandidat — bleiben stehen."""
     calc = _seed_row(db, company, "ebitda", "Q2", Decimal("4100000000"),
                      primary_method="calculated",

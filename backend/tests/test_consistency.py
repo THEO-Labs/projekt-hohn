@@ -279,3 +279,45 @@ def test_net_debt_insert_race_does_not_clobber_manual(client, db, monkeypatch):
     assert manual.manually_overridden is True
     assert manual.numeric_value == Decimal("9999000000")
     assert manual.primary_method == "manual"
+
+
+def test_us_validator_diet_skips_llm_checks(client, db):
+    """is_us=True: nur qsum + fcf_vs_ocf_capex laufen — eps_ni/unit_scale/
+    prior_year_copy/estimate_jump/sbc-Checks sind LLM-Fehlerklassen und
+    werden fuer US-Firmen uebersprungen."""
+    cid = _company(client, db, "us1@example.com")
+    # eps x shares weicht massiv von net_income ab -> DE wuerde flaggen.
+    _seed(db, cid, "eps_diluted", "FY", 9.34)
+    _seed(db, cid, "shares_outstanding", "SNAPSHOT", 178e6, year=None)
+    _seed(db, cid, "net_income", "FY", 764e6)
+    # unit_scale-Verdacht (< 1 Mio) -> DE wuerde flaggen.
+    _seed(db, cid, "capex", "FY", 2510)
+    active = validate_cross_metrics(db, cid, 2026, is_us=True)
+    db.commit()
+    assert active == []
+    assert _row(db, cid, "net_income", "FY").consistency_flags is None
+    assert _row(db, cid, "capex", "FY").consistency_flags is None
+
+
+def test_us_validator_diet_keeps_qsum_and_fcf_checks(client, db):
+    cid = _company(client, db, "us2@example.com")
+    for q, v in (("Q1", 100e6), ("Q2", 100e6), ("Q3", 100e6), ("Q4", 100e6)):
+        _seed(db, cid, "operating_cash_flow", q, v)
+    _seed(db, cid, "operating_cash_flow", "FY", 751e6)
+    _seed(db, cid, "capex", "FY", 500e6)
+    _seed(db, cid, "fcf", "FY", 2800e6)
+    active = validate_cross_metrics(db, cid, 2026, is_us=True)
+    db.commit()
+    assert any(f.startswith("qsum_mismatch") for f in active)
+    assert any(f.startswith("fcf_vs_ocf_capex") for f in active)
+
+
+def test_us_validator_diet_clears_stale_llm_flags(client, db):
+    """Alt-Flags aus der Two-Stage-Aera werden fuer US geraeumt, damit sie
+    nicht dauerhaft im UI stehen bleiben."""
+    cid = _company(client, db, "us3@example.com")
+    _seed(db, cid, "net_income", "FY", 764e6,
+          consistency_flags="eps_ni_mismatch,prior_year_copy")
+    validate_cross_metrics(db, cid, 2026, is_us=True)
+    db.commit()
+    assert _row(db, cid, "net_income", "FY").consistency_flags is None

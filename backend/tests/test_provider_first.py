@@ -285,3 +285,66 @@ def test_apply_to_db_still_overwrites_forecast(db, company):
     db.refresh(row)
     assert row.numeric_value == Decimal("999")
     assert row.primary_method.startswith("two_stage")
+
+
+# --- _anchor_us_key_periods (US-Refresh ohne Two-Stage) ---------------------
+
+
+def _run_anchor(db, monkeypatch, company, provider, key="net_income", year=CLOSED_YEAR):
+    import app.values.provider_anchor as anchor_mod
+    from app.values.routes import _anchor_us_key_periods
+
+    monkeypatch.setattr(anchor_mod, "get_providers", lambda k: [provider])
+    updated: list = []
+    wrote = _anchor_us_key_periods(
+        db=db, key=key, company=company,
+        company_id=company.id, updated=updated, year=year,
+    )
+    db.commit()
+    return wrote, updated
+
+
+def test_anchor_us_key_periods_writes_provider_rows(db, company, monkeypatch):
+    """US-Anker-Pfad (Ersatz fuer Two-Stage): FY+Q1-Q4 aus EDGAR werden
+    geankert, alle Zellen provider, kein LLM involviert."""
+    fy, quarters = _full_coverage("net_income", CLOSED_YEAR)
+    provider = _Provider(fy=fy, quarters=quarters)
+
+    wrote, updated = _run_anchor(db, monkeypatch, company, provider)
+
+    assert wrote is True
+    rows = _rows(db, company, "net_income", CLOSED_YEAR)
+    assert {r.period_type for r in rows} == {"FY", "Q1", "Q2", "Q3", "Q4"}
+    assert all(r.primary_method == "provider" for r in rows)
+    assert len(updated) == 5
+
+
+def test_anchor_us_key_periods_non_edgar_key_noop(db, company, monkeypatch):
+    """Key ohne EDGAR-Konzept (net_debt): No-op ohne Provider-Call — die
+    Zelle bleibt leer bzw. wird per Ableitung gefuellt."""
+    provider = _Provider()
+
+    wrote, updated = _run_anchor(db, monkeypatch, company, provider, key="net_debt")
+
+    assert wrote is False
+    assert updated == []
+    assert provider.fy_calls == []
+    assert provider.q_calls == []
+
+
+def test_anchor_us_key_periods_error_returns_false(db, company, monkeypatch):
+    """Anker-Fehler crasht den Refresh nicht — Key gilt als nicht
+    geschrieben."""
+    import app.values.provider_anchor as anchor_mod
+
+    def boom(db_, comp_, key_, year_):
+        raise RuntimeError("edgar down")
+
+    monkeypatch.setattr(anchor_mod, "anchor_key_periods_with_provider", boom)
+    from app.values.routes import _anchor_us_key_periods
+
+    wrote = _anchor_us_key_periods(
+        db=db, key="net_income", company=company,
+        company_id=company.id, updated=[], year=CLOSED_YEAR,
+    )
+    assert wrote is False

@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.values.models import CompanyValue
-from app.values.quarterly_estimates import SUMMABLE_QUARTERLY_KEYS
+from app.values.period_keys import SUMMABLE_QUARTERLY_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +130,15 @@ def _rel_diff(a: Decimal, b: Decimal) -> Decimal:
     return abs(a - b) / denom
 
 
-def validate_cross_metrics(db: Session, company_id: UUID, year: int) -> list[str]:
+def validate_cross_metrics(
+    db: Session, company_id: UUID, year: int, is_us: bool = False,
+) -> list[str]:
     """Prueft die Kern-Identitaeten und setzt/loescht consistency_flags.
+
+    is_us=True (Validator-Diet): nur qsum_mismatch und fcf_vs_ocf_capex —
+    die uebrigen Checks zielen auf LLM-Recherche-Fehlerklassen (Skalierung,
+    Vorjahres-Kopie, stale Schaetzung, IFRS-Notes-SBC), die es im
+    EDGAR/Bruecke/Guidance-Pfad nicht mehr gibt. DE unveraendert.
 
     Gibt die Liste aktiver Flags zurueck (fuer Logging/Response).
     """
@@ -164,6 +171,20 @@ def validate_cross_metrics(db: Session, company_id: UUID, year: int) -> list[str
         _set_flag(fcf_row, "fcf_vs_ocf_capex", mismatch)
         if mismatch:
             active.append(f"fcf_vs_ocf_capex:{pt}")
+
+    # Validator-Diet fuer US: Checks 3-7 ueberspringen und deren evtl.
+    # noch gesetzte Alt-Flags (aus der Two-Stage-Aera) raeumen, damit
+    # keine stale Flags im UI stehen bleiben.
+    if is_us:
+        for row in rows:
+            for flag in (
+                "eps_ni_mismatch", "sbc_implausibly_low", "unit_scale_suspect",
+                "prior_year_copy", "estimate_jump", "estimate_below_prior",
+            ):
+                _set_flag(row, flag, False)
+        if active:
+            logger.warning("consistency: %s/%s flags: %s", company_id, year, ",".join(active))
+        return active
 
     # 3. eps x shares ~= net_income (FY). Weite Toleranz: weighted-avg
     #    diluted Shares vs Snapshot-Shares driften durch Buybacks.
@@ -507,76 +528,88 @@ def derive_missing_fcf(db: Session, company_id: UUID, years: list[int]) -> int:
     return written
 
 
-def derive_ebitda_q4_from_fy(db: Session, company_id: UUID, year: int) -> int:
-    """ebitda Q4 = FY - Q1 - Q2 - Q3 aus berichteten Actuals.
+# Q4-Residuum-Keys abgeschlossener Jahre: additiv, Provider liefert kein
+# Q4 (kein 3M-Frame im 10-K). eps_diluted bewusst NICHT dabei — nicht
+# additiv (weighted diluted shares), kommt aus 8-K-Bruecke/XBRL.
+_Q4_RESIDUAL_KEYS = ("ebitda", "net_income", "revenue")
+# Negativer Rest = Dateninkonsistenz bei diesen Keys (revenue per
+# Konvention immer positiv, ebitda bei den Zielfirmen). net_income darf
+# negativ sein (Verlustquartal).
+_Q4_RESIDUAL_NONNEGATIVE = frozenset({"ebitda", "revenue"})
 
-    EDGAR kann EBIT fuer Q4 strukturell nicht liefern (kein 3M-Frame im
-    10-K, providers/edgar sucht nur standalone) — der Restwert schliesst
-    die Luecke deterministisch. Negativer Rest gilt bei den Zielfirmen als
-    Dateninkonsistenz und wird nicht geschrieben (Verhalten wie
-    derive_open_quarter bei ALWAYS_POSITIVE_KEYS). Lock-Guards wie
-    _derivation_replaceable. Rueckgabe: 1 wenn geschrieben, sonst 0.
+
+def derive_q4_residual_from_fy(db: Session, company_id: UUID, year: int) -> int:
+    """Q4 = FY - Q1 - Q2 - Q3 aus berichteten Actuals, pro Residuum-Key
+    (ebitda, net_income, revenue).
+
+    EDGAR kann Q4 fuer Income-Keys strukturell nicht liefern (kein
+    3M-Frame im 10-K, providers/edgar sucht nur standalone) — der
+    Restwert schliesst die Luecke deterministisch und ersetzt die
+    Two-Stage-Recherche fuer abgeschlossene US-Jahre. Lock-Guards wie
+    _derivation_replaceable. Rueckgabe: Anzahl geschriebener Q4-Zellen.
     """
     rows = _rows_for_year(db, company_id, year)
+    written = 0
+    for key in _Q4_RESIDUAL_KEYS:
+        def _actual(pt: str) -> CompanyValue | None:
+            return next(
+                (r for r in rows
+                 if r.value_key == key and r.period_type == pt
+                 and not r.is_forecast and r.numeric_value is not None),
+                None,
+            )
 
-    def _actual(pt: str) -> CompanyValue | None:
-        return next(
-            (r for r in rows
-             if r.value_key == "ebitda" and r.period_type == pt
-             and not r.is_forecast and r.numeric_value is not None),
-            None,
-        )
-
-    fy_row = _actual("FY")
-    if fy_row is None:
-        return 0
-    q_rows = [_actual(q) for q in ("Q1", "Q2", "Q3")]
-    if any(r is None for r in q_rows):
-        return 0
-    slot_rows = [
-        r for r in rows
-        if r.value_key == "ebitda" and r.period_type == "Q4"
-    ]
-    if any(not _derivation_replaceable(r) for r in slot_rows):
-        return 0
-    q_sum = sum((r.numeric_value for r in q_rows), Decimal("0"))
-    derived = fy_row.numeric_value - q_sum
-    if derived < 0:
-        logger.warning(
-            "ebitda-q4 residual implausibel %s/FY%s: fy=%s q1-q3=%s -> %s "
-            "negativ — skip",
-            company_id, year, fy_row.numeric_value, q_sum, derived,
-        )
-        return 0
-    target = next((r for r in slot_rows if not r.is_forecast), None)
-    now = datetime.now(timezone.utc)
-    if target is None:
-        target = CompanyValue(
-            id=uuid4(), company_id=company_id, value_key="ebitda",
-            period_type="Q4", period_year=year, is_forecast=False,
-        )
-        # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
-        # Guards erneut anwenden.
-        try:
-            with db.begin_nested():
-                db.add(target)
-                db.flush()
-        except IntegrityError:
-            target = _reload_slot(db, company_id, "ebitda", "Q4", year, False)
-            if target is None or not _derivation_replaceable(target):
-                return 0
-    target.numeric_value = derived
-    target.source_name = (
-        f"Berechnet: FY minus Q1-Q3 ({fy_row.numeric_value} - {q_sum} = {derived})"
-    )[:4096]
-    target.source_link = None
-    target.primary_method = "calculated"
-    target.is_forecast = False
-    target.currency = fy_row.currency or target.currency
-    target.fetched_at = now
-    target.last_refresh_attempt = now
+        fy_row = _actual("FY")
+        if fy_row is None:
+            continue
+        q_rows = [_actual(q) for q in ("Q1", "Q2", "Q3")]
+        if any(r is None for r in q_rows):
+            continue
+        slot_rows = [
+            r for r in rows
+            if r.value_key == key and r.period_type == "Q4"
+        ]
+        if any(not _derivation_replaceable(r) for r in slot_rows):
+            continue
+        q_sum = sum((r.numeric_value for r in q_rows), Decimal("0"))
+        derived = fy_row.numeric_value - q_sum
+        if key in _Q4_RESIDUAL_NONNEGATIVE and derived < 0:
+            logger.warning(
+                "%s-q4 residual implausibel %s/FY%s: fy=%s q1-q3=%s -> %s "
+                "negativ — skip",
+                key, company_id, year, fy_row.numeric_value, q_sum, derived,
+            )
+            continue
+        target = next((r for r in slot_rows if not r.is_forecast), None)
+        now = datetime.now(timezone.utc)
+        if target is None:
+            target = CompanyValue(
+                id=uuid4(), company_id=company_id, value_key=key,
+                period_type="Q4", period_year=year, is_forecast=False,
+            )
+            # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+            # Guards erneut anwenden.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(db, company_id, key, "Q4", year, False)
+                if target is None or not _derivation_replaceable(target):
+                    continue
+        target.numeric_value = derived
+        target.source_name = (
+            f"Berechnet: FY minus Q1-Q3 ({fy_row.numeric_value} - {q_sum} = {derived})"
+        )[:4096]
+        target.source_link = None
+        target.primary_method = "calculated"
+        target.is_forecast = False
+        target.currency = fy_row.currency or target.currency
+        target.fetched_at = now
+        target.last_refresh_attempt = now
+        written += 1
     db.flush()
-    return 1
+    return written
 
 
 def _quarter_reported_us(company, year: int, q: str, subs_cache: dict) -> bool:

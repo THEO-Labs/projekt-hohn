@@ -95,8 +95,8 @@ def _seed_shares(db, comp, value: str):
 def _mock_claude(monkeypatch, payload):
     calls: list[tuple] = []
 
-    def fake(company, year, cost_tracker=None):
-        calls.append((company.ticker, year))
+    def fake(company, year, cost_tracker=None, open_quarter=None):
+        calls.append((company.ticker, year, open_quarter))
         return payload
 
     monkeypatch.setattr(ge, "_call_claude", fake)
@@ -125,12 +125,12 @@ def test_single_call_writes_fy_forecasts_and_sidecars(db, company, monkeypatch):
         "net_income": "18000000000",
         "operating_cash_flow": "28000000000",
     })
-    _seed_shares(db, company, "5000000000")  # eps 4.0 x 5B = 20B = NI
 
     written = ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
     db.commit()
 
     assert len(calls) == 1
+    assert calls[0][2] is None  # FY-only: kein open_quarter
     assert written == 4  # revenue, net_income, eps_diluted, ocf
 
     rev = _fy_rows(db, company, "revenue")
@@ -199,34 +199,6 @@ def test_prev_year_gate_discards_outlier_allows_sign_flip(db, company, monkeypat
     ni = _fy_rows(db, company, "net_income")
     assert len(ni) == 1
     assert ni[0].numeric_value == Decimal("20000000000")
-
-
-def test_eps_ni_consistency_gate(db, company, monkeypatch):
-    """eps x shares weicht >20% von net_income ab: beide GAAP-Werte werden
-    verworfen, die uebrigen Keys geschrieben. Die Non-GAAP-Sidecars
-    ueberleben auf Traeger-Zeilen mit leerem GAAP-Slot."""
-    payload = _payload(
-        eps_diluted={
-            "value": 10.0, "source": "consensus", "basis": "gaap",
-            "quote": "EPS consensus", "url": None,
-        },
-    )
-    _mock_claude(monkeypatch, payload)
-    _seed_shares(db, company, "5000000000")  # 10.0 x 5B = 50B vs NI 20B
-
-    ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
-    db.commit()
-
-    eps = _fy_rows(db, company, "eps_diluted")
-    assert len(eps) == 1
-    assert eps[0].numeric_value is None
-    assert eps[0].numeric_value_adjusted == Decimal("5.0")
-    ni = _fy_rows(db, company, "net_income")
-    assert len(ni) == 1
-    assert ni[0].numeric_value is None
-    assert ni[0].numeric_value_adjusted == Decimal("25000000000")
-    assert len(_fy_rows(db, company, "revenue")) == 1
-    assert len(_fy_rows(db, company, "operating_cash_flow")) == 1
 
 
 def test_unit_gate_discards_sub_million_absolute(db, company, monkeypatch):
@@ -329,8 +301,8 @@ def _setup_refresh(client, db, email, isin):
 
 def _patch_refresh_env(monkeypatch):
     """Refresh-Umfeld isolieren: kein Backfill, keine Calculations, kein
-    Prev-Year-Prefetch. Two-Stage-Prozessor und fetch_guidance_estimates
-    werden durch zaehlende Mocks ersetzt."""
+    Prev-Year-Prefetch. Two-Stage-Prozessor, EDGAR-Anker und
+    fetch_guidance_estimates werden durch zaehlende Mocks ersetzt."""
     import app.values.routes as routes
 
     monkeypatch.setattr(routes, "_prev_year_needs_backfill",
@@ -346,24 +318,32 @@ def _patch_refresh_env(monkeypatch):
 
     monkeypatch.setattr(routes, "_process_one_key_via_two_stage", fake_process)
 
+    anchor_keys: list[str] = []
+
+    def fake_anchor(db, key, company, company_id, updated, year):
+        anchor_keys.append(key)
+        return False
+
+    monkeypatch.setattr(routes, "_anchor_us_key_periods", fake_anchor)
+
     guidance_calls: list[tuple] = []
 
-    def fake_fetch(db, company, year, cost_tracker=None):
+    def fake_fetch(db, company, year, cost_tracker=None, open_quarter=None):
         guidance_calls.append((company.ticker, year))
         return 0
 
     monkeypatch.setattr(ge, "fetch_guidance_estimates", fake_fetch)
-    return two_stage_keys, guidance_calls
+    return two_stage_keys, guidance_calls, anchor_keys
 
 
 def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monkeypatch):
-    """US-Filer, laufendes FY: Estimate-Keys laufen NICHT durch Two-Stage,
-    fetch_guidance_estimates wird genau EINMAL aufgerufen. Balance-Keys
-    (cash_and_equivalents) uebernimmt die Bilanz-Fortschreibung — auch kein
-    Two-Stage. Nicht abgedeckte Keys (net_debt) laufen weiter durch
-    Two-Stage."""
+    """US-Filer, laufendes FY: Estimate-Keys laufen NICHT durch Two-Stage
+    oder EDGAR-Anker, fetch_guidance_estimates wird genau EINMAL
+    aufgerufen. Balance-Keys (cash_and_equivalents) uebernimmt die
+    Bilanz-Fortschreibung. Nicht abgedeckte Keys (net_debt) laufen fuer
+    US-Filer durch den EDGAR-Anker statt Two-Stage."""
     cid = _setup_refresh(client, db, "wire-us@example.com", "US0001234567")
-    two_stage_keys, guidance_calls = _patch_refresh_env(monkeypatch)
+    two_stage_keys, guidance_calls, anchor_keys = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -375,14 +355,15 @@ def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monk
 
     assert r.status_code == 200
     assert guidance_calls == [("TST", RUNNING_YEAR)]
-    assert two_stage_keys == ["net_debt"]
+    assert two_stage_keys == []
+    assert anchor_keys == ["net_debt"]
 
 
-def test_us_refresh_closed_year_uses_two_stage(client, db, monkeypatch):
+def test_us_refresh_closed_year_no_guidance_call(client, db, monkeypatch):
     """US-Filer, abgeschlossenes Jahr: kein Guidance-Call, alle Keys
-    unveraendert durch Two-Stage."""
+    durch den EDGAR-Anker (US-Filer erreichen Two-Stage nicht mehr)."""
     cid = _setup_refresh(client, db, "wire-closed@example.com", "US0001234567")
-    two_stage_keys, guidance_calls = _patch_refresh_env(monkeypatch)
+    two_stage_keys, guidance_calls, anchor_keys = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -394,13 +375,14 @@ def test_us_refresh_closed_year_uses_two_stage(client, db, monkeypatch):
 
     assert r.status_code == 200
     assert guidance_calls == []
-    assert two_stage_keys == ["revenue", "net_income"]
+    assert two_stage_keys == []
+    assert anchor_keys == ["revenue", "net_income"]
 
 
 def test_non_us_refresh_uses_two_stage(client, db, monkeypatch):
     """Nicht-US-Firma: kein Guidance-Call, Two-Stage laeuft fuer alle Keys."""
     cid = _setup_refresh(client, db, "wire-eu@example.com", "DE0001234567")
-    two_stage_keys, guidance_calls = _patch_refresh_env(monkeypatch)
+    two_stage_keys, guidance_calls, _anchor_keys = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",

@@ -123,7 +123,7 @@ def _patch_consistency_spies(monkeypatch):
 
     validated: list[int] = []
     monkeypatch.setattr(cons, "validate_cross_metrics",
-                        lambda db_, cid_, y: validated.append(y))
+                        lambda db_, cid_, y, **kw: validated.append(y))
     monkeypatch.setattr(cons, "derive_net_debt_from_components", lambda db_, cid_, y: None)
     monkeypatch.setattr(cons, "derive_missing_ocf", lambda db_, cid_, y: None)
     monkeypatch.setattr(cons, "derive_sbc_quarters", lambda db_, cid_, y: None)
