@@ -1358,6 +1358,7 @@ def refresh_company_values(
         # Pro Key committen: ein Fehler (und der zugehoerige Rollback) in
         # Key N darf die bereits erfolgreich geschriebenen Keys 1..N-1
         # nicht mit verwerfen. mark_success erst NACH erfolgreichem Commit.
+        from app.values.consistency import BALANCE_CARRY_FORWARD_KEYS
         from app.values.guidance_estimates import GUIDANCE_ESTIMATE_KEYS
         for key in effective_keys:
             update_job(company_id, key)
@@ -1366,6 +1367,13 @@ def refresh_company_values(
             # (unten, vor dem Konsistenz-Pass) deckt sie ab. Berichtete
             # Quartale ankert der Quartals-Anker im Konsistenz-Block.
             if us_guidance_fy and key in GUIDANCE_ESTIMATE_KEYS:
+                continue
+            # Bilanz-Keys fuers laufende FY: keine Two-Stage-Forecast-
+            # Recherche mehr — die Fortschreibung des letzten berichteten
+            # Bilanzstichtags (derive_balance_carry_forward im Konsistenz-
+            # Block) ersetzt sie vollstaendig. Berichtete Quartale ankern
+            # Quartals-Anker + 8-K-Bruecke.
+            if us_guidance_fy and key in BALANCE_CARRY_FORWARD_KEYS:
                 continue
             updated_before = len(updated)
             try:
@@ -1433,11 +1441,14 @@ def refresh_company_values(
         # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
         if use_two_stage_fy and payload.period_year is not None:
             from app.values.consistency import (
+                derive_balance_carry_forward,
+                derive_declared_dividend_quarter,
                 derive_ebitda_q4_from_fy,
                 derive_missing_fcf,
                 derive_missing_ocf,
                 derive_net_debt_from_components,
                 derive_open_quarter_from_fy_estimate,
+                derive_runrate_quarter,
                 derive_sbc_quarters,
                 validate_cross_metrics,
             )
@@ -1534,6 +1545,12 @@ def refresh_company_values(
                     db.rollback()
             for cons_year in consistency_years:
                 try:
+                    # Bilanz-Fortschreibung VOR der net_debt-Ableitung und
+                    # VOR validate_cross_metrics: Q4/FY-Staende aus dem
+                    # letzten berichteten Stichtag ersetzen die Two-Stage-
+                    # Bilanz-Schaetzungen, net_debt rechnet danach mit den
+                    # fortgeschriebenen Komponenten.
+                    derive_balance_carry_forward(db, company_id, cons_year)
                     derive_net_debt_from_components(db, company_id, cons_year)
                     derive_missing_ocf(db, company_id, cons_year)
                     derive_sbc_quarters(db, company_id, cons_year)
@@ -1543,6 +1560,15 @@ def refresh_company_values(
                     # Offenes Rest-Quartal deterministisch aus dem FY-
                     # Estimate (Guidance/Konsens) statt LLM-Schaetzung.
                     derive_open_quarter_from_fy_estimate(db, company_id, cons_year)
+                    # Deklarierte Dividendenrate NACH der Guidance-Ableitung:
+                    # die Fortschreibung des zuletzt berichteten Quartals
+                    # schlaegt das FY-Guidance-Residuum (calculated ist
+                    # ersetzbar).
+                    derive_declared_dividend_quarter(db, company_id, cons_year)
+                    # SBC/Buyback-Runrate NUR als Fallback ohne FY-Konsens
+                    # (nach derive_open_quarter: der Konsens-Pfad hat
+                    # Vorrang), VOR derive_missing_fcf.
+                    derive_runrate_quarter(db, company_id, cons_year)
                     # fcf = OCF - Capex als berechneter Wert — VOR
                     # validate_cross_metrics, damit der fcf-Check die
                     # frischen Werte sieht.

@@ -358,22 +358,24 @@ def _patch_refresh_env(monkeypatch):
 
 def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monkeypatch):
     """US-Filer, laufendes FY: Estimate-Keys laufen NICHT durch Two-Stage,
-    fetch_guidance_estimates wird genau EINMAL aufgerufen. Nicht abgedeckte
-    Keys (Balance-Sheet) laufen weiter durch Two-Stage."""
+    fetch_guidance_estimates wird genau EINMAL aufgerufen. Balance-Keys
+    (cash_and_equivalents) uebernimmt die Bilanz-Fortschreibung — auch kein
+    Two-Stage. Nicht abgedeckte Keys (net_debt) laufen weiter durch
+    Two-Stage."""
     cid = _setup_refresh(client, db, "wire-us@example.com", "US0001234567")
     two_stage_keys, guidance_calls = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
         json={
-            "keys": ["revenue", "net_income", "cash_and_equivalents"],
+            "keys": ["revenue", "net_income", "cash_and_equivalents", "net_debt"],
             "period_type": "FY", "period_year": RUNNING_YEAR,
         },
     )
 
     assert r.status_code == 200
     assert guidance_calls == [("TST", RUNNING_YEAR)]
-    assert two_stage_keys == ["cash_and_equivalents"]
+    assert two_stage_keys == ["net_debt"]
 
 
 def test_us_refresh_closed_year_uses_two_stage(client, db, monkeypatch):

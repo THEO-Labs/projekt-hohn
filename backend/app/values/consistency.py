@@ -30,6 +30,14 @@ _EST_MIN_BASE = Decimal("1000000")
 
 _NET_DEBT_COMPONENTS = ("st_debt", "lt_debt", "cash_and_equivalents", "st_investments")
 
+# Point-in-Time-Bilanz-Keys der Carry-Forward-Ableitung: der letzte
+# berichtete Quartalsstichtag ersetzt die Two-Stage-Forecast-Recherche
+# fuer Q4/FY des laufenden FY vollstaendig (siehe
+# derive_balance_carry_forward + Key-Loop-Skip in routes).
+BALANCE_CARRY_FORWARD_KEYS = frozenset(
+    {"cash_and_equivalents", "st_investments", "st_debt", "lt_debt"}
+)
+
 # Keys, die per LLM-Recherche befuellt werden — Ziel der Vorjahres-Kopie-
 # und Schaetzungs-Plausibilitaets-Checks. eps_diluted explizit dabei.
 _RESEARCH_KEYS = tuple(sorted(set(SUMMABLE_QUARTERLY_KEYS) | {"eps_diluted"}))
@@ -571,6 +579,42 @@ def derive_ebitda_q4_from_fy(db: Session, company_id: UUID, year: int) -> int:
     return 1
 
 
+def _quarter_reported_us(company, year: int, q: str, subs_cache: dict) -> bool:
+    """Berichtet-Kriterium wie im apply_to_db-Gate (nur US-Filer): Quartal
+    beendet UND (Karenz abgelaufen ODER Item-2.02-8-K nach Quartalsende).
+    Der 8-K-Check (Netz) laeuft nur fuer beendete Quartale innerhalb der
+    Karenz; Fetch-Fehler fallen konservativ auf die Karenz-Regel zurueck
+    (Quartal gilt dann als offen)."""
+    reported = False
+    try:
+        from app.calculations.lock import is_us_company
+        if company is not None and is_us_company(company):
+            from app.values.detail_page import (
+                REPORTING_GRACE_DAYS,
+                quarter_end_date,
+            )
+            p_end = quarter_end_date(
+                year, q,
+                getattr(company, "fiscal_year_end_month", None),
+                getattr(company, "fiscal_year_end_day", None),
+            )
+            today = date.today()
+            if p_end is not None and p_end < today:
+                if (today - p_end).days >= REPORTING_GRACE_DAYS:
+                    reported = True
+                else:
+                    from app.values.gaap_bridge import has_reported_8k
+                    reported = has_reported_8k(company.ticker, p_end, subs_cache)
+    except Exception as e:
+        logger.warning(
+            "reported-check failed %s/%s FY%s: %s — Karenz-Regel greift "
+            "nicht, Quartal gilt als offen",
+            getattr(company, "id", None), q, year, e,
+        )
+        reported = False
+    return reported
+
+
 def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: int) -> int:
     """Offenes Rest-Quartal deterministisch aus dem FY-Estimate ableiten:
     Q_offen = FY_est (Guidance/Konsens) - Summe(berichtete Quartale).
@@ -597,40 +641,10 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
     subs_cache: dict = {}
 
     def _quarter_already_reported(q: str) -> bool:
-        """Berichtet-Kriterium wie im apply_to_db-Gate (nur US-Filer).
-        Der 8-K-Check (Netz) laeuft nur fuer beendete Quartale innerhalb
-        der Karenz; Fetch-Fehler fallen auf die Karenz-Regel zurueck."""
-        if q in reported_memo:
-            return reported_memo[q]
-        reported = False
-        try:
-            from app.calculations.lock import is_us_company
-            if company is not None and is_us_company(company):
-                from app.values.detail_page import (
-                    REPORTING_GRACE_DAYS,
-                    quarter_end_date,
-                )
-                p_end = quarter_end_date(
-                    year, q,
-                    getattr(company, "fiscal_year_end_month", None),
-                    getattr(company, "fiscal_year_end_day", None),
-                )
-                today = date.today()
-                if p_end is not None and p_end < today:
-                    if (today - p_end).days >= REPORTING_GRACE_DAYS:
-                        reported = True
-                    else:
-                        from app.values.gaap_bridge import has_reported_8k
-                        reported = has_reported_8k(company.ticker, p_end, subs_cache)
-        except Exception as e:
-            logger.warning(
-                "open-quarter reported-check failed %s/%s FY%s: %s — "
-                "Karenz-Regel greift nicht, Quartal gilt als offen",
-                company_id, q, year, e,
-            )
-            reported = False
-        reported_memo[q] = reported
-        return reported
+        # Memoisierter Wrapper um das gemeinsame Berichtet-Kriterium.
+        if q not in reported_memo:
+            reported_memo[q] = _quarter_reported_us(company, year, q, subs_cache)
+        return reported_memo[q]
 
     for key in sorted(SUMMABLE_QUARTERLY_KEYS):
         # FY-Estimate (Guidance/Konsens): Forecast-Zeile mit Wert. Ein
@@ -643,16 +657,22 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
         )
         if fy_actual is not None:
             continue
+        # FY-Anker: GAAP-Wert ODER adjusted-only (numeric_value=None, aber
+        # numeric_value_adjusted vorhanden — z.B. Non-GAAP-Konsens ohne
+        # explizite GAAP-Basis aus guidance_estimates).
         fy_est = next(
             (r for r in rows
              if r.value_key == key and r.period_type == "FY"
-             and r.is_forecast and r.numeric_value is not None),
+             and r.is_forecast
+             and (r.numeric_value is not None
+                  or r.numeric_value_adjusted is not None)),
             None,
         )
         if fy_est is None:
             # Hygiene: verwaiste Residuen raeumen. Ein frueher abgeleitetes
             # Q-Residuum ohne FY-Anker (z.B. nachdem ein kontaminierter
-            # GAAP-Konsens geraeumt wurde) ist nicht mehr belegbar.
+            # GAAP-Konsens geraeumt wurde) ist nicht mehr belegbar. Greift
+            # NUR wenn weder GAAP- noch adjusted-Anker existieren.
             for r in rows:
                 if (
                     r.value_key == key and r.period_type in _Q_TYPES
@@ -669,6 +689,94 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
                         "open-quarter orphan geraeumt %s/%s/%s FY%s",
                         company_id, key, r.period_type, year,
                     )
+            continue
+        if fy_est.numeric_value is None:
+            # Adjusted-only-Anker: GAAP-Pfad ueberspringen, nur das
+            # adjusted-Residuum rechnen. Berichtet heisst hier: Actual-
+            # Zeile MIT adjusted-Wert — alle berichteten Quartale muessen
+            # adjusted haben, sonst ist das Residuum nicht belegbar.
+            reported_adj: dict[str, CompanyValue] = {}
+            open_adj_qs: list[str] = []
+            for q in _Q_TYPES:
+                actual = next(
+                    (r for r in rows
+                     if r.value_key == key and r.period_type == q
+                     and not r.is_forecast
+                     and r.numeric_value_adjusted is not None),
+                    None,
+                )
+                if actual is not None:
+                    reported_adj[q] = actual
+                else:
+                    open_adj_qs.append(q)
+            if len(open_adj_qs) != 1:
+                continue
+            target_q = open_adj_qs[0]
+            # Berichtetes Quartal ohne DB-Actual: nicht als offen behandeln
+            # (gleiches Gate wie im GAAP-Pfad).
+            if _quarter_already_reported(target_q):
+                continue
+            adj_sum = sum(
+                (r.numeric_value_adjusted for r in reported_adj.values()),
+                Decimal("0"),
+            )
+            derived_adj = fy_est.numeric_value_adjusted - adj_sum
+            if key in ALWAYS_POSITIVE_KEYS and derived_adj < 0:
+                logger.warning(
+                    "open-quarter derive adjusted-only implausibel %s/%s/FY%s: "
+                    "fy_adj=%s reported_adj_sum=%s -> %s negativ — skip",
+                    company_id, key, year, fy_est.numeric_value_adjusted,
+                    adj_sum, derived_adj,
+                )
+                continue
+            slot_rows = [
+                r for r in rows
+                if r.value_key == key and r.period_type == target_q
+            ]
+            if any(
+                r.manually_overridden
+                or (r.from_ir_pdf and r.numeric_value is not None)
+                for r in slot_rows
+            ):
+                continue
+            target = next((r for r in slot_rows if r.is_forecast), None)
+            now = datetime.now(timezone.utc)
+            if target is None:
+                target = CompanyValue(
+                    id=uuid4(), company_id=company_id, value_key=key,
+                    period_type=target_q, period_year=year, is_forecast=True,
+                )
+                # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+                # Guards erneut anwenden.
+                try:
+                    with db.begin_nested():
+                        db.add(target)
+                        db.flush()
+                except IntegrityError:
+                    target = _reload_slot(db, company_id, key, target_q, year, True)
+                    if target is None or target.manually_overridden:
+                        continue
+            if adjusted_is_protected(target.adjustments_source):
+                continue
+            # GAAP-Spur bleibt None/unveraendert — es gibt keinen GAAP-Anker.
+            was_empty = (
+                target.numeric_value is None
+                and target.numeric_value_adjusted is None
+            )
+            target.numeric_value_adjusted = derived_adj
+            target.adjustments_note = (
+                "Abgeleitet: FY-Schaetzung minus berichtete Quartale"
+            )
+            target.adjustments_source = None
+            # primary_method nur setzen wenn Zeile neu/leer war — eine
+            # bestehende GAAP-Herkunft der Zeile nicht umdeklarieren.
+            if not (target.primary_method or "") or was_empty:
+                target.primary_method = "calculated"
+            target.is_forecast = True
+            target.currency = target.currency or fy_est.currency
+            target.fetched_at = now
+            target.last_refresh_attempt = now
+            written += 1
             continue
         reported: dict[str, CompanyValue] = {}
         open_qs: list[str] = []
@@ -773,6 +881,312 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
             )
             target.adjustments_source = None
         written += 1
+    db.flush()
+    return written
+
+
+def derive_declared_dividend_quarter(db: Session, company_id: UUID, year: int) -> int:
+    """Offenes Dividenden-Quartal aus der deklarierten Rate fortschreiben.
+
+    US-Firmen (Visa) aendern die Quartalsdividende typischerweise nur
+    einmal pro FY — ist genau EIN Quartal des laufenden FY offen (gleiches
+    Berichtet-Kriterium wie derive_open_quarter: Karenz ODER 8-K) und
+    tragen die letzten beiden berichteten Quartale dividends-Werte, wird
+    der zuletzt berichtete Quartalswert fortgeschrieben. 0 -> 0 ist
+    korrekt (keine Dividende bleibt keine Dividende). Nur leere/ersetzbare
+    Slots (_derivation_replaceable); manual/PDF bleiben. Sind damit alle
+    4 Quartale voll, wird FY = Summe ueber den bestehenden
+    _refresh_fy_from_quarters-Mechanismus nachgezogen (der Refresh-Flow
+    ruft ihn hier sonst nicht auf). Rueckgabe: 1 wenn geschrieben.
+    """
+    from app.companies.models import Company
+
+    rows = _rows_for_year(db, company_id, year)
+    # Abgeschlossenes Jahr (FY-Actual mit Wert): das exakte Residuum
+    # FY - Sigma(Q) ist der bessere Weg — keine Raten-Fortschreibung.
+    fy_actual = next(
+        (r for r in rows
+         if r.value_key == "dividends" and r.period_type == "FY"
+         and not r.is_forecast and r.numeric_value is not None),
+        None,
+    )
+    if fy_actual is not None:
+        return 0
+    reported: dict[str, CompanyValue] = {}
+    open_qs: list[str] = []
+    for q in _Q_TYPES:
+        actual = next(
+            (r for r in rows
+             if r.value_key == "dividends" and r.period_type == q
+             and not r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+        if actual is not None:
+            reported[q] = actual
+        else:
+            open_qs.append(q)
+    if len(open_qs) != 1:
+        return 0
+    target_q = open_qs[0]
+    # Die letzten beiden berichteten Quartale muessen Werte tragen — mit
+    # genau einem offenen Quartal sind das die zwei juengsten Actuals.
+    ordered = [q for q in _Q_TYPES if q in reported]
+    if len(ordered) < 2:
+        return 0
+    # Berichtetes Quartal ohne DB-Actual (8-K da, XBRL/Bruecke noch nicht
+    # durch): nicht fortschreiben — das echte Actual kommt gleich.
+    company = db.get(Company, company_id)
+    if _quarter_reported_us(company, year, target_q, {}):
+        return 0
+    src_row = reported[ordered[-1]]
+    rate = src_row.numeric_value
+    slot_rows = [
+        r for r in rows
+        if r.value_key == "dividends" and r.period_type == target_q
+    ]
+    if any(not _derivation_replaceable(r) for r in slot_rows):
+        return 0
+    target = next((r for r in slot_rows if r.is_forecast), None)
+    now = datetime.now(timezone.utc)
+    if target is None:
+        target = CompanyValue(
+            id=uuid4(), company_id=company_id, value_key="dividends",
+            period_type=target_q, period_year=year, is_forecast=True,
+        )
+        # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+        # Guards erneut anwenden.
+        try:
+            with db.begin_nested():
+                db.add(target)
+                db.flush()
+        except IntegrityError:
+            target = _reload_slot(db, company_id, "dividends", target_q, year, True)
+            if target is None or not _derivation_replaceable(target):
+                return 0
+    target.numeric_value = rate
+    target.source_name = (
+        f"Fortschreibung deklarierte Quartalsdividende ({ordered[-1]} {rate})"
+    )[:4096]
+    target.source_link = None
+    target.primary_method = "calculated"
+    target.is_forecast = True
+    target.currency = src_row.currency or target.currency
+    target.fetched_at = now
+    target.last_refresh_attempt = now
+    db.flush()
+    # FY = Q1+Q2+Q3+Q4, wenn nun alle 4 Quartale Werte haben — der
+    # bestehende Mechanismus prueft die Vollstaendigkeit selbst (kein
+    # Doppeln). Import lokal: routes importiert consistency (Zyklus).
+    from app.values.routes import _refresh_fy_from_quarters
+    _refresh_fy_from_quarters(db, company_id, "dividends", year)
+    db.flush()
+    return 1
+
+
+_RUNRATE_KEYS = ("sbc", "buyback_volume")
+
+
+def derive_runrate_quarter(db: Session, company_id: UUID, year: int) -> int:
+    """SBC/Buybacks: offenes Quartal als Runrate fortschreiben (Fallback).
+
+    Freigegebene Konvention: existiert KEIN FY-Konsens/Guidance-Forecast
+    mit Wert (der einen Q4-Rest via derive_open_quarter_from_fy_estimate
+    ermoeglichen wuerde — dieser Pfad hat Vorrang) und ist genau EIN
+    Quartal des laufenden FY offen (Berichtet-Kriterium wie
+    derive_open_quarter), wird Q_offen = Durchschnitt der berichteten
+    Quartale gesetzt und FY = Summe der 4 Quartale nachgezogen
+    (_refresh_fy_from_quarters, gleicher Mechanismus wie bei der
+    Dividenden-Fortschreibung). Nur leere/ersetzbare Slots
+    (_derivation_replaceable); manual/PDF bleiben. Rueckgabe: Anzahl
+    geschriebener Q-Zellen.
+    """
+    from app.companies.models import Company
+
+    rows = _rows_for_year(db, company_id, year)
+    company = db.get(Company, company_id)
+    subs_cache: dict = {}
+    written = 0
+    for key in _RUNRATE_KEYS:
+        # Abgeschlossenes Jahr (FY-Actual mit Wert): kein Runrate-Fall.
+        fy_actual = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and not r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+        if fy_actual is not None:
+            continue
+        # Konsens-Pfad hat Vorrang: FY-Forecast mit Wert -> die normale
+        # Q4-Rest-Ableitung liefert das offene Quartal, Runrate greift nicht.
+        fy_est = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+        if fy_est is not None:
+            continue
+        reported: dict[str, CompanyValue] = {}
+        open_qs: list[str] = []
+        for q in _Q_TYPES:
+            actual = next(
+                (r for r in rows
+                 if r.value_key == key and r.period_type == q
+                 and not r.is_forecast and r.numeric_value is not None),
+                None,
+            )
+            if actual is not None:
+                reported[q] = actual
+            else:
+                open_qs.append(q)
+        if len(open_qs) != 1:
+            continue
+        target_q = open_qs[0]
+        # Berichtetes Quartal ohne DB-Actual (8-K da, XBRL/Bruecke noch
+        # nicht durch): nicht fortschreiben — das echte Actual kommt gleich.
+        if _quarter_reported_us(company, year, target_q, subs_cache):
+            continue
+        runrate = sum(
+            (r.numeric_value for r in reported.values()), Decimal("0")
+        ) / Decimal(len(reported))
+        slot_rows = [
+            r for r in rows
+            if r.value_key == key and r.period_type == target_q
+        ]
+        if any(not _derivation_replaceable(r) for r in slot_rows):
+            continue
+        target = next((r for r in slot_rows if r.is_forecast), None)
+        now = datetime.now(timezone.utc)
+        if target is None:
+            target = CompanyValue(
+                id=uuid4(), company_id=company_id, value_key=key,
+                period_type=target_q, period_year=year, is_forecast=True,
+            )
+            # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+            # Guards erneut anwenden.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(db, company_id, key, target_q, year, True)
+                if target is None or not _derivation_replaceable(target):
+                    continue
+        src_currency = next(
+            (r.currency for r in reported.values() if r.currency), None
+        )
+        target.numeric_value = runrate
+        target.source_name = (
+            "Fortschreibung Quartals-Runrate (Q1-Qn-Durchschnitt)"
+        )
+        target.source_link = None
+        target.primary_method = "calculated"
+        target.is_forecast = True
+        target.currency = src_currency or target.currency
+        target.fetched_at = now
+        target.last_refresh_attempt = now
+        db.flush()
+        written += 1
+        # FY = Q1+Q2+Q3+Q4 ueber den bestehenden Mechanismus; danach die
+        # konventionsgemaesse Quelle setzen (nur auf der frisch
+        # abgeleiteten Zeile — 'Derived Annual'-Signatur).
+        from app.values.routes import _refresh_fy_from_quarters
+        _refresh_fy_from_quarters(db, company_id, key, year)
+        fy_rows = (
+            db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == "FY",
+                CompanyValue.period_year == year,
+            )
+            .all()
+        )
+        for r in fy_rows:
+            if (
+                not r.manually_overridden
+                and r.numeric_value is not None
+                and (r.source_name or "").startswith("Derived Annual")
+            ):
+                r.source_name = "Summe der Quartale (inkl. Fortschreibung)"
+    db.flush()
+    return written
+
+
+def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> int:
+    """Point-in-Time-Bilanz-Keys: unberichtete Q4-/FY-Slots des laufenden
+    FY mit dem letzten berichteten Quartalsstichtag fortschreiben.
+
+    Bilanzstaende driften zwischen Stichtagen wenig — die Fortschreibung
+    (z.B. Q3-Wert) ersetzt die Two-Stage-Forecast-Recherche fuer diese
+    Keys vollstaendig. Ersetzbare Slots (two_stage_*/not_found/leer/
+    calculated) werden ueberschrieben — die Two-Stage-Bilanz-Schaetzungen
+    sind damit obsolet; manual/PDF und Provider-Actuals bleiben.
+    net_debt danach via derive_net_debt_from_components neu rechnen
+    (Aufruf-Reihenfolge im Refresh-Flow). Rueckgabe: Anzahl
+    geschriebener Slots.
+    """
+    rows = _rows_for_year(db, company_id, year)
+    written = 0
+    for key in sorted(BALANCE_CARRY_FORWARD_KEYS):
+        # Letzter berichteter Stichtag: hoechstes Quartal mit authoritativem
+        # Actual (provider/manual/PDF). Ersetzbare Zeilen (two_stage_*/
+        # calculated/web_*) sind Schaetzungen — kein Fortschreibungs-Anker.
+        src: CompanyValue | None = None
+        src_q: str | None = None
+        for q in _Q_TYPES:
+            actual = next(
+                (r for r in rows
+                 if r.value_key == key and r.period_type == q
+                 and not r.is_forecast and r.numeric_value is not None
+                 and not _derivation_replaceable(r)),
+                None,
+            )
+            if actual is not None:
+                src, src_q = actual, q
+        if src is None:
+            continue
+        for pt in ("Q4", "FY"):
+            if pt == src_q:
+                continue
+            slot_rows = [
+                r for r in rows
+                if r.value_key == key and r.period_type == pt
+            ]
+            if any(not _derivation_replaceable(r) for r in slot_rows):
+                continue
+            # Zielzeile: Forecast-Slot bevorzugt, sonst den (ersetzbaren)
+            # anderen Slot umziehen (Muster derive_missing_fcf).
+            target = next((r for r in slot_rows if r.is_forecast), None)
+            if target is None:
+                target = next(iter(slot_rows), None)
+            now = datetime.now(timezone.utc)
+            if target is None:
+                target = CompanyValue(
+                    id=uuid4(), company_id=company_id, value_key=key,
+                    period_type=pt, period_year=year, is_forecast=True,
+                )
+                # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+                # Guards erneut anwenden.
+                try:
+                    with db.begin_nested():
+                        db.add(target)
+                        db.flush()
+                except IntegrityError:
+                    target = _reload_slot(db, company_id, key, pt, year, True)
+                    if target is None or not _derivation_replaceable(target):
+                        continue
+            target.numeric_value = src.numeric_value
+            target.source_name = (
+                f"Fortschreibung letzter Bilanzstichtag ({src_q})"
+            )
+            target.source_link = None
+            target.primary_method = "calculated"
+            target.is_forecast = True
+            target.currency = src.currency or target.currency
+            target.fetched_at = now
+            target.last_refresh_attempt = now
+            written += 1
     db.flush()
     return written
 

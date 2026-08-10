@@ -47,6 +47,13 @@ BRIDGE_KEYS = (
     "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
 )
 
+# EBITDA-Bausteine: ebitda selbst steht nicht im Release, Operating income
+# (GuV) und D&A (Cashflow-Addback) schon. Interne Extraktionsfelder OHNE
+# eigene value_keys — der Katalog (catalog.py) kennt weder operating_income
+# noch depreciation_amortization; verrechnet wird intern zu
+# ebitda = operating_income + d_and_a (siehe bridge-Loop).
+_EBITDA_COMPONENT_FIELDS = ("operating_income", "depreciation_amortization")
+
 # capex steht im Cash-Flow-Statement negativ, die DB-Konvention ist ein
 # positiver Betrag. capex ist bewusst NICHT in ALWAYS_POSITIVE_KEYS
 # (normalize_sign laesst es durch) — die Bruecke normalisiert selbst.
@@ -123,6 +130,10 @@ _SYSTEM_PROMPT = (
     "(noncurrent). WARNING: NEVER use a 'total carrying value of debt' or "
     "any debt total from footnotes or prose — those include current "
     "maturities and are WRONG here.\n"
+    "    operating_income: operating income (statements of operations)\n"
+    "    depreciation_amortization: depreciation and amortization "
+    "(add-back line of the cash flow statement; include amortization of "
+    "intangibles lines if shown separately by summing them)\n"
     "- Balance sheet keys are point-in-time as of the balance sheet date: "
     "never year-to-date, report them under values only. If a line is not "
     "shown in the balance sheet, use null — do not guess.\n"
@@ -146,11 +157,13 @@ _SYSTEM_PROMPT = (
     '"capex": number|null, "sbc": number|null, "dividends": number|null, '
     '"buyback_volume": number|null, "cash_and_equivalents": number|null, '
     '"st_investments": number|null, "st_debt": number|null, '
-    '"lt_debt": number|null}, '
+    '"lt_debt": number|null, "operating_income": number|null, '
+    '"depreciation_amortization": number|null}, '
     '"ytd_values": {"revenue": number|null, "net_income": number|null, '
     '"eps_diluted": number|null, "operating_cash_flow": number|null, '
     '"capex": number|null, "sbc": number|null, "dividends": number|null, '
-    '"buyback_volume": number|null}}'
+    '"buyback_volume": number|null, "operating_income": number|null, '
+    '"depreciation_amortization": number|null}}'
 )
 
 
@@ -453,7 +466,9 @@ def bridge_gaap_from_earnings_releases(
 
     # Kandidaten sammeln: (year, ptype) -> fehlende Keys. Juengste Periode
     # zuerst, damit der max_llm_calls-Deckel die relevanteste nimmt.
-    candidates: list[tuple[int, str, date, list[str]]] = []
+    # ebitda laeuft ueber die Baustein-Ableitung (Operating income + D&A)
+    # mit denselben Lock-Regeln wie die direkten Bruecken-Keys.
+    candidates: list[tuple[int, str, date, list[str], bool]] = []
     for year in sorted(set(years), reverse=True):
         for ptype in ("FY", "Q4", "Q3", "Q2", "Q1"):
             period_end = _period_end(company, ptype, year)
@@ -463,15 +478,18 @@ def bridge_gaap_from_earnings_releases(
                 key for key in BRIDGE_KEYS
                 if _cell_needs_bridge(_cell_rows(db, company.id, key, ptype, year))
             ]
-            if missing:
-                candidates.append((year, ptype, period_end, missing))
+            ebitda_needed = _cell_needs_bridge(
+                _cell_rows(db, company.id, "ebitda", ptype, year)
+            )
+            if missing or ebitda_needed:
+                candidates.append((year, ptype, period_end, missing, ebitda_needed))
     if not candidates:
         return 0
     candidates.sort(
         key=lambda c: (c[0], _PERIOD_ORDER.get(c[1], 9)), reverse=True,
     )
 
-    for year, ptype, period_end, missing in candidates:
+    for year, ptype, period_end, missing, ebitda_needed in candidates:
         if llm_calls >= max_llm_calls:
             logger.info(
                 "%s gaap bridge: max_llm_calls=%d erreicht — Rest uebersprungen",
@@ -510,11 +528,14 @@ def bridge_gaap_from_earnings_releases(
             continue
 
         period_label = f"FY{year}" if ptype == "FY" else f"{ptype} FY{year}"
+        req_keys = list(missing)
+        if ebitda_needed:
+            req_keys += list(_EBITDA_COMPONENT_FIELDS)
         llm_calls += 1
         try:
             data = _extract_via_claude(
                 text, company.name, company.ticker, period_label, period_end,
-                company.currency, missing, cost_tracker=cost_tracker,
+                company.currency, req_keys, cost_tracker=cost_tracker,
             )
         except Exception as e:
             logger.warning(
@@ -611,6 +632,47 @@ def bridge_gaap_from_earnings_releases(
                     written += 1
             except InvalidOperation:
                 continue
+        # EBITDA aus den Bausteinen: nur wenn BEIDE extrahiert wurden und
+        # aus derselben Spaltenperiode stammen (values ODER ytd_values —
+        # keine Mischspalten: Operating income ist meist standalone-Q,
+        # D&A im Cashflow meist YTD). YTD-Logik wie bei Statement-Keys:
+        # Cross-Check gegen DB-Vorquartale bzw. Standalone-Ableitung.
+        if ebitda_needed:
+            oi = _to_decimal(values.get("operating_income"))
+            da = _to_decimal(values.get("depreciation_amortization"))
+            oi_ytd = _to_decimal(ytd_values.get("operating_income"))
+            da_ytd = _to_decimal(ytd_values.get("depreciation_amortization"))
+            ev = oi + da if (oi is not None and da is not None) else None
+            e_ytd = (
+                oi_ytd + da_ytd
+                if (oi_ytd is not None and da_ytd is not None) else None
+            )
+            note = "EBITDA = Operating income + D&A"
+            consistent = True
+            if ptype != "FY":
+                prior_sum = _prior_quarter_sum(db, company.id, "ebitda", year, ptype)
+                if ev is not None and e_ytd is not None and prior_sum is not None:
+                    if e_ytd != 0 and abs((prior_sum + ev) - e_ytd) > abs(e_ytd) * _YTD_TOLERANCE:
+                        logger.warning(
+                            "%s gaap bridge: YTD-Konsistenz verletzt "
+                            "ebitda/%s (prior %s + q %s != ytd %s) — verworfen",
+                            company.ticker, period_label, prior_sum, ev, e_ytd,
+                        )
+                        consistent = False
+                elif ev is None and e_ytd is not None and prior_sum is not None:
+                    ev = e_ytd - prior_sum
+                    note = (
+                        f"EBITDA = Operating income + D&A | {ptype} = "
+                        f"YTD {e_ytd} minus Summe berichteter "
+                        f"Vorquartale {prior_sum}"
+                    )
+            if consistent and ev is not None:
+                try:
+                    if _write_bridge_value(db, company, "ebitda", ptype, year,
+                                           ev, exhibit_url, note=note):
+                        written += 1
+                except InvalidOperation:
+                    pass
         db.flush()
 
     logger.info(

@@ -22,6 +22,15 @@ direkter NI-Konsens, wird net_income adjusted deterministisch als
 eps_adj x shares_outstanding (SNAPSHOT) abgeleitet — GAAP-Slots bleiben
 dann bewusst leer (keine Rueckrechnung ueber historische Spreads, das
 waere verkappte Extrapolation).
+
+FCF/OCF: Analysten publizieren FCF-Konsens haeufig (Aggregator-Tabellen),
+daher ist fcf abfragbar und wird als web_guidance-Forecast geschrieben.
+Die deterministische Ableitung consistency.derive_missing_fcf (fcf =
+OCF - |Capex|, primary_method calculated) darf einen web_guidance-fcf
+spaeter ersetzen — _derivation_replaceable ersetzt web*-Zeilen, das ist
+gewollt. Umgekehrt wird hier OCF FY deterministisch als fcf + |capex|
+abgeleitet (calculated), wenn der Call FCF- und Capex-Konsens liefert,
+aber keinen OCF-Konsens.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -46,7 +55,7 @@ MAX_TOKENS = 4096
 # ueberspringt sie fuer US-Filer im laufenden FY (routes).
 GUIDANCE_ESTIMATE_KEYS = frozenset({
     "revenue", "net_income", "eps_diluted", "operating_cash_flow",
-    "capex", "sbc", "dividends", "buyback_volume", "ebitda",
+    "capex", "fcf", "sbc", "dividends", "buyback_volume", "ebitda",
 })
 
 # Non-GAAP-Sidecars: landen in numeric_value_adjusted der jeweiligen
@@ -81,6 +90,7 @@ _METRIC_SPECS = (
     ("net_income_non_gaap", "Non-GAAP / adjusted net income"),
     ("operating_cash_flow", "operating cash flow"),
     ("capex", "capital expenditures"),
+    ("fcf", "free cash flow (analyst consensus for FCF is widely published on estimate aggregators)"),
     ("sbc", "stock-based compensation expense"),
     ("dividends", "total dividends paid"),
     ("buyback_volume", "share repurchase volume"),
@@ -107,9 +117,16 @@ def _build_system_prompt(company, year: int) -> str:
         "fiscal year. Sources in this order: (1) guidance from the latest "
         "earnings release, (2) guidance updates published after that "
         "(ad-hoc/press releases, guidance raises/cuts), (3) analyst "
-        "consensus (Zacks, Visible Alpha, stockanalysis.com, "
-        "Bloomberg-cited figures). Consensus counts as a fully valid "
-        "source. FORBIDDEN: your own YoY/trend/run-rate extrapolation. "
+        "consensus. Consensus counts as a fully valid source, and it is "
+        "published on aggregator sites: MarketScreener, StockAnalysis.org, "
+        "Zacks, TipRanks, Simply Wall St, WSJ and Yahoo Finance analyst "
+        "estimates, Visible Alpha, Bloomberg-cited figures. These sites "
+        "carry consensus estimate TABLES that go beyond revenue/EPS — "
+        "including free cash flow, capex, and often operating cash flow "
+        "and EBITDA. Spend your web search budget actively looking for "
+        "these estimate tables instead of giving up early on the "
+        "non-headline metrics. "
+        "FORBIDDEN: your own YoY/trend/run-rate extrapolation. "
         "GAAP vs non-GAAP rules: (a) analyst consensus EPS and net income "
         "figures are by default NON-GAAP ('adjusted EPS', 'adjusted net "
         "income') and belong in the non-GAAP fields (eps_diluted_non_gaap, "
@@ -307,6 +324,10 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict]) -> None:
     4. GAAP <= Non-GAAP + 1% wenn beide fuer denselben Key geliefert
        (US-Standard: adjusted >= GAAP durch SBC/Amortisations-Addbacks) —
        sonst beide verwerfen.
+    5. fcf <= ocf wenn beide geliefert (fcf = ocf - |capex|, Capex >= 0) —
+       welcher falsch ist, ist nicht entscheidbar: beide skippen.
+       (fcf/capex > 1 Mio und capex vs Vorjahres-Ist laufen ueber die
+       bestehenden Gates 1 und 2.)
     """
     ticker = company.ticker
     for key in list(parsed):
@@ -365,6 +386,17 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict]) -> None:
             del parsed[gaap_key]
             del parsed[adj_key]
 
+    fcf = parsed.get("fcf")
+    ocf = parsed.get("operating_cash_flow")
+    if fcf and ocf and fcf["value"] > ocf["value"]:
+        logger.warning(
+            "guidance estimates %s/FY%s: fcf=%s > ocf=%s "
+            "(fcf muss <= ocf sein) — beide skip",
+            ticker, year, fcf["value"], ocf["value"],
+        )
+        del parsed["fcf"]
+        del parsed["operating_cash_flow"]
+
 
 def _derive_adjusted_net_income(db, company, year: int, parsed: dict[str, dict]) -> None:
     """Fehlt ein direkter NI-adj-Konsens, aber es gibt Non-GAAP-EPS:
@@ -392,6 +424,34 @@ def _derive_adjusted_net_income(db, company, year: int, parsed: dict[str, dict])
     logger.info(
         "guidance estimates %s/FY%s: net_income adjusted abgeleitet "
         "(eps_adj %s x shares %s)", company.ticker, year, eps["value"], shares,
+    )
+
+
+def _derive_ocf_from_fcf_capex(company, year: int, parsed: dict[str, dict]) -> None:
+    """Liefert der Call FCF- UND Capex-Konsens, aber keinen OCF-Konsens:
+    OCF FY deterministisch als fcf + |capex| ableiten (Umkehrung von
+    fcf = ocf - |capex|). Kein Modell-Schaetzwert — reine Addition.
+    primary_method calculated: derive_missing_fcf & Co duerfen die Zeile
+    spaeter ersetzen (_derivation_replaceable)."""
+    if "operating_cash_flow" in parsed:
+        return
+    fcf = parsed.get("fcf")
+    capex = parsed.get("capex")
+    if fcf is None or capex is None:
+        return
+    parsed["operating_cash_flow"] = {
+        "value": fcf["value"] + abs(capex["value"]),
+        "source": "consensus",
+        "basis": "unclear",
+        "quote": None,
+        "url": fcf.get("url"),
+        "method": "calculated",
+        "source_name": "Abgeleitet: FCF-Konsens + Capex-Konsens",
+    }
+    logger.info(
+        "guidance estimates %s/FY%s: operating_cash_flow abgeleitet "
+        "(fcf %s + |capex| %s)",
+        company.ticker, year, fcf["value"], abs(capex["value"]),
     )
 
 
@@ -470,9 +530,10 @@ def _upsert_fy_forecast(db, company, key: str, year: int, info: dict, now) -> Co
 
     target.numeric_value = value
     target.text_value = None
-    target.source_name = _compose_source_name(info)
+    # Abgeleitete Werte (OCF aus fcf+capex) tragen eigene Quelle/Methode.
+    target.source_name = info.get("source_name") or _compose_source_name(info)
     target.source_link = info.get("url")
-    target.primary_method = "web_guidance"
+    target.primary_method = info.get("method") or "web_guidance"
     target.is_forecast = True
     target.manually_overridden = False
     target.from_ir_pdf = False
@@ -578,6 +639,7 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None) -> int:
     _rebook_by_basis(parsed, company.ticker, year)
     _apply_gates(db, company, year, parsed)
     _derive_adjusted_net_income(db, company, year, parsed)
+    _derive_ocf_from_fcf_capex(company, year, parsed)
     if not parsed:
         return 0
 
