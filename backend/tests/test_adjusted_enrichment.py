@@ -917,6 +917,69 @@ def test_prior_write_survives_own_older_release(db, company, monkeypatch):
     assert pr_ni.adjustments_source == EXHIBIT_URL_Q2
 
 
+def test_retrofit_prior_only_candidate_fills_marked_prior_year(db, company, monkeypatch):
+    """MSFT-Retrofit-Muster: die aktuelle Periode ist bereits voll
+    angereichert (https-Quelle, geschuetzt) und die Vorjahres-Zeilen tragen
+    den Negativ-Marker — der Claude-Call laeuft trotzdem (prior-only-
+    Kandidat), fuellt das Vorjahr aus der Vergleichsspalte und laesst die
+    aktuellen Zeilen unveraendert."""
+    cur_ni = _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"),
+                       numeric_value_adjusted=Decimal("24000000000"),
+                       adjustments_note="Non-GAAP (Reconciliation 8-K): SBC",
+                       adjustments_source="https://www.sec.gov/Archives/cur-ex99.htm")
+    cur_eps = _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.70"),
+                        numeric_value_adjusted=Decimal("3.23"),
+                        adjustments_note="Non-GAAP (Reconciliation 8-K): SBC",
+                        adjustments_source="https://www.sec.gov/Archives/cur-ex99.htm")
+    pr_ni = _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+                      year=PRIOR_YEAR,
+                      adjustments_note="no non-GAAP reconciliation found")
+    pr_eps = _seed_row(db, company, "eps_diluted", "Q2", Decimal("2.40"),
+                       year=PRIOR_YEAR,
+                       adjustments_note="no non-GAAP reconciliation found")
+    fake = _patch_period(monkeypatch, {**_CURRENT_Q2, "prior_period": _prior_block()})
+
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    # Nur die Vorjahres-Periode zaehlt — die aktuelle war schon fertig.
+    assert enriched == 1
+    assert len(fake.messages.calls) == 1
+    db.refresh(cur_ni)
+    db.refresh(cur_eps)
+    db.refresh(pr_ni)
+    db.refresh(pr_eps)
+    assert cur_ni.numeric_value_adjusted == Decimal("24000000000")
+    assert cur_ni.adjustments_note == "Non-GAAP (Reconciliation 8-K): SBC"
+    assert cur_ni.adjustments_source == "https://www.sec.gov/Archives/cur-ex99.htm"
+    assert cur_eps.numeric_value_adjusted == Decimal("3.23")
+    assert pr_ni.numeric_value_adjusted == Decimal("21500000000")
+    assert pr_ni.adjustments_note == \
+        f"Vorjahres-Vergleichsspalte aus Q2 FY{YEAR}-Release"
+    assert pr_ni.adjustments_source == EXHIBIT_URL_Q2
+    assert pr_eps.numeric_value_adjusted == Decimal("2.88")
+
+
+def test_no_call_when_prior_year_has_no_need(db, company, monkeypatch):
+    """Spar-Logik intakt: aktuelle Periode UND Vorjahres-Periode sind voll
+    angereichert (geschuetzt) — weder EDGAR- noch Claude-Call."""
+    _seed_row(db, company, "net_income", "Q2", Decimal("20000000000"),
+              numeric_value_adjusted=Decimal("24000000000"),
+              adjustments_source="https://www.sec.gov/Archives/cur-ex99.htm")
+    _seed_row(db, company, "net_income", "Q2", Decimal("18000000000"),
+              year=PRIOR_YEAR,
+              numeric_value_adjusted=Decimal("21500000000"),
+              adjustments_source="https://www.sec.gov/Archives/old-ex99.htm")
+
+    def _boom(ticker):
+        raise AssertionError("ohne eigenen und Vorjahres-Bedarf darf EDGAR nicht laufen")
+
+    monkeypatch.setattr(adj, "_resolve_cik", _boom)
+    enriched = enrich_adjusted_from_earnings_releases(db, company, [YEAR])
+
+    assert enriched == 0
+
+
 def test_prompt_schema_includes_prior_period():
     """Das JSON-Schema im System-Prompt muss den prior_period-Block
     ausweisen und ihn auf echte Tabellenspalten beschraenken."""

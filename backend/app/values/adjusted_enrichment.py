@@ -542,40 +542,59 @@ def enrich_adjusted_from_earnings_releases(
     if not is_us_company(company):
         return 0
 
-    from sqlalchemy import or_
-
     from app.values.persistence import adjusted_is_protected
 
-    rows = (
+    # Vorjahre mitladen: der Prior-Bedarf (Vorjahres-Vergleichsspalte) wird
+    # auch fuer Perioden ausserhalb von `years` beurteilt.
+    years_set = set(years)
+    load_years = sorted(years_set | {y - 1 for y in years_set})
+    all_rows = (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company.id,
             CompanyValue.value_key.in_(ADJUSTED_KEYS),
-            CompanyValue.period_year.in_(years),
+            CompanyValue.period_year.in_(load_years),
             CompanyValue.period_type.in_(("FY", "Q1", "Q2", "Q3", "Q4")),
             CompanyValue.is_forecast.is_(False),
             CompanyValue.numeric_value.isnot(None),
-            # Negativ-Marker: bereits als "keine Reconciliation" markierte
-            # Zeilen nicht erneut versuchen (keine Dauer-Retries).
-            or_(
-                CompanyValue.adjustments_note.is_(None),
-                CompanyValue.adjustments_note != NO_RECONCILIATION_NOTE,
-            ),
         )
         .all()
     )
-    # Kandidaten: Adjusted leer ODER unbelegt (Two-Stage-Format 'quote |
-    # url' bzw. ohne Quelle) — tabellenstrikte 8-K-Werte duerfen Freitext-
-    # LLM-Adjusted ersetzen. Manual/URL-belegte Adjusted bleiben tabu.
-    rows = [
-        r for r in rows
-        if r.numeric_value_adjusted is None
-        or not adjusted_is_protected(r.adjustments_source)
-    ]
+
+    def _needs_adjusted(r: CompanyValue) -> bool:
+        return (
+            r.numeric_value_adjusted is None
+            or not adjusted_is_protected(r.adjustments_source)
+        )
+
+    # Eigene Kandidaten: Adjusted leer ODER unbelegt (Two-Stage-Format
+    # 'quote | url' bzw. ohne Quelle) — tabellenstrikte 8-K-Werte duerfen
+    # Freitext-LLM-Adjusted ersetzen. Manual/URL-belegte Adjusted bleiben
+    # tabu. Negativ-Marker-Zeilen werden fuer das EIGENE Release nicht
+    # erneut versucht (keine Dauer-Retries).
     by_period: dict[tuple[int, str], list[CompanyValue]] = {}
-    for row in rows:
+    for row in all_rows:
+        if row.period_year not in years_set:
+            continue
+        if row.adjustments_note == NO_RECONCILIATION_NOTE:
+            continue
+        if not _needs_adjusted(row):
+            continue
         by_period.setdefault((row.period_year, row.period_type), []).append(row)
-    if not by_period:
+
+    # Prior-Bedarf: (Y, ptype) wird AUCH dann Kandidat, wenn die eigenen
+    # Zeilen komplett/geschuetzt sind, aber die Vorjahres-Periode
+    # (Y-1, ptype) adjusted braucht — deren Release-Vergleichsspalte ist
+    # dann die Quelle. Marker-Zeilen zaehlen dabei als beduerftig: der
+    # Marker heisst nur 'eigenes Release ohne Reconciliation', genau dann
+    # ist die Vergleichsspalte des Folgejahres die einzige Quelle.
+    prior_need: set[tuple[int, str]] = set()
+    for row in all_rows:
+        if (row.period_year + 1) in years_set and _needs_adjusted(row):
+            prior_need.add((row.period_year + 1, row.period_type))
+
+    periods = set(by_period) | prior_need
+    if not periods:
         return 0
 
     today = date.today()
@@ -590,14 +609,20 @@ def enrich_adjusted_from_earnings_releases(
     prior_written: set[int] = set()
     # Absteigend nach Periode (juengste zuerst): der max_llm_calls-Deckel
     # soll die relevantesten Perioden zuerst nehmen.
-    for (year, ptype), period_rows in sorted(
-        by_period.items(),
-        key=lambda kv: (kv[0][0], _PERIOD_ORDER.get(kv[0][1], 9)),
+    for year, ptype in sorted(
+        periods,
+        key=lambda p: (p[0], _PERIOD_ORDER.get(p[1], 9)),
         reverse=True,
     ):
-        if all(r.id in prior_written for r in period_rows):
-            # Alle Zeilen der Periode schon per Comparative gefuellt —
-            # kein eigener Claude-Call mehr noetig.
+        # Bei prior-only-Kandidaten kann period_rows leer sein — die
+        # aktuelle Spalte dient dann nur den Gates (GAAP-Referenz kommt
+        # aus der DB), geschrieben wird nur der prior-Block.
+        period_rows = by_period.get((year, ptype), [])
+        own_pending = [r for r in period_rows if r.id not in prior_written]
+        if not own_pending and (year, ptype) not in prior_need:
+            # Alle eigenen Zeilen schon per Comparative gefuellt und kein
+            # Vorjahres-Bedarf — kein Claude-Call noetig. (Bewusst nicht
+            # all() auf period_rows: die leere Liste waere immer True.)
             continue
         if llm_calls >= max_llm_calls:
             logger.info(
