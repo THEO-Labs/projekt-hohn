@@ -791,6 +791,15 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
                         continue
             if adjusted_is_protected(target.adjustments_source):
                 continue
+            # Direkte Q-Schaetzung aus dem Guidance-Call ist vorrangig —
+            # das Residuum ueberschreibt sie nicht (der Call fragt das
+            # offene Quartal explizit, genau um Residual-Artefakte zu
+            # vermeiden).
+            if (
+                target.primary_method == "web_guidance"
+                and target.numeric_value_adjusted is not None
+            ):
+                continue
             # GAAP-Spur bleibt None/unveraendert — es gibt keinen GAAP-Anker.
             was_empty = (
                 target.numeric_value is None
@@ -892,6 +901,13 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
                 target = _reload_slot(db, company_id, key, target_q, year, True)
                 if target is None or target.manually_overridden:
                     continue
+        # Direkte Q-Schaetzung aus dem Guidance-Call ist vorrangig — das
+        # Residuum ueberschreibt sie nicht.
+        if (
+            target.primary_method == "web_guidance"
+            and target.numeric_value is not None
+        ):
+            continue
         target.numeric_value = derived
         target.source_name = (
             f"FY-Guidance minus berichtete Quartale: FY {fy_est.numeric_value} "

@@ -125,7 +125,7 @@ def test_protected_manual_adjusted_stays(db, company):
     for q, v, a in (("Q1", 100, 105), ("Q2", 110, 115), ("Q3", 120, 125)):
         _seed(db, company, "net_income", q, v, adjusted=a)
     est = _seed(db, company, "net_income", "Q4", 999, adjusted=140,
-                is_forecast=True, primary_method="web_guidance",
+                is_forecast=True, primary_method="two_stage_confirmed",
                 adjustments_note="Manuell gesetzt", adjustments_source="Manual")
     _seed(db, company, "net_income", "FY", 460, adjusted=480, is_forecast=True)
 

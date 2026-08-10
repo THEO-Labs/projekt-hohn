@@ -68,7 +68,7 @@ def test_derives_open_q4_and_overwrites_llm_estimate(db, company):
     for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
         _seed(db, company, "net_income", q, v)
     _seed(db, company, "net_income", "Q4", 999, is_forecast=True,
-          primary_method="web_guidance")
+          primary_method="two_stage_confirmed")
     _seed(db, company, "net_income", "FY", 460, is_forecast=True,
           primary_method="two_stage_confirmed")
 
@@ -188,7 +188,7 @@ def _in_grace_setup(db, company, days_back=20):
     for q, v in (("Q1", 100), ("Q2", 110), ("Q3", 120)):
         _seed(db, company, "net_income", q, v, year=year)
     est = _seed(db, company, "net_income", "Q4", 999, is_forecast=True,
-                primary_method="web_guidance", year=year)
+                primary_method="two_stage_confirmed", year=year)
     _seed(db, company, "net_income", "FY", 460, is_forecast=True,
           primary_method="two_stage_confirmed", year=year)
     return year, p_end, est
@@ -214,7 +214,7 @@ def test_quarter_with_8k_not_treated_as_open(db, company, monkeypatch):
     assert written == 0
     db.refresh(est)
     assert est.numeric_value == Decimal("999")
-    assert est.primary_method == "web_guidance"
+    assert est.primary_method == "two_stage_confirmed"
 
 
 def test_quarter_without_8k_still_derived(db, company, monkeypatch):
