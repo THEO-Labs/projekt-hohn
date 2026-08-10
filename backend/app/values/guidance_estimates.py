@@ -60,7 +60,9 @@ logger = logging.getLogger(__name__)
 # web_search-Tool, temperature 0.
 EXTRACT_MODEL = "claude-sonnet-4-6"
 WEB_SEARCH_MAX_USES = 5
-MAX_TOKENS = 4096
+# Mit open_quarter verdoppelt sich das Antwort-JSON (fy- + Q-Block je
+# Metric, reasoning-Strings): 4096 fuehrte zu abgeschnittenem JSON.
+MAX_TOKENS = 12288
 
 _Q_TYPES = ("Q1", "Q2", "Q3", "Q4")
 
