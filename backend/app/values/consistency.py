@@ -650,6 +650,25 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
             None,
         )
         if fy_est is None:
+            # Hygiene: verwaiste Residuen raeumen. Ein frueher abgeleitetes
+            # Q-Residuum ohne FY-Anker (z.B. nachdem ein kontaminierter
+            # GAAP-Konsens geraeumt wurde) ist nicht mehr belegbar.
+            for r in rows:
+                if (
+                    r.value_key == key and r.period_type in _Q_TYPES
+                    and r.is_forecast and not r.manually_overridden
+                    and r.primary_method == "calculated"
+                    and r.numeric_value is not None
+                    and (r.source_name or "").startswith("FY-Guidance minus")
+                ):
+                    r.numeric_value = None
+                    r.source_name = (
+                        "Geraeumt: FY-Anker der Ableitung entfallen"
+                    )
+                    logger.info(
+                        "open-quarter orphan geraeumt %s/%s/%s FY%s",
+                        company_id, key, r.period_type, year,
+                    )
             continue
         reported: dict[str, CompanyValue] = {}
         open_qs: list[str] = []
