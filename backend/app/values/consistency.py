@@ -1146,7 +1146,11 @@ def derive_gaap_from_adjusted_spread(db: Session, company_id: UUID, year: int) -
     return written
 
 
-_RUNRATE_KEYS = ("sbc", "buyback_volume")
+# capex/operating_cash_flow ergaenzt (User-Freigabe): ohne sie bleibt
+# fcf = OCF - Capex fuer Q4/FY dauerhaft leer, da Analysten diese Keys
+# selten quotieren. OCF ist volatiler als die anderen Runrate-Keys —
+# der Konsens-Pfad (derive_open_quarter) behaelt Vorrang.
+_RUNRATE_KEYS = ("sbc", "buyback_volume", "capex", "operating_cash_flow")
 
 
 def derive_runrate_quarter(db: Session, company_id: UUID, year: int) -> int:
