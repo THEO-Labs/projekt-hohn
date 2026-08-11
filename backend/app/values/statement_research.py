@@ -809,8 +809,22 @@ def _download_document(url: str) -> tuple[bytes, str] | None:
     import httpx
 
     current = url
+    # Browser-Header: IR-Seiten (z.B. sap.com) blocken Default-Clients
+    # mit 403 — realistische UA/Accept-Header wie ein Browser senden.
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/pdf,text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
+        "Referer": "https://www.google.com/",
+    }
     try:
-        with httpx.Client(timeout=_DOC_TIMEOUT_SECONDS, follow_redirects=False) as client:
+        with httpx.Client(
+            timeout=_DOC_TIMEOUT_SECONDS, follow_redirects=False, headers=headers,
+        ) as client:
             for _ in range(_DOC_REDIRECT_LIMIT + 1):
                 if not _url_allowed(current):
                     logger.warning(
