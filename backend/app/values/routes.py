@@ -10,10 +10,12 @@ Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
     Provider-Chain in _try_providers (EDGAR > ESEF > Yahoo):
       - US-Filer (ISIN US...): EDGAR-XBRL liefert FY-Werte aus 10-K/20-F
       - EU-Filer (NL/FR/ES/IT/SE/...): ESEF-XBRL via filings.xbrl.org
-      - Fallback: Yahoo (Macrotrends-Snippets) + Claude-Web-Recherche
-    DE-Filer (Munich Re, Allianz, ...) sind NICHT in ESEF -> Yahoo-Anker
-    + Statement-Recherche (statement_research: EIN Call pro Firma+Jahr+
-    Statement-Gruppe, ersetzt die Two-Stage-Recherche pro Key).
+      - Yahoo-Fallback nur noch fuer US-Filer (Kundenentscheid: der
+        Marktdaten-Feed ist fuer Nicht-US keine Fundamental-Wertequelle)
+    Nicht-US ohne ESEF (Munich Re, Allianz, ...): Statement-Recherche
+    (statement_research: EIN Call pro Firma+Jahr+Statement-Gruppe,
+    ersetzt die Two-Stage-Recherche pro Key; Yahoo dient dort nur noch
+    als Cross-Check-Referenz).
 
   FY-ESTIMATES (laufendes FY, period_year >= current_year)
     US- UND Nicht-US-Filer: EIN gebuendelter Guidance-Call
@@ -437,8 +439,21 @@ def _try_web_guidance(
     )
 
 
-def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day, isin: str | None = None):
+def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day,
+                   isin: str | None = None, company=None):
+    # Kundenentscheid: der Marktdaten-Feed (provider_kind='market', Yahoo)
+    # schreibt fuer Nicht-US-Firmen keine Fundamental-Werte mehr.
+    # Stammdaten (ALWAYS_CURRENT_KEYS: stock_price/shares/market_cap)
+    # bleiben ausdruecklich auf dem Feed — Marktdaten sind kein
+    # Berichtswert.
+    skip_market = (
+        company is not None
+        and key not in ALWAYS_CURRENT_KEYS
+        and not is_us_company(company)
+    )
     for provider in get_providers(key):
+        if skip_market and getattr(provider, "provider_kind", None) == "market":
+            continue
         try:
             # Cascading fallback fuer unterschiedliche fetch-Signaturen:
             # 1) Full (mit isin) — ESEFProvider
@@ -798,6 +813,7 @@ def _process_one_key(
             getattr(company, "fiscal_year_end_month", None),
             getattr(company, "fiscal_year_end_day", None),
             isin=getattr(company, "isin", None),
+            company=company,
         )
     if result is None and not is_stammdaten and not is_us_company(company):
         # Fallback fuer FY-Werte ohne Provider-Treffer: Web-Recherche
@@ -1182,9 +1198,10 @@ def _ensure_previous_year_inputs(
 
     if not is_us_company(company):
         # Nicht-US: Statement-Recherche statt Two-Stage/Web-Fallback.
-        # Erst der Provider-Anker (Yahoo/ESEF, nur abgeschlossene Jahre),
-        # dann EIN Statement-Lauf fuer die Gruppen der noch fehlenden
-        # Keys; fcf/net_debt liefern die deterministischen Ableitungen.
+        # Erst der Provider-Anker (nur ESEF — der Markt-Feed schreibt
+        # keine Fundamentals mehr; nur abgeschlossene Jahre), dann EIN
+        # Statement-Lauf fuer die Gruppen der noch fehlenden Keys;
+        # fcf/net_debt liefern die deterministischen Ableitungen.
         from app.values.provider_anchor import anchor_fy_with_provider
         for key in missing:
             try:
@@ -1407,7 +1424,8 @@ def refresh_company_values(
                             year=payload.period_year,
                         )
                     else:
-                        # Nicht-US: Provider-First-FY-Anker (ESEF/Yahoo)
+                        # Nicht-US: Provider-First-FY-Anker (nur ESEF —
+                        # der Markt-Feed schreibt keine Fundamentals mehr)
                         # fuer abgeschlossene Jahre. Die LLM-Recherche
                         # laeuft danach EINMAL pro Jahr als Statement-
                         # Call-Trio (statement_research, vor dem
@@ -1499,26 +1517,14 @@ def refresh_company_values(
                 [payload.period_year - 1] if prev_year_backfill_keys else []
             ) + [payload.period_year]
 
-            # Nicht-US: Quartals-Anker aus den Yahoo-Quartalsstatements —
-            # NACH dem FY-Anker (Key-Loop oben), VOR den Statement-Calls,
-            # damit die Recherche nur noch fuellt, was der Provider nicht
-            # abdeckt (provider-Zeilen sind dort nicht ersetzbar und die
-            # Bedarfspruefung spart ganze Gruppen-Calls ein). Fehler
-            # brechen den Refresh nie ab.
-            if not us_filer:
-                try:
-                    from app.values.provider_anchor import anchor_quarters_with_yahoo
-                    anchor_quarters_with_yahoo(db, company, consistency_years)
-                    db.commit()
-                except Exception as e:
-                    logger.warning("yahoo quarter anchor failed for %s: %s", ticker, e)
-                    db.rollback()
-
             # Nicht-US: EIN Recherche-Call pro Jahr und Statement-Gruppe
             # (max. 3 Calls) ersetzt die Two-Stage-Recherche pro Key.
             # Reihenfolge N-1 vor N, damit das Vorjahresband-Gate die
             # frischen N-1-Actuals sieht. Nur die Gruppen der angefragten
-            # Keys. Fehler brechen den Refresh nie ab.
+            # Keys. Der Yahoo-Feed schreibt keine Quartale mehr
+            # (Kundenentscheid) — er liefert nur noch die Cross-Check-
+            # Referenzen innerhalb von fetch_statement_research.
+            # Fehler brechen den Refresh nie ab.
             if not us_filer:
                 try:
                     from app.values.statement_research import (

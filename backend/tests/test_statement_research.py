@@ -590,9 +590,11 @@ def test_validator_diet_keeps_core_checks_and_clears_legacy_flags(db, company):
 # --- Bedarfspruefung (Quartals-Anker deckt Gruppen) -------------------------
 
 
-def _cover_group(db, company, group, skip=()):
-    """Alle Basis-Keys der Gruppe fuer FY+Q1-Q4 mit provider-Zeilen
-    fuellen (wie nach FY- und Yahoo-Quartals-Anker)."""
+def _cover_group(db, company, group, skip=(), source_name=None):
+    """Alle Basis-Keys der Gruppe fuer FY+Q1-Q4 mit XBRL-provider-Zeilen
+    fuellen (wie nach dem ESEF-Anker). Markt-Provider-Zeilen (Bloomberg-
+    Label) decken seit dem Kundenentscheid NICHT mehr — siehe
+    test_market_covered_group_still_triggers_call."""
     keys = [k for k, _ in sr.STATEMENT_GROUPS[group]
             if k not in sr._ADJUSTED_SIDECARS]
     for key in keys:
@@ -600,7 +602,8 @@ def _cover_group(db, company, group, skip=()):
             if (key, pt) in skip:
                 continue
             _seed(db, company, key, pt, 5_000_000_000,
-                  primary_method="provider", source_name="Bloomberg")
+                  primary_method="provider",
+                  source_name=source_name or f"ESEF FY{YEAR}")
 
 
 def test_fully_covered_group_skips_claude_call(db, company, monkeypatch):
@@ -657,3 +660,177 @@ def test_replaceable_row_still_triggers_group_call(db, company, monkeypatch):
     sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
 
     assert [c[2] for c in calls] == ["balance"]
+
+
+# --- Migration: Markt-Provider-Zeilen (Yahoo-Altbestand) --------------------
+
+
+def test_market_covered_group_still_triggers_call(db, company, monkeypatch):
+    """Bloomberg-gedeckte Gruppe zaehlt als beduerftig — sonst liefe kein
+    Call, der den Markt-Provider-Altbestand ersetzt."""
+    _cover_group(db, company, "income", source_name="Bloomberg")
+    _cover_group(db, company, "cashflow")
+    _cover_group(db, company, "balance")
+    calls = _mock_claude(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR)
+
+    assert [c[2] for c in calls] == ["income"]
+
+
+def test_market_provider_row_replaced_by_research(db, company, monkeypatch):
+    """Markt-Provider-Zeile (primary_method 'provider', Label 'Bloomberg')
+    ist fuer die Recherche ersetzbar — der Berichtswert uebernimmt."""
+    old = _seed(db, company, "revenue", "FY", 39_000_000_000,
+                primary_method="provider", source_name="Bloomberg")
+    _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+    db.refresh(old)
+
+    assert old.numeric_value == Decimal("40000000000")
+    assert old.primary_method == "statement_research"
+    assert not (old.source_name or "").startswith("Bloomberg")
+
+
+def test_esef_provider_row_not_replaced(db, company, monkeypatch):
+    """XBRL-Provider-Zeilen (ESEF-/EDGAR-Label) bleiben gesperrt —
+    die Erkennung laeuft ueber das source_name-Label."""
+    esef = _seed(db, company, "revenue", "FY", 39_000_000_000,
+                 primary_method="provider", source_name=f"ESEF FY{YEAR}")
+    edgar = _seed(db, company, "net_income", "FY", 2_900_000_000,
+                  primary_method="provider", source_name="SEC EDGAR 10-K")
+    _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+    db.refresh(esef)
+    db.refresh(edgar)
+
+    assert esef.numeric_value == Decimal("39000000000")
+    assert esef.primary_method == "provider"
+    assert edgar.numeric_value == Decimal("2900000000")
+    assert edgar.primary_method == "provider"
+
+
+def test_market_provider_cell_is_needy_for_document_stage(db, company):
+    """_needy_cells: Bloomberg-Zellen zaehlen trotz Wert als beduerftig;
+    ESEF-Zellen nicht."""
+    for pt in ("FY", "Q1"):
+        _seed(db, company, "net_income", pt, 1_000_000_000,
+              primary_method="provider", source_name="Bloomberg")
+    _seed(db, company, "net_income", "Q2", 1_000_000_000,
+          primary_method="provider", source_name=f"ESEF FY{YEAR}")
+
+    needed = sr._needy_cells(db, company, YEAR, "income",
+                             ("FY", "Q1", "Q2", "Q3", "Q4"))
+
+    assert set(needed["net_income"]) == {"FY", "Q1", "Q3", "Q4"}
+
+
+# --- Yahoo-Cross-Check-Gate -------------------------------------------------
+
+
+def _mock_refs(monkeypatch, refs, calls=None, error=False):
+    """yahoo_reference_map am Quell-Modul mocken (statement_research
+    importiert sie pro Aufruf aus provider_anchor)."""
+    import app.values.provider_anchor as anchor_mod
+
+    def fake(company_, years):
+        if calls is not None:
+            calls.append(tuple(years))
+        if error:
+            raise RuntimeError("yahoo down")
+        return refs
+
+    monkeypatch.setattr(anchor_mod, "yahoo_reference_map", fake)
+
+
+def test_yahoo_gate_discards_outlier_keeps_within_band(db, company, monkeypatch):
+    """>35% Abweichung von der Yahoo-Referenz -> verworfen ('Yahoo-Cross-
+    Check'); innerhalb des Bandes -> geschrieben. Ohne Referenz (kein
+    Map-Eintrag) kein Urteil."""
+    _mock_refs(monkeypatch, {
+        ("revenue", "FY", YEAR): Decimal("20000000000"),   # Recherche 2x -> raus
+        ("net_income", "FY", YEAR): Decimal("2800000000"),  # +7% -> ok
+    })
+    payload = {
+        "revenue": {"FY": _entry(40_000_000_000)},
+        "net_income": {"FY": _entry(3_000_000_000)},
+        "eps_diluted": {"FY": _entry("3.05")},  # keine Referenz -> ok
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+    assert _rows(db, company, "eps_diluted", "FY")[0].numeric_value == Decimal("3.05")
+
+
+def test_yahoo_gate_per_share_key_same_band(db, company, monkeypatch):
+    """Per-Share-Keys laufen mit demselben 35%-Band."""
+    _mock_refs(monkeypatch, {("eps_diluted", "FY", YEAR): Decimal("3.00")})
+    payload = {"eps_diluted": {"FY": _entry("5.00")}}  # +67% -> raus
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "eps_diluted", "FY")[0].primary_method == "not_found"
+
+
+def test_yahoo_gate_sign_free_magnitude_compare(db, company, monkeypatch):
+    """Betragsvergleich: Yahoo liefert capex roh negativ, die Recherche
+    brutto positiv — gleicher Betrag passiert das Gate."""
+    _mock_refs(monkeypatch, {("capex", "FY", YEAR): Decimal("-2000000000")})
+    payload = {"capex": {"FY": _entry(2_100_000_000)}}
+    _mock_claude(monkeypatch, {"cashflow": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["cashflow"])
+    db.commit()
+
+    assert _rows(db, company, "capex", "FY")[0].numeric_value is not None
+
+
+def test_yahoo_gate_skipped_on_reference_fetch_error(db, company, monkeypatch):
+    """Fetch-Fehler der Referenz-Map -> Gate komplett uebersprungen,
+    der Lauf schreibt normal weiter."""
+    _mock_refs(monkeypatch, {}, error=True)
+    payload = {"revenue": {"FY": _entry(40_000_000_000)}}
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].numeric_value == Decimal("40000000000")
+
+
+def test_yahoo_references_fetched_once_per_run(db, company, monkeypatch):
+    """Die Referenz-Map wird einmal pro fetch_statement_research-Aufruf
+    geholt — nicht pro Gruppe."""
+    calls: list = []
+    _mock_refs(monkeypatch, {}, calls=calls)
+    _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    sr.fetch_statement_research(db, company, YEAR)
+
+    assert calls == [(YEAR,)]
+
+
+def test_yahoo_gate_complements_prev_year_band(db, company, monkeypatch):
+    """Das Gate ersetzt das Vorjahresband NICHT: ein Wert, der die
+    Yahoo-Referenz trifft, aber aus dem Vorjahresband faellt, wird
+    weiterhin verworfen."""
+    _seed(db, company, "revenue", "FY", 10_000_000_000, year=PREV,
+          primary_method="statement_research")
+    _mock_refs(monkeypatch, {("revenue", "FY", YEAR): Decimal("30000000000")})
+    payload = {"revenue": {"FY": _entry(30_000_000_000)}}  # 3x Vorjahr
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"

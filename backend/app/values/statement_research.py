@@ -31,12 +31,17 @@ Code-Gates sind die einzige Verteidigung (Muster guidance_estimates):
      schliesst auch Einmal-Gewinne aus, SAP-Muster; nur klare
      Spur-Verwechslungen werden verworfen),
   4. qsum-Enforcement: FY + alle 4 Quartale geliefert und Summe > 1%
-     daneben -> Quartale verwerfen, FY behalten, loggen.
+     daneben -> Quartale verwerfen, FY behalten, loggen,
+  5. Yahoo-Cross-Check (Kundenentscheid: der Marktdaten-Feed schreibt
+     fuer Nicht-US keine Werte mehr, er gated nur noch): existiert eine
+     Yahoo-Referenz und weicht der Recherche-Wert >35% ab, wird er
+     verworfen; ohne Referenz kein Urteil (_apply_yahoo_gate).
 
 Schreib-Invarianten wie ueberall: normalize_sign, currency_conflict,
 SAVEPOINT-Slot-Muster (uq_company_values_slot). Schreibrechte: Manual-/
-PDF-/Provider-Zeilen mit Wert bleiben; not_found/two_stage_*/web_*/
-calculated/statement_research sind ersetzbar. source_name ist
+PDF-/XBRL-Provider-Zeilen mit Wert bleiben; not_found/two_stage_*/web_*/
+calculated/statement_research und Markt-Provider-Zeilen (Bloomberg-
+Label, Yahoo-Altbestand) sind ersetzbar. source_name ist
 quote-first ("<quote> | <url>", beginnt nie mit https — bleibt damit
 fuer den naechsten Lauf ersetzbar). Kein Beleg -> null -> not_found-
 Platzhalter (rote Zelle) via stamp_attempt_and_fill_not_found.
@@ -164,6 +169,19 @@ _REPORTED_ADJ_BAND = Decimal("0.60")
 # erweitert um die eigene Signatur, damit der naechste Lauf seine
 # Vorgaenger-Zeilen aktualisieren darf).
 _REPLACEABLE_METHODS = ("not_found", "calculated", "statement_research")
+
+# Markt-Provider-Erkennung (Migration bestehender Yahoo-Werte): der
+# Marktdaten-Feed schreibt primary_method='provider' mit dem Label
+# 'Bloomberg' (YahooFinanceProvider.name, auch Varianten wie 'Bloomberg
+# (Close ...)'). Berichts-Provider tragen andere Labels ('ESEF ...',
+# 'SEC EDGAR ...') und bleiben gesperrt. NUR die Statement-Recherche darf
+# Markt-Provider-Zeilen ersetzen (Kundenentscheid: Feed ist keine
+# Wertequelle) — die Ableitungs-Guards (consistency) respektieren
+# 'provider' unveraendert.
+_MARKET_PROVIDER_LABEL = "Bloomberg"
+
+# Yahoo-Cross-Check-Gate: weites Band, weil der Feed selbst ungenau ist.
+_YAHOO_XCHECK_TOL = Decimal("0.35")
 
 # --- Stufe 2: Dokument-Bruecke ----------------------------------------------
 # Kosten-Deckel: max. 2 Dokument-Calls pro Gruppe/Jahr.
@@ -507,11 +525,71 @@ def _enforce_qsum(parsed: dict[str, dict[str, dict]], ticker: str, year: int) ->
             del periods[q]
 
 
+def _yahoo_reference_map(company, year: int) -> dict:
+    """Yahoo-Referenzen fuer das Cross-Check-Gate: EIN Fetch pro
+    fetch_statement_research-Aufruf. Fehler -> leere Map (Gate komplett
+    uebersprungen), geloggt."""
+    from app.values.provider_anchor import yahoo_reference_map
+
+    try:
+        return yahoo_reference_map(company, [year])
+    except Exception as e:
+        logger.warning(
+            "statement research %s/FY%s: Yahoo-Referenzen nicht verfuegbar "
+            "— Yahoo-Cross-Check uebersprungen: %s",
+            company.ticker, year, e,
+        )
+        return {}
+
+
+def _apply_yahoo_gate(parsed: dict[str, dict[str, dict]], ref_map: dict,
+                      ticker: str, year: int) -> None:
+    """Yahoo-Cross-Check: existiert fuer eine Zelle eine Markt-Referenz
+    und weicht der Recherche-Wert um mehr als 35% davon ab
+    (|research/yahoo - 1| > 0.35), wird er verworfen und geloggt. Ohne
+    Referenz kein Urteil. Betragsvergleich, weil Yahoo-Rohwerte (z.B.
+    capex negativ) und Recherche-Werte vor normalize_sign unterschiedliche
+    Vorzeichen tragen koennen. Per-Share-Keys laufen mit demselben Band;
+    Sidecars nicht (Yahoo kennt keine Non-IFRS-Spur). Das Gate laeuft
+    ZUSAETZLICH zum Vorjahresband, es ersetzt es nicht. Mutiert `parsed`
+    in place."""
+    if not ref_map:
+        return
+    for key in list(parsed):
+        if key in _ADJUSTED_SIDECARS:
+            continue
+        for pt in list(parsed[key]):
+            ref = ref_map.get((key, pt, year))
+            if ref is None or ref == 0:
+                continue
+            v = parsed[key][pt]["value"]
+            if abs(abs(v) / abs(ref) - 1) > _YAHOO_XCHECK_TOL:
+                logger.warning(
+                    "statement research %s/FY%s: Yahoo-Cross-Check %s/%s=%s "
+                    "weicht >35%% von der Referenz %s ab — verworfen",
+                    ticker, year, key, pt, v, ref,
+                )
+                del parsed[key][pt]
+
+
+def _is_market_provider_row(row: CompanyValue) -> bool:
+    """Markt-Provider-Zeile (Yahoo-Feed): primary_method 'provider' mit
+    Bloomberg-Label im source_name. XBRL-Provider-Zeilen (ESEF/EDGAR)
+    matchen nicht — deren Labels beginnen mit 'ESEF'/'SEC EDGAR'."""
+    return (
+        (row.primary_method or "") == "provider"
+        and (row.source_name or "").startswith(_MARKET_PROVIDER_LABEL)
+    )
+
+
 def _row_replaceable(row: CompanyValue) -> bool:
-    """Schreibrechte: Manual-/PDF-/Provider-Zeilen mit Wert sind
+    """Schreibrechte: Manual-/PDF-/XBRL-Provider-Zeilen mit Wert sind
     authoritative; leere Zeilen und LLM-/Ableitungs-Herkuenfte
     (not_found/two_stage_*/web_*/calculated/statement_research) sind
-    ersetzbar (Muster consistency._derivation_replaceable)."""
+    ersetzbar (Muster consistency._derivation_replaceable). Markt-
+    Provider-Zeilen (Bloomberg-Label, Alt-Bestand des Yahoo-Ankers) sind
+    seit dem Kundenentscheid ebenfalls ersetzbar — die Recherche aus
+    offiziellen Berichten loest sie ab."""
     if row.manually_overridden or (row.from_ir_pdf and row.numeric_value is not None):
         return False
     if row.numeric_value is None:
@@ -521,6 +599,7 @@ def _row_replaceable(row: CompanyValue) -> bool:
         pm in _REPLACEABLE_METHODS
         or pm.startswith("two_stage")
         or pm.startswith("web")
+        or _is_market_provider_row(row)
     )
 
 
@@ -669,7 +748,8 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
         return False
     # reported <= adjusted auch gegen den DB-Basiswert pruefen — die
     # Dokument-Stufe liefert Sidecars oft ohne Basis-Wert im Payload
-    # (Basis kam vom Yahoo-Anker), das Parsed-Paar-Gate greift dann nicht.
+    # (Basis kam z.B. vom ESEF-Anker oder aus Stufe 1), das
+    # Parsed-Paar-Gate greift dann nicht.
     base_val = row.numeric_value
     adj_val = info["value"]
     # Richtungs-frei (Non-IFRS darf unter reported liegen): nur klare
@@ -758,9 +838,9 @@ def _group_needs_research(db, company, year: int, group: str,
     """Bedarfspruefung pro Gruppe: hat mindestens EINE berichtete Zelle
     der Gruppe keinen autoritativen Wert (leer oder ersetzbar per
     _row_replaceable), lohnt der Claude-Call. Sind alle Zellen durch
-    Provider-/Manual-/PDF-Zeilen gedeckt (Yahoo-Quartals-Anker + FY-
-    Anker), entfaellt er — SAP-artige Faelle brauchen im Steady State
-    0-1 Calls statt 3."""
+    XBRL-Provider-/Manual-/PDF-Zeilen gedeckt (ESEF-Anker), entfaellt
+    er. Markt-Provider-Zellen (Bloomberg-Label) zaehlen als beduerftig
+    — sonst liefe kein Call, der den Alt-Bestand ersetzt."""
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
     for key in base_keys:
         for pt in periods_reported:
@@ -895,8 +975,9 @@ def _needy_cells(db, company, year: int, group: str,
                  periods_reported: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
     """Beduerftige berichtete Zellen der Gruppe nach Stufe 1 + Ankern:
     Actual-Slot ohne Wert (leer oder not_found-Platzhalter) und nicht
-    durch Manual/PDF/Provider gesperrt. Nur diese darf die Dokument-
-    Stufe fuellen/stempeln."""
+    durch Manual/PDF/XBRL-Provider gesperrt. Markt-Provider-Zellen
+    (Bloomberg-Alt-Bestand) zaehlen trotz Wert als beduerftig — die
+    Dokument-Stufe darf sie durch Berichtswerte ersetzen."""
     needed: dict[str, tuple[str, ...]] = {}
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
     for key in base_keys:
@@ -911,7 +992,11 @@ def _needy_cells(db, company, year: int, group: str,
             actual = next((r for r in rows if not r.is_forecast), None)
             if actual is not None and not _row_replaceable(actual):
                 continue
-            if actual is None or actual.numeric_value is None:
+            if (
+                actual is None
+                or actual.numeric_value is None
+                or _is_market_provider_row(actual)
+            ):
                 pts.append(pt)
         if pts:
             needed[key] = tuple(pts)
@@ -1084,7 +1169,7 @@ def _call_claude_document(company, year: int, group: str,
 
 def _document_stage(db, company, year: int, group: str, raw_data: dict,
                     periods_reported: tuple[str, ...], now,
-                    cost_tracker=None) -> int:
+                    cost_tracker=None, ref_map: dict | None = None) -> int:
     """Stufe 2: verbliebene beduerftige Zellen aus den Berichts-
     Dokumenten der Stufe-1-Antwort fuellen. Max. MAX_DOC_CALLS
     Dokument-Calls; Downloads mit Guards, PDFs > MAX_PDF_PAGES werden
@@ -1158,6 +1243,7 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
                 if not parsed[key][pt].get("url"):
                     parsed[key][pt]["url"] = url
         _apply_gates(db, company, year, parsed)
+        _apply_yahoo_gate(parsed, ref_map or {}, company.ticker, year)
         _enforce_qsum(parsed, company.ticker, year)
         # needed_map beschraenkt Writes UND not_found-Stempel auf die
         # beduerftigen Zellen — Dokument gelesen, Wert nicht enthalten
@@ -1179,10 +1265,13 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
     """Berichtete Fundamentals eines Nicht-US-Filers fuer ein Jahr holen:
     EIN Claude-Websuche-Call pro Statement-Gruppe (max. 3 Calls).
 
-    Fuellt nur, was nach den vorgeschalteten Ankern (PDF-Locks, ESEF/
-    Yahoo-Provider) ersetzbar oder leer ist — Schreibrechte siehe
-    _row_replaceable. `groups` (optional) beschraenkt auf eine Teilmenge
-    der Gruppen (z.B. fuer den Vorjahres-Backfill einzelner Keys).
+    Fuellt nur, was nach den vorgeschalteten Ankern (PDF-Locks, ESEF-
+    Provider) ersetzbar oder leer ist — Schreibrechte siehe
+    _row_replaceable (Markt-Provider-Altbestand ist ersetzbar). Der
+    Yahoo-Feed schreibt keine Werte mehr, er dient nur noch als
+    Cross-Check-Referenz (_apply_yahoo_gate). `groups` (optional)
+    beschraenkt auf eine Teilmenge der Gruppen (z.B. fuer den
+    Vorjahres-Backfill einzelner Keys).
 
     Nur Nicht-US-Filer (US-Filer laufen ueber EDGAR/8-K-Bruecke) — sonst
     0. Rueckgabe: Anzahl geschriebener Zeilen.
@@ -1209,6 +1298,9 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
     group_names = [g for g in STATEMENT_GROUPS if groups is None or g in groups]
     now = datetime.now(timezone.utc)
     total = 0
+    # Yahoo-Referenzen fuer das Cross-Check-Gate: einmal pro Aufruf, lazy
+    # (erst wenn eine Gruppe wirklich recherchiert wird).
+    ref_map: dict | None = None
     for group in group_names:
         # Bedarfspruefung: Gruppe ohne ersetzbare/leere berichtete Zelle
         # (alles vom Provider-Anker gedeckt) -> kein Claude-Call.
@@ -1219,6 +1311,8 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
                 company.ticker, year, group,
             )
             continue
+        if ref_map is None:
+            ref_map = _yahoo_reference_map(company, year)
         try:
             data = _call_claude(company, year, group, cost_tracker=cost_tracker)
         except Exception as e:
@@ -1239,6 +1333,7 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
             if not parsed[key]:
                 del parsed[key]
         _apply_gates(db, company, year, parsed)
+        _apply_yahoo_gate(parsed, ref_map, company.ticker, year)
         _enforce_qsum(parsed, company.ticker, year)
         wrote = _persist_group(db, company, year, group, parsed, now, periods_reported)
         total += wrote
@@ -1251,7 +1346,7 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
         # in _document_stage.
         total += _document_stage(
             db, company, year, group, data, periods_reported, now,
-            cost_tracker=cost_tracker,
+            cost_tracker=cost_tracker, ref_map=ref_map,
         )
     db.flush()
     return total
