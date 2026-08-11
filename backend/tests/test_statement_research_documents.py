@@ -295,8 +295,9 @@ def test_html_fallback_extracts_text_no_document_block(db, company, monkeypatch)
 
 
 def test_pdf_over_page_limit_skipped(db, company, monkeypatch):
-    """PDF > MAX_PDF_PAGES (Geschaeftsbericht) wird uebersprungen —
-    kein Claude-Call."""
+    """PDF > MAX_PDF_PAGES, aber die Seiten-Extraktion scheitert
+    (Fake-Bytes unparsbar, kein Teil-PDF) -> Skip wie frueher, kein
+    Claude-Call."""
     _mock_stage1(monkeypatch, {"income": _stage1_income()})
     _mock_download(monkeypatch)
     monkeypatch.setattr(sr, "_pdf_page_count", lambda data: 320)
@@ -368,6 +369,207 @@ def test_real_download_size_limit_and_redirect_guard(monkeypatch):
     assert _REAL_DOWNLOAD("https://redir.example.com/doc.pdf") is None
     data, kind = _REAL_DOWNLOAD("https://ok.example.com/doc.pdf")
     assert kind == "pdf" and data == b"%PDF-ok"
+
+
+# --- Seiten-Extraktion fuer grosse PDFs --------------------------------------
+
+
+def _make_text_pdf(pages_text: list[str]) -> bytes:
+    """Minimal-PDF mit einer Textzeile pro Seite (Helvetica, Tj-Operator)
+    — hermetisch erzeugt, von pypdf les- und extrahierbar."""
+    n = len(pages_text)
+    objs: list[bytes] = []
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(n))
+    objs.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {n} >>".encode())
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for i, text in enumerate(pages_text):
+        content_num = 4 + 2 * i + 1
+        objs.append(
+            (
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                "/Resources << /Font << /F1 3 0 R >> >> "
+                f"/Contents {content_num} 0 R >>"
+            ).encode()
+        )
+        safe = text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+        stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET".encode()
+        objs.append(
+            b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"
+        )
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for idx, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{idx} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_pos = len(out)
+    count = len(objs) + 1
+    out += f"xref\n0 {count}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {count} /Root 1 0 R >>\n"
+        f"startxref\n{xref_pos}\n%%EOF"
+    ).encode()
+    return bytes(out)
+
+
+def test_extract_relevant_pages_keyword_and_neighbors():
+    """Keyword-Seite + je 1 Nachbarseite landen im Teil-PDF (SAP-Muster:
+    Finanzverbindlichkeiten-Note im Geschaeftsbericht)."""
+    import io
+
+    from pypdf import PdfReader
+
+    texts = [f"Vorwort Seite {i}" for i in range(10)]
+    texts[5] = "Note 12: Financial liabilities and borrowings"
+    result = sr._extract_relevant_pages(_make_text_pdf(texts), "balance")
+    assert result is not None
+    part, n_extracted, n_total = result
+    assert (n_extracted, n_total) == (3, 10)
+    reader = PdfReader(io.BytesIO(part))
+    assert len(reader.pages) == 3
+    joined = " ".join((p.extract_text() or "") for p in reader.pages)
+    assert "Financial liabilities" in joined
+    assert "Seite 4" in joined and "Seite 6" in joined  # Nachbarn
+    assert "Seite 0" not in joined
+
+
+def test_extract_relevant_pages_cap():
+    """Viele Treffer-Seiten -> Deckel MAX_EXTRACT_PAGES greift."""
+    texts = [f"Kapitalflussrechnung Seite {i}" for i in range(40)]
+    part, n_extracted, n_total = sr._extract_relevant_pages(
+        _make_text_pdf(texts), "cashflow",
+    )
+    assert n_total == 40
+    assert n_extracted == sr.MAX_EXTRACT_PAGES == 30
+    assert part[:5] == b"%PDF-"
+
+
+def test_extract_relevant_pages_no_hit_returns_none():
+    """Kein Keyword-Treffer -> None (Caller skippt das Dokument)."""
+    pdf = _make_text_pdf(["Vorwort des Vorstands"] * 5)
+    assert sr._extract_relevant_pages(pdf, "balance") is None
+
+
+def test_extract_relevant_pages_unparsable_returns_none():
+    assert sr._extract_relevant_pages(b"%PDF- junk", "balance") is None
+
+
+def test_large_pdf_partial_extraction_attached(db, company, monkeypatch):
+    """PDF > MAX_PDF_PAGES wird nicht mehr uebersprungen: das Teil-PDF
+    der Keyword-Seiten geht an den Dokument-Call und zaehlt normal
+    gegen das Budget."""
+    _mock_stage1(monkeypatch, {"income": _stage1_income()})
+    _mock_download(monkeypatch)
+    monkeypatch.setattr(sr, "_pdf_page_count", lambda data: 320)
+    part = b"%PDF-partial"
+    monkeypatch.setattr(
+        sr, "_extract_relevant_pages", lambda data, group: (part, 12, 320),
+    )
+    doc_calls = _mock_doc_call(
+        monkeypatch, {"net_income": {"FY": _doc_entry("FY", 3_000_000_000)}},
+    )
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert len(doc_calls) == 1
+    assert doc_calls[0][2] == part  # Teil-PDF, nicht das Original
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+
+
+def test_large_pdf_no_hit_skipped_logged_no_budget(db, company, monkeypatch, caplog):
+    """Grosses PDF ohne Keyword-Treffer: Skip + Log, verbraucht KEIN
+    Call-Budget — der naechste Kandidat kommt dran."""
+    import logging
+
+    big = "https://ir.example.com/big-report.pdf"
+    payload = _stage1_income(doc_url=big)  # big deckt am meisten -> zuerst
+    for pt in ("Q1", "Q2", "Q3", "Q4"):
+        payload["net_income"][pt] = _null_entry(DOC_URL)
+    _mock_stage1(monkeypatch, {"income": payload})
+
+    def fake_download(url):
+        if "big" in url:
+            return (b"%PDF-big annual report", "pdf")
+        return (PDF_BYTES, "pdf")
+
+    monkeypatch.setattr(sr, "_download_document", fake_download)
+    monkeypatch.setattr(
+        sr, "_pdf_page_count", lambda data: 320 if b"big" in data else 3,
+    )
+    monkeypatch.setattr(sr, "_extract_relevant_pages", lambda data, group: None)
+    doc_calls = _mock_doc_call(
+        monkeypatch, {"net_income": {"FY": _doc_entry("FY", 3_000_000_000)}},
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.values.statement_research"):
+        sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert "keine Keyword-Treffer" in caplog.text
+    assert len(doc_calls) == 1
+    assert doc_calls[0][4] == DOC_URL  # Budget blieb fuer den Kandidaten
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+
+
+# --- Kandidaten-Priorisierung ------------------------------------------------
+
+
+def test_balance_candidates_prefer_half_year_and_annual_reports():
+    """Bilanz-Gruppe: Halbjahres-/Geschaeftsberichte (Notes mit dem
+    Schulden-Split) vor Quartals-Statements — trotz geringerer
+    Perioden-Abdeckung."""
+    q_url = "https://ir.example.com/q1-statement.pdf"
+    hy_url = "https://ir.example.com/half-year-report.pdf"
+    ar_url = "https://ir.example.com/annual-report.pdf"
+    period_urls = {
+        "FY": [q_url, ar_url],
+        "Q1": [q_url],
+        "Q2": [q_url, hy_url],
+        "Q3": [q_url],
+    }
+    order = sr._candidate_docs(period_urls, ["FY", "Q1", "Q2", "Q3"], "balance")
+    assert order == [ar_url, hy_url, q_url] or order == [hy_url, ar_url, q_url]
+    # Innerhalb der Prioritaets-Stufe entscheidet weiter die Abdeckung.
+    assert order[-1] == q_url
+
+
+def test_income_candidates_annual_report_last_but_allowed():
+    """income/cashflow: Statements zuerst, Geschaeftsbericht als LETZTER
+    Kandidat zugelassen (statt nie)."""
+    q_url = "https://ir.example.com/q4-statement.pdf"
+    ar_url = "https://ir.example.com/annual-report.pdf"
+    order = sr._candidate_docs({"FY": [ar_url, q_url]}, ["FY"], "income")
+    assert order == [q_url, ar_url]
+    # Halbjahresberichte sind fuer income/cashflow NICHT zurueckgestuft.
+    hy_url = "https://ir.example.com/half-year-report.pdf"
+    order = sr._candidate_docs({"Q2": [ar_url, hy_url]}, ["Q2"], "cashflow")
+    assert order == [hy_url, ar_url]
+
+
+def test_balance_stage2_downloads_priority_doc_first(db, company, monkeypatch):
+    """End-to-end: die Bilanz-Stufe-2 laedt den Halbjahresbericht vor dem
+    hoeher abdeckenden Quartals-Statement."""
+    q_url = "https://ir.example.com/q1-statement.pdf"
+    hy_url = "https://ir.example.com/half-year-report.pdf"
+    payload = {
+        "st_debt": {
+            "FY": _null_entry(q_url), "Q1": _null_entry(q_url),
+            "Q2": _null_entry(hy_url), "Q3": _null_entry(q_url),
+            "Q4": _null_entry(q_url),
+        },
+    }
+    _mock_stage1(monkeypatch, {"balance": payload})
+    downloads = _mock_download(monkeypatch)
+    _mock_doc_call(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+
+    assert downloads[0] == hy_url
 
 
 # --- non-IFRS-Sidecars -------------------------------------------------------
@@ -535,6 +737,26 @@ def test_cost_cap_max_two_document_calls(db, company, monkeypatch):
 
     assert len(doc_calls) == sr.MAX_DOC_CALLS == 2
     assert len(downloads) == 2
+
+
+def test_balance_budget_three_document_calls(db, company, monkeypatch):
+    """Bilanz-Gruppe: Doc-Budget 3 (MAX_DOC_CALLS_BALANCE) — der
+    Schulden-Split steht oft erst im dritten Kandidaten."""
+    urls = [f"https://ir.example.com/report-{i}.pdf" for i in range(4)]
+    payload = {
+        "st_debt": {
+            pt: _null_entry(url)
+            for pt, url in zip(("FY", "Q1", "Q2", "Q3"), urls)
+        },
+    }
+    _mock_stage1(monkeypatch, {"balance": payload})
+    downloads = _mock_download(monkeypatch)
+    doc_calls = _mock_doc_call(monkeypatch, {})  # Dokumente liefern nichts
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+
+    assert len(doc_calls) == sr.MAX_DOC_CALLS_BALANCE == 3
+    assert len(downloads) == 3
 
 
 def test_failed_download_does_not_consume_call_budget(db, company, monkeypatch):

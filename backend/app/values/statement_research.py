@@ -85,9 +85,22 @@ Dokument heruntergeladen (SSRF-Guards, Groessen-/Seiten-Limit) und als
 document-Block (PDF) bzw. extrahierter Text (HTML) an EINEN weiteren
 Claude-Call gegeben — exakte Tabellenwerte inkl. non-IFRS-Spalten
 (SAP-Muster: IFRS und non-IFRS nebeneinander). Max. 2 Dokument-Calls
-pro Gruppe/Jahr (Kosten-Deckel). Persistenz/Gates identisch zu Stufe 1;
-non-IFRS-Sidecars mit adjustments_note 'Non-IFRS (Berichts-PDF)'.
-Dokument gelesen, Wert nachweislich nicht enthalten -> not_found.
+pro Gruppe/Jahr (Kosten-Deckel), Bilanz-Gruppe 3 — der Schulden-Split
+steht oft erst im dritten Kandidaten. Persistenz/Gates identisch zu
+Stufe 1; non-IFRS-Sidecars mit adjustments_note 'Non-IFRS
+(Berichts-PDF)'. Dokument gelesen, Wert nachweislich nicht enthalten
+-> not_found.
+
+Grosse PDFs (> MAX_PDF_PAGES, z.B. 327-Seiten-Geschaeftsberichte)
+werden nicht mehr uebersprungen: pypdf extrahiert seitenweise Text,
+Keyword-Match pro Gruppe findet die relevanten Seiten (Statements +
+Finanzverbindlichkeiten-Note — SAP-Lektion: der Schulden-Split ohne
+IFRS-16-Leases steht NUR in der Note des Geschaeftsberichts), und ein
+Teil-PDF (+/- 1 Nachbarseite, Deckel MAX_EXTRACT_PAGES) geht an den
+Call. Kein Keyword-Treffer -> Skip wie bisher. Bilanz-Kandidaten
+werden priorisiert: Halbjahres-/Geschaeftsberichte (enthalten die
+Notes) vor Quartals-Statements; income/cashflow behalten die
+Coverage-Reihenfolge, Geschaeftsberichte als letzte Kandidaten.
 """
 import logging
 import re
@@ -235,13 +248,46 @@ _PORTAL_BLOCKLIST = (
 )
 
 # --- Stufe 2: Dokument-Bruecke ----------------------------------------------
-# Kosten-Deckel: max. 2 Dokument-Calls pro Gruppe/Jahr.
+# Kosten-Deckel: max. 2 Dokument-Calls pro Gruppe/Jahr; Bilanz 3 — der
+# Schulden-Split (Finanzverbindlichkeiten-Note) steht oft erst im
+# dritten Kandidaten (Halbjahres-/Geschaeftsbericht).
 MAX_DOC_CALLS = 2
-# Download-Limits: ~20 MB, Berichts-PDFs > 100 Seiten (Geschaeftsberichte)
-# werden uebersprungen — die API akzeptiert nur ~100 Seiten sinnvoll,
-# Quartalsmitteilungen/Halbjahresberichte sind kurz genug.
+MAX_DOC_CALLS_BALANCE = 3
+# Download-Limits: ~20 MB; Berichts-PDFs > 100 Seiten (Geschaeftsberichte)
+# gehen nicht komplett an die API (~100-Seiten-Limit) — stattdessen wird
+# per Keyword-Match ein Teil-PDF der relevanten Seiten extrahiert.
 MAX_DOC_BYTES = 20 * 1024 * 1024
 MAX_PDF_PAGES = 100
+# Teil-PDF-Deckel: Keyword-Seiten +/- 1 Nachbarseite, max. 30 Seiten.
+MAX_EXTRACT_PAGES = 30
+
+# Keyword-Sets pro Gruppe fuer die Seiten-Extraktion (case-insensitive).
+# balance enthaelt die Finanzverbindlichkeiten-Note (SAP: st_debt/lt_debt
+# ohne IFRS-16-Leases stehen nur dort).
+_PAGE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "balance": (
+        "financial liabilities", "finanzverbindlichkeiten",
+        "financial debt", "borrowings",
+        "statement of financial position", "bilanz",
+    ),
+    "income": (
+        "income statement", "gewinn- und verlustrechnung",
+        "non-ifrs", "reconciliation", "earnings per share",
+    ),
+    "cashflow": ("cash flow", "kapitalflussrechnung"),
+}
+
+# Kandidaten-Priorisierung (URL-Marker): Halbjahres-/Geschaeftsberichte
+# enthalten die vollstaendigen Notes — fuer die Bilanz-Gruppe zuerst.
+# Fuer income/cashflow bleiben Statements zuerst, Geschaeftsberichte
+# als letzte Kandidaten (statt nie, seit der Seiten-Extraktion).
+_BALANCE_PRIORITY_URL_MARKERS = (
+    "half-year", "halbjahres", "annual", "integrated",
+    "geschaeftsbericht", "jahresbericht",
+)
+_ANNUAL_REPORT_URL_MARKERS = (
+    "annual", "integrated", "geschaeftsbericht", "jahresbericht",
+)
 # Fallback-Heuristik, falls pypdf das PDF nicht parsen kann.
 _PDF_PAGE_BYTES_HEURISTIC = 50_000
 _DOC_REDIRECT_LIMIT = 3
@@ -1103,6 +1149,49 @@ def _pdf_page_count(data: bytes) -> int:
         return max(1, len(data) // _PDF_PAGE_BYTES_HEURISTIC)
 
 
+def _extract_relevant_pages(data: bytes, group: str) -> tuple[bytes, int, int] | None:
+    """Teil-PDF fuer grosse Berichte (> MAX_PDF_PAGES): Seiten mit
+    Gruppen-Keywords (case-insensitive) finden, +/- 1 Nachbarseite
+    mitnehmen, auf MAX_EXTRACT_PAGES deckeln und als neues PDF (pypdf
+    PdfWriter) zurueckgeben. Rueckgabe: (pdf_bytes, extrahierte Seiten,
+    Gesamtseiten) — kein Treffer oder unparsbar -> None (Caller skippt
+    das Dokument wie bisher)."""
+    import io
+
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(io.BytesIO(data))
+        total = len(reader.pages)
+        keywords = _PAGE_KEYWORDS[group]
+        hits: set[int] = set()
+        for i, page in enumerate(reader.pages):
+            try:
+                text = (page.extract_text() or "").lower()
+            except Exception:
+                continue
+            if any(kw in text for kw in keywords):
+                hits.add(i)
+        if not hits:
+            return None
+        wanted: set[int] = set()
+        for i in hits:
+            wanted.update((i - 1, i, i + 1))
+        selected = sorted(p for p in wanted if 0 <= p < total)[:MAX_EXTRACT_PAGES]
+        writer = PdfWriter()
+        for i in selected:
+            writer.add_page(reader.pages[i])
+        out = io.BytesIO()
+        writer.write(out)
+        return out.getvalue(), len(selected), total
+    except Exception as e:
+        logger.warning(
+            "statement research doc: Seiten-Extraktion (%s) fehlgeschlagen: %s",
+            group, e,
+        )
+        return None
+
+
 def _download_document(url: str) -> tuple[bytes, str] | None:
     """Dokument-Download mit Timeout, Groessen-Limit und manueller
     Redirect-Verfolgung (jeder Hop laeuft durch _url_allowed).
@@ -1238,10 +1327,18 @@ def _collect_period_urls(data: dict, group: str) -> dict[str, list[str]]:
 
 
 def _candidate_docs(period_urls: dict[str, list[str]],
-                    needy_periods) -> list[str]:
-    """URLs der beduerftigen Perioden deduplizieren und nach Abdeckung
-    sortieren (ein Halbjahresbericht deckt Q2, ein Quartalsbericht Q1
-    usw. — Dokumente, die mehr beduerftige Perioden abdecken, zuerst)."""
+                    needy_periods, group: str = "income") -> list[str]:
+    """URLs der beduerftigen Perioden deduplizieren und sortieren.
+
+    Basis-Reihenfolge: Abdeckung (ein Halbjahresbericht deckt Q2, ein
+    Quartalsbericht Q1 usw. — mehr beduerftige Perioden zuerst). Darueber
+    die Gruppen-Priorisierung (stabile Sortierung erhaelt die
+    Coverage-Reihenfolge innerhalb der Stufen):
+    - balance: Halbjahres-/Geschaeftsberichte zuerst (der Schulden-Split
+      steht in der Finanzverbindlichkeiten-Note, die die knappen
+      Quartals-Statements nicht haben), dann Quartals-Statements.
+    - income/cashflow: Statements zuerst, Geschaeftsberichte als letzte
+      Kandidaten (seit der Seiten-Extraktion zugelassen statt nie)."""
     cover: dict[str, set] = {}
     order: list[str] = []
     for pt in needy_periods:
@@ -1251,6 +1348,18 @@ def _candidate_docs(period_urls: dict[str, list[str]],
                 order.append(url)
             cover[url].add(pt)
     order.sort(key=lambda u: -len(cover[u]))  # stabil: Ties in Fundreihenfolge
+    if group == "balance":
+        order.sort(
+            key=lambda u: 0 if any(
+                m in u.lower() for m in _BALANCE_PRIORITY_URL_MARKERS
+            ) else 1,
+        )
+    else:
+        order.sort(
+            key=lambda u: 1 if any(
+                m in u.lower() for m in _ANNUAL_REPORT_URL_MARKERS
+            ) else 0,
+        )
     return order
 
 
@@ -1391,8 +1500,11 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
                     cost_tracker=None, ref_map: dict | None = None) -> int:
     """Stufe 2: verbliebene beduerftige Zellen aus den Berichts-
     Dokumenten der Stufe-1-Antwort fuellen. Max. MAX_DOC_CALLS
-    Dokument-Calls; Downloads mit Guards, PDFs > MAX_PDF_PAGES werden
-    uebersprungen. Rueckgabe: geschriebene Zeilen."""
+    Dokument-Calls (Bilanz: MAX_DOC_CALLS_BALANCE); Downloads mit
+    Guards, aus PDFs > MAX_PDF_PAGES wird per Keyword-Match ein
+    Teil-PDF extrahiert (kein Treffer -> skip). Rueckgabe:
+    geschriebene Zeilen."""
+    max_doc_calls = MAX_DOC_CALLS_BALANCE if group == "balance" else MAX_DOC_CALLS
     needed = _needy_cells(db, company, year, group, periods_reported)
     if not needed:
         return 0
@@ -1401,7 +1513,7 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
         if any(pt in pts for pts in needed.values())
     ]
     period_urls = _collect_period_urls(raw_data, group)
-    candidates = _candidate_docs(period_urls, needy_periods)
+    candidates = _candidate_docs(period_urls, needy_periods, group)
     if not candidates:
         logger.info(
             "statement research doc %s/FY%s %s: Restbedarf, aber keine "
@@ -1412,11 +1524,11 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
     written = 0
     calls = 0
     for url in candidates:
-        if calls >= MAX_DOC_CALLS:
+        if calls >= max_doc_calls:
             logger.info(
                 "statement research doc %s/FY%s %s: Kosten-Deckel "
                 "(%d Dokument-Calls) erreicht",
-                company.ticker, year, group, MAX_DOC_CALLS,
+                company.ticker, year, group, max_doc_calls,
             )
             break
         needed = _needy_cells(db, company, year, group, periods_reported)
@@ -1429,12 +1541,23 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
         if kind == "pdf":
             pages = _pdf_page_count(doc_bytes)
             if pages > MAX_PDF_PAGES:
+                # Geschaeftsbericht-Format: nicht mehr skippen, sondern
+                # die relevanten Seiten als Teil-PDF extrahieren.
+                extracted = _extract_relevant_pages(doc_bytes, group)
+                if extracted is None:
+                    logger.info(
+                        "statement research doc %s/FY%s %s: %s hat %d "
+                        "Seiten (> %d) und keine Keyword-Treffer — skip",
+                        company.ticker, year, group, url, pages,
+                        MAX_PDF_PAGES,
+                    )
+                    continue
+                doc_bytes, n_extracted, n_total = extracted
                 logger.info(
-                    "statement research doc %s/FY%s %s: %s hat %d Seiten "
-                    "(> %d, vermutlich Geschaeftsbericht) — skip",
-                    company.ticker, year, group, url, pages, MAX_PDF_PAGES,
+                    "statement research doc %s/FY%s %s: Teil-PDF %d von "
+                    "%d Seiten extrahiert aus %s",
+                    company.ticker, year, group, n_extracted, n_total, url,
                 )
-                continue
         calls += 1
         try:
             data = _call_claude_document(
