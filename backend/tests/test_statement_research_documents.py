@@ -657,7 +657,7 @@ def test_sidecar_gate_track_mixup_skipped(db, company, monkeypatch):
     _mock_download(monkeypatch)
     _mock_doc_call(monkeypatch, {
         "ebitda": {"FY": _doc_entry("FY", 5_000_000_000)},
-        "net_income_adjusted": {"FY": _doc_entry("FY", 1_000_000_000)},  # >60% daneben
+        "net_income_adjusted": {"FY": _doc_entry("FY", 12_000_000_000)},  # >150% aufwaerts daneben
     })
 
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])

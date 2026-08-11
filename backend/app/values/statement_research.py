@@ -200,7 +200,11 @@ _UNIT_MIN = Decimal("1000000")
 _PREV_DEVIATION_TOL = Decimal("0.60")
 # reported <= adjusted + 1% Toleranz (Rundungsdifferenzen der Berichte).
 _REPORTED_ADJ_TOL = Decimal("0.01")  # (nur noch historisch)
-_REPORTED_ADJ_BAND = Decimal("0.60")
+# 150%: echte Non-IFRS-Divergenzen koennen gross sein (SAP FY2024
+# Restrukturierung: IFRS 3.3 vs non-IFRS 5.7 Mrd = 72%). Echte
+# Spur-Verwechslungen (Vorjahresspalte, Kumulativ) fangen seit dem
+# Spalten-Gate dessen Checks; hier bleibt nur der Absurditaets-Deckel.
+_REPORTED_ADJ_BAND = Decimal("1.50")
 
 # Ersetzbare Herkuenfte (Muster _derivation_replaceable in consistency,
 # erweitert um die eigene Signatur, damit der naechste Lauf seine
@@ -829,6 +833,14 @@ def _yahoo_reference_map(company, year: int) -> dict:
         return {}
 
 
+YAHOO_GATE_EXCLUDED_KEYS = frozenset({
+    # Definitionskonflikt: unsere Capex-Konvention ist brutto inkl.
+    # immaterieller Vermoegenswerte, Yahoo fuehrt reines PP&E —
+    # legitime Werte wuerden systematisch verworfen.
+    "capex",
+})
+
+
 def _apply_yahoo_gate(parsed: dict[str, dict[str, dict]], ref_map: dict,
                       ticker: str, year: int) -> None:
     """Yahoo-Cross-Check: existiert fuer eine Zelle eine Markt-Referenz
@@ -843,7 +855,7 @@ def _apply_yahoo_gate(parsed: dict[str, dict[str, dict]], ref_map: dict,
     if not ref_map:
         return
     for key in list(parsed):
-        if key in _ADJUSTED_SIDECARS:
+        if key in _ADJUSTED_SIDECARS or key in YAHOO_GATE_EXCLUDED_KEYS:
             continue
         for pt in list(parsed[key]):
             ref = ref_map.get((key, pt, year))

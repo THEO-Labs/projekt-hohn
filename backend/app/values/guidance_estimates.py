@@ -26,7 +26,13 @@ EINZIGE Verteidigung und entsprechend wichtig:
   1. Einheiten-Check: Absolutwerte >= 1 Mio (ausser Per-Share),
   2. Vorjahresband 40-160%: FY gegen FY-Vorjahres-Ist, Q gegen dasselbe
      Quartal des Vorjahres-Ist (fehlt der Vorjahreswert: uebersprungen;
-     Sign-Flip/Turnaround erlaubt),
+     Sign-Flip/Turnaround erlaubt). NUR fuer buyback_volume gibt es eine
+     Ausnahme: liefert das Modell einen program_context (angekuendigtes
+     Rueckkauf-PROGRAMM) und liegt der Schaetzwert <= dem daraus
+     geparsten Programmvolumen, wird die Band-Verletzung akzeptiert
+     (SAP-Muster: neues Programm >> Vorjahres-Ist). Zusaetzlich gilt fuer
+     buyback_volume ein Absurditaets-Deckel: > 25% der Market Cap
+     (SNAPSHOT) wird IMMER verworfen, Programm-Kontext hin oder her,
   3. GAAP <= Non-GAAP + 1% (Paare, beide verwerfen bei Verstoss).
 Pro Wert liefert das Modell ein 1-2-Satz-reasoning; das ist der sichtbare
 Quellentext der Zelle (source_name/adjustments_source, reasoning-first,
@@ -55,6 +61,7 @@ GUIDANCE_ESTIMATE_KEYS, damit der Refresh-Key-Loop (routes) den Key fuer
 US-Filer weiter am Two-Stage-Pfad vorbeifuehrt — die Ableitung deckt ihn.
 """
 import logging
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -114,6 +121,30 @@ _SOURCE_OPTIONAL_KEYS = frozenset({"effective_tax_rate"})
 # Vorjahresband 40-160%: |v/prev - 1| > 0.60 verwirft.
 _PREV_DEVIATION_TOL = Decimal("0.60")
 _UNIT_MIN = Decimal("1000000")
+# Absurditaets-Deckel NUR fuer buyback_volume: > 25% der Market Cap
+# (SNAPSHOT) ist nie ein plausibles Jahres-Rueckkaufvolumen.
+_BUYBACK_MCAP_CAP = Decimal("0.25")
+
+# Programmvolumen aus program_context parsen: Zahl + Skalenwort
+# ("10 billion", "4-10 Mrd EUR", "$5.8bn") oder grosse Rohzahl
+# (>= 7 Stellen; Jahreszahlen wie 2026 fallen damit raus).
+_PROGRAM_SCALE = {
+    "trillion": Decimal("1000000000000"),
+    "billion": Decimal("1000000000"),
+    "bn": Decimal("1000000000"),
+    "b": Decimal("1000000000"),
+    "mrd": Decimal("1000000000"),
+    "milliarden": Decimal("1000000000"),
+    "million": Decimal("1000000"),
+    "mio": Decimal("1000000"),
+    "mn": Decimal("1000000"),
+    "m": Decimal("1000000"),
+}
+_PROGRAM_NUM_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(trillion|billion|milliarden|million|mrd|mio|bn|mn|[bm])\b",
+    re.IGNORECASE,
+)
+_PROGRAM_RAW_RE = re.compile(r"\b\d{7,}\b")
 # US-Standard: adjusted >= GAAP (SBC/Amortisations-Addbacks). 1% Toleranz.
 _GAAP_ADJ_TOL = Decimal("0.01")
 
@@ -210,6 +241,12 @@ def _build_user_prompt(company, year: int, open_quarter: str | None = None) -> s
         "company's last REPORTED effective tax rate as a decimal "
         "fraction (e.g. 0.29), with reasoning and url; source may be "
         "null here.",
+        "",
+        "buyback_volume: if the company has announced a share "
+        "repurchase PROGRAM, add an extra field \"program_context\" "
+        "(string|null) to the buyback_volume estimate naming the "
+        "announced program (volume, period, source); null if no "
+        "program is announced.",
     ]
     if open_quarter:
         lines += [
@@ -276,6 +313,29 @@ def _call_claude(company, year: int, cost_tracker=None,
     return data if isinstance(data, dict) else None
 
 
+def _parse_program_volume(text: str | None) -> Decimal | None:
+    """Programmvolumen aus dem program_context-String parsen: groesste
+    Zahl mit Skalenwort (billion/Mrd/million/...) oder grosse Rohzahl
+    (>= 1 Mio). Ranges ("4-10 Mrd") ergeben so die Obergrenze. None wenn
+    nichts parsebar — die Band-Ausnahme greift dann nicht."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    candidates: list[Decimal] = []
+    for num, unit in _PROGRAM_NUM_RE.findall(text):
+        try:
+            candidates.append(
+                Decimal(num.replace(",", ".")) * _PROGRAM_SCALE[unit.lower()]
+            )
+        except InvalidOperation:
+            continue
+    for raw in _PROGRAM_RAW_RE.findall(text):
+        try:
+            candidates.append(Decimal(raw))
+        except InvalidOperation:
+            continue
+    return max(candidates) if candidates else None
+
+
 def _to_decimal(value) -> Decimal | None:
     if value is None or isinstance(value, bool):
         return None
@@ -310,7 +370,7 @@ def _parse_entry(entry, key: str, ticker: str, period_label: str) -> dict | None
     reasoning = entry.get("reasoning")
     url = entry.get("url")
     basis = entry.get("basis")
-    return {
+    info = {
         "value": value,
         "source": source,
         # Fehlend/unbekannt als "unclear" behandeln (nur informativ).
@@ -319,6 +379,14 @@ def _parse_entry(entry, key: str, ticker: str, period_label: str) -> dict | None
         "quote": quote.strip() if isinstance(quote, str) else None,
         "url": url if isinstance(url, str) and url.startswith(("http://", "https://")) else None,
     }
+    if key == "buyback_volume":
+        # Angekuendigtes Rueckkauf-PROGRAMM (Volumen, Zeitraum, Quelle)
+        # — Grundlage der Band-Ausnahme in _apply_gates.
+        pc = entry.get("program_context")
+        info["program_context"] = (
+            pc.strip() if isinstance(pc, str) and pc.strip() else None
+        )
+    return info
 
 
 def _parse_payload(data: dict, ticker: str, year: int,
@@ -408,6 +476,19 @@ def _snapshot_shares(db, company_id) -> Decimal | None:
     return row.numeric_value if row else None
 
 
+def _snapshot_market_cap(db, company_id) -> Decimal | None:
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == "market_cap",
+            CompanyValue.period_type == "SNAPSHOT",
+        )
+        .first()
+    )
+    return row.numeric_value if row else None
+
+
 def _apply_gates(db, company, year: int, parsed: dict[str, dict],
                  period_type: str = "FY") -> None:
     """Drei deterministische Plausibilitaets-Gates — mutiert `parsed` in
@@ -418,9 +499,18 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict],
     2. Vorjahresband 40-160%: Schaetzung vs Vorjahres-Actual DERSELBEN
        Periode (FY vs FY, Qx vs Qx). Fehlt der Vorjahreswert, wird das
        Gate uebersprungen; Vorzeichenwechsel (Turnaround) ist erlaubt.
+       Ausnahme NUR fuer buyback_volume: Band-Verletzung wird akzeptiert,
+       wenn program_context geliefert wurde UND der Schaetzwert <= dem
+       daraus geparsten Programmvolumen liegt (SAP-Muster: neu
+       angekuendigtes Programm >> Vorjahres-Ist). Unparsebarer Kontext
+       -> alte Regel.
     3. GAAP <= Non-GAAP + 1% wenn beide fuer denselben Key geliefert
        (US-Standard: adjusted >= GAAP durch SBC/Amortisations-Addbacks) —
        sonst beide verwerfen.
+
+    Zusaetzlich fuer buyback_volume: Absurditaets-Deckel > 25% der
+    Market Cap (SNAPSHOT, falls verfuegbar) — verwirft IMMER, auch mit
+    Programm-Kontext.
     """
     ticker = company.ticker
     label = f"{period_type}/FY{year}" if period_type != "FY" else f"FY{year}"
@@ -435,6 +525,20 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict],
             )
             del parsed[key]
 
+    # Absurditaets-Deckel NUR fuer buyback_volume: > 25% der Market Cap
+    # (SNAPSHOT) — verwirft IMMER, Programm-Kontext hin oder her. Vor dem
+    # Band-Gate, damit die Programm-Ausnahme den Deckel nie aushebelt.
+    bb = parsed.get("buyback_volume")
+    if bb is not None:
+        mcap = _snapshot_market_cap(db, company.id)
+        if mcap and abs(bb["value"]) > mcap * _BUYBACK_MCAP_CAP:
+            logger.warning(
+                "guidance estimates %s/%s: buyback_volume=%s ueber 25%% der "
+                "Market Cap %s (Absurditaets-Deckel) — skip",
+                ticker, label, bb["value"], mcap,
+            )
+            del parsed["buyback_volume"]
+
     for key in list(parsed):
         if key in _NON_GAAP_SIDECARS:
             continue
@@ -444,6 +548,18 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict],
         v = parsed[key]["value"]
         sign_flip = (v >= 0) != (prev >= 0)
         if not sign_flip and abs(v / prev - 1) > _PREV_DEVIATION_TOL:
+            if key == "buyback_volume":
+                # Band-Ausnahme: angekuendigtes Programm deckt den Wert.
+                program = _parse_program_volume(parsed[key].get("program_context"))
+                if program is not None and abs(v) <= program:
+                    logger.info(
+                        "guidance estimates %s/%s: buyback_volume=%s "
+                        "ausserhalb Vorjahresband (Ist %s) — Programm-Kontext "
+                        "akzeptiert (Programmvolumen %s): %s",
+                        ticker, label, v, prev, program,
+                        parsed[key]["program_context"],
+                    )
+                    continue
             logger.warning(
                 "guidance estimates %s/%s: %s=%s ausserhalb 40-160%% des "
                 "Vorjahres-Actual %s — skip", ticker, label, key, v, prev,

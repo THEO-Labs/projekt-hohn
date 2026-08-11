@@ -328,10 +328,12 @@ def test_adjusted_below_reported_is_allowed(db, company, monkeypatch):
 
 def test_track_mixup_beyond_band_discards_pair(db, company, monkeypatch):
     """Mehr als 60% Abstand zwischen reported und adjusted ist eine
-    Spur-Verwechslung — beide Werte der Periode werden verworfen."""
+    Spur-Verwechslung — beide Werte der Periode werden verworfen.
+    (Aufwaerts konstruiert: abwaerts ist die maximale Abweichung -100%
+    und kann das 150%-Band nie reissen.)"""
     payload = {
         "net_income": {"FY": _entry(4_000_000_000)},
-        "net_income_adjusted": {"FY": _entry(1_000_000_000)},
+        "net_income_adjusted": {"FY": _entry(12_000_000_000)},
     }
     _mock_claude(monkeypatch, {"income": payload})
 
