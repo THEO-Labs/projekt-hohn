@@ -304,12 +304,30 @@ def test_prev_year_band_allows_sign_flip(db, company, monkeypatch):
     assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
 
 
-def test_reported_above_adjusted_discards_pair(db, company, monkeypatch):
-    """reported > adjusted + 1% ist ein klarer Verstoss — beide Werte der
-    Periode werden verworfen."""
+def test_adjusted_below_reported_is_allowed(db, company, monkeypatch):
+    """Non-IFRS darf UNTER reported liegen (schliesst auch Einmal-Gewinne
+    aus, SAP-Muster) — beide Spuren werden geschrieben."""
     payload = {
         "net_income": {"FY": _entry(4_000_000_000)},
         "net_income_adjusted": {"FY": _entry(3_000_000_000)},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    fy = _rows(db, company, "net_income", "FY")
+    assert len(fy) == 1
+    assert fy[0].numeric_value == Decimal("4000000000")
+    assert fy[0].numeric_value_adjusted == Decimal("3000000000")
+
+
+def test_track_mixup_beyond_band_discards_pair(db, company, monkeypatch):
+    """Mehr als 60% Abstand zwischen reported und adjusted ist eine
+    Spur-Verwechslung — beide Werte der Periode werden verworfen."""
+    payload = {
+        "net_income": {"FY": _entry(4_000_000_000)},
+        "net_income_adjusted": {"FY": _entry(1_000_000_000)},
     }
     _mock_claude(monkeypatch, {"income": payload})
 

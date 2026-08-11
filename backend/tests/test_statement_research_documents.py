@@ -389,9 +389,10 @@ def test_non_ifrs_sidecar_written_with_doc_note(db, company, monkeypatch):
     assert _rows(db, company, "ebitda", "FY")[0].numeric_value == Decimal("5000000000")
 
 
-def test_sidecar_gate_reported_above_adjusted_skipped(db, company, monkeypatch):
-    """reported > adjusted + 1% gegen den DB-Basiswert: Sidecar wird
-    verworfen (das Parsed-Paar-Gate greift ohne Basis im Payload nicht)."""
+def test_sidecar_gate_track_mixup_skipped(db, company, monkeypatch):
+    """Sidecar weicht >60% vom DB-Basiswert ab (Spur-Verwechslung):
+    verworfen. Unter-reported allein ist dagegen erlaubt (Non-IFRS darf
+    unter reported liegen)."""
     payload = _stage1_income()
     payload["net_income"]["FY"] = _entry(4_000_000_000, url=DOC_URL)
     payload["ebitda"] = {"FY": _null_entry()}
@@ -399,7 +400,7 @@ def test_sidecar_gate_reported_above_adjusted_skipped(db, company, monkeypatch):
     _mock_download(monkeypatch)
     _mock_doc_call(monkeypatch, {
         "ebitda": {"FY": _entry(5_000_000_000)},
-        "net_income_adjusted": {"FY": _entry(3_000_000_000)},  # < reported
+        "net_income_adjusted": {"FY": _entry(1_000_000_000)},  # >60% daneben
     })
 
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])

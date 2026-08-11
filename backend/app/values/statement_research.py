@@ -26,7 +26,10 @@ Code-Gates sind die einzige Verteidigung (Muster guidance_estimates):
   1. Einheiten-Check: Absolutwerte >= 1 Mio (ausser Per-Share-Keys),
   2. Vorjahresband 40-160% gegen das Vorjahres-Ist DERSELBEN Periode
      (fehlt es: uebersprungen; Sign-Flip/Turnaround erlaubt),
-  3. reported <= adjusted bei Paaren (klarer Verstoss: beide verwerfen),
+  3. Spur-Plausibilitaet bei Paaren: reported vs adjusted duerfen max.
+     60% auseinanderliegen (Non-IFRS darf UNTER reported liegen — es
+     schliesst auch Einmal-Gewinne aus, SAP-Muster; nur klare
+     Spur-Verwechslungen werden verworfen),
   4. qsum-Enforcement: FY + alle 4 Quartale geliefert und Summe > 1%
      daneben -> Quartale verwerfen, FY behalten, loggen.
 
@@ -154,7 +157,8 @@ _UNIT_MIN = Decimal("1000000")
 # Vorjahresband 40-160%: |v/prev - 1| > 0.60 verwirft.
 _PREV_DEVIATION_TOL = Decimal("0.60")
 # reported <= adjusted + 1% Toleranz (Rundungsdifferenzen der Berichte).
-_REPORTED_ADJ_TOL = Decimal("0.01")
+_REPORTED_ADJ_TOL = Decimal("0.01")  # (nur noch historisch)
+_REPORTED_ADJ_BAND = Decimal("0.60")
 
 # Ersetzbare Herkuenfte (Muster _derivation_replaceable in consistency,
 # erweitert um die eigene Signatur, damit der naechste Lauf seine
@@ -465,10 +469,14 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict[str, dict]]) -> 
                 continue
             b_val = base[pt]["value"]
             a_val = a["value"]
-            if b_val > a_val + abs(a_val) * _REPORTED_ADJ_TOL:
+            # Non-IFRS darf UNTER reported liegen (schliesst auch Einmal-
+            # GEWINNE aus, SAP-Muster) — keine Richtungs-Regel wie im
+            # US-GAAP-Pfad. Nur klare Verwechslungen verwerfen: mehr als
+            # 60% Abstand zwischen den Spuren.
+            if b_val != 0 and abs(a_val - b_val) > abs(b_val) * _REPORTED_ADJ_BAND:
                 logger.warning(
-                    "statement research %s/FY%s: %s/%s=%s > %s=%s + 1%% "
-                    "(reported muss <= adjusted sein) — beide skip",
+                    "statement research %s/FY%s: %s/%s=%s vs %s=%s weicht "
+                    ">60%% ab (Spur-Verwechslung?) — beide skip",
                     ticker, year, base_key, pt, b_val, adj_key, a_val,
                 )
                 del base[pt]
@@ -664,10 +672,15 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
     # (Basis kam vom Yahoo-Anker), das Parsed-Paar-Gate greift dann nicht.
     base_val = row.numeric_value
     adj_val = info["value"]
-    if base_val is not None and base_val > adj_val + abs(adj_val) * _REPORTED_ADJ_TOL:
+    # Richtungs-frei (Non-IFRS darf unter reported liegen): nur klare
+    # Spur-Verwechslung (>60% Abstand) verwerfen.
+    if (
+        base_val is not None and base_val != 0
+        and abs(adj_val - base_val) > abs(base_val) * _REPORTED_ADJ_BAND
+    ):
         logger.warning(
-            "statement research %s/FY%s: Sidecar %s/%s=%s < reported %s "
-            "(reported muss <= adjusted sein) — Sidecar skip",
+            "statement research %s/FY%s: Sidecar %s/%s=%s vs reported %s "
+            "weicht >60%% ab (Spur-Verwechslung?) — Sidecar skip",
             company.ticker, year, base_key, pt, adj_val, base_val,
         )
         return False
