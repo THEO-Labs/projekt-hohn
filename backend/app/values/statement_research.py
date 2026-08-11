@@ -178,7 +178,9 @@ _REPLACEABLE_METHODS = ("not_found", "calculated", "statement_research")
 # Markt-Provider-Zeilen ersetzen (Kundenentscheid: Feed ist keine
 # Wertequelle) — die Ableitungs-Guards (consistency) respektieren
 # 'provider' unveraendert.
-_MARKET_PROVIDER_LABEL = "Bloomberg"
+# Neues Label + Alt-Bestand ("Bloomberg" war das historische,
+# irrefuehrende Label des Yahoo-Feeds — Umbenennung Kundenauflage).
+_MARKET_PROVIDER_LABELS = ("Marktdaten-Feed", "Bloomberg")
 
 # Yahoo-Cross-Check-Gate: weites Band, weil der Feed selbst ungenau ist.
 _YAHOO_XCHECK_TOL = Decimal("0.35")
@@ -578,7 +580,7 @@ def _is_market_provider_row(row: CompanyValue) -> bool:
     matchen nicht — deren Labels beginnen mit 'ESEF'/'SEC EDGAR'."""
     return (
         (row.primary_method or "") == "provider"
-        and (row.source_name or "").startswith(_MARKET_PROVIDER_LABEL)
+        and (row.source_name or "").startswith(_MARKET_PROVIDER_LABELS)
     )
 
 

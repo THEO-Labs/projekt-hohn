@@ -1147,7 +1147,7 @@ def _fetch_and_store_historical_mcap(
     if result is None or not isinstance(result.value, Decimal):
         return
 
-    # Bloomberg-Close = last trading day on-or-before (anchor_year, fy_month, fy_day).
+    # Marktdaten-Close = last trading day on-or-before (anchor_year, fy_month, fy_day).
     # Konvention: Stammdaten der FY-Row[N] = Snapshot am letzten Tag von FY[N-1]
     # ("FY-Ende N-1"). Wirtschaftlich = Anfang FY[N] (gleicher Trading-Tag).
     # Label-Format einheitlich "FY-Ende {N-1} = DD.MM.YYYY" — damit alle 4
@@ -1165,13 +1165,13 @@ def _fetch_and_store_historical_mcap(
     anchor_note = f"FY-Ende {anchor_year} = {fy_end_label}"
 
     _upsert_fy_value(db, company_id, "market_cap", period_year, result.value,
-                     f"Bloomberg (Close {anchor_note} × {shares_label})", None, result.currency)
+                     f"Marktdaten-Feed (Close {anchor_note} × {shares_label})", None, result.currency)
     if isinstance(stock_price, Decimal):
         _upsert_fy_value(db, company_id, "stock_price", period_year, stock_price,
-                         f"Bloomberg (Adj Close {anchor_note})", None, result.currency)
+                         f"Marktdaten-Feed (Adj Close {anchor_note})", None, result.currency)
     if isinstance(shares, Decimal):
         _upsert_fy_value(db, company_id, "shares_outstanding", period_year, shares,
-                         f"Bloomberg ({shares_label}, {anchor_note})", None, None)
+                         f"Marktdaten-Feed ({shares_label}, {anchor_note})", None, None)
 
 
 def _ensure_previous_year_inputs(

@@ -113,7 +113,7 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
 
 
 class YahooFinanceProvider:
-    name = "Bloomberg"
+    name = "Marktdaten-Feed"
     # Marker fuer den Nicht-US-Quartals-Anker (provider_anchor):
     # unterscheidet den Markt-Provider von den XBRL-Providern in der
     # Kette, ohne isinstance (Test-Fakes setzen dasselbe Attribut).
@@ -613,7 +613,7 @@ class YahooFinanceProvider:
             target_str = target.strftime("%d.%m.%Y")
             return ProviderResult(
                 value=mcap,
-                source_name=f"Bloomberg (Close {target_str} × {shares_source_suffix})",
+                source_name=f"Marktdaten-Feed (Close {target_str} × {shares_source_suffix})",
                 source_link=None,
                 currency=currency,
                 extras={

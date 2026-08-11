@@ -127,7 +127,7 @@ def test_fetch_quarterly_calendar_fy_maps_quarter_to_column(monkeypatch):
     assert r is not None
     assert r.value == Decimal("9000000000")
     assert r.currency == "EUR"
-    assert r.source_name == "Bloomberg"
+    assert r.source_name == "Marktdaten-Feed"
     r1 = p.fetch_quarterly("DTC", "revenue", YEAR, "Q1",
                            fy_end_month=12, fy_end_day=31)
     assert r1.value == Decimal("8000000000")
