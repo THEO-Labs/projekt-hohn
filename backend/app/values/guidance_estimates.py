@@ -1,4 +1,8 @@
-"""FY- und Open-Quarter-Guidance-Estimates fuer US-Filer: EIN Claude-Call.
+"""FY- und Open-Quarter-Guidance-Estimates: EIN Claude-Call pro Firma.
+
+Seit dem DE-Umbau fuer ALLE Filer (US und Nicht-US): fuer IFRS-Firmen
+liest sich die gaap/non_gaap-Basis als reported IFRS / adjusted (Core,
+bereinigt, Non-IFRS).
 
 Fuer US-Filer kommen berichtete Perioden aus XBRL/8-K (Provider-Anker,
 GAAP-Bruecke) — die Two-Stage-Recherche schaetzte fuers laufende
@@ -692,15 +696,15 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
     spaeter von der Quartalssummen-Aggregation ueberstimmt, sobald alle
     vier Quartale vorliegen.
 
-    Nur US-Filer, nur fuers laufende (nicht abgeschlossene) FY — sonst 0.
+    Nur fuers laufende (nicht abgeschlossene) FY — sonst 0. Gilt fuer
+    US- UND Nicht-US-Filer (DE-Umbau): die gaap/non_gaap-Basis liest sich
+    fuer IFRS-Firmen als reported IFRS / adjusted (Core, bereinigt,
+    Non-IFRS); Currency und FY-Ende kommen aus den Company-Stammdaten.
     Rueckgabe: Anzahl geschriebener Forecast-Zeilen (FY + Quartal).
     """
-    from app.calculations.lock import is_us_company
     from app.config import settings
     from app.values.provider_anchor import _fy_is_closed
 
-    if not is_us_company(company):
-        return 0
     if _fy_is_closed(company, year):
         return 0
     if not settings.anthropic_api_key:

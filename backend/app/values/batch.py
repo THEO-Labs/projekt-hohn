@@ -76,17 +76,18 @@ def _recompute_one(company_id: UUID, owner_id: UUID, api_keys: list[str], year: 
 
 
 def select_stale_companies(db, portfolio_id: UUID) -> list:
-    """Firmen, deren Earnings nach dem letzten Two-Stage-Lauf liegen.
+    """Firmen, deren Earnings nach dem letzten Recherche-Lauf liegen.
 
     Stale-Kriterium:
     - keine company_values-Zeile mit primary_method LIKE 'two_stage%'
-      (bzw. keine mit fetched_at) -> stale, die Firma wurde nie gerechnet;
+      oder 'statement_research' (Nicht-US-Pfad seit dem DE-Umbau)
+      -> stale, die Firma wurde nie gerechnet;
     - sonst: next_earnings_date existiert, liegt in der Vergangenheit
       (strikt vor heute — Earnings am selben Tag koennen noch ausstehen)
-      UND nach dem Datum des juengsten two_stage-fetched_at;
+      UND nach dem Datum des juengsten Recherche-fetched_at;
     - Firmen ohne next_earnings_date sind NICHT stale (keine Info).
     """
-    from sqlalchemy import func as sa_func
+    from sqlalchemy import func as sa_func, or_
 
     from app.companies.models import Company
     from app.values.models import CompanyValue
@@ -96,7 +97,10 @@ def select_stale_companies(db, portfolio_id: UUID) -> list:
         .join(Company, Company.id == CompanyValue.company_id)
         .filter(
             Company.portfolio_id == portfolio_id,
-            CompanyValue.primary_method.like("two_stage%"),
+            or_(
+                CompanyValue.primary_method.like("two_stage%"),
+                CompanyValue.primary_method == "statement_research",
+            ),
         )
         .group_by(CompanyValue.company_id)
         .all()

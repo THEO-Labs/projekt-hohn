@@ -199,15 +199,26 @@ def _fake_two_stage_result(value_key: str, year: int, fy_value: Decimal):
 
 
 def test_get_company_values_after_refresh(client, db):
-    """FY-Refresh fuer API-Keys laeuft transparent durch die Two-Stage-
-    Pipeline (kein Provider-Fallback) — der Test mockt research_two_stage."""
+    """FY-Refresh fuer Nicht-US-API-Keys laeuft ueber die Statement-
+    Recherche (EIN Call pro Statement-Gruppe) — der Test mockt den
+    Claude-Call des statement_research-Moduls."""
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db)
 
-    def fake_research(*, ticker, company_name, value_key, year, **kwargs):
-        return _fake_two_stage_result(value_key, year, Decimal("314000000"))
+    def fake_call(company, year, group, cost_tracker=None):
+        if group != "income":
+            return {}
+        return {
+            "net_income": {
+                "FY": {
+                    "value": 314000000,
+                    "quote": "Konzernergebnis 314 Mio",
+                    "url": "https://ir.example.com/ar.pdf",
+                },
+            },
+        }
 
-    with patch("scripts.two_stage_research.research_two_stage", side_effect=fake_research):
+    with patch("app.values.statement_research._call_claude", side_effect=fake_call):
         client.post(
             f"/api/companies/{cid}/values/refresh",
             json={"keys": ["net_income"], "period_type": "FY", "period_year": 2024},
@@ -219,7 +230,8 @@ def test_get_company_values_after_refresh(client, db):
     rows = {item["value_key"]: item for item in data}
     assert "net_income" in rows
     assert Decimal(rows["net_income"]["numeric_value"]) == Decimal("314000000")
-    assert rows["net_income"]["primary_method"] == "two_stage_confirmed"
+    assert rows["net_income"]["primary_method"] == "statement_research"
+    assert rows["net_income"]["source_name"].startswith("Konzernergebnis")
 
 
 def test_manual_override(client, db):

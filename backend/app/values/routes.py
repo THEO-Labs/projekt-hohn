@@ -11,12 +11,14 @@ Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
       - US-Filer (ISIN US...): EDGAR-XBRL liefert FY-Werte aus 10-K/20-F
       - EU-Filer (NL/FR/ES/IT/SE/...): ESEF-XBRL via filings.xbrl.org
       - Fallback: Yahoo (Macrotrends-Snippets) + Claude-Web-Recherche
-    DE-Filer (Munich Re, Allianz, ...) sind NICHT in ESEF -> Claude-Web only.
+    DE-Filer (Munich Re, Allianz, ...) sind NICHT in ESEF -> Yahoo-Anker
+    + Statement-Recherche (statement_research: EIN Call pro Firma+Jahr+
+    Statement-Gruppe, ersetzt die Two-Stage-Recherche pro Key).
 
   FY-ESTIMATES (laufendes FY, period_year >= current_year)
-    US-Filer: EIN gebuendelter Guidance-Call (guidance_estimates) +
-    deterministische Ableitungen (Carry-Forward, Residuen) — keine
-    LLM-Recherche pro Key. Non-US: Two-Stage bzw. Web-Recherche.
+    US- UND Nicht-US-Filer: EIN gebuendelter Guidance-Call
+    (guidance_estimates) + deterministische Ableitungen (Carry-Forward,
+    Residuen) — keine LLM-Recherche pro Key.
 
   CALCULATED FELDER (FCF-Yield, EV/EBITDA, Hohn-Return, ...)
     calculation_engine.calculate_fy nach Werte-Refresh.
@@ -666,13 +668,14 @@ def _anchor_us_key_periods(
 def _prev_year_needs_backfill(
     db: Session, company_id: UUID, key: str, prev_year: int
 ) -> bool:
-    """True if there is no fresh two-stage/provider row for (company, key,
-    FY prev_year).
+    """True if there is no fresh two-stage/statement/provider row for
+    (company, key, FY prev_year).
 
     Skip-if-already-good: if we already have a two_stage_* row for FY N-1
-    (any variant: confirmed / verified / insufficient) or a geankerte
-    'provider'-Zeile (XBRL), we do NOT rerun it on a FY N refresh. That
-    keeps subsequent 'Refresh full' clicks cheap.
+    (any variant: confirmed / verified / insufficient), eine
+    statement_research-Zeile oder eine geankerte 'provider'-Zeile (XBRL),
+    we do NOT rerun it on a FY N refresh. That keeps subsequent
+    'Refresh full' clicks cheap.
     """
     # first() statt one_or_none(): Actual+Forecast koennen koexistieren,
     # die Actual-Zeile entscheidet ueber die Frische.
@@ -690,7 +693,10 @@ def _prev_year_needs_backfill(
     if row is None:
         return True
     pm = row.primary_method or ""
-    return not (pm.startswith("two_stage_") or pm == "provider")
+    return not (
+        pm.startswith("two_stage_")
+        or pm in ("provider", "statement_research")
+    )
 
 
 def _process_one_key(
@@ -1174,6 +1180,54 @@ def _ensure_previous_year_inputs(
     if not missing:
         return
 
+    if not is_us_company(company):
+        # Nicht-US: Statement-Recherche statt Two-Stage/Web-Fallback.
+        # Erst der Provider-Anker (Yahoo/ESEF, nur abgeschlossene Jahre),
+        # dann EIN Statement-Lauf fuer die Gruppen der noch fehlenden
+        # Keys; fcf/net_debt liefern die deterministischen Ableitungen.
+        from app.values.provider_anchor import anchor_fy_with_provider
+        for key in missing:
+            try:
+                anchor_fy_with_provider(db, company, key, prev_year)
+            except Exception as e:
+                logger.warning(
+                    "Prev-year provider anchor failed for %s/%s FY%s: %s",
+                    ticker, key, prev_year, e,
+                )
+                db.rollback()
+        db.flush()
+        still = db.query(CompanyValue).filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == prev_year,
+            CompanyValue.value_key.in_(missing),
+            CompanyValue.numeric_value.isnot(None),
+        ).all()
+        still_missing = [k for k in missing if k not in {r.value_key for r in still}]
+        if not still_missing:
+            return
+        try:
+            from app.values.consistency import (
+                derive_missing_fcf,
+                derive_net_debt_from_components,
+            )
+            from app.values.statement_research import (
+                fetch_statement_research,
+                groups_for_keys,
+            )
+            fetch_statement_research(
+                db, company, prev_year, groups=groups_for_keys(still_missing),
+            )
+            derive_net_debt_from_components(db, company_id, prev_year)
+            derive_missing_fcf(db, company_id, [prev_year])
+        except Exception as e:
+            logger.warning(
+                "Prev-year statement research failed for %s FY%s: %s",
+                ticker, prev_year, e,
+            )
+            db.rollback()
+        return
+
     class _PrevPayload:
         period_type = "FY"
         period_year = prev_year
@@ -1286,19 +1340,20 @@ def refresh_company_values(
     # gebuendelte Guidance-Call + deterministische Ableitungen.
     us_filer = is_us_company(company)
 
-    # US-Filer + laufendes (nicht abgeschlossenes) FY: die Estimate-Keys
-    # ueberspringt der Key-Loop komplett — EIN fetch_guidance_estimates-Call
-    # vor dem Konsistenz-Pass deckt sie ab.
-    us_guidance_fy = False
+    # Laufendes (nicht abgeschlossenes) FY: EIN fetch_guidance_estimates-
+    # Call vor dem Konsistenz-Pass deckt die Estimate-Keys ab — fuer US-
+    # UND Nicht-US-Filer. Die US-spezifischen Key-Loop-Skips (EDGAR-Anker
+    # + Bilanz-Fortschreibung ersetzen dort die Recherche) haengen weiter
+    # am kombinierten US-Gate.
+    guidance_fy = False
     if use_two_stage_fy:
         try:
             from app.values.provider_anchor import _fy_is_closed
-            us_guidance_fy = us_filer and not _fy_is_closed(
-                company, payload.period_year
-            )
+            guidance_fy = not _fy_is_closed(company, payload.period_year)
         except Exception as e:
             logger.warning("guidance-estimate gate failed for %s: %s", ticker, e)
-            us_guidance_fy = False
+            guidance_fy = False
+    us_guidance_fy = us_filer and guidance_fy
 
     # Precompute prev-year backfill list: for a two-stage FY N refresh we
     # also fill FY N-1 for each key that has no two-stage row yet. Skip
@@ -1352,9 +1407,14 @@ def refresh_company_values(
                             year=payload.period_year,
                         )
                     else:
-                        wrote = _process_one_key_via_two_stage(
-                            db=db, key=key, company=company,
-                            company_id=company_id, payload=payload, updated=updated,
+                        # Nicht-US: Provider-First-FY-Anker (ESEF/Yahoo)
+                        # fuer abgeschlossene Jahre. Die LLM-Recherche
+                        # laeuft danach EINMAL pro Jahr als Statement-
+                        # Call-Trio (statement_research, vor dem
+                        # Konsistenz-Pass) statt pro Key durch Two-Stage
+                        # (Alt-Pfad bleibt fuer Rollback erhalten).
+                        wrote = _anchor_fy_after_apply(
+                            db, company, key, payload.period_year, updated,
                         )
                 else:
                     wrote = _process_one_key(
@@ -1399,10 +1459,10 @@ def refresh_company_values(
                             year=prev_year,
                         )
                     else:
-                        wrote = _process_one_key_via_two_stage(
-                            db=db, key=key, company=company,
-                            company_id=company_id, payload=payload,
-                            updated=updated, target_year=prev_year,
+                        # Nicht-US: Provider-Anker; die Recherche-Luecken
+                        # fuellt der Statement-Lauf fuer FY N-1 unten.
+                        wrote = _anchor_fy_after_apply(
+                            db, company, key, prev_year, updated,
                         )
                     db.commit()
                     if wrote:
@@ -1437,6 +1497,40 @@ def refresh_company_values(
             consistency_years = (
                 [payload.period_year - 1] if prev_year_backfill_keys else []
             ) + [payload.period_year]
+
+            # Nicht-US: EIN Recherche-Call pro Jahr und Statement-Gruppe
+            # (max. 3 Calls) ersetzt die Two-Stage-Recherche pro Key.
+            # Reihenfolge N-1 vor N, damit das Vorjahresband-Gate die
+            # frischen N-1-Actuals sieht. Nur die Gruppen der angefragten
+            # Keys. Fehler brechen den Refresh nie ab.
+            if not us_filer:
+                try:
+                    from app.values.statement_research import (
+                        fetch_statement_research,
+                        groups_for_keys,
+                    )
+                    from scripts.two_stage_research import CostTracker
+                    stmt_groups = groups_for_keys(two_stage_eligible_keys)
+                    if stmt_groups:
+                        stmt_tracker = CostTracker()
+                        for stmt_year in consistency_years:
+                            set_phase(
+                                company_id, "statement_research",
+                                f"Statement-Recherche (FY{stmt_year})",
+                            )
+                            fetch_statement_research(
+                                db, company, stmt_year,
+                                cost_tracker=stmt_tracker, groups=stmt_groups,
+                            )
+                            db.commit()
+                        if stmt_tracker.calls:
+                            logger.info(
+                                "statement research %s: %d Claude-Calls, %.4f USD",
+                                ticker, stmt_tracker.calls, stmt_tracker.spent_usd,
+                            )
+                except Exception as e:
+                    logger.warning("statement research failed for %s: %s", ticker, e)
+                    db.rollback()
 
             # Quartals-Anker (Gegenstueck zum FY-Anker in
             # _process_one_key_via_two_stage): gefilte Quartale mit exakten
@@ -1496,12 +1590,13 @@ def refresh_company_values(
             except Exception as e:
                 logger.warning("adjusted enrichment failed for %s: %s", ticker, e)
                 db.rollback()
-            # FY-Guidance-Estimates fuer US-Filer (laufendes FY): EIN
-            # Claude-Call ersetzt die uebersprungenen Two-Stage-Keys.
-            # Muss VOR dem Konsistenz-Pass laufen, damit
+            # FY-Guidance-Estimates fuers laufende FY (US- und Nicht-US-
+            # Filer): EIN Claude-Call ersetzt die uebersprungenen bzw.
+            # nicht mehr recherchierten Estimate-Keys. Muss VOR dem
+            # Konsistenz-Pass laufen, damit
             # derive_open_quarter_from_fy_estimate die frischen
             # FY-Forecasts sieht. Fehler brechen den Refresh nie ab.
-            if us_guidance_fy:
+            if guidance_fy:
                 try:
                     from app.values.guidance_estimates import fetch_guidance_estimates
                     from scripts.two_stage_research import CostTracker
@@ -1515,12 +1610,36 @@ def refresh_company_values(
                     # Nur bei GENAU EINEM offenen Quartal eindeutig.
                     open_q = None
                     try:
-                        from app.values.consistency import _quarter_reported_us
-                        _subs: dict = {}
-                        _open = [
-                            q for q in ("Q1", "Q2", "Q3", "Q4")
-                            if not _quarter_reported_us(company, payload.period_year, q, _subs)
-                        ]
+                        if us_filer:
+                            from app.values.consistency import _quarter_reported_us
+                            _subs: dict = {}
+                            _open = [
+                                q for q in ("Q1", "Q2", "Q3", "Q4")
+                                if not _quarter_reported_us(company, payload.period_year, q, _subs)
+                            ]
+                        else:
+                            # Nicht-US: Karenz-Kriterium ohne 8-K-Check —
+                            # ein Quartal gilt als berichtet, wenn sein
+                            # Ende REPORTING_GRACE_DAYS zurueckliegt.
+                            from datetime import date as _date_oq
+                            from app.values.detail_page import (
+                                REPORTING_GRACE_DAYS,
+                                quarter_end_date,
+                            )
+                            _today = _date_oq.today()
+                            _open = []
+                            for q in ("Q1", "Q2", "Q3", "Q4"):
+                                _q_end = quarter_end_date(
+                                    payload.period_year, q,
+                                    getattr(company, "fiscal_year_end_month", None),
+                                    getattr(company, "fiscal_year_end_day", None),
+                                )
+                                _reported = (
+                                    _q_end is not None
+                                    and (_today - _q_end).days >= REPORTING_GRACE_DAYS
+                                )
+                                if not _reported:
+                                    _open.append(q)
                         if len(_open) == 1:
                             open_q = _open[0]
                     except Exception:
@@ -1576,7 +1695,13 @@ def refresh_company_values(
                     # validate_cross_metrics, damit der fcf-Check die
                     # frischen Werte sieht.
                     derive_missing_fcf(db, company_id, [cons_year])
-                    validate_cross_metrics(db, company_id, cons_year, is_us=us_filer)
+                    # Validator-Diet auch fuer Nicht-US (full_checks=False):
+                    # qsum + fcf-Identitaet + eps_ni bleiben; die uebrigen
+                    # Checks decken die Schreib-Gates der neuen Pfade ab.
+                    validate_cross_metrics(
+                        db, company_id, cons_year, is_us=us_filer,
+                        full_checks=False,
+                    )
                     db.commit()
                 except Exception as e:
                     logger.error("consistency pass failed for %s FY%s: %s", ticker, cons_year, e)

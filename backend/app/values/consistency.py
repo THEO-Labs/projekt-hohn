@@ -132,13 +132,21 @@ def _rel_diff(a: Decimal, b: Decimal) -> Decimal:
 
 def validate_cross_metrics(
     db: Session, company_id: UUID, year: int, is_us: bool = False,
+    full_checks: bool = True,
 ) -> list[str]:
     """Prueft die Kern-Identitaeten und setzt/loescht consistency_flags.
 
     is_us=True (Validator-Diet): nur qsum_mismatch und fcf_vs_ocf_capex —
     die uebrigen Checks zielen auf LLM-Recherche-Fehlerklassen (Skalierung,
     Vorjahres-Kopie, stale Schaetzung, IFRS-Notes-SBC), die es im
-    EDGAR/Bruecke/Guidance-Pfad nicht mehr gibt. DE unveraendert.
+    EDGAR/Bruecke/Guidance-Pfad nicht mehr gibt.
+
+    full_checks=False (Nicht-US-Diet, Statement-Research-Pfad): qsum +
+    fcf-Identitaet + eps_ni bleiben; sbc_low/unit_scale/prior_year_copy/
+    estimate_jump/estimate_below_prior sind deaktiviert — die Schreib-
+    Gates (Einheiten-Minimum, Vorjahresband, qsum-Enforcement) decken
+    diese Fehlerklassen ab. Default True behaelt den Vollausbau
+    (Alt-Pfad/Skripte, faellt erst nach bestandenem Pilot).
 
     Gibt die Liste aktiver Flags zurueck (fuer Logging/Response).
     """
@@ -205,6 +213,21 @@ def validate_cross_metrics(
         _set_flag(ni_row, "eps_ni_mismatch", mismatch)
         if mismatch:
             active.append("eps_ni_mismatch")
+
+    # Nicht-US-Diet (full_checks=False): Checks 4-7 ueberspringen und
+    # deren evtl. noch gesetzte Alt-Flags raeumen — die Fehlerklassen
+    # fangen jetzt die deterministischen Schreib-Gates des Statement-/
+    # Guidance-Pfads.
+    if not full_checks:
+        for row in rows:
+            for flag in (
+                "sbc_implausibly_low", "unit_scale_suspect",
+                "prior_year_copy", "estimate_jump", "estimate_below_prior",
+            ):
+                _set_flag(row, flag, False)
+        if active:
+            logger.warning("consistency: %s/%s flags: %s", company_id, year, ",".join(active))
+        return active
 
     # 4. SBC-Teilkomponenten-Detektor: non-zero aber winzig relativ zum
     #    Umsatz = fast sicher nur EIN Plan aus der IFRS-2-Note uebernommen

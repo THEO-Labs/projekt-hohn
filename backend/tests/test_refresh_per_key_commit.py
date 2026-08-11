@@ -30,20 +30,23 @@ def _setup(client, db, email):
 
 def _patch_refresh_env(monkeypatch, failing_key):
     """Isoliert den Key-Loop: kein Backfill, keine Calculations, kein
-    Prev-Year-Prefetch. Der gepatchte Two-Stage-Prozessor schreibt pro Key
-    eine Zeile und wirft fuer failing_key NACH einem partiellen Write."""
+    Prev-Year-Prefetch, keine Statement-Recherche. Der gepatchte Nicht-US-
+    Key-Schritt (FY-Anker) schreibt pro Key eine Zeile und wirft fuer
+    failing_key NACH einem partiellen Write."""
     import app.values.routes as routes
+    import app.values.statement_research as sr
 
     monkeypatch.setattr(routes, "_prev_year_needs_backfill",
                         lambda db_, cid_, k, y: False)
     monkeypatch.setattr(routes, "_run_and_persist_calculations", lambda *a, **kw: [])
     monkeypatch.setattr(routes, "_ensure_previous_year_inputs", lambda *a, **kw: None)
+    monkeypatch.setattr(sr, "fetch_statement_research", lambda *a, **kw: 0)
 
-    def fake_process(db, key, company, company_id, payload, updated, target_year=None):
+    def fake_anchor(db, company, key, year, updated):
         row = CompanyValue(
-            company_id=company_id, value_key=key, period_type="FY",
-            period_year=payload.period_year, numeric_value=Decimal("42"),
-            source_name="fake two-stage", primary_method="two_stage_confirmed",
+            company_id=company.id, value_key=key, period_type="FY",
+            period_year=year, numeric_value=Decimal("42"),
+            source_name="fake anchor", primary_method="provider",
         )
         db.add(row)
         db.flush()
@@ -52,7 +55,7 @@ def _patch_refresh_env(monkeypatch, failing_key):
             raise RuntimeError("boom after partial write")
         return True
 
-    monkeypatch.setattr(routes, "_process_one_key_via_two_stage", fake_process)
+    monkeypatch.setattr(routes, "_anchor_fy_after_apply", fake_anchor)
 
 
 def _rows(db, cid, key):
