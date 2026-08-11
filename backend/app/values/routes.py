@@ -515,6 +515,50 @@ def _prev_year_needs_backfill(
     )
 
 
+# FY-N-2-Anker fuer die H-Rendite des Vorjahres (N-1): deren FY-Changes
+# (ni_growth, Delta-Net-Debt) brauchen net_income/eps/revenue plus die
+# Bilanzkomponenten als FY-N-2-Basis. dividends/buybacks/sbc/ocf/capex
+# sind nice-to-have — der Nicht-US-FY-only-Lauf deckt sie ueber die
+# Statement-Gruppen ohnehin mit ab.
+_N2_FY_ANCHOR_KEYS = (
+    "net_income",
+    "eps_diluted",
+    "revenue",
+    "cash_and_equivalents",
+    "st_investments",
+    "st_debt",
+    "lt_debt",
+)
+
+
+def _n2_fy_anchor_missing(db: Session, company_id: UUID, year: int) -> bool:
+    """FY-Kernanker fuer N-2 fehlt: keine net_income-FY-Actual-Zeile mit
+    Wert aus frischer/authoritativer Herkunft (provider/statement_research/
+    two_stage_*/manual/PDF). Leer, not_found, calculated und web_*-Reste
+    zaehlen als fehlend — dann lohnt der FY-only-Backfill."""
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == "net_income",
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == year,
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .first()
+    )
+    if row is None:
+        return True
+    if row.manually_overridden or row.from_ir_pdf:
+        return False
+    pm = row.primary_method or ""
+    return not (
+        pm.startswith("two_stage_")
+        or pm in ("provider", "statement_research", "manual", "pdf")
+    )
+
+
 def _process_one_key(
     db: Session,
     key: str,
@@ -1253,6 +1297,69 @@ def refresh_company_values(
                 [payload.period_year - 1] if prev_year_backfill_keys else []
             ) + [payload.period_year]
 
+            # FY-only-Backfill fuer N-2 (User-Konvention: die H-Rendite
+            # rechnet auf FY-Basis — die FY-Changes des VORJAHRES (N-1)
+            # brauchen die FY-N-2-Anker). Fehlt der Kernanker (net_income
+            # FY leer/ersetzbar), laeuft einmalig: Nicht-US ein FY-only-
+            # Statement-Lauf (periods=('FY',), 1-3 Calls, kein Quartals-
+            # Backfill — Konvention); US der EDGAR-FY-Anker fuer die
+            # Kern-Keys (der Key-Loop/Prev-Year-Backfill decken nur
+            # N/N-1). Danach net_debt aus den Komponenten, damit
+            # Delta-ND/H-Rendite N-1 rechnen. Laeuft VOR der Statement-
+            # Recherche fuer N-1/N, damit das Vorjahresband-Gate die
+            # N-2-Actuals sieht. Fehler brechen den Refresh nie ab.
+            n2_year = payload.period_year - 2
+            n2_backfilled = False
+            if _n2_fy_anchor_missing(db, company_id, n2_year):
+                try:
+                    set_phase(
+                        company_id, "n2_fy_backfill",
+                        f"FY-Anker FY{n2_year} nachladen",
+                    )
+                    if us_filer:
+                        from app.values.provider_anchor import (
+                            anchor_fy_with_provider,
+                        )
+                        for n2_key in _N2_FY_ANCHOR_KEYS:
+                            try:
+                                if anchor_fy_with_provider(
+                                    db, company, n2_key, n2_year,
+                                ):
+                                    n2_backfilled = True
+                            except Exception as e:
+                                logger.warning(
+                                    "n2 fy anchor failed %s/%s FY%s: %s",
+                                    ticker, n2_key, n2_year, e,
+                                )
+                    else:
+                        from app.values.statement_research import (
+                            fetch_statement_research,
+                        )
+                        from app.llm.cost_tracker import CostTracker
+                        n2_tracker = CostTracker()
+                        wrote_n2 = fetch_statement_research(
+                            db, company, n2_year,
+                            cost_tracker=n2_tracker, periods=("FY",),
+                        )
+                        n2_backfilled = wrote_n2 > 0
+                        if n2_tracker.calls:
+                            logger.info(
+                                "n2 fy backfill %s: %d Zeilen, %d Claude-"
+                                "Calls, %.4f USD",
+                                ticker, wrote_n2, n2_tracker.calls,
+                                n2_tracker.spent_usd,
+                            )
+                    if n2_backfilled:
+                        derive_net_debt_from_components(db, company_id, n2_year)
+                    db.commit()
+                except Exception as e:
+                    logger.warning(
+                        "n2 fy backfill failed for %s FY%s: %s",
+                        ticker, n2_year, e,
+                    )
+                    db.rollback()
+                    n2_backfilled = False
+
             # Nicht-US: EIN Recherche-Call pro Jahr und Statement-Gruppe
             # (max. 3 Calls) statt Recherche pro Key.
             # Reihenfolge N-1 vor N, damit das Vorjahresband-Gate die
@@ -1481,6 +1588,27 @@ def refresh_company_values(
                     logger.warning(
                         "prev-year ratios/anchors failed for %s FY%s: %s",
                         ticker, calc_year, e,
+                    )
+                    db.rollback()
+
+            # H-Rendite N-1 nach erfolgreichem N-2-Backfill: ni_growth/
+            # Delta-ND des Vorjahres rechnen mit den frischen FY-N-2-
+            # Ankern. Gezielter Zusatz-Call — nur wenn N-1 nicht ohnehin
+            # als consistency_year gerechnet wurde (der Loop oben deckt
+            # diesen Fall bereits ab).
+            n1_year = payload.period_year - 1
+            if n2_backfilled and n1_year not in consistency_years:
+                try:
+                    set_phase(
+                        company_id, "calculating",
+                        f"Kennzahlen FY{n1_year} berechnen",
+                    )
+                    _run_and_persist_calculations(db, company_id, "FY", n1_year)
+                    db.commit()
+                except Exception as e:
+                    logger.warning(
+                        "n2 backfill ratios failed for %s FY%s: %s",
+                        ticker, n1_year, e,
                     )
                     db.rollback()
 

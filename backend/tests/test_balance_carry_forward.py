@@ -190,6 +190,114 @@ def test_closed_year_no_writes(db, company):
         assert _rows(db, company, "cash_and_equivalents", pt, year=closed) == []
 
 
+def test_cross_year_prev_fy_anchor(db, company):
+    """Cross-Year: kein Jahres-interner Stichtag — das authoritative
+    FY-Actual des VORJAHRES traegt Q4 und FY des laufenden Jahres, Source
+    nennt das Vorjahr (SAP-Fall: st_debt/lt_debt FY-Forecast =
+    FY-Vorjahreswerte)."""
+    _seed(db, company, "st_debt", "FY", 1_600_000_000, year=YEAR - 1,
+          primary_method="statement_research")
+
+    written = derive_balance_carry_forward(db, company.id, YEAR)
+    db.commit()
+
+    assert written == 2
+    for pt in ("Q4", "FY"):
+        (row,) = _rows(db, company, "st_debt", pt)
+        assert row.numeric_value == Decimal("1600000000")
+        assert row.is_forecast is True
+        assert row.primary_method == "calculated"
+        assert row.source_name == (
+            f"Fortschreibung letzter Bilanzstichtag (FY{YEAR - 1})"
+        )
+
+
+def test_cross_year_prev_q4_anchor_and_fy_preferred(db, company):
+    """Vorjahres-Q4-Actual dient als Anker; existiert auch ein
+    FY-Actual (gleicher Stichtag), gewinnt FY."""
+    _seed(db, company, "lt_debt", "Q4", 100, year=YEAR - 1)
+
+    assert derive_balance_carry_forward(db, company.id, YEAR) == 2
+    db.commit()
+    (fy,) = _rows(db, company, "lt_debt", "FY")
+    assert fy.numeric_value == Decimal("100")
+    assert f"(FY{YEAR - 1})" in fy.source_name
+
+    _seed(db, company, "cash_and_equivalents", "Q4", 300, year=YEAR - 1)
+    _seed(db, company, "cash_and_equivalents", "FY", 320, year=YEAR - 1)
+    derive_balance_carry_forward(db, company.id, YEAR)
+    db.commit()
+    (cash_fy,) = _rows(db, company, "cash_and_equivalents", "FY")
+    assert cash_fy.numeric_value == Decimal("320")
+
+
+def test_year_internal_anchor_wins_over_prev_year(db, company):
+    """Jahres-interner Stichtag hat Vorrang vor dem Vorjahres-Anker."""
+    _seed(db, company, "st_debt", "Q2", 500)
+    _seed(db, company, "st_debt", "FY", 999, year=YEAR - 1)
+
+    written = derive_balance_carry_forward(db, company.id, YEAR)
+    db.commit()
+
+    assert written == 2
+    (q4,) = _rows(db, company, "st_debt", "Q4")
+    assert q4.numeric_value == Decimal("500")
+    assert "(Q2)" in q4.source_name
+    assert f"FY{YEAR - 1}" not in q4.source_name
+
+
+def test_cross_year_replaceable_prev_rows_are_no_anchor(db, company):
+    """Ersetzbare Vorjahres-Zeilen (calculated/two_stage/Forecast) sind
+    kein Cross-Year-Anker — gleiche Authoritaets-Kriterien wie im Jahr."""
+    _seed(db, company, "st_debt", "FY", 111, year=YEAR - 1,
+          primary_method="calculated")
+    _seed(db, company, "lt_debt", "Q4", 222, year=YEAR - 1,
+          primary_method="two_stage_confirmed")
+    _seed(db, company, "cash_and_equivalents", "FY", 333, year=YEAR - 1,
+          is_forecast=True)
+
+    assert derive_balance_carry_forward(db, company.id, YEAR) == 0
+    for key in ("st_debt", "lt_debt", "cash_and_equivalents"):
+        assert _rows(db, company, key, "FY") == []
+
+
+def test_cross_year_manual_slot_stays(db, company):
+    """Manual im laufenden Jahr bleibt auch beim Cross-Year-Anker — nur
+    der jeweils andere Slot wird fortgeschrieben."""
+    _seed(db, company, "st_debt", "FY", 1600, year=YEAR - 1)
+    manual = _seed(db, company, "st_debt", "Q4", 555, is_forecast=True,
+                   primary_method="manual", manually_overridden=True)
+
+    written = derive_balance_carry_forward(db, company.id, YEAR)
+    db.commit()
+
+    assert written == 1
+    db.refresh(manual)
+    assert manual.numeric_value == Decimal("555")
+    (fy,) = _rows(db, company, "st_debt", "FY")
+    assert fy.numeric_value == Decimal("1600")
+
+
+def test_cross_year_net_debt_chain(db, company):
+    """SAP-Real-Fall: alle vier Komponenten aus dem Vorjahres-FY
+    fortgeschrieben -> derive_net_debt_from_components rechnet den
+    FY-Forecast des laufenden Jahres."""
+    _seed(db, company, "st_debt", "FY", 1600, year=YEAR - 1)
+    _seed(db, company, "lt_debt", "FY", 4550, year=YEAR - 1)
+    _seed(db, company, "cash_and_equivalents", "FY", 3000, year=YEAR - 1)
+    _seed(db, company, "st_investments", "FY", 150, year=YEAR - 1)
+
+    written = derive_balance_carry_forward(db, company.id, YEAR)
+    derive_net_debt_from_components(db, company.id, YEAR)
+    db.commit()
+
+    assert written == 8
+    (nd_fy,) = _rows(db, company, "net_debt", "FY")
+    # 1600 + 4550 - 3000 - 150 = 3000
+    assert nd_fy.numeric_value == Decimal("3000")
+    assert nd_fy.is_forecast is True
+
+
 def test_net_debt_recomputed_from_carried_components(db, company):
     """Integration: alle vier Komponenten aus Q3 fortgeschrieben, danach
     rechnet derive_net_debt_from_components net_debt Q4/FY als Forecast."""

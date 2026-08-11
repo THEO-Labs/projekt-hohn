@@ -538,6 +538,47 @@ def test_balance_candidates_prefer_half_year_and_annual_reports():
     assert order[-1] == q_url
 
 
+def test_candidate_docs_fy_gap_beats_pure_quarter_coverage():
+    """FY-first-Budget: das Dokument, das die beduerftige FY-Zelle deckt,
+    kommt vor dem Quartals-Kandidaten mit hoeherer Perioden-Abdeckung —
+    das Call-Budget fliesst zuerst in die FY-Reihe (H-Rendite-Basis)."""
+    fy_url = "https://ir.example.com/q4-statement.pdf"
+    q_url = "https://ir.example.com/q2-statement.pdf"
+    period_urls = {
+        "FY": [fy_url], "Q1": [q_url], "Q2": [q_url], "Q3": [q_url],
+    }
+    order = sr._candidate_docs(period_urls, ["FY", "Q1", "Q2", "Q3"], "income")
+    assert order == [fy_url, q_url]
+
+
+def test_candidate_docs_without_fy_need_keep_coverage_order():
+    """Ohne FY-Bedarf bleibt die reine Abdeckungs-Reihenfolge."""
+    q_url = "https://ir.example.com/q2-statement.pdf"
+    one_url = "https://ir.example.com/q1-statement.pdf"
+    period_urls = {"Q1": [q_url, one_url], "Q2": [q_url], "Q3": [q_url]}
+    order = sr._candidate_docs(period_urls, ["Q1", "Q2", "Q3"], "income")
+    assert order == [q_url, one_url]
+
+
+def test_candidate_docs_balance_priority_dominates_fy_first():
+    """Die Bilanz-Priorisierung (Schulden-Split-Note) bleibt dominant:
+    Halbjahresbericht ohne FY-Deckung vor dem FY-deckenden
+    Quartals-Statement; FY-first ordnet nur innerhalb der Stufen."""
+    q_url = "https://ir.example.com/q4-statement.pdf"
+    hy_url = "https://ir.example.com/half-year-report.pdf"
+    order = sr._candidate_docs(
+        {"FY": [q_url], "Q2": [hy_url]}, ["FY", "Q2"], "balance",
+    )
+    assert order == [hy_url, q_url]
+
+
+def test_needy_cells_list_fy_first(db, company):
+    """Beduerftige Perioden stehen in _PERIODS-Ordnung — FY zuerst im
+    Dokument-Prompt, unabhaengig von der Reihenfolge des Inputs."""
+    needed = sr._needy_cells(db, company, YEAR, "income", ("Q1", "FY"))
+    assert needed["revenue"] == ("FY", "Q1")
+
+
 def test_income_candidates_annual_report_last_but_allowed():
     """income/cashflow: Statements zuerst, Geschaeftsbericht als LETZTER
     Kandidat zugelassen (statt nie)."""

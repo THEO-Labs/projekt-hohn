@@ -1059,3 +1059,91 @@ def test_yahoo_gate_complements_prev_year_band(db, company, monkeypatch):
     db.commit()
 
     assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"
+
+
+# --- FY-only-Modus (periods=('FY',), N-2-Backfill) ---------------------------
+
+
+def test_fy_only_user_prompt_contains_only_fy(company):
+    """FY-only-Schema: nur die FY-Spalte, keine Quartale im Prompt."""
+    up = sr._build_user_prompt(company, YEAR, "income", periods=("FY",))
+    assert '"FY": ENTRY' in up
+    for q in ("Q1", "Q2", "Q3", "Q4"):
+        assert f'"{q}"' not in up
+
+
+def test_fy_only_system_prompt_fy_scope_no_h1_protocol(company):
+    """System-Prompt fragt NUR das Gesamtjahr ab; das H1/9M-
+    Rechenprotokoll (Quartals-Ableitung) entfaellt."""
+    sp = sr._build_system_prompt(company, YEAR, "income", periods=("FY",))
+    assert "NUR fuer das Gesamtjahr (FY)" in sp
+    assert "Q2 = H1 - Q1" not in sp
+    sp_bal = sr._build_system_prompt(company, YEAR, "balance", periods=("FY",))
+    assert "NUR fuer das Gesamtjahr (FY)" in sp_bal
+    assert "Q1-Q3" not in sp_bal
+
+
+def test_default_prompts_unchanged_contain_quarters(company):
+    """Default-Modus unveraendert: Schema nennt FY und alle Quartale,
+    das H1-Rechenprotokoll bleibt."""
+    up = sr._build_user_prompt(company, YEAR, "income")
+    assert '"FY": ENTRY' in up and '"Q1": ENTRY' in up and '"Q4": ENTRY' in up
+    sp = sr._build_system_prompt(company, YEAR, "income")
+    assert "und alle verfuegbaren Quartale" in sp
+    assert "Q2 = H1 - Q1" in sp
+
+
+def test_fy_only_mode_writes_fy_and_never_quarters(db, company, monkeypatch):
+    """periods=('FY',): _call_claude bekommt das FY-only-Schema; Quartale
+    werden weder geschrieben noch not_found-gestempelt — auch wenn das
+    Modell welche liefert."""
+    calls: list[tuple] = []
+
+    def fake(company_, year, group, cost_tracker=None, periods=None):
+        calls.append((group, periods))
+        return _income_payload() if group == "income" else {}
+
+    monkeypatch.setattr(sr, "_call_claude", fake)
+
+    written = sr.fetch_statement_research(db, company, YEAR, periods=("FY",))
+    db.commit()
+
+    assert [g for g, _ in calls] == ["income", "cashflow", "balance"]
+    assert all(p == ("FY",) for _, p in calls)
+    assert written == 3  # revenue FY, net_income FY, eps FY
+    assert _rows(db, company, "revenue", "FY")[0].numeric_value == Decimal(
+        "40000000000"
+    )
+    # Kein Quartals-Write, kein Quartals-Stempel (Konvention: kein
+    # Quartals-Backfill fuer N-2).
+    for key in ("revenue", "net_income", "operating_cash_flow", "st_debt"):
+        for pt in ("Q1", "Q2", "Q3", "Q4"):
+            assert _rows(db, company, key, pt) == []
+
+
+def test_fy_only_mode_default_call_signature_unchanged(db, company, monkeypatch):
+    """Default-Modus (periods=None) ruft _call_claude OHNE periods-Kwarg
+    auf — bestehende Mocks/Aufrufer bleiben kompatibel."""
+    seen_kwargs: list[dict] = []
+
+    def fake(company_, year, group, **kwargs):
+        seen_kwargs.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(sr, "_call_claude", fake)
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+
+    assert seen_kwargs and all("periods" not in kw for kw in seen_kwargs)
+
+
+def test_fy_only_unreported_fy_no_call(db, company, monkeypatch):
+    """Laufendes Jahr, FY noch nicht berichtet: FY-only-Modus macht
+    keinen Call (Karenz-Gate)."""
+    calls = _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    current = date.today().year
+    assert sr.fetch_statement_research(
+        db, company, current, periods=("FY",)
+    ) == 0
+    assert calls == []

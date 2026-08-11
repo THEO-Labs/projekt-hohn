@@ -1372,6 +1372,16 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
     sind berichtet, die Forecast-Zeile wuerde neben dem FY-Actual
     stehen; dort fuellt derive_q4_instant_from_fy ein leeres Q4 aus dem
     FY-Wert. Rueckgabe: Anzahl geschriebener Slots.
+
+    Cross-Year-Anker (Nicht-US-Konvention: FY-Reihe traegt die
+    H-Rendite, Quartalsluecken sind akzeptabel): hat das laufende Jahr
+    KEINEN authoritativen Quartalsstichtag fuer einen Key, dient der
+    juengste authoritative Stichtag des Vorjahres (Q4- oder FY-Actual
+    mit Wert, gleiche Authoritaets-Kriterien) als Anker — Source
+    'Fortschreibung letzter Bilanzstichtag (FY<N-1>)'. Der
+    Jahres-interne Anker hat Vorrang. Real-Fall SAP: st_debt/lt_debt
+    FY-Forecast = FY-Vorjahreswerte -> net_debt entsteht via
+    derive_net_debt_from_components -> Delta-ND/H-Rendite rechnen.
     """
     from app.companies.models import Company
     from app.values.detail_page import REPORTING_GRACE_DAYS, quarter_end_date
@@ -1386,6 +1396,7 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
         return 0
 
     rows = _rows_for_year(db, company_id, year)
+    prev_rows: list[CompanyValue] | None = None  # lazy, nur im Cross-Year-Fall
     written = 0
     for key in sorted(BALANCE_CARRY_FORWARD_KEYS):
         # Letzter berichteter Stichtag: hoechstes Quartal mit authoritativem
@@ -1403,6 +1414,25 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
             )
             if actual is not None:
                 src, src_q = actual, q
+        src_label = src_q
+        if src is None:
+            # Cross-Year-Anker: kein Jahres-interner Stichtag — juengster
+            # authoritativer Vorjahres-Stichtag (Q4/FY teilen das FY-Ende,
+            # FY-Actual bevorzugt). src_q bleibt None: Q4 UND FY des
+            # laufenden Jahres werden fortgeschrieben.
+            if prev_rows is None:
+                prev_rows = _rows_for_year(db, company_id, year - 1)
+            for prev_pt in ("Q4", "FY"):
+                actual = next(
+                    (r for r in prev_rows
+                     if r.value_key == key and r.period_type == prev_pt
+                     and not r.is_forecast and r.numeric_value is not None
+                     and not _derivation_replaceable(r)),
+                    None,
+                )
+                if actual is not None:
+                    src = actual
+                    src_label = f"FY{year - 1}"
         if src is None:
             continue
         for pt in ("Q4", "FY"):
@@ -1437,7 +1467,7 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
                         continue
             target.numeric_value = src.numeric_value
             target.source_name = (
-                f"Fortschreibung letzter Bilanzstichtag ({src_q})"
+                f"Fortschreibung letzter Bilanzstichtag ({src_label})"
             )
             target.source_link = None
             target.primary_method = "calculated"

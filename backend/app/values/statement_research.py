@@ -360,15 +360,38 @@ def _reported_periods(company, year: int, today: date | None = None) -> tuple[st
     return tuple(out)
 
 
-def _build_system_prompt(company, year: int, group: str) -> str:
+def _build_system_prompt(company, year: int, group: str,
+                         periods: tuple[str, ...] = _PERIODS) -> str:
     fy_end = _fy_end_date(company, year).isoformat()
     currency = getattr(company, "currency", None) or "EUR"
     label = _GROUP_LABELS[group]
-    if group == "balance":
+    fy_only = tuple(periods) == ("FY",)
+    if fy_only:
+        # FY-only-Modus (N-2-Backfill): NUR die Jahres-Spalte —
+        # Geschaeftsbericht bzw. Q4-/Jahresend-Statement, keine Quartale.
+        if group == "balance":
+            period_sentence = (
+                "Bilanzwerte sind Stichtagswerte: FY = Stand am "
+                "Geschaeftsjahresende. "
+            )
+        else:
+            period_sentence = (
+                "Die FY-Spalte steht im Geschaeftsbericht bzw. im "
+                "Q4-/Jahresend-Statement. "
+            )
+        scope_sentence = (
+            f"der IR-Seite) die folgenden {label}-Werte NUR fuer das "
+            "Gesamtjahr (FY) — keine Quartalswerte, exakte Tabellenwerte, "
+        )
+    elif group == "balance":
         period_sentence = (
             "Bilanzwerte sind Stichtagswerte: FY = Stand am "
             "Geschaeftsjahresende (identisch Q4), Q1-Q3 = Stand am "
             "jeweiligen Quartalsende. "
+        )
+        scope_sentence = (
+            f"der IR-Seite) die folgenden {label}-Werte fuer das Gesamtjahr "
+            "(FY) und alle verfuegbaren Quartale — exakte Tabellenwerte, "
         )
     else:
         period_sentence = (
@@ -380,12 +403,15 @@ def _build_system_prompt(company, year: int, group: str) -> str:
             "ausdruecklich AUCH fuer eps_diluted (Naeherung, "
             "derived_from setzen) und die *_adjusted-Werte. "
         )
+        scope_sentence = (
+            f"der IR-Seite) die folgenden {label}-Werte fuer das Gesamtjahr "
+            "(FY) und alle verfuegbaren Quartale — exakte Tabellenwerte, "
+        )
     return (
         f"Extrahiere fuer {company.name} ({company.ticker}) "
         f"Geschaeftsjahr {year} (Ende {fy_end}) aus den OFFIZIELLEN "
         "Berichten (Geschaeftsbericht, Halbjahres-/Quartalsmitteilungen "
-        f"der IR-Seite) die folgenden {label}-Werte fuer das Gesamtjahr "
-        "(FY) und alle verfuegbaren Quartale — exakte Tabellenwerte, "
+        + scope_sentence +
         "keine gerundeten Freitextzahlen. Werte NUR aus "
         "Originalberichten und offiziellen Pressemitteilungen der Firma "
         "(IR-Domain, Firmenmeldungen); Finanzportale (GuruFocus, "
@@ -407,7 +433,8 @@ def _build_system_prompt(company, year: int, group: str) -> str:
     )
 
 
-def _build_user_prompt(company, year: int, group: str) -> str:
+def _build_user_prompt(company, year: int, group: str,
+                       periods: tuple[str, ...] = _PERIODS) -> str:
     specs = STATEMENT_GROUPS[group]
     lines = [
         f"Werte fuer {company.name} ({company.ticker}), "
@@ -416,9 +443,11 @@ def _build_user_prompt(company, year: int, group: str) -> str:
     ]
     for key, desc in specs:
         lines.append(f"- {key}: {desc}")
+    # Schema nennt nur die angeforderten Perioden (FY-only-Modus: nur die
+    # FY-Spalte, Quartale tauchen im Prompt nicht auf).
+    entry_schema = ", ".join(f'"{pt}": ENTRY' for pt in periods)
     fields = ",\n".join(
-        f'  "{key}": {{"FY": ENTRY, "Q1": ENTRY, "Q2": ENTRY, '
-        '"Q3": ENTRY, "Q4": ENTRY}'
+        f'  "{key}": {{{entry_schema}}}'
         for key, _ in specs
     )
     lines += [
@@ -441,9 +470,11 @@ def _build_user_prompt(company, year: int, group: str) -> str:
     return "\n".join(lines)
 
 
-def _call_claude(company, year: int, group: str, cost_tracker=None) -> dict | None:
+def _call_claude(company, year: int, group: str, cost_tracker=None,
+                 periods: tuple[str, ...] = _PERIODS) -> dict | None:
     """EIN Claude-Call mit Websuche fuer eine Statement-Gruppe. In Tests
-    gemockt (conftest blockt get_client)."""
+    gemockt (conftest blockt get_client). `periods` steuert das
+    Prompt-Schema (FY-only-Modus: nur die FY-Spalte)."""
     import app.llm.claude as claude_mod
     from app.llm.rate_limiter import claude_limiter
     from app.llm.json_utils import extract_json
@@ -455,7 +486,7 @@ def _call_claude(company, year: int, group: str, cost_tracker=None) -> dict | No
             model=EXTRACT_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=0,
-            system=_build_system_prompt(company, year, group),
+            system=_build_system_prompt(company, year, group, periods=periods),
             tools=[{
                 "type": "web_search_20250305",
                 "name": "web_search",
@@ -463,7 +494,7 @@ def _call_claude(company, year: int, group: str, cost_tracker=None) -> dict | No
             }],
             messages=[{
                 "role": "user",
-                "content": _build_user_prompt(company, year, group),
+                "content": _build_user_prompt(company, year, group, periods=periods),
             }],
         )
 
@@ -1280,7 +1311,10 @@ def _needy_cells(db, company, year: int, group: str,
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
     for key in base_keys:
         pts = []
-        for pt in periods_reported:
+        # FY-first (Nicht-US-Konvention: FY-Reihe traegt die H-Rendite):
+        # _PERIODS-Ordnung erzwingen, damit FY im Dokument-Prompt und in
+        # der Kandidaten-Deckung immer vor den Quartalen steht.
+        for pt in (p for p in _PERIODS if p in periods_reported):
             rows = _slot_rows(db, company.id, key, pt, year)
             if any(
                 r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None)
@@ -1338,7 +1372,14 @@ def _candidate_docs(period_urls: dict[str, list[str]],
       steht in der Finanzverbindlichkeiten-Note, die die knappen
       Quartals-Statements nicht haben), dann Quartals-Statements.
     - income/cashflow: Statements zuerst, Geschaeftsberichte als letzte
-      Kandidaten (seit der Seiten-Extraktion zugelassen statt nie)."""
+      Kandidaten (seit der Seiten-Extraktion zugelassen statt nie).
+
+    FY-first-Budget (zwischen Abdeckung und Gruppen-Priorisierung):
+    Dokumente, die eine beduerftige FY-Zelle decken, kommen vor reinen
+    Quartals-Kandidaten dran — das Call-Budget der Dokument-Stufe
+    fliesst zuerst in die FY-Reihe (Nicht-US-Konvention: die H-Rendite
+    rechnet auf FY-Basis, Quartale bleiben Best-Effort). Die
+    Gruppen-Priorisierung bleibt dominant (Schulden-Split-Note)."""
     cover: dict[str, set] = {}
     order: list[str] = []
     for pt in needy_periods:
@@ -1348,6 +1389,8 @@ def _candidate_docs(period_urls: dict[str, list[str]],
                 order.append(url)
             cover[url].add(pt)
     order.sort(key=lambda u: -len(cover[u]))  # stabil: Ties in Fundreihenfolge
+    if "FY" in needy_periods:
+        order.sort(key=lambda u: 0 if "FY" in cover[u] else 1)
     if group == "balance":
         order.sort(
             key=lambda u: 0 if any(
@@ -1607,7 +1650,7 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
 
 
 def fetch_statement_research(db, company, year: int, cost_tracker=None,
-                             groups=None) -> int:
+                             groups=None, periods=None) -> int:
     """Berichtete Fundamentals eines Nicht-US-Filers fuer ein Jahr holen:
     EIN Claude-Websuche-Call pro Statement-Gruppe (max. 3 Calls).
 
@@ -1618,6 +1661,12 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
     Cross-Check-Referenz (_apply_yahoo_gate). `groups` (optional)
     beschraenkt auf eine Teilmenge der Gruppen (z.B. fuer den
     Vorjahres-Backfill einzelner Keys).
+
+    `periods` (optional, z.B. ('FY',)): beschraenkt Prompts, Writes und
+    not_found-Stempel auf diese Perioden — FY-only-Modus fuer den
+    N-2-Backfill (Nicht-US-Konvention: die H-Rendite rechnet auf
+    FY-Basis, Quartalsluecken sind akzeptabel). Persistenz und Gates
+    bleiben unveraendert, der Lauf ist deutlich billiger (1-3 Calls).
 
     Nur Nicht-US-Filer (US-Filer laufen ueber EDGAR/8-K-Bruecke) — sonst
     0. Rueckgabe: Anzahl geschriebener Zeilen.
@@ -1634,6 +1683,12 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
     # Ist noch keine Periode des Jahres berichtet, gibt es nichts zu
     # recherchieren — kein Claude-Call.
     periods_reported = _reported_periods(company, year)
+    prompt_periods: tuple[str, ...] | None = None
+    if periods is not None:
+        prompt_periods = tuple(pt for pt in _PERIODS if pt in set(periods))
+        periods_reported = tuple(
+            pt for pt in periods_reported if pt in prompt_periods
+        )
     if not periods_reported:
         logger.info(
             "statement research %s/FY%s: keine berichtete Periode (Karenz) — skip",
@@ -1659,8 +1714,13 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
             continue
         if ref_map is None:
             ref_map = _yahoo_reference_map(company, year)
+        # periods nur im Restriktions-Modus durchreichen — der Default-Pfad
+        # bleibt call-kompatibel (Mocks/Signatur unveraendert).
+        call_kwargs = {"cost_tracker": cost_tracker}
+        if prompt_periods is not None:
+            call_kwargs["periods"] = prompt_periods
         try:
-            data = _call_claude(company, year, group, cost_tracker=cost_tracker)
+            data = _call_claude(company, year, group, **call_kwargs)
         except Exception as e:
             logger.warning(
                 "statement research: Claude-Call failed fuer %s FY%s %s: %s",
