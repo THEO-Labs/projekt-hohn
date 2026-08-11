@@ -371,8 +371,6 @@ def test_refresh_endpoint_invokes_quarter_anchor_before_consistency(client, db, 
                         lambda db_, cid_, k, y: False)
     monkeypatch.setattr(routes, "_run_and_persist_calculations", lambda *a, **kw: [])
     monkeypatch.setattr(routes, "_ensure_previous_year_inputs", lambda *a, **kw: None)
-    monkeypatch.setattr(routes, "_process_one_key_via_two_stage",
-                        lambda **kw: False)
 
     calls: list[list[int]] = []
 

@@ -15,8 +15,8 @@ from app.values.sign_keys import ALWAYS_POSITIVE_KEYS
 logger = logging.getLogger(__name__)
 
 # Source-Name der roten "manuell recherchieren"-Platzhalter im UI.
-# Geteilt zwischen Gap-Fill (scripts/fill_gaps.py) und dem Two-Stage-
-# Platzhalter-Pfad (scripts/two_stage_research.py).
+# Geteilt zwischen Gap-Fill (scripts/fill_gaps.py) und
+# stamp_attempt_and_fill_not_found (unten).
 NOT_FOUND_SOURCE = "No source found (research attempted)"
 
 
@@ -61,3 +61,64 @@ def adjusted_is_protected(source: str | None) -> bool:
     if source is None:
         return False
     return source == "Manual" or source.startswith("https://")
+
+
+def stamp_attempt_and_fill_not_found(
+    db,
+    company_id,
+    value_key: str,
+    year: int,
+    periods,
+    currency: str | None = None,
+) -> None:
+    """Pro Periode: Refresh-Versuch dokumentieren statt still nichts zu tun.
+
+    Bestehende Zeilen (paarfest: Actual UND Forecast) bekommen einen
+    last_refresh_attempt-Stempel; Perioden ganz ohne Zeile einen
+    not_found-Platzhalter (primary_method='not_found'), damit das UI die
+    Zelle rot markieren kann (= manuell raussuchen).
+    """
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from app.values.models import CompanyValue
+
+    periods = list(periods)
+    if not periods:
+        return
+    now = datetime.now(timezone.utc)
+    rows = db.execute(select(CompanyValue).where(
+        CompanyValue.company_id == company_id,
+        CompanyValue.value_key == value_key,
+        CompanyValue.period_year == year,
+        CompanyValue.period_type.in_(periods),
+    )).scalars().all()
+    for row in rows:
+        row.last_refresh_attempt = now
+    present = {row.period_type for row in rows}
+    for pt in periods:
+        if pt in present:
+            continue
+        placeholder = CompanyValue(
+            id=uuid4(), company_id=company_id, value_key=value_key,
+            period_type=pt, period_year=year, numeric_value=None,
+            source_name=NOT_FOUND_SOURCE,
+            primary_method="not_found", currency=currency,
+            fetched_at=now, last_refresh_attempt=now,
+            manually_overridden=False, from_ir_pdf=False,
+        )
+        # SAVEPOINT pro Insert: Unique-Index-Kollision (Race mit parallelem
+        # Writer) -> Platzhalter ueberspringen statt Transaktion zu killen.
+        try:
+            with db.begin_nested():
+                db.add(placeholder)
+                db.flush()
+        except IntegrityError:
+            logger.warning(
+                "not_found-Platzhalter %s/%s/%s FY%s existiert bereits (Race) — skip",
+                company_id, value_key, pt, year,
+            )
+    db.flush()

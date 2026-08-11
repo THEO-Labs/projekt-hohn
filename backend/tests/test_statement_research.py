@@ -506,15 +506,10 @@ def _login_refresh(client, db, company):
 
 
 def test_prev_year_inputs_use_statement_research_not_web(db, company, monkeypatch):
-    """_ensure_previous_year_inputs (Nicht-US): Statement-Recherche statt
-    Two-Stage/Web-Fallback — der alte research_value_dual-Pfad wird nicht
-    mehr betreten."""
+    """_ensure_previous_year_inputs (Nicht-US): Statement-Recherche
+    fuellt die Vorjahres-Luecken (der alte Web-Recherche-Pfad ist
+    geloescht)."""
     import app.values.routes as routes
-
-    def boom(*a, **kw):
-        raise AssertionError("Alt-Pfad _try_web_guidance darf nicht laufen")
-
-    monkeypatch.setattr(routes, "_try_web_guidance", boom)
 
     statement_calls: list[tuple] = []
 

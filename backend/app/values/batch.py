@@ -219,10 +219,12 @@ def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID, only_stale: bo
                     state.current.remove(ticker)
 
     def _finalize() -> None:
-        """Batch-Abschluss: Gap-Fill + not_found-Platzhalter + Report.
+        """Batch-Abschluss: not_found-Platzhalter + Report.
 
-        Fehler werden geloggt, aber der Batch darf hier nie crashen —
-        der Firmen-Recompute ist zu diesem Zeitpunkt bereits durch.
+        Die fruehere LLM-Gap-Fill-Phase (Two-Stage-Nachrecherche) ist
+        entfernt — Luecken fuellen die Refresh-Fluesse selbst. Fehler
+        werden geloggt, aber der Batch darf hier nie crashen — der
+        Firmen-Recompute ist zu diesem Zeitpunkt bereits durch.
         """
         from scripts import fill_gaps
 
@@ -232,29 +234,11 @@ def start_portfolio_recompute(portfolio_id: UUID, owner_id: UUID, only_stale: bo
             state.phase = "gap_fill"
         db = SessionLocal()
         try:
-            # Getrennte try/except-Bloecke: die not_found-Platzhalter muessen
-            # auch dann geschrieben werden, wenn der Gap-Fill wirft.
-            try:
-                import os as _os
-                from scripts.two_stage_research import CostTracker
-                # Budget-Deckel fuer die automatische Gap-Fill-Phase (Review-
-                # Befund: sonst unbegrenzte LLM-Ausgaben bei vielen Luecken).
-                cap = float(_os.environ.get("BATCH_GAPFILL_MAX_USD", "50"))
-                stats = fill_gaps.fill_portfolio_gaps(
-                    db, portfolio_id, years,
-                    progress_cb=lambda msg: logger.info("batch gap-fill: %s", msg),
-                    cost_tracker=CostTracker(max_usd=cap),
-                )
-                logger.info("batch gap-fill stats: %s", stats)
-            except Exception:
-                logger.exception("batch: gap-fill failed for portfolio %s", portfolio_id)
-                db.rollback()
-            try:
-                placeholders = fill_gaps.write_not_found_placeholders(db, portfolio_id, years)
-                logger.info("batch: %d not_found placeholders written", placeholders)
-            except Exception:
-                logger.exception("batch: placeholder write failed for portfolio %s", portfolio_id)
-                db.rollback()
+            placeholders = fill_gaps.write_not_found_placeholders(db, portfolio_id, years)
+            logger.info("batch: %d not_found placeholders written", placeholders)
+        except Exception:
+            logger.exception("batch: placeholder write failed for portfolio %s", portfolio_id)
+            db.rollback()
         finally:
             db.close()
 

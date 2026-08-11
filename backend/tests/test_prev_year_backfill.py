@@ -4,13 +4,10 @@ einem Backfill auch fuer das Vorjahr laufen muss."""
 
 from datetime import date
 from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import patch
 from uuid import UUID
 
 from app.auth.models import User
 from app.auth.security import hash_password
-from app.companies.models import Company
 from app.values.models import CompanyValue
 from app.values.routes import _prev_year_needs_backfill
 
@@ -84,39 +81,6 @@ def test_actual_forecast_pair_no_crash_actual_decides(client, db):
     assert _prev_year_needs_backfill(db, cid, "net_income", PREV) is False
 
 
-def test_two_stage_helper_survives_pair_and_prefers_actual_hint(client, db):
-    """prev_stmt im Two-Stage-Helper darf bei einem Actual+Forecast-Paar
-    nicht crashen; der prev_year_fy_hint kommt aus der Actual-Zeile."""
-    from app.values.routes import _process_one_key_via_two_stage
-    from tests.test_two_stage_apply import _result
-
-    cid = _setup(client, db)
-    year = PREV + 1
-    db.add(_fy_row(cid, "net_income", PREV, "estimate",
-                   is_forecast=True, value=Decimal("50")))
-    db.add(_fy_row(cid, "net_income", PREV, "two_stage_verified",
-                   is_forecast=False, value=Decimal("77")))
-    db.commit()
-    company = db.get(Company, cid)
-
-    seen = {}
-
-    def fake_research(**kw):
-        seen.update(kw)
-        return _result("net_income", Decimal("100"))
-
-    payload = SimpleNamespace(period_type="FY", period_year=year)
-    with patch("scripts.two_stage_research.research_two_stage",
-               side_effect=fake_research):
-        _process_one_key_via_two_stage(
-            db=db, key="net_income", company=company,
-            company_id=cid, payload=payload, updated=[],
-        )
-    db.commit()
-
-    assert seen["prev_year_fy_hint"] == Decimal("77")
-
-
 def _patch_consistency_spies(monkeypatch):
     import app.values.consistency as cons
     import app.values.routes as routes
@@ -136,8 +100,6 @@ def test_refresh_runs_consistency_for_prev_year_after_backfill(client, db, monke
     """Backfill hat FY N-1 geschrieben -> Konsistenz-Pass (inkl.
     validate_cross_metrics) laeuft fuer N-1 UND N — sonst blieben
     FY/Quartals-Mismatches im Vorjahr ungeflaggt."""
-    from tests.test_two_stage_apply import _result
-
     cid = _setup(client, db)
     year = date.today().year
     # FY N-1 stale (primary_method='estimate') -> Backfill-Key.
@@ -146,20 +108,16 @@ def test_refresh_runs_consistency_for_prev_year_after_backfill(client, db, monke
 
     validated = _patch_consistency_spies(monkeypatch)
 
-    with patch("scripts.two_stage_research.research_two_stage",
-               return_value=_result("net_income", Decimal("100"))):
-        r = client.post(
-            f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["net_income"], "period_type": "FY", "period_year": year},
-        )
+    r = client.post(
+        f"/api/companies/{cid}/values/refresh",
+        json={"keys": ["net_income"], "period_type": "FY", "period_year": year},
+    )
 
     assert r.status_code == 200
     assert validated == [year - 1, year]
 
 
 def test_refresh_without_backfill_validates_only_current_year(client, db, monkeypatch):
-    from tests.test_two_stage_apply import _result
-
     cid = _setup(client, db)
     year = date.today().year
     # FY N-1 bereits frisch -> kein Backfill.
@@ -168,12 +126,10 @@ def test_refresh_without_backfill_validates_only_current_year(client, db, monkey
 
     validated = _patch_consistency_spies(monkeypatch)
 
-    with patch("scripts.two_stage_research.research_two_stage",
-               return_value=_result("net_income", Decimal("100"))):
-        r = client.post(
-            f"/api/companies/{cid}/values/refresh",
-            json={"keys": ["net_income"], "period_type": "FY", "period_year": year},
-        )
+    r = client.post(
+        f"/api/companies/{cid}/values/refresh",
+        json={"keys": ["net_income"], "period_type": "FY", "period_year": year},
+    )
 
     assert r.status_code == 200
     assert validated == [year]

@@ -223,10 +223,10 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     row.is_forecast = False
     row.from_ir_pdf = False
     row.manually_overridden = False
-    # Stale LLM-Adjusted-Werte abraeumen: der apply_to_db-Guard fasst
-    # provider-Actuals nie wieder an, sonst friert ein alter Adjusted-Wert
+    # Stale LLM-Adjusted-Werte abraeumen: kein Schreibpfad fasst
+    # provider-Actuals wieder an, sonst friert ein alter Adjusted-Wert
     # neben dem frischen GAAP-Wert ein. Geschuetzt sind nur Manual-Eintraege
-    # und 8-K-Enrichment (SEC-URL) — Two-Stage-Sources werden abgeraeumt,
+    # und 8-K-Enrichment (SEC-URL) — Alt-Recherche-Sources werden abgeraeumt,
     # das Enrichment fuellt danach billiger/besser nach. Ausnahme: beim
     # Ersetzen einer manuellen Forecast-Zeile wird auch Manual-Adjusted
     # geleert — er war nur ein Schaetz-Ableger, das Enrichment fuellt neu.
@@ -302,8 +302,8 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
     if result is None or not isinstance(result.value, Decimal):
         return False
     # EBIT-only-Approximation (kein D&A-Concept in XBRL) nicht ankern:
-    # sie wuerde durch den apply_to_db-Guard unkorrigierbar und ist
-    # schlechter als ein LLM-recherchiertes echtes EBITDA.
+    # sie waere als provider-Actual unkorrigierbar und ist schlechter
+    # als ein recherchiertes echtes EBITDA.
     if key == "ebitda" and result.source_name and "EBITDA ~ EBIT" in result.source_name:
         return False
     return _write_quarter_result(db, company, key, year, quarter, result)

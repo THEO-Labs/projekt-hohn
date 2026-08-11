@@ -82,16 +82,14 @@ def no_live_network(monkeypatch):
 
     monkeypatch.setattr(sr_mod, "_download_document", lambda url: None)
 
-    # Kein Test darf real gegen die Anthropic-API laufen. Tests, die die
-    # Two-Stage-Pipeline brauchen, mocken research_two_stage direkt.
+    # Kein Test darf real gegen die Anthropic-API laufen. Tests, die
+    # LLM-Pfade brauchen, mocken get_client bzw. die _call_claude-Ebene.
     def _no_llm_in_tests():
-        raise RuntimeError("Live-Anthropic-Call in Tests blockiert — mocke research_two_stage/get_client")
+        raise RuntimeError("Live-Anthropic-Call in Tests blockiert — mocke get_client")
 
     import app.llm.claude as claude_mod
-    import scripts.two_stage_research as ts_mod
 
     monkeypatch.setattr(claude_mod, "get_client", _no_llm_in_tests)
-    monkeypatch.setattr(ts_mod, "get_client", _no_llm_in_tests)
     yield
 
 

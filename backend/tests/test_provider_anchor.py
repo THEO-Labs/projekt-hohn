@@ -7,7 +7,6 @@ haelt dieselben Schreibpfad-Invarianten ein wie der FY-Refresh
 """
 from datetime import date, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -373,54 +372,3 @@ def test_kwargs_cascade_passes_isin_and_falls_back(db, company):
     assert seen_kwargs == {"isin": "DE0001234567", "ticker": "TST"}
     row = _fy_row(db, company, "net_income", CLOSED_YEAR)
     assert row.numeric_value == Decimal("5")
-
-
-def test_two_stage_caller_invokes_anchor_after_apply(db, company):
-    """Integration: _process_one_key_via_two_stage ruft den Anker NACH dem
-    Apply-Schritt auf — der XBRL-Wert schlaegt den LLM-FY-Wert."""
-    from app.values.routes import _process_one_key_via_two_stage
-    from tests.test_two_stage_apply import _result
-
-    payload = SimpleNamespace(period_type="FY", period_year=CLOSED_YEAR)
-    updated: list = []
-    anchor_result = ProviderResult(
-        value=Decimal("999"), source_name="EDGAR 10-K", currency="EUR",
-    )
-    with patch("scripts.two_stage_research.research_two_stage",
-               return_value=_result("net_income", Decimal("100"))), \
-         patch("app.values.provider_anchor.get_providers",
-               return_value=[_mock_provider(anchor_result)]):
-        wrote = _process_one_key_via_two_stage(
-            db=db, key="net_income", company=company,
-            company_id=company.id, payload=payload, updated=updated,
-        )
-    db.commit()
-
-    assert wrote is True
-    row = _fy_row(db, company, "net_income", CLOSED_YEAR)
-    assert row.numeric_value == Decimal("999")
-    assert row.primary_method == "provider"
-    assert row in updated
-
-
-def test_anchor_error_never_crashes_refresh(db, company):
-    """Anker-Fehler werden geloggt, der Refresh laeuft weiter — das
-    Two-Stage-Ergebnis bleibt stehen."""
-    from app.values.routes import _process_one_key_via_two_stage
-    from tests.test_two_stage_apply import _result
-
-    payload = SimpleNamespace(period_type="FY", period_year=CLOSED_YEAR)
-    updated: list = []
-    with patch("scripts.two_stage_research.research_two_stage",
-               return_value=_result("net_income", Decimal("100"))), \
-         patch("app.values.provider_anchor.anchor_fy_with_provider",
-               side_effect=RuntimeError("boom")):
-        wrote = _process_one_key_via_two_stage(
-            db=db, key="net_income", company=company,
-            company_id=company.id, payload=payload, updated=updated,
-        )
-    db.commit()
-
-    assert wrote is True
-    row = _fy_row(db, company, "net_income", CLOSED_YEAR)
-    assert row.numeric_value == Decimal("100")

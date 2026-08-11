@@ -250,6 +250,19 @@ def _fy_estimate_year(db: Session, company_id: UUID) -> int | None:
         )
         .scalar()
     )
+    if max_year is None:
+        # Fallback: seit der Nur-bei-vollstaendigen-Komponenten-Regel
+        # existiert die hohn_return-Zeile nicht immer — ohne Fallback
+        # rendert die Detail-Seite trotz vorhandener Werte GAR NICHTS.
+        max_year = (
+            db.query(func.max(CompanyValue.period_year))
+            .filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.period_type == "FY",
+                CompanyValue.numeric_value.isnot(None),
+            )
+            .scalar()
+        )
     return int(max_year) if max_year is not None else None
 
 

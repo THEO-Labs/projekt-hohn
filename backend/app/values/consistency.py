@@ -637,8 +637,8 @@ def derive_q4_residual_from_fy(db: Session, company_id: UUID, year: int) -> int:
 
 def _quarter_reported(company, year: int, q: str, subs_cache: dict) -> bool:
     """Generisches Berichtet-Kriterium der Ableitungen: Quartal beendet
-    UND Karenz (REPORTING_GRACE_DAYS) abgelaufen. US-Filer zusaetzlich
-    wie im apply_to_db-Gate: innerhalb der Karenz gilt ein Quartal mit
+    UND Karenz (REPORTING_GRACE_DAYS) abgelaufen. US-Filer zusaetzlich:
+    innerhalb der Karenz gilt ein Quartal mit
     Item-2.02-8-K nach Quartalsende als berichtet. Nicht-US-Filer (kein
     EDGAR) haben nur die Karenz-Regel — vorher lieferte das US-Gate hier
     immer False, wodurch die Ableitungen ALLE Quartale von DE-Firmen als

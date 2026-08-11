@@ -60,8 +60,7 @@ from app.values.persistence import adjusted_is_protected, currency_conflict, nor
 
 logger = logging.getLogger(__name__)
 
-# Modell/Muster wie der Two-Stage-Extractor (scripts/two_stage_research.py):
-# web_search-Tool, temperature 0.
+# Recherche-Muster: web_search-Tool, temperature 0.
 EXTRACT_MODEL = "claude-sonnet-4-6"
 WEB_SEARCH_MAX_USES = 5
 # Mit open_quarter verdoppelt sich das Antwort-JSON (fy- + Q-Block je
@@ -214,7 +213,7 @@ def _call_claude(company, year: int, cost_tracker=None,
     Schaetzwerte. In Tests gemockt (conftest blockt get_client)."""
     import app.llm.claude as claude_mod
     from app.llm.rate_limiter import claude_limiter
-    from scripts.two_stage_research import _extract_json
+    from app.llm.json_utils import extract_json
 
     client = claude_mod.get_client()
 
@@ -241,7 +240,7 @@ def _call_claude(company, year: int, cost_tracker=None,
     parts = [getattr(block, "text", None) for block in response.content]
     raw = "\n".join(p for p in parts if p).strip()
     try:
-        data = _extract_json(raw)
+        data = extract_json(raw)
     except ValueError as e:
         logger.warning(
             "guidance estimates: kein JSON in Claude-Antwort (%s FY%s): %s",

@@ -307,9 +307,8 @@ def _setup_refresh(client, db, email, isin):
 
 def _patch_refresh_env(monkeypatch):
     """Refresh-Umfeld isolieren: kein Backfill, keine Calculations, kein
-    Prev-Year-Prefetch. Two-Stage-Prozessor, EDGAR-Anker,
-    fetch_guidance_estimates und fetch_statement_research werden durch
-    zaehlende Mocks ersetzt."""
+    Prev-Year-Prefetch. EDGAR-Anker, fetch_guidance_estimates und
+    fetch_statement_research werden durch zaehlende Mocks ersetzt."""
     import app.values.routes as routes
     import app.values.statement_research as sr
 
@@ -317,14 +316,6 @@ def _patch_refresh_env(monkeypatch):
                         lambda db_, cid_, k, y: False)
     monkeypatch.setattr(routes, "_run_and_persist_calculations", lambda *a, **kw: [])
     monkeypatch.setattr(routes, "_ensure_previous_year_inputs", lambda *a, **kw: None)
-
-    two_stage_keys: list[str] = []
-
-    def fake_process(db, key, company, company_id, payload, updated, target_year=None):
-        two_stage_keys.append(key)
-        return False
-
-    monkeypatch.setattr(routes, "_process_one_key_via_two_stage", fake_process)
 
     anchor_keys: list[str] = []
 
@@ -349,17 +340,17 @@ def _patch_refresh_env(monkeypatch):
         return 0
 
     monkeypatch.setattr(sr, "fetch_statement_research", fake_statement)
-    return two_stage_keys, guidance_calls, anchor_keys, statement_calls
+    return guidance_calls, anchor_keys, statement_calls
 
 
 def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monkeypatch):
-    """US-Filer, laufendes FY: Estimate-Keys laufen NICHT durch Two-Stage
-    oder EDGAR-Anker, fetch_guidance_estimates wird genau EINMAL
-    aufgerufen. Balance-Keys (cash_and_equivalents) uebernimmt die
-    Bilanz-Fortschreibung. Nicht abgedeckte Keys (net_debt) laufen fuer
-    US-Filer durch den EDGAR-Anker statt Two-Stage."""
+    """US-Filer, laufendes FY: Estimate-Keys laufen NICHT durch den
+    EDGAR-Anker, fetch_guidance_estimates wird genau EINMAL aufgerufen.
+    Balance-Keys (cash_and_equivalents) uebernimmt die Bilanz-
+    Fortschreibung. Nicht abgedeckte Keys (net_debt) laufen fuer
+    US-Filer durch den EDGAR-Anker."""
     cid = _setup_refresh(client, db, "wire-us@example.com", "US0001234567")
-    two_stage_keys, guidance_calls, anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -371,16 +362,15 @@ def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monk
 
     assert r.status_code == 200
     assert guidance_calls == [("TST", RUNNING_YEAR)]
-    assert two_stage_keys == []
     assert anchor_keys == ["net_debt"]
     assert statement_calls == []  # Statement-Recherche ist Nicht-US-only
 
 
 def test_us_refresh_closed_year_no_guidance_call(client, db, monkeypatch):
     """US-Filer, abgeschlossenes Jahr: kein Guidance-Call, alle Keys
-    durch den EDGAR-Anker (US-Filer erreichen Two-Stage nicht mehr)."""
+    durch den EDGAR-Anker."""
     cid = _setup_refresh(client, db, "wire-closed@example.com", "US0001234567")
-    two_stage_keys, guidance_calls, anchor_keys, _statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, anchor_keys, _statement_calls = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -392,16 +382,14 @@ def test_us_refresh_closed_year_no_guidance_call(client, db, monkeypatch):
 
     assert r.status_code == 200
     assert guidance_calls == []
-    assert two_stage_keys == []
     assert anchor_keys == ["revenue", "net_income"]
 
 
 def test_non_us_refresh_uses_statement_and_guidance(client, db, monkeypatch):
-    """Nicht-US-Firma, laufendes FY (DE-Umbau): KEIN Two-Stage mehr —
-    EIN Statement-Lauf (nur die Gruppen der angefragten Keys) plus EIN
-    Guidance-Call."""
+    """Nicht-US-Firma, laufendes FY (DE-Umbau): EIN Statement-Lauf (nur
+    die Gruppen der angefragten Keys) plus EIN Guidance-Call."""
     cid = _setup_refresh(client, db, "wire-eu@example.com", "DE0001234567")
-    two_stage_keys, guidance_calls, anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -413,7 +401,6 @@ def test_non_us_refresh_uses_statement_and_guidance(client, db, monkeypatch):
 
     assert r.status_code == 200
     assert guidance_calls == [("TST", RUNNING_YEAR)]
-    assert two_stage_keys == []
     assert anchor_keys == []  # EDGAR-Anker ist US-only
     assert statement_calls == [("TST", RUNNING_YEAR, ("income",))]
 
@@ -422,7 +409,7 @@ def test_non_us_refresh_closed_year_statement_without_guidance(client, db, monke
     """Nicht-US-Firma, abgeschlossenes Jahr: Statement-Recherche laeuft,
     Guidance-Call nicht (der gehoert dem laufenden FY)."""
     cid = _setup_refresh(client, db, "wire-eu-closed@example.com", "DE0001234567")
-    two_stage_keys, guidance_calls, _anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, _anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -434,5 +421,4 @@ def test_non_us_refresh_closed_year_statement_without_guidance(client, db, monke
 
     assert r.status_code == 200
     assert guidance_calls == []
-    assert two_stage_keys == []
     assert statement_calls == [("TST", PREV_YEAR, ("income", "cashflow"))]

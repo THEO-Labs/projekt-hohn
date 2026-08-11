@@ -66,29 +66,6 @@ class RefreshRequest(BaseModel):
     stammdaten_only: bool = False
 
 
-class TwoStageRefreshRequest(BaseModel):
-    keys: list[str]
-    period_year: int
-    max_cost_usd: float | None = None
-
-
-class TwoStageVerdictOut(BaseModel):
-    value_key: str
-    period_year: int
-    verdict: str  # "confirm" | "correct" | "insufficient_evidence" | "error"
-    flags: list[str] = []
-    confidence: float = 0.0
-    reason: str = ""
-    final_values: dict[str, str | None] = {}  # {"Q1": "...", "FY": "..."}
-    error: str | None = None
-
-
-class TwoStageRefreshResponse(BaseModel):
-    results: list[TwoStageVerdictOut]
-    spent_usd: float
-    calls: int
-
-
 class OverrideRequest(BaseModel):
     numeric_value: Decimal | None = None
     text_value: str | None = None

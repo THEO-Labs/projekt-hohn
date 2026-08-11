@@ -33,7 +33,6 @@ from app.values.models import CompanyValue
 
 logger = logging.getLogger(__name__)
 
-# Modell wie der Two-Stage-Extractor (scripts/two_stage_research.py),
 # Temperatur 0. Kein Web-Search-Tool — der Release-Text kommt im Prompt.
 EXTRACT_MODEL = "claude-sonnet-4-6"
 

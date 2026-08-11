@@ -13,9 +13,8 @@ Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
       - Yahoo-Fallback nur noch fuer US-Filer (Kundenentscheid: der
         Marktdaten-Feed ist fuer Nicht-US keine Fundamental-Wertequelle)
     Nicht-US ohne ESEF (Munich Re, Allianz, ...): Statement-Recherche
-    (statement_research: EIN Call pro Firma+Jahr+Statement-Gruppe,
-    ersetzt die Two-Stage-Recherche pro Key; Yahoo dient dort nur noch
-    als Cross-Check-Referenz).
+    (statement_research: EIN Call pro Firma+Jahr+Statement-Gruppe;
+    Yahoo dient dort nur noch als Cross-Check-Referenz).
 
   FY-ESTIMATES (laufendes FY, period_year >= current_year)
     US- UND Nicht-US-Filer: EIN gebuendelter Guidance-Call
@@ -69,9 +68,6 @@ from app.values.schemas import (
     CompanyValueOut,
     OverrideRequest,
     RefreshRequest,
-    TwoStageRefreshRequest,
-    TwoStageRefreshResponse,
-    TwoStageVerdictOut,
     ValueDefinitionOut,
 )
 
@@ -367,78 +363,6 @@ def get_quarterly_breakdown(
     return list(seen.values())
 
 
-def _try_web_guidance(
-    db: Session,
-    company,
-    company_id: UUID,
-    key: str,
-    target_fy: int,
-):
-    """Web-Recherche für FY-Guidance via Claude.
-    Returns ProviderResult oder None."""
-    from app.config import settings
-    if not settings.anthropic_api_key:
-        return None
-    from app.llm.research import research_value_dual
-    from app.providers.base import ProviderResult
-
-    vd = db.query(ValueDefinition).filter(ValueDefinition.key == key).one_or_none()
-    if vd is None or vd.source_type != SourceType.API:
-        return None
-
-    label = f"{vd.label_en} ({vd.label_de})"
-    # FY[N-1]-Anker fuer Currency-Cross-Check.
-    prev_fy = target_fy - 1
-    prev_row = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_type == "FY",
-            CompanyValue.period_year == prev_fy,
-        )
-        .order_by(CompanyValue.is_forecast.asc())
-        .first()
-    )
-    prev_fy_val = prev_row.numeric_value if prev_row and prev_row.numeric_value is not None else None
-
-    # FY-monolith Web-Recherche (Dual). Die fruehere Per-Q-Estimate-Pipeline
-    # (quarterly_estimates.py) ist entfernt — dieser minimale Fallback traegt
-    # nur noch Non-US-Luecken (v.a. FY-N-1-Backfill via
-    # _ensure_previous_year_inputs); US-Filer erreichen ihn nicht mehr.
-    try:
-        dual = research_value_dual(
-            company.name, company.ticker, label, company.currency,
-            period_type="FY", period_year=target_fy, value_key=key,
-            prev_fy_val=prev_fy_val,
-            q_actuals=None,
-        )
-    except Exception as e:
-        logger.warning("Web-Guidance research failed for %s/%s/FY%s: %s",
-                       company.ticker, key, target_fy, e)
-        return None
-
-    if dual.value is None:
-        return None
-
-    return ProviderResult(
-        value=dual.value,
-        source_name=f"Web-Guidance: {dual.source}" if dual.source else "Web-Guidance (Claude-Recherche)",
-        source_link=dual.url,
-        currency=company.currency if key in CURRENCY_KEYS else None,
-        extras={
-            "is_forecast": True,
-            "guidance_method": "web_research",
-            "providers_responded": dual.providers_responded,
-            "claude_value": str(dual.claude.value) if dual.claude.value is not None else None,
-            "claude_source": dual.claude.source,
-            "value_adjusted": str(dual.value_adjusted) if dual.value_adjusted is not None else None,
-            "adjustments_note": dual.adjustments_note,
-            "adjustments_source": dual.adjustments_source,
-        },
-    )
-
-
 def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day,
                    isin: str | None = None, company=None):
     # Kundenentscheid: der Marktdaten-Feed (provider_kind='market', Yahoo)
@@ -479,133 +403,10 @@ def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day,
     return None
 
 
-def _process_one_key_via_two_stage(
-    db: Session,
-    key: str,
-    company,
-    company_id: UUID,
-    payload,
-    updated: list,
-    target_year: int | None = None,
-) -> bool:
-    """Two-stage extractor + verifier for one key on the FY refresh path.
-
-    Transparent to the caller (Full-Refresh button user): no separate opt-in.
-    Called only for API-source non-STAMMDATEN keys on FY periods.
-
-    target_year overrides payload.period_year when set. Used by the
-    prev-year backfill so we can re-use the same helper for FY N and FY N-1.
-    """
-    import os as _os
-    from decimal import Decimal as _Dec
-    from scripts.two_stage_research import (
-        CostTracker,
-        apply_to_db as _apply,
-        choose_mode_for_year,
-        research_two_stage,
-    )
-
-    year = target_year if target_year is not None else payload.period_year
-
-    # Provider-First: fuer US-Filer die EDGAR-abgedeckten Perioden VOR der
-    # teuren LLM-Recherche verankern. Deckt der Provider ein abgeschlossenes
-    # Jahr komplett ab (FY+Q1-Q4), entfaellt die Two-Stage-Recherche fuer
-    # diesen Key ganz. Coverage zaehlt auch provider-Zeilen aus frueheren
-    # Laeufen: schlaegt der aktuelle EDGAR-Fetch fehl, tragen die alten
-    # Filing-Werte den Skip (dann ohne frischen last_refresh_attempt-Stempel).
-    # Voll-Coverage erreichen praktisch nur Cashflow-/Bilanz-Keys + fcf —
-    # Income-Statement-Keys haben kein Provider-Q4 (implied) und laufen
-    # weiter durch die Recherche. Fehler hier verhindern die Recherche nie.
-    try:
-        from app.providers.edgar import EdgarProvider
-        from app.values.provider_anchor import (
-            _fy_is_closed,
-            anchor_key_periods_with_provider,
-        )
-        if is_us_company(company) and key in EdgarProvider.supported_keys:
-            covered = anchor_key_periods_with_provider(db, company, key, year)
-            db.commit()
-            if _fy_is_closed(company, year) and covered >= {"FY", "Q1", "Q2", "Q3", "Q4"}:
-                logger.info("provider-covered, two-stage uebersprungen: %s/%s", key, year)
-                for row in (
-                    db.query(CompanyValue)
-                    .filter(
-                        CompanyValue.company_id == company_id,
-                        CompanyValue.value_key == key,
-                        CompanyValue.period_year == year,
-                        CompanyValue.period_type.in_(("FY", "Q1", "Q2", "Q3", "Q4")),
-                        CompanyValue.is_forecast.is_(False),
-                    )
-                    .all()
-                ):
-                    if row not in updated:
-                        updated.append(row)
-                return True
-    except Exception as e:
-        logger.warning(
-            "Provider-First-Anker failed for %s/%s/FY%s: %s — weiter mit LLM",
-            company.ticker, key, year, e,
-        )
-        db.rollback()
-
-    # Actual+Forecast koennen als Paar koexistieren — one_or_none() wuerde
-    # dann MultipleResultsFound werfen. Actual-Zeile bevorzugen.
-    prev_stmt = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_year == year - 1,
-            CompanyValue.period_type == "FY",
-        )
-        .order_by(CompanyValue.is_forecast.asc())
-        .first()
-    )
-    prev_fy = prev_stmt.numeric_value if prev_stmt else None
-
-    verifier_model = _os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
-    try:
-        result = research_two_stage(
-            ticker=company.ticker,
-            company_name=company.name,
-            value_key=key,
-            year=year,
-            currency=company.currency,
-            mode="historic",
-            quarter=None,
-            prev_year_fy_hint=prev_fy,
-            verifier_model=verifier_model,
-            cost_tracker=CostTracker(),
-        )
-    except Exception as e:
-        logger.error("two-stage failed for %s / %s (year=%s): %s", company.ticker, key, year, e)
-        # LLM-Pipeline tot heisst nicht dass die Zeitreihe leer bleiben muss:
-        # fuer abgeschlossene Jahre kann der XBRL-Anker trotzdem liefern.
-        anchored = _anchor_fy_after_apply(db, company, key, year, updated)
-        if not anchored:
-            # Kein stiller Zustand: bestehende FY/Q-Zeilen des Keys werden
-            # last_refresh_attempt-gestempelt, komplett fehlende Perioden
-            # bekommen not_found-Platzhalter (rote Zelle im UI).
-            from scripts.two_stage_research import stamp_attempt_and_fill_not_found
-            stamp_attempt_and_fill_not_found(
-                db, company_id, key, year,
-                periods=("Q1", "Q2", "Q3", "Q4", "FY"),
-                currency=company.currency,
-            )
-        return anchored
-
-    written = _apply(db, company_id, key, year, result, currency=company.currency)
-    for cv in written:
-        updated.append(cv)
-    # XBRL-Provider-Anker: fuer abgeschlossene Geschaeftsjahre ueberschreibt
-    # der strukturierte Filing-Wert (EDGAR/ESEF) den LLM-FY-Wert.
-    anchored = _anchor_fy_after_apply(db, company, key, year, updated)
-    return bool(written) or anchored
-
-
 def _anchor_fy_after_apply(db: Session, company, key: str, year: int, updated: list) -> bool:
-    """XBRL-Anker nach dem Two-Stage-Apply: XBRL schlaegt LLM als FY-Anker
-    fuer abgeschlossene Jahre. Fehler duerfen den Refresh niemals crashen."""
+    """XBRL-Anker: der strukturierte Filing-Wert schlaegt jeden
+    Recherche-Wert als FY-Anker fuer abgeschlossene Jahre. Fehler duerfen
+    den Refresh niemals crashen."""
     try:
         from app.values.provider_anchor import anchor_fy_with_provider
         anchored = anchor_fy_with_provider(db, company, key, year)
@@ -641,8 +442,8 @@ def _anchor_us_key_periods(
 ) -> bool:
     """US-Filer: EDGAR-XBRL-Anker statt LLM-Recherche.
 
-    Ersetzt _process_one_key_via_two_stage im Refresh-Key-Loop fuer
-    US-Firmen komplett: FY + Q1-Q4 des Jahres aus XBRL ankern; Luecken
+    Deckt den Refresh-Key-Loop fuer US-Firmen komplett:
+    FY + Q1-Q4 des Jahres aus XBRL ankern; Luecken
     schliessen 8-K-Bruecke und Residuum-/Carry-Forward-Ableitungen im
     Konsistenz-Pass — sonst bleibt die Zelle leer (Strich). Keys ohne
     EDGAR-Konzept (z.B. net_debt) sind No-op. Returns True wenn der
@@ -726,11 +527,11 @@ def _process_one_key(
     """Returns True if a value was actually written/updated, False if skipped
     (manual override / PDF value / no provider result).
 
-    Source-Strategie:
+    Source-Strategie (nur noch Provider — keine LLM-Recherche mehr):
       - Stammdaten (stock_price/shares/market_cap): immer Yahoo
       - US-Filer (ISIN US...): EDGAR + Yahoo Provider-Chain
-      - Non-US + Estimates: Web-Recherche (Claude-Recherche)
-      - Sonst (historisches FY): Annual-Report-PDF (oder Web-Fallback)
+      - Nicht-US abgeschlossene FY: ESEF; Luecken fuellt statement_research
+        im FY-Refresh-Flow
     """
     effective_period_type = "SNAPSHOT" if key in ALWAYS_CURRENT_KEYS else payload.period_type
     effective_period_year = None if key in ALWAYS_CURRENT_KEYS else payload.period_year
@@ -780,33 +581,11 @@ def _process_one_key(
     # ueberschrieben.
     forecast_locked = bool(forecast_existing and forecast_existing.manually_overridden)
 
-    # PDF-Guidance-Challenge: PDF-Wert ist nicht mehr Hard-Lock. Web-Recherche
-    # laeuft auch wenn PDF-Wert da ist; bei Divergenz > PDF_GUIDANCE_CHALLENGE_THRESHOLD
-    # uebernimmt der Web-Wert (Quartals-Guidance kann veralten, z.B. nach
-    # neueren Management-Aussagen, Pre-Announcements oder geupdateten Analyst-
-    # Konsens-Werten zwischen Q-Reports).
-    pdf_guidance_value: Decimal | None = (
-        forecast_existing.numeric_value
-        if (
-            forecast_existing
-            and forecast_existing.from_ir_pdf
-            and forecast_existing.numeric_value is not None
-            and not forecast_existing.manually_overridden
-        )
-        else None
-    )
-    PDF_GUIDANCE_CHALLENGE_THRESHOLD = Decimal("0.15")
-
-    # Fallback-Kette pro Cell:
-    #   1. Provider-Chain (EDGAR/Yahoo) — fuer Stammdaten und ABGESCHLOSSENE FY
-    #      (US-Filer). EDGAR liefert keine Forward-Forecasts → bei
-    #      is_running_fy=True (Estimate-Mode) explizit ueberspringen.
-    #   2. Web-Recherche (Claude-Recherche) als universeller Fallback fuer
-    #      FY-Werte ohne Provider-Quelle (Non-US, oder Estimate-Mode).
-    # Provider-Chain (EDGAR > ESEF > Yahoo): bei Stammdaten IMMER,
-    # bei FY-Backtests fuer US-Filer (EDGAR) UND EU-Filer (ESEF).
-    # Bei is_running_fy=True (Estimate-Mode) Provider-Chain skippen — die liefern
-    # keine Forecasts, das macht die Web-Recherche/Per-Q-Pipeline.
+    # Provider-Chain (EDGAR > ESEF > Yahoo): bei Stammdaten IMMER, bei
+    # FY-Backtests fuer US-Filer (EDGAR) UND EU-Filer (ESEF). Bei
+    # is_running_fy=True (Estimate-Mode) Provider-Chain skippen — die liefern
+    # keine Forecasts; Estimates kommen aus fetch_guidance_estimates im
+    # FY-Refresh-Flow, nicht aus diesem Pfad.
     if is_stammdaten or not is_running_fy:
         result = _try_providers(
             ticker, key, payload,
@@ -815,68 +594,11 @@ def _process_one_key(
             isin=getattr(company, "isin", None),
             company=company,
         )
-    if result is None and not is_stammdaten and not is_us_company(company):
-        # Fallback fuer FY-Werte ohne Provider-Treffer: Web-Recherche
-        # (Claude-Recherche). NUR Non-US — fuer US-Filer gilt EDGAR/
-        # 8-K-Bruecke oder Strich, keine Web-Recherche mehr.
-        target_fy = effective_period_year if effective_period_year is not None else 0
-        if target_fy > 0:
-            result = _try_web_guidance(db, company, company_id, key, target_fy)
 
     # Forecast-Lock: nur Manual-Override blockiert ein automatisches Update.
     if forecast_locked and forecast_existing is not None:
         updated.append(forecast_existing)
         return True
-
-    # PDF-Guidance-Challenge: PDF-Wert hatte den Slot besetzt, Web-Recherche
-    # hat einen Vergleichswert geliefert. Bei kleiner Abweichung (< Threshold)
-    # PDF behalten — Q-Guidance ist erstmal authoritativ. Bei groesserer
-    # Abweichung Web uebernehmen — Quartals-Guidance wurde durch neuere
-    # Aussagen ueberholt.
-    if (
-        pdf_guidance_value is not None
-        and result is not None
-        and isinstance(result.value, Decimal)
-        and forecast_existing is not None
-    ):
-        try:
-            pdf_abs = abs(pdf_guidance_value)
-            web_val = result.value
-            web_abs = abs(web_val)
-            if pdf_abs > 0:
-                diff = abs(web_abs - pdf_abs) / pdf_abs
-                if diff < PDF_GUIDANCE_CHALLENGE_THRESHOLD:
-                    logger.info(
-                        "PDF-Guidance-Challenge %s/%s/%s: Web=%s bestaetigt PDF=%s "
-                        "(Abweichung %.1f%% < %.0f%%) — PDF-Wert bleibt",
-                        ticker, key, effective_period_year, web_val, pdf_guidance_value,
-                        float(diff) * 100, float(PDF_GUIDANCE_CHALLENGE_THRESHOLD) * 100,
-                    )
-                    forecast_existing.last_refresh_attempt = datetime.now(timezone.utc)
-                    db.flush()
-                    updated.append(forecast_existing)
-                    return True
-                # Divergenz: Web uebernimmt. Source-Name kennzeichnet die Update-Geschichte.
-                logger.info(
-                    "PDF-Guidance-Challenge %s/%s/%s: Web=%s weicht von PDF=%s ab "
-                    "(%.1f%% >= %.0f%%) — Web-Wert uebernehmen",
-                    ticker, key, effective_period_year, web_val, pdf_guidance_value,
-                    float(diff) * 100, float(PDF_GUIDANCE_CHALLENGE_THRESHOLD) * 100,
-                )
-                from app.providers.base import ProviderResult as _PR
-                pdf_src_short = (forecast_existing.source_name or "PDF-Guidance")[:80]
-                result = _PR(
-                    value=result.value,
-                    source_name=f"PDF-Guidance ueberholt ({pdf_src_short}) -> {result.source_name}",
-                    source_link=result.source_link,
-                    currency=result.currency,
-                    extras=result.extras,
-                )
-        except Exception as e:
-            logger.warning(
-                "PDF-Guidance-Challenge %s/%s/%s failed (%s) — Web-Wert nimmt PDF-Slot ohne Vergleich",
-                ticker, key, effective_period_year, e,
-            )
 
     if result is None:
         # Refresh hat nichts geliefert. Aber: wir markieren die last_refresh_attempt
@@ -1197,7 +919,7 @@ def _ensure_previous_year_inputs(
         return
 
     if not is_us_company(company):
-        # Nicht-US: Statement-Recherche statt Two-Stage/Web-Fallback.
+        # Nicht-US: Statement-Recherche.
         # Erst der Provider-Anker (nur ESEF — der Markt-Feed schreibt
         # keine Fundamentals mehr; nur abgeschlossene Jahre), dann EIN
         # Statement-Lauf fuer die Gruppen der noch fehlenden Keys;
@@ -1342,19 +1064,18 @@ def refresh_company_values(
     else:
         effective_keys = payload.keys
 
-    # Full FY refresh (not stammdaten_only) uses the two-stage extractor +
-    # verifier pipeline transparently: user only sees a slightly longer
-    # progress bar, but every value is challenged by a second LLM against
-    # its own source_quote before being written to the DB.
-    use_two_stage_fy = (
+    # Full-FY-Refresh (not stammdaten_only): Provider-Anker + neue
+    # Recherche-Fluesse (US: EDGAR/8-K-Bruecke/Guidance; Nicht-US:
+    # statement_research/Guidance) statt Per-Key-LLM-Recherche.
+    full_fy_refresh = (
         not payload.stammdaten_only
         and payload.period_type == "FY"
         and payload.period_year is not None
     )
 
-    # US-Filer laufen NIE mehr durch die Two-Stage-Recherche: abgeschlossene
-    # Jahre deckt EDGAR-Anker + 8-K-Bruecke + Residuum, das laufende FY der
-    # gebuendelte Guidance-Call + deterministische Ableitungen.
+    # US-Filer: abgeschlossene Jahre deckt EDGAR-Anker + 8-K-Bruecke +
+    # Residuum, das laufende FY der gebuendelte Guidance-Call +
+    # deterministische Ableitungen.
     us_filer = is_us_company(company)
 
     # Laufendes (nicht abgeschlossenes) FY: EIN fetch_guidance_estimates-
@@ -1363,7 +1084,7 @@ def refresh_company_values(
     # + Bilanz-Fortschreibung ersetzen dort die Recherche) haengen weiter
     # am kombinierten US-Gate.
     guidance_fy = False
-    if use_two_stage_fy:
+    if full_fy_refresh:
         try:
             from app.values.provider_anchor import _fy_is_closed
             guidance_fy = not _fy_is_closed(company, payload.period_year)
@@ -1372,16 +1093,16 @@ def refresh_company_values(
             guidance_fy = False
     us_guidance_fy = us_filer and guidance_fy
 
-    # Precompute prev-year backfill list: for a two-stage FY N refresh we
-    # also fill FY N-1 for each key that has no two-stage row yet. Skip
-    # already-verified rows so a second Refresh full click stays cheap.
-    two_stage_eligible_keys: list[str] = []
+    # Precompute prev-year backfill list: ein FY-N-Refresh fuellt FY N-1
+    # fuer jeden Key ohne frische Anker-/Recherche-Zeile mit. Skip
+    # already-good rows so a second Refresh full click stays cheap.
+    research_eligible_keys: list[str] = []
     prev_year_backfill_keys: list[str] = []
-    if use_two_stage_fy:
+    if full_fy_refresh:
         for k in effective_keys:
             if k in ALWAYS_CURRENT_KEYS or k in CALCULATED_KEYS:
                 continue
-            two_stage_eligible_keys.append(k)
+            research_eligible_keys.append(k)
             if _prev_year_needs_backfill(db, company_id, k, payload.period_year - 1):
                 prev_year_backfill_keys.append(k)
 
@@ -1395,23 +1116,21 @@ def refresh_company_values(
         from app.values.guidance_estimates import GUIDANCE_ESTIMATE_KEYS
         for key in effective_keys:
             update_job(company_id, key)
-            # US-Filer, laufendes FY: Estimate-Keys nicht einzeln per
-            # Two-Stage recherchieren — der gebuendelte Guidance-Call
-            # (unten, vor dem Konsistenz-Pass) deckt sie ab. Berichtete
+            # US-Filer, laufendes FY: Estimate-Keys deckt der gebuendelte
+            # Guidance-Call (unten, vor dem Konsistenz-Pass) ab. Berichtete
             # Quartale ankert der Quartals-Anker im Konsistenz-Block.
             if us_guidance_fy and key in GUIDANCE_ESTIMATE_KEYS:
                 continue
-            # Bilanz-Keys fuers laufende FY: keine Two-Stage-Forecast-
-            # Recherche mehr — die Fortschreibung des letzten berichteten
-            # Bilanzstichtags (derive_balance_carry_forward im Konsistenz-
-            # Block) ersetzt sie vollstaendig. Berichtete Quartale ankern
+            # Bilanz-Keys fuers laufende FY: die Fortschreibung des letzten
+            # berichteten Bilanzstichtags (derive_balance_carry_forward im
+            # Konsistenz-Block) deckt sie ab. Berichtete Quartale ankern
             # Quartals-Anker + 8-K-Bruecke.
             if us_guidance_fy and key in BALANCE_CARRY_FORWARD_KEYS:
                 continue
             updated_before = len(updated)
             try:
                 if (
-                    use_two_stage_fy
+                    full_fy_refresh
                     and key not in ALWAYS_CURRENT_KEYS
                     and key not in CALCULATED_KEYS
                 ):
@@ -1429,8 +1148,7 @@ def refresh_company_values(
                         # fuer abgeschlossene Jahre. Die LLM-Recherche
                         # laeuft danach EINMAL pro Jahr als Statement-
                         # Call-Trio (statement_research, vor dem
-                        # Konsistenz-Pass) statt pro Key durch Two-Stage
-                        # (Alt-Pfad bleibt fuer Rollback erhalten).
+                        # Konsistenz-Pass).
                         wrote = _anchor_fy_after_apply(
                             db, company, key, payload.period_year, updated,
                         )
@@ -1461,8 +1179,8 @@ def refresh_company_values(
             _maybe_refresh_next_earnings(db, company, ticker)
             db.commit()
 
-        # Prev-year backfill: for the two-stage-eligible keys where FY N-1
-        # has no two-stage row yet, run the pipeline against FY N-1 too.
+        # Prev-year backfill: fuer die Recherche-Keys ohne frische
+        # FY-N-1-Zeile laeuft der Anker-/Recherche-Pfad auch fuer FY N-1.
         if prev_year_backfill_keys:
             prev_year = payload.period_year - 1
             for key in prev_year_backfill_keys:
@@ -1487,7 +1205,7 @@ def refresh_company_values(
                         mark_success(company_id)
                 except Exception as e:
                     logger.error(
-                        "prev-year two-stage failed for %s / %s / FY%s: %s",
+                        "prev-year backfill failed for %s / %s / FY%s: %s",
                         ticker, key, prev_year, e,
                     )
                     db.rollback()
@@ -1495,7 +1213,7 @@ def refresh_company_values(
 
         # Cross-Metrik-Konsistenz: net_debt aus Komponenten ableiten (eine
         # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
-        if use_two_stage_fy and payload.period_year is not None:
+        if full_fy_refresh and payload.period_year is not None:
             from app.values.consistency import (
                 derive_balance_carry_forward,
                 derive_declared_dividend_quarter,
@@ -1518,7 +1236,7 @@ def refresh_company_values(
             ) + [payload.period_year]
 
             # Nicht-US: EIN Recherche-Call pro Jahr und Statement-Gruppe
-            # (max. 3 Calls) ersetzt die Two-Stage-Recherche pro Key.
+            # (max. 3 Calls) statt Recherche pro Key.
             # Reihenfolge N-1 vor N, damit das Vorjahresband-Gate die
             # frischen N-1-Actuals sieht. Nur die Gruppen der angefragten
             # Keys. Der Yahoo-Feed schreibt keine Quartale mehr
@@ -1531,8 +1249,8 @@ def refresh_company_values(
                         fetch_statement_research,
                         groups_for_keys,
                     )
-                    from scripts.two_stage_research import CostTracker
-                    stmt_groups = groups_for_keys(two_stage_eligible_keys)
+                    from app.llm.cost_tracker import CostTracker
+                    stmt_groups = groups_for_keys(research_eligible_keys)
                     if stmt_groups:
                         stmt_tracker = CostTracker()
                         for stmt_year in consistency_years:
@@ -1554,8 +1272,8 @@ def refresh_company_values(
                     logger.warning("statement research failed for %s: %s", ticker, e)
                     db.rollback()
 
-            # Quartals-Anker (Gegenstueck zum FY-Anker in
-            # _process_one_key_via_two_stage): gefilte Quartale mit exakten
+            # Quartals-Anker (Gegenstueck zum FY-Anker im Key-Loop):
+            # gefilte Quartale mit exakten
             # EDGAR-XBRL-Werten ueberschreiben — VOR dem Konsistenz-Pass,
             # damit validate_cross_metrics die finalen Werte prueft.
             # Fehler duerfen den Refresh nicht abbrechen.
@@ -1572,7 +1290,7 @@ def refresh_company_values(
             # die provider-Zeilen ueberschreibt. Fehler brechen nie ab.
             try:
                 from app.values.gaap_bridge import bridge_gaap_from_earnings_releases
-                from scripts.two_stage_research import CostTracker
+                from app.llm.cost_tracker import CostTracker
                 bridge_tracker = CostTracker()
                 bridge_gaap_from_earnings_releases(
                     db, company, consistency_years, cost_tracker=bridge_tracker,
@@ -1586,19 +1304,17 @@ def refresh_company_values(
             except Exception as e:
                 logger.warning("gaap bridge failed for %s: %s", ticker, e)
                 db.rollback()
-            # Non-GAAP-Anreicherung aus 8-K-Earnings-Releases: der Provider-
-            # first-Skip ueberspringt die Two-Stage-Recherche, die frueher
-            # die Adjusted-Werte mitbrachte. Fill-only-NULL; Fehler brechen
-            # den Refresh nie ab.
+            # Non-GAAP-Anreicherung aus 8-K-Earnings-Releases: der
+            # Anker-Pfad liefert keine Adjusted-Werte. Fill-only-NULL;
+            # Fehler brechen den Refresh nie ab.
             try:
                 from app.values.adjusted_enrichment import (
                     enrich_adjusted_from_earnings_releases,
                 )
-                from scripts.two_stage_research import CostTracker
-                # Der Refresh-Flow hat keinen flowweiten CostTracker (die
-                # Two-Stage-Keys nutzen lokale Tracker ohne Budget, siehe
-                # _process_one_key_via_two_stage) — eigener Tracker fuer
-                # das Kosten-Logging der Enrichment-Calls.
+                from app.llm.cost_tracker import CostTracker
+                # Der Refresh-Flow hat keinen flowweiten CostTracker —
+                # eigener Tracker fuer das Kosten-Logging der
+                # Enrichment-Calls.
                 adj_tracker = CostTracker()
                 enrich_adjusted_from_earnings_releases(
                     db, company, consistency_years, cost_tracker=adj_tracker,
@@ -1621,7 +1337,7 @@ def refresh_company_values(
             if guidance_fy:
                 try:
                     from app.values.guidance_estimates import fetch_guidance_estimates
-                    from scripts.two_stage_research import CostTracker
+                    from app.llm.cost_tracker import CostTracker
                     set_phase(
                         company_id, "guidance_estimates",
                         f"FY-Guidance-Schaetzungen (FY{payload.period_year})",
@@ -1661,7 +1377,7 @@ def refresh_company_values(
                 try:
                     # Bilanz-Fortschreibung VOR der net_debt-Ableitung und
                     # VOR validate_cross_metrics: Q4/FY-Staende aus dem
-                    # letzten berichteten Stichtag ersetzen die Two-Stage-
+                    # letzten berichteten Stichtag ersetzen aeltere
                     # Bilanz-Schaetzungen, net_debt rechnet danach mit den
                     # fortgeschriebenen Komponenten.
                     derive_balance_carry_forward(db, company_id, cons_year)
@@ -1756,118 +1472,6 @@ def calculate_company_values(
     for cv in calc_updated:
         db.refresh(cv)
     return calc_updated
-
-
-@values_router.post("/{company_id}/values/{value_key}/research")
-def research_company_value(
-    company_id: UUID,
-    value_key: str,
-    period_type: str = Query(default="FY"),
-    period_year: int | None = Query(default=None),
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    """Manueller Trigger für Claude-Web-Recherche zu einer einzelnen Zelle.
-    Persistiert das Ergebnis direkt als CompanyValue (manually_overridden=True).
-    Returns: { value, source_name, source_url, value_found }.
-    """
-    from app.config import settings
-    from app.llm.claude import research_value, validate_claude_value
-
-    company = _get_owned_company(db, user, company_id)
-
-    if not settings.anthropic_api_key:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Claude-API nicht konfiguriert")
-    if value_key in CALCULATED_KEYS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Berechnete Werte können nicht recherchiert werden")
-
-    vd = db.query(ValueDefinition).filter(ValueDefinition.key == value_key).one_or_none()
-    if vd is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unbekannter Wert")
-    if vd.source_type == SourceType.QUALITATIVE:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Qualitative Werte werden nicht via Recherche befuellt")
-
-    eff_period_type = "SNAPSHOT" if value_key in ALWAYS_CURRENT_KEYS else period_type
-    eff_period_year = None if value_key in ALWAYS_CURRENT_KEYS else period_year
-
-    label = f"{vd.label_en} ({vd.label_de})"
-    research_val, research_source, research_url, _user_prompt, _assistant_response = research_value(
-        company.name, company.ticker, label, company.currency,
-        period_type=eff_period_type, period_year=eff_period_year, value_key=value_key,
-    )
-    if research_val is None:
-        return {"value": None, "source_name": None, "source_url": None, "value_found": False}
-
-    research_val = validate_claude_value(value_key, research_val)
-    if research_val is None:
-        return {"value": None, "source_name": None, "source_url": None, "value_found": False}
-
-    # Direkt in CompanyValue persistieren — User hat die Recherche manuell ausgeloest.
-    is_running_fy = (
-        eff_period_type == "FY"
-        and eff_period_year is not None
-        and eff_period_year >= datetime.now(timezone.utc).year
-    )
-    inherit_currency = company.currency if value_key in CURRENCY_KEYS else None
-    source_label = f"Claude-Recherche: {research_source}" if research_source else "Claude-Recherche"
-
-    oq = (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == value_key,
-            CompanyValue.period_type == eff_period_type,
-            CompanyValue.is_forecast.is_(is_running_fy),
-        )
-    )
-    if eff_period_year is not None:
-        oq = oq.filter(CompanyValue.period_year == eff_period_year)
-    else:
-        oq = oq.filter(CompanyValue.period_year.is_(None))
-    existing = oq.one_or_none()
-
-    if existing:
-        existing.numeric_value = research_val
-        existing.source_name = source_label
-        existing.source_link = research_url
-        if inherit_currency and not existing.currency:
-            existing.currency = inherit_currency
-        existing.manually_overridden = True
-        existing.from_ir_pdf = False
-        existing.is_forecast = is_running_fy
-        existing.fetched_at = datetime.now(timezone.utc)
-    else:
-        cv = CompanyValue(
-            id=uuid4(),
-            company_id=company_id,
-            value_key=value_key,
-            period_type=eff_period_type,
-            period_year=eff_period_year,
-            numeric_value=research_val,
-            source_name=source_label,
-            source_link=research_url,
-            currency=inherit_currency,
-            manually_overridden=True,
-            from_ir_pdf=False,
-            is_forecast=is_running_fy,
-            fetched_at=datetime.now(timezone.utc),
-        )
-        db.add(cv)
-
-    _recalc_after_override(
-        db, company_id, value_key, eff_period_type, eff_period_year, label,
-    )
-    db.commit()
-
-    return {
-        "value": str(research_val),
-        "source_name": source_label,
-        "source_url": research_url,
-        "value_found": True,
-    }
 
 
 @values_router.post("/{company_id}/values/{value_key}/explain")
@@ -2400,7 +2004,7 @@ def _refresh_fy_from_quarters(
         existing_fy.numeric_value = fy_value
         # Geschuetzte Adjusted-Werte (Manual, 8-K-Enrichment mit SEC-URL)
         # nie ueberschreiben oder nullen — alle anderen (source NULL oder
-        # Two-Stage) werden aus den Quartalen neu abgeleitet.
+        # Alt-Recherche) werden aus den Quartalen neu abgeleitet.
         from app.values.persistence import adjusted_is_protected
         if not adjusted_is_protected(existing_fy.adjustments_source):
             existing_fy.numeric_value_adjusted = fy_adj
@@ -2584,7 +2188,7 @@ def override_company_value(
         # bestehenden Zeile. GAAP-Felder (numeric_value, primary_method,
         # manually_overridden, source_name, is_forecast, from_ir_pdf)
         # bleiben unangetastet. adjustments_source='Manual' schuetzt den
-        # Wert vor Anker-/Two-Stage-Cleanup (adjusted_is_protected) und
+        # Wert vor dem Anker-Cleanup (adjusted_is_protected) und
         # vor dem Adjusted-Enrichment (fuellt nur NULL-Felder).
         if payload.text_value is not None:
             raise HTTPException(
@@ -2650,113 +2254,3 @@ def override_company_value(
     db.commit()
     db.refresh(result_cv)
     return result_cv
-
-
-# --- Two-Stage Research Endpoint ------------------------------------------
-
-
-@values_router.post(
-    "/{company_id}/values/two-stage-refresh",
-    response_model=TwoStageRefreshResponse,
-)
-def two_stage_refresh(
-    company_id: UUID,
-    payload: TwoStageRefreshRequest,
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
-) -> TwoStageRefreshResponse:
-    """Run the two-stage extractor + verifier for a set of value_keys and
-    persist verifier-final values with primary_method='two_stage_*'.
-
-    Skips CALCULATED and ALWAYS_CURRENT keys server-side.
-    """
-    company = _get_owned_company(db, user, company_id)
-
-    # Local import: keep two_stage_research optional if module isn't loaded
-    # by other paths (avoids circular pulls on server startup).
-    import os as _os
-    from decimal import Decimal as _Dec
-    from scripts.two_stage_research import (
-        CostTracker,
-        apply_to_db as _apply,
-        choose_mode_for_year,
-        research_two_stage,
-    )
-
-    tracker = CostTracker(max_usd=payload.max_cost_usd)
-    verifier_model = _os.environ.get("VERIFIER_MODEL", "claude-haiku-4-5-20251001")
-
-    results: list[TwoStageVerdictOut] = []
-    for key in payload.keys:
-        if key in CALCULATED_KEYS or key in ALWAYS_CURRENT_KEYS:
-            results.append(TwoStageVerdictOut(
-                value_key=key, period_year=payload.period_year,
-                verdict="error", error="calculated/always-current key not eligible",
-            ))
-            continue
-
-        try:
-            tracker.check_budget()
-        except RuntimeError as e:
-            results.append(TwoStageVerdictOut(
-                value_key=key, period_year=payload.period_year,
-                verdict="error", error=str(e),
-            ))
-            break
-
-        try:
-            # Load prev-year FY as hint (if exists). Im inneren try: ein
-            # Lookup-Fehler soll nur diesen Key als error markieren, nicht
-            # den ganzen Endpoint crashen. Actual+Forecast koennen als Paar
-            # koexistieren — one_or_none() wuerde MultipleResultsFound
-            # werfen, daher order_by(is_forecast asc).first() = Actual.
-            prev_row = (
-                db.query(CompanyValue)
-                .filter(
-                    CompanyValue.company_id == company_id,
-                    CompanyValue.value_key == key,
-                    CompanyValue.period_year == payload.period_year - 1,
-                    CompanyValue.period_type == "FY",
-                )
-                .order_by(CompanyValue.is_forecast.asc())
-                .first()
-            )
-            prev_fy = prev_row.numeric_value if prev_row else None
-
-            mode = choose_mode_for_year(payload.period_year)
-            result = research_two_stage(
-                ticker=company.ticker,
-                company_name=company.name,
-                value_key=key,
-                year=payload.period_year,
-                currency=company.currency,
-                mode=mode,
-                quarter=None,
-                prev_year_fy_hint=prev_fy,
-                verifier_model=verifier_model,
-                cost_tracker=tracker,
-            )
-            _apply(db, company_id, key, payload.period_year, result, currency=company.currency)
-            db.commit()
-            results.append(TwoStageVerdictOut(
-                value_key=key,
-                period_year=payload.period_year,
-                verdict=result.verdict.verdict,
-                flags=result.verdict.flags,
-                confidence=result.verdict.confidence,
-                reason=result.verdict.reason[:500],
-                final_values={
-                    k: (str(v) if v is not None else None)
-                    for k, v in result.final_values.items()
-                },
-            ))
-        except Exception as e:
-            db.rollback()
-            results.append(TwoStageVerdictOut(
-                value_key=key, period_year=payload.period_year,
-                verdict="error", error=f"{type(e).__name__}: {str(e)[:300]}",
-            ))
-
-    return TwoStageRefreshResponse(
-        results=results, spent_usd=round(tracker.spent_usd, 4), calls=tracker.calls,
-    )

@@ -177,27 +177,6 @@ def test_refresh_updates_existing_value(client, db):
     assert len(all_values) == 1
 
 
-def _fake_two_stage_result(value_key: str, year: int, fy_value: Decimal):
-    from scripts.two_stage_research import (
-        ExtractResult,
-        QuarterValue,
-        TwoStageResult,
-        VerifierVerdict,
-    )
-
-    extract = ExtractResult(
-        ticker="AAPL", value_key=value_key, year=year, currency="USD",
-        q1=None, q2=None, q3=None, q4=None,
-        fy=QuarterValue(value=fy_value, source_quote="10-K net income line",
-                        source_url=None, is_estimate=False),
-        quarter_only=None, is_adjusted_note=None,
-    )
-    verdict = VerifierVerdict(
-        verdict="confirm", corrections={}, reason="reconciles", confidence=0.9, flags=[],
-    )
-    return TwoStageResult(extract=extract, verdict=verdict)
-
-
 def test_get_company_values_after_refresh(client, db):
     """FY-Refresh fuer Nicht-US-API-Keys laeuft ueber die Statement-
     Recherche (EIN Call pro Statement-Gruppe) — der Test mockt den

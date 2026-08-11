@@ -1,11 +1,11 @@
-"""Gap-Fill: recherchiert gezielt (Firma, Key, Jahr)-Kombinationen nach,
-bei denen Perioden-Zeilen fehlen — durch die normale Two-Stage-Pipeline
-(inkl. Median-Sampling, Verifier, Sign-/Currency-Invarianten). Danach
-net_debt-Ableitung + Konsistenz-Pass + Recalc pro betroffener Firma.
+"""Gap-Inventar + not_found-Platzhalter + Vollstaendigkeits-Report.
 
-Kernlogik ist importierbar (fill_portfolio_gaps, write_not_found_placeholders,
-build_completeness_report) und wird auch vom Portfolio-Batch
-(app/values/batch.py) als Abschlussphase genutzt.
+Die fruehere LLM-Nachrecherche (fill_portfolio_gaps via Two-Stage-
+Pipeline) ist entfernt — Luecken fuellen die neuen Refresh-Fluesse
+(EDGAR/8-K-Bruecke bzw. statement_research). Dieses Modul inventarisiert
+nur noch: collect_missing_combos (Luecken-Liste), write_not_found_placeholders
+(rote Zellen im UI) und build_completeness_report — beide werden vom
+Portfolio-Batch (app/values/batch.py) als Abschlussphase genutzt.
 
 Usage (im App-Container):
     .venv/bin/python -m scripts.fill_gaps --portfolio DAX [--ticker ADS.DE] [--dry-run]
@@ -14,7 +14,6 @@ Usage (im App-Container):
 import argparse
 import sys
 from datetime import datetime, timezone
-from typing import Callable
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -25,7 +24,6 @@ from app.db import SessionLocal
 from app.portfolios.models import Portfolio
 from app.values.models import CompanyValue, SourceType, ValueDefinition
 from app.values.persistence import NOT_FOUND_SOURCE
-from scripts.two_stage_research import apply_to_db, research_two_stage
 
 PERIODS = ("Q1", "Q2", "Q3", "Q4", "FY")
 ALWAYS_CURRENT = {"market_cap", "stock_price", "shares_outstanding"}
@@ -74,9 +72,9 @@ def collect_missing_combos(
                 continue
             for year in years:
                 # not_found-Platzhalter (numeric_value NULL) zaehlen NICHT
-                # als vorhanden — sonst wuerde ein spaeterer Batch die Zelle
-                # nie nachrecherchieren. Erfolgreiche Recherche ueberschreibt
-                # den Platzhalter ohnehin (Insert-or-Update in apply_to_db).
+                # als vorhanden — sonst wuerde ein spaeterer Refresh die
+                # Zelle nie nachrecherchieren. Erfolgreiche Recherche
+                # ueberschreibt den Platzhalter ohnehin.
                 present = {
                     row.period_type
                     for row in db.query(
@@ -95,94 +93,6 @@ def collect_missing_combos(
                 if missing:
                     todo.append((c, key, year, missing))
     return todo
-
-
-def fill_portfolio_gaps(
-    db: Session,
-    portfolio_id: UUID,
-    years: list[int],
-    ticker: str | None = None,
-    progress_cb: Callable[[str], None] | None = None,
-    cost_tracker=None,
-) -> dict:
-    """Recherchiert alle luecken-behafteten Kombos nach und laesst danach
-    Ableitungen + Recalc pro beruehrter Firma laufen.
-
-    Rueckgabe-Statistik:
-      combos  — Kombos mit fehlenden Perioden (Arbeitsvorrat)
-      filled  — Recherche erfolgreich, mindestens eine Zeile geschrieben
-      empty   — Recherche erfolgreich, aber keine Zeile geschrieben
-      failed  — Recherche/Persistenz mit Fehler
-    """
-    def _log(msg: str) -> None:
-        if progress_cb:
-            progress_cb(msg)
-
-    todo = collect_missing_combos(db, portfolio_id, years, ticker)
-    _log(f"gap-fill: {len(todo)} (company,key,year) combos with missing periods")
-
-    touched_companies: dict[UUID, Company] = {}
-    filled = empty = failed = 0
-    for i, (c, key, year, missing) in enumerate(todo, 1):
-        try:
-            # Im per-Combo-try UND first() statt one_or_none(): ein Actual+
-            # Forecast-Paar fuer FY N-1 darf nicht die ganze Gap-Fill-Phase
-            # abbrechen. Actual-Zeile bevorzugen.
-            prev = (
-                db.query(CompanyValue)
-                .filter(
-                    CompanyValue.company_id == c.id,
-                    CompanyValue.value_key == key,
-                    CompanyValue.period_year == year - 1,
-                    CompanyValue.period_type == "FY",
-                )
-                .order_by(CompanyValue.is_forecast.asc())
-                .first()
-            )
-            result = research_two_stage(
-                ticker=c.ticker, company_name=c.name, value_key=key, year=year,
-                currency=c.currency, mode="historic", quarter=None,
-                prev_year_fy_hint=prev.numeric_value if prev else None,
-            )
-            written = apply_to_db(db, c.id, key, year, result, currency=c.currency)
-            db.commit()
-            touched_companies[c.id] = c
-            if written:
-                filled += 1
-            else:
-                empty += 1
-            _log(f"[{i}/{len(todo)}] {c.ticker} {key} {year}: wrote {len(written)} rows "
-                 f"(was missing {','.join(missing)})")
-        except Exception as e:
-            db.rollback()
-            failed += 1
-            _log(f"[{i}/{len(todo)}] {c.ticker} {key} {year} FAILED: {str(e)[:150]}")
-
-    # Nachlauf pro beruehrter Firma: net_debt-Ableitung, Konsistenz, Recalc.
-    from app.values.consistency import (
-        derive_missing_ocf,
-        derive_net_debt_from_components,
-        derive_sbc_quarters,
-        validate_cross_metrics,
-    )
-    from app.values.routes import _run_and_persist_calculations
-
-    for c in touched_companies.values():
-        try:
-            for year in years:
-                derive_net_debt_from_components(db, c.id, year)
-                derive_missing_ocf(db, c.id, year)
-                derive_sbc_quarters(db, c.id, year)
-                validate_cross_metrics(db, c.id, year)
-                _run_and_persist_calculations(db, c.id, "FY", year)
-            db.commit()
-            _log(f"postprocess {c.ticker}: ok")
-        except Exception as e:
-            db.rollback()
-            _log(f"postprocess {c.ticker} FAILED: {str(e)[:150]}")
-
-    _log(f"gap-fill done: {filled + empty} ok, {failed} failed")
-    return {"combos": len(todo), "filled": filled, "empty": empty, "failed": failed}
 
 
 def write_not_found_placeholders(db: Session, portfolio_id: UUID, years: list[int]) -> int:
@@ -303,18 +213,20 @@ def main() -> int:
     db = SessionLocal()
     try:
         pf = db.query(Portfolio).filter(Portfolio.name == args.portfolio).one()
+        todo = collect_missing_combos(db, pf.id, years, args.ticker)
+        print(f"gap-inventar: {len(todo)} (company,key,year) combos with missing periods",
+              flush=True)
+        for c, key, year, missing in todo:
+            print(f"  {c.ticker} {key} {year}: missing {','.join(missing)}", flush=True)
         if args.dry_run:
-            todo = collect_missing_combos(db, pf.id, years, args.ticker)
-            print(f"gap-fill: {len(todo)} (company,key,year) combos with missing periods",
-                  flush=True)
-            for c, key, year, missing in todo:
-                print(f"  {c.ticker} {key} {year}: missing {','.join(missing)}", flush=True)
             return 0
 
-        fill_portfolio_gaps(
-            db, pf.id, years, ticker=args.ticker,
-            progress_cb=lambda msg: print(msg, flush=True),
-        )
+        created = write_not_found_placeholders(db, pf.id, years)
+        print(f"{created} not_found placeholders written", flush=True)
+        report = build_completeness_report(db, pf.id, years)
+        for key, stats in report["per_key"].items():
+            print(f"  {key}: expected={stats['expected']} with_value={stats['with_value']} "
+                  f"not_found={stats['not_found']} excluded={stats['excluded']}", flush=True)
         return 0
     finally:
         db.close()

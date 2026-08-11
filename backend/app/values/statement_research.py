@@ -332,7 +332,7 @@ def _call_claude(company, year: int, group: str, cost_tracker=None) -> dict | No
     gemockt (conftest blockt get_client)."""
     import app.llm.claude as claude_mod
     from app.llm.rate_limiter import claude_limiter
-    from scripts.two_stage_research import _extract_json
+    from app.llm.json_utils import extract_json
 
     client = claude_mod.get_client()
 
@@ -359,7 +359,7 @@ def _call_claude(company, year: int, group: str, cost_tracker=None) -> dict | No
     parts = [getattr(block, "text", None) for block in response.content]
     raw = "\n".join(p for p in parts if p).strip()
     try:
-        data = _extract_json(raw)
+        data = extract_json(raw)
     except ValueError as e:
         logger.warning(
             "statement research: kein JSON in Claude-Antwort (%s FY%s %s): %s",
@@ -644,8 +644,7 @@ def _upsert_reported(db, company, key: str, pt: str, year: int, info: dict,
         return None
 
     # Zielzeile: Actual-Slot bevorzugt; existiert nur ein (ersetzbarer)
-    # Forecast-Slot, wird er zum Actual umgezogen (Guidance -> berichtet,
-    # Muster apply_to_db).
+    # Forecast-Slot, wird er zum Actual umgezogen (Guidance -> berichtet).
     target = next((r for r in rows if not r.is_forecast), None)
     if target is None:
         target = next(iter(rows), None)
@@ -794,7 +793,7 @@ def _persist_group(db, company, year: int, group: str,
     `needed_map` (Dokument-Stufe) beschraenkt Writes und Stempel auf die
     dort gelisteten beduerftigen Zellen — Stufe-1-Werte anderer Zellen
     bleiben unberuehrt. Rueckgabe: geschriebene Zeilen."""
-    from scripts.two_stage_research import stamp_attempt_and_fill_not_found
+    from app.values.persistence import stamp_attempt_and_fill_not_found
 
     written = 0
     written_rows: dict[tuple[str, str], CompanyValue] = {}
@@ -1122,7 +1121,7 @@ def _call_claude_document(company, year: int, group: str,
 
     import app.llm.claude as claude_mod
     from app.llm.rate_limiter import claude_limiter
-    from scripts.two_stage_research import _extract_json
+    from app.llm.json_utils import extract_json
 
     client = claude_mod.get_client()
     user_text = _build_doc_user_prompt(company, year, group, needed, doc_url)
@@ -1159,7 +1158,7 @@ def _call_claude_document(company, year: int, group: str,
     parts = [getattr(block, "text", None) for block in response.content]
     raw = "\n".join(p for p in parts if p).strip()
     try:
-        data = _extract_json(raw)
+        data = extract_json(raw)
     except ValueError as e:
         logger.warning(
             "statement research doc: kein JSON in Claude-Antwort "
