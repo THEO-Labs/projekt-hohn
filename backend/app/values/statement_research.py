@@ -43,6 +43,20 @@ REPORTING_GRACE_DAYS abgelaufen). Unberichtete Perioden des laufenden
 Jahres bekommen weder Write noch not_found-Stempel — sonst verschattet
 der Actual-Platzhalter die Forecast-Zeile im selben Slot-Paar
 (Detail-Seite wirkt leer).
+
+Stufe 2 — PDF-Bruecke (Muster gaap_bridge, dort fuer US-8-K): Die
+Websuche FINDET die Berichts-PDFs (url-Feld, auch bei value null),
+kann sie aber nicht LESEN — Bilanz-Quartale, non-IFRS-Spalten und
+aeltere Quartale bleiben leer. Sind nach Stufe 1 + Ankern noch
+beduerftige berichtete Zellen der Gruppe uebrig (Actual ohne Wert),
+werden die von Stufe 1 gelieferten Dokument-URLs dedupliziert, das
+Dokument heruntergeladen (SSRF-Guards, Groessen-/Seiten-Limit) und als
+document-Block (PDF) bzw. extrahierter Text (HTML) an EINEN weiteren
+Claude-Call gegeben — exakte Tabellenwerte inkl. non-IFRS-Spalten
+(SAP-Muster: IFRS und non-IFRS nebeneinander). Max. 2 Dokument-Calls
+pro Gruppe/Jahr (Kosten-Deckel). Persistenz/Gates identisch zu Stufe 1;
+non-IFRS-Sidecars mit adjustments_note 'Non-IFRS (Berichts-PDF)'.
+Dokument gelesen, Wert nachweislich nicht enthalten -> not_found.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -147,6 +161,23 @@ _REPORTED_ADJ_TOL = Decimal("0.01")
 # Vorgaenger-Zeilen aktualisieren darf).
 _REPLACEABLE_METHODS = ("not_found", "calculated", "statement_research")
 
+# --- Stufe 2: Dokument-Bruecke ----------------------------------------------
+# Kosten-Deckel: max. 2 Dokument-Calls pro Gruppe/Jahr.
+MAX_DOC_CALLS = 2
+# Download-Limits: ~20 MB, Berichts-PDFs > 100 Seiten (Geschaeftsberichte)
+# werden uebersprungen — die API akzeptiert nur ~100 Seiten sinnvoll,
+# Quartalsmitteilungen/Halbjahresberichte sind kurz genug.
+MAX_DOC_BYTES = 20 * 1024 * 1024
+MAX_PDF_PAGES = 100
+# Fallback-Heuristik, falls pypdf das PDF nicht parsen kann.
+_PDF_PAGE_BYTES_HEURISTIC = 50_000
+_DOC_REDIRECT_LIMIT = 3
+_DOC_TIMEOUT_SECONDS = 30
+# HTML-Dokumente: extrahierter Text wird gekappt (Muster gaap_bridge).
+_HTML_TEXT_CAP_CHARS = 80_000
+# non-IFRS-Sidecars der Dokument-Stufe tragen diese Note.
+DOC_SIDECAR_NOTE = "Non-IFRS (Berichts-PDF)"
+
 _ENTRY_FIELDS = (
     '{"value": <number|null>, "quote": <string|null>, '
     '"url": <string|null>, "derived_from": <string|null>}'
@@ -230,7 +261,10 @@ def _build_system_prompt(company, year: int, group: str) -> str:
         + period_sentence
         + f"Absolute Betraege in {currency}-Basiseinheiten "
         "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie. Nicht berichtete "
-        "Perioden: value null. Antworte NUR mit einem JSON-Objekt nach "
+        "Perioden: value null. Gib fuer JEDE Periode die URL des "
+        "offiziellen Berichts-PDFs/HTML im Feld url an — auch wenn du "
+        "den Wert nicht extrahieren kannst (dann value null, url "
+        "trotzdem gesetzt). Antworte NUR mit einem JSON-Objekt nach "
         "dem Schema in der User-Nachricht — kein Text ausserhalb des "
         "JSON, keine Markdown-Fences."
     )
@@ -261,8 +295,10 @@ def _build_user_prompt(company, year: int, group: str) -> str:
         f"ENTRY = {_ENTRY_FIELDS}",
         "",
         "quote = woertliches Zitat/Tabellenzeile aus dem Bericht; "
-        "url = Quelle-URL; derived_from = Rechenweg bei abgeleiteten "
-        "Quartalen, sonst null; nicht berichtet = value null.",
+        "url = Quelle-URL (URL des offiziellen Berichts auch angeben, "
+        "wenn value null bleibt); derived_from = Rechenweg bei "
+        "abgeleiteten Quartalen, sonst null; nicht berichtet = "
+        "value null.",
     ]
     return "\n".join(lines)
 
@@ -581,9 +617,11 @@ def _upsert_reported(db, company, key: str, pt: str, year: int, info: dict,
 
 
 def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
-                    info: dict, now, base_row: CompanyValue | None) -> bool:
+                    info: dict, now, base_row: CompanyValue | None,
+                    note: str | None = None) -> bool:
     """Adjusted-Sidecar in numeric_value_adjusted der Basis-Zeile schreiben.
     Nur bei echten adjusted-Ausweisen; adjusted_is_protected respektieren.
+    `note` ueberschreibt die Default-adjustments_note (Dokument-Stufe).
     Rueckgabe: True wenn geschrieben."""
     row = base_row
     if row is None:
@@ -621,6 +659,18 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
         return False
     if adjusted_is_protected(row.adjustments_source):
         return False
+    # reported <= adjusted auch gegen den DB-Basiswert pruefen — die
+    # Dokument-Stufe liefert Sidecars oft ohne Basis-Wert im Payload
+    # (Basis kam vom Yahoo-Anker), das Parsed-Paar-Gate greift dann nicht.
+    base_val = row.numeric_value
+    adj_val = info["value"]
+    if base_val is not None and base_val > adj_val + abs(adj_val) * _REPORTED_ADJ_TOL:
+        logger.warning(
+            "statement research %s/FY%s: Sidecar %s/%s=%s < reported %s "
+            "(reported muss <= adjusted sein) — Sidecar skip",
+            company.ticker, year, base_key, pt, adj_val, base_val,
+        )
+        return False
     # quote-first ('quote | url'): beginnt nie mit https — bleibt damit
     # fuer den naechsten Lauf ersetzbar (adjusted_is_protected schuetzt
     # nur 'Manual' und reine URLs).
@@ -630,8 +680,8 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
     src_parts = [text[:400]]
     if info.get("url"):
         src_parts.append(info["url"])
-    row.numeric_value_adjusted = info["value"]
-    row.adjustments_note = "Adjusted (berichtet, Statement-Recherche)"
+    row.numeric_value_adjusted = adj_val
+    row.adjustments_note = note or "Adjusted (berichtet, Statement-Recherche)"
     row.adjustments_source = " | ".join(src_parts)[:2048]
     db.flush()
     return True
@@ -639,20 +689,27 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
 
 def _persist_group(db, company, year: int, group: str,
                    parsed: dict[str, dict[str, dict]], now,
-                   periods_reported: tuple[str, ...]) -> int:
+                   periods_reported: tuple[str, ...],
+                   needed_map: dict[str, tuple[str, ...]] | None = None,
+                   sidecar_note: str | None = None) -> int:
     """Einen geparsten Gruppen-Block persistieren: berichtete Perioden +
     adjusted-Sidecars; nicht gelieferte/verworfene BERICHTETE Perioden
     bekommen not_found-Platzhalter bzw. einen Refresh-Stempel.
     Unberichtete Perioden (Karenz laeuft noch) werden nicht angefasst.
-    Rueckgabe: geschriebene Zeilen."""
+    `needed_map` (Dokument-Stufe) beschraenkt Writes und Stempel auf die
+    dort gelisteten beduerftigen Zellen — Stufe-1-Werte anderer Zellen
+    bleiben unberuehrt. Rueckgabe: geschriebene Zeilen."""
     from scripts.two_stage_research import stamp_attempt_and_fill_not_found
 
     written = 0
     written_rows: dict[tuple[str, str], CompanyValue] = {}
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
     for key in base_keys:
+        target_periods = (
+            needed_map.get(key, ()) if needed_map is not None else periods_reported
+        )
         periods = parsed.get(key, {})
-        for pt in periods_reported:
+        for pt in target_periods:
             info = periods.get(pt)
             if info is None:
                 continue
@@ -663,7 +720,7 @@ def _persist_group(db, company, year: int, group: str,
         # Kein stiller Zustand: berichtete Perioden ohne Write dokumentieren
         # (Stempel auf bestehende Zeilen, not_found-Platzhalter fuer
         # komplett fehlende — rote Zelle im UI).
-        unwritten = [pt for pt in periods_reported if (key, pt) not in written_rows]
+        unwritten = [pt for pt in target_periods if (key, pt) not in written_rows]
         if unwritten:
             stamp_attempt_and_fill_not_found(
                 db, company.id, key, year, unwritten,
@@ -678,6 +735,7 @@ def _persist_group(db, company, year: int, group: str,
             _attach_sidecar(
                 db, company, base_key, pt, year, info, now,
                 written_rows.get((base_key, pt)),
+                note=sidecar_note,
             )
     return written
 
@@ -700,6 +758,393 @@ def _group_needs_research(db, company, year: int, group: str,
             if target is None or _row_replaceable(target):
                 return True
     return False
+
+
+# --- Stufe 2: Dokument-Bruecke ----------------------------------------------
+
+
+def _url_allowed(url: str) -> bool:
+    """Basis-Hygiene fuer Dokument-URLs aus der Stufe-1-Antwort (kein
+    User-Input): nur http(s), keine IP-Literale, kein localhost/interne
+    Hostnamen (SSRF-Schutz). Wird auch auf jeden Redirect-Hop angewandt."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").strip(".").lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False  # IP-Literale generell verwerfen (deckt private Ranges)
+    except ValueError:
+        pass
+    return True
+
+
+def _pdf_page_count(data: bytes) -> int:
+    """Seitenzahl via pypdf; unparsbares PDF -> Groessen-Heuristik
+    (~50 KB/Seite), damit der 100-Seiten-Deckel trotzdem greift."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(io.BytesIO(data)).pages)
+    except Exception:
+        return max(1, len(data) // _PDF_PAGE_BYTES_HEURISTIC)
+
+
+def _download_document(url: str) -> tuple[bytes, str] | None:
+    """Dokument-Download mit Timeout, Groessen-Limit und manueller
+    Redirect-Verfolgung (jeder Hop laeuft durch _url_allowed).
+    Rueckgabe: (bytes, 'pdf'|'html') oder None. In Tests gemockt
+    (conftest: Default None — kein Live-Netz)."""
+    import httpx
+
+    current = url
+    try:
+        with httpx.Client(timeout=_DOC_TIMEOUT_SECONDS, follow_redirects=False) as client:
+            for _ in range(_DOC_REDIRECT_LIMIT + 1):
+                if not _url_allowed(current):
+                    logger.warning(
+                        "statement research doc: URL verworfen (Guard): %s", current,
+                    )
+                    return None
+                with client.stream("GET", current) as r:
+                    if r.status_code in (301, 302, 303, 307, 308):
+                        loc = r.headers.get("location")
+                        if not loc:
+                            return None
+                        current = str(httpx.URL(current).join(loc))
+                        continue
+                    if r.status_code >= 400:
+                        logger.info(
+                            "statement research doc: HTTP %s fuer %s",
+                            r.status_code, current,
+                        )
+                        return None
+                    length = r.headers.get("content-length")
+                    if length and length.isdigit() and int(length) > MAX_DOC_BYTES:
+                        logger.info(
+                            "statement research doc: %s > %d Bytes — skip",
+                            current, MAX_DOC_BYTES,
+                        )
+                        return None
+                    buf = bytearray()
+                    for chunk in r.iter_bytes():
+                        buf += chunk
+                        if len(buf) > MAX_DOC_BYTES:
+                            logger.info(
+                                "statement research doc: %s ueberschreitet "
+                                "%d Bytes — skip", current, MAX_DOC_BYTES,
+                            )
+                            return None
+                    ctype = (r.headers.get("content-type") or "").lower()
+                data = bytes(buf)
+                if data[:5] == b"%PDF-" or "pdf" in ctype:
+                    return data, "pdf"
+                if "html" in ctype or "text" in ctype or data[:512].lstrip()[:1] == b"<":
+                    return data, "html"
+                logger.info(
+                    "statement research doc: unbekannter Content-Type %r fuer %s "
+                    "— skip", ctype, current,
+                )
+                return None
+    except Exception as e:
+        logger.warning("statement research doc: Download failed %s: %s", url, e)
+        return None
+    logger.warning("statement research doc: Redirect-Limit erreicht: %s", url)
+    return None
+
+
+def _needy_cells(db, company, year: int, group: str,
+                 periods_reported: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+    """Beduerftige berichtete Zellen der Gruppe nach Stufe 1 + Ankern:
+    Actual-Slot ohne Wert (leer oder not_found-Platzhalter) und nicht
+    durch Manual/PDF/Provider gesperrt. Nur diese darf die Dokument-
+    Stufe fuellen/stempeln."""
+    needed: dict[str, tuple[str, ...]] = {}
+    base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
+    for key in base_keys:
+        pts = []
+        for pt in periods_reported:
+            rows = _slot_rows(db, company.id, key, pt, year)
+            if any(
+                r.manually_overridden or (r.from_ir_pdf and r.numeric_value is not None)
+                for r in rows
+            ):
+                continue
+            actual = next((r for r in rows if not r.is_forecast), None)
+            if actual is not None and not _row_replaceable(actual):
+                continue
+            if actual is None or actual.numeric_value is None:
+                pts.append(pt)
+        if pts:
+            needed[key] = tuple(pts)
+    return needed
+
+
+def _collect_period_urls(data: dict, group: str) -> dict[str, list[str]]:
+    """Dokument-URLs aus der ROHEN Stufe-1-Antwort einsammeln — auch aus
+    Eintraegen mit value null (die Websuche liefert die URL, kann den
+    Wert aber nicht lesen). Rueckgabe: {period: [urls, dedupliziert]}."""
+    urls: dict[str, list[str]] = {}
+    for key, _ in STATEMENT_GROUPS[group]:
+        entry = data.get(key)
+        if not isinstance(entry, dict):
+            continue
+        for pt in _PERIODS:
+            info = entry.get(pt)
+            if not isinstance(info, dict):
+                continue
+            url = info.get("url")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                continue
+            bucket = urls.setdefault(pt, [])
+            if url not in bucket:
+                bucket.append(url)
+    return urls
+
+
+def _candidate_docs(period_urls: dict[str, list[str]],
+                    needy_periods) -> list[str]:
+    """URLs der beduerftigen Perioden deduplizieren und nach Abdeckung
+    sortieren (ein Halbjahresbericht deckt Q2, ein Quartalsbericht Q1
+    usw. — Dokumente, die mehr beduerftige Perioden abdecken, zuerst)."""
+    cover: dict[str, set] = {}
+    order: list[str] = []
+    for pt in needy_periods:
+        for url in period_urls.get(pt, ()):
+            if url not in cover:
+                cover[url] = set()
+                order.append(url)
+            cover[url].add(pt)
+    order.sort(key=lambda u: -len(cover[u]))  # stabil: Ties in Fundreihenfolge
+    return order
+
+
+def _build_doc_system_prompt(company, year: int, group: str) -> str:
+    currency = getattr(company, "currency", None) or "EUR"
+    label = _GROUP_LABELS[group]
+    return (
+        f"Extrahiere aus dem beigefuegten offiziellen Bericht von "
+        f"{company.name} ({company.ticker}) die angeforderten "
+        f"{label}-Werte fuer Geschaeftsjahr {year} — AUSSCHLIESSLICH "
+        "exakte Werte aus den Tabellen des Berichts (Konzernabschluss-/"
+        "Kennzahlentabellen), keine gerundeten Freitextzahlen. Weist der "
+        "Bericht IFRS- und non-IFRS-Spalten nebeneinander aus, nimm die "
+        "IFRS-Spalte fuer die Basis-Keys und die non-IFRS-Spalte fuer "
+        "die *_adjusted-Keys. Abgeleitete Quartale (z.B. Q2 = H1 - Q1) "
+        "nur, wenn BEIDE Bausteine im Dokument stehen — dann "
+        'derived_from setzen (z.B. "H1-Q1"); sonst value null. '
+        f"Absolute Betraege in {currency}-Basiseinheiten "
+        "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie. Steht ein "
+        "angeforderter Wert nachweislich nicht im Dokument: value null. "
+        "Antworte NUR mit einem JSON-Objekt nach dem Schema in der "
+        "User-Nachricht — kein Text ausserhalb des JSON, keine "
+        "Markdown-Fences."
+    )
+
+
+def _build_doc_user_prompt(company, year: int, group: str,
+                           needed: dict[str, tuple[str, ...]],
+                           doc_url: str) -> str:
+    specs = dict(STATEMENT_GROUPS[group])
+    adj_keys = [
+        adj for adj, base in _ADJUSTED_SIDECARS.items()
+        if adj in specs and base in specs
+    ]
+    lines = [
+        f"Noch fehlende Werte fuer {company.name} ({company.ticker}), "
+        f"Geschaeftsjahr {year} ({_GROUP_LABELS[group]}), aus dem "
+        f"Dokument {doc_url}:",
+        "",
+    ]
+    req_keys = list(needed)
+    for key in req_keys:
+        lines.append(f"- {key} ({specs[key]}): Perioden {', '.join(needed[key])}")
+    for adj in adj_keys:
+        lines.append(
+            f"- {adj} ({specs[adj]}): alle im Dokument ausgewiesenen Perioden"
+        )
+    fields = ",\n".join(
+        f'  "{key}": {{"FY": ENTRY, "Q1": ENTRY, "Q2": ENTRY, '
+        '"Q3": ENTRY, "Q4": ENTRY}'
+        for key in req_keys + adj_keys
+    )
+    lines += [
+        "",
+        "Antworte mit JSON exakt nach diesem Schema:",
+        "",
+        "{",
+        fields,
+        "}",
+        "",
+        f"ENTRY = {_ENTRY_FIELDS}",
+        "",
+        "quote = woertliches Zitat/Tabellenzeile aus dem Dokument; "
+        "url = Quelle-URL (null erlaubt, Dokument-URL wird ergaenzt); "
+        "derived_from = Rechenweg bei abgeleiteten Quartalen, sonst "
+        "null; nicht im Dokument = value null.",
+    ]
+    return "\n".join(lines)
+
+
+def _call_claude_document(company, year: int, group: str,
+                          needed: dict[str, tuple[str, ...]],
+                          doc_bytes: bytes, kind: str, doc_url: str,
+                          cost_tracker=None) -> dict | None:
+    """EIN Claude-Call mit dem Berichtsdokument: PDF als document-Block
+    (base64), HTML als extrahierter Text im Prompt (Muster
+    gaap_bridge._clean_html). In Tests gemockt."""
+    import base64
+
+    import app.llm.claude as claude_mod
+    from app.llm.rate_limiter import claude_limiter
+    from scripts.two_stage_research import _extract_json
+
+    client = claude_mod.get_client()
+    user_text = _build_doc_user_prompt(company, year, group, needed, doc_url)
+    content: list[dict] = []
+    if kind == "pdf":
+        content.append({
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": base64.b64encode(doc_bytes).decode("ascii"),
+            },
+        })
+    else:
+        from app.values.adjusted_enrichment import _clean_html
+        text = _clean_html(
+            doc_bytes.decode("utf-8", errors="replace")
+        )[:_HTML_TEXT_CAP_CHARS]
+        user_text = f"Berichtstext ({doc_url}):\n{text}\n\n{user_text}"
+    content.append({"type": "text", "text": user_text})
+
+    def _do_call():
+        return client.messages.create(
+            model=EXTRACT_MODEL,
+            max_tokens=MAX_TOKENS,
+            temperature=0,
+            system=_build_doc_system_prompt(company, year, group),
+            messages=[{"role": "user", "content": content}],
+        )
+
+    response = claude_limiter.call(_do_call)
+    if cost_tracker is not None:
+        cost_tracker.add_response(response, EXTRACT_MODEL)
+    parts = [getattr(block, "text", None) for block in response.content]
+    raw = "\n".join(p for p in parts if p).strip()
+    try:
+        data = _extract_json(raw)
+    except ValueError as e:
+        logger.warning(
+            "statement research doc: kein JSON in Claude-Antwort "
+            "(%s FY%s %s): %s", company.ticker, year, group, e,
+        )
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _document_stage(db, company, year: int, group: str, raw_data: dict,
+                    periods_reported: tuple[str, ...], now,
+                    cost_tracker=None) -> int:
+    """Stufe 2: verbliebene beduerftige Zellen aus den Berichts-
+    Dokumenten der Stufe-1-Antwort fuellen. Max. MAX_DOC_CALLS
+    Dokument-Calls; Downloads mit Guards, PDFs > MAX_PDF_PAGES werden
+    uebersprungen. Rueckgabe: geschriebene Zeilen."""
+    needed = _needy_cells(db, company, year, group, periods_reported)
+    if not needed:
+        return 0
+    needy_periods = [
+        pt for pt in _PERIODS
+        if any(pt in pts for pts in needed.values())
+    ]
+    period_urls = _collect_period_urls(raw_data, group)
+    candidates = _candidate_docs(period_urls, needy_periods)
+    if not candidates:
+        logger.info(
+            "statement research doc %s/FY%s %s: Restbedarf, aber keine "
+            "Dokument-URLs aus Stufe 1", company.ticker, year, group,
+        )
+        return 0
+
+    written = 0
+    calls = 0
+    for url in candidates:
+        if calls >= MAX_DOC_CALLS:
+            logger.info(
+                "statement research doc %s/FY%s %s: Kosten-Deckel "
+                "(%d Dokument-Calls) erreicht",
+                company.ticker, year, group, MAX_DOC_CALLS,
+            )
+            break
+        needed = _needy_cells(db, company, year, group, periods_reported)
+        if not needed:
+            break
+        doc = _download_document(url)
+        if doc is None:
+            continue
+        doc_bytes, kind = doc
+        if kind == "pdf":
+            pages = _pdf_page_count(doc_bytes)
+            if pages > MAX_PDF_PAGES:
+                logger.info(
+                    "statement research doc %s/FY%s %s: %s hat %d Seiten "
+                    "(> %d, vermutlich Geschaeftsbericht) — skip",
+                    company.ticker, year, group, url, pages, MAX_PDF_PAGES,
+                )
+                continue
+        calls += 1
+        try:
+            data = _call_claude_document(
+                company, year, group, needed, doc_bytes, kind, url,
+                cost_tracker=cost_tracker,
+            )
+        except Exception as e:
+            logger.warning(
+                "statement research doc: Claude-Call failed fuer %s FY%s "
+                "%s (%s): %s", company.ticker, year, group, url, e,
+            )
+            continue
+        if not data:
+            continue
+        parsed = _parse_payload(data, group)
+        for key in list(parsed):
+            for pt in list(parsed[key]):
+                if pt not in periods_reported:
+                    del parsed[key][pt]
+            if not parsed[key]:
+                del parsed[key]
+        # url-Fallback: Zellen ohne eigene Quelle tragen die Dokument-URL.
+        for key in parsed:
+            for pt in parsed[key]:
+                if not parsed[key][pt].get("url"):
+                    parsed[key][pt]["url"] = url
+        _apply_gates(db, company, year, parsed)
+        _enforce_qsum(parsed, company.ticker, year)
+        # needed_map beschraenkt Writes UND not_found-Stempel auf die
+        # beduerftigen Zellen — Dokument gelesen, Wert nicht enthalten
+        # -> not_found (nur berichtete Perioden, wie Stufe 1).
+        wrote = _persist_group(
+            db, company, year, group, parsed, now, periods_reported,
+            needed_map=needed, sidecar_note=DOC_SIDECAR_NOTE,
+        )
+        written += wrote
+        logger.info(
+            "statement research doc %s/FY%s %s: %d Zeilen aus %s",
+            company.ticker, year, group, wrote, url,
+        )
+    return written
 
 
 def fetch_statement_research(db, company, year: int, cost_tracker=None,
@@ -773,6 +1218,13 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
         logger.info(
             "statement research %s/FY%s %s: %d Zeilen geschrieben",
             company.ticker, year, group, wrote,
+        )
+        # Stufe 2 (Dokument-Bruecke): nur wenn nach Stufe 1 + Ankern noch
+        # beduerftige berichtete Zellen uebrig sind — Trigger/Kosten-Deckel
+        # in _document_stage.
+        total += _document_stage(
+            db, company, year, group, data, periods_reported, now,
+            cost_tracker=cost_tracker,
         )
     db.flush()
     return total

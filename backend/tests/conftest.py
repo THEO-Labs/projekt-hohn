@@ -75,6 +75,13 @@ def no_live_network(monkeypatch):
 
     monkeypatch.setattr(adj_mod, "_resolve_cik", lambda ticker: None)
 
+    # Die Dokument-Stufe der Statement-Recherche (statement_research.py)
+    # laedt Berichts-PDFs via httpx — Default None (kein Live-Netz).
+    # Dokument-Tests patchen _download_document explizit.
+    import app.values.statement_research as sr_mod
+
+    monkeypatch.setattr(sr_mod, "_download_document", lambda url: None)
+
     # Kein Test darf real gegen die Anthropic-API laufen. Tests, die die
     # Two-Stage-Pipeline brauchen, mocken research_two_stage direkt.
     def _no_llm_in_tests():

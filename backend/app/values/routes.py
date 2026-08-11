@@ -1665,10 +1665,10 @@ def refresh_company_values(
                     derive_q4_instant_from_fy(db, company_id, cons_year)
                     derive_net_debt_from_components(db, company_id, cons_year)
                     derive_missing_ocf(db, company_id, cons_year)
-                    # SBC-FY/4-Verteilung ist ein DE-Muster (Annual-only-
-                    # Reporter) — US-Filer taggen SBC quartalsweise in XBRL.
-                    if not us_filer:
-                        derive_sbc_quarters(db, company_id, cons_year)
+                    # SBC-FY/4-Verteilung entfernt (Pilot-Befund SAP: die
+                    # Gleichverteilung ueberschrieb echte Quartalswerte,
+                    # 423.75 statt dokumentierter 420). Yahoo-Quartals-
+                    # Anker, Statement-Recherche und Runrate decken SBC.
                     # Q4-Restwert (ebitda/revenue/net_income): EDGAR liefert
                     # Q4 fuer Income-Keys strukturell nicht (kein 3M-Frame
                     # im 10-K).
