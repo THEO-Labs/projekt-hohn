@@ -41,6 +41,13 @@ Umbuchungsgrund mehr. Fehlt ein direkter NI-adj-Konsens, wird net_income
 adjusted weiterhin deterministisch als eps_adj x shares_outstanding
 (SNAPSHOT) abgeleitet (Fallback wenn das Modell null liefert).
 
+Firmen ohne NI/EPS-Guidance (SAP-Muster): der Call fragt zusaetzlich die
+Hilfsgroessen operating_profit_guidance und effective_tax_rate ab (keine
+eigenen DB-Keys). Daraus deterministisch NI = OP x (1 - Steuersatz)
+(Slot nach OP-basis: non_gaap -> adjusted-Sidecar, sonst GAAP) und
+eps = NI / shares (SNAPSHOT), wenn eps fehlt. Beide Ableitungen laufen
+VOR den Gates und unterliegen ihnen damit wie direkte Schaetzwerte.
+
 FCF wird NICHT mehr abgefragt: fcf ist berechnet (OCF - |Capex|),
 consistency.derive_missing_fcf liefert das deterministisch. OCF wird
 direkt abgefragt (FY und offenes Quartal). fcf bleibt trotzdem in
@@ -95,6 +102,15 @@ _GAAP_ADJ_PAIRS = (
 # Per-Share-Keys sind vom Einheiten-Check (> 1 Mio) ausgenommen.
 _PER_SHARE_KEYS = frozenset({"eps_diluted", "eps_diluted_non_gaap"})
 
+# Hilfsgroessen fuer die NI-Ableitung (SAP-Muster: Ergebnis-Guidance nur
+# auf operativer Ebene, kein NI/EPS) — KEINE eigenen DB-Keys, werden nach
+# der Ableitung aus dem Block entfernt und nie persistiert.
+_HELPER_KEYS = frozenset({"operating_profit_guidance", "effective_tax_rate"})
+
+# Der effektive Steuersatz ist ein BERICHTETER Wert — das
+# guidance/consensus-Quellen-Gate greift fuer ihn nicht.
+_SOURCE_OPTIONAL_KEYS = frozenset({"effective_tax_rate"})
+
 # Vorjahresband 40-160%: |v/prev - 1| > 0.60 verwirft.
 _PREV_DEVIATION_TOL = Decimal("0.60")
 _UNIT_MIN = Decimal("1000000")
@@ -109,6 +125,8 @@ _METRIC_SPECS = (
     ("eps_diluted", "GAAP diluted EPS"),
     ("eps_diluted_non_gaap", "adjusted diluted EPS"),
     ("net_income_non_gaap", "adjusted net income"),
+    ("operating_profit_guidance", "operating profit guidance"),
+    ("effective_tax_rate", "last reported effective tax rate"),
     ("operating_cash_flow", "operating cash flow"),
     ("capex", "capital expenditures"),
     ("sbc", "stock-based compensation"),
@@ -184,6 +202,14 @@ def _build_user_prompt(company, year: int, open_quarter: str | None = None) -> s
         "value = latest guidance (midpoint of a range) or analyst "
         "consensus; reasoning = one to two sentences on which guidance/"
         "consensus figure the value rests; url = source URL.",
+        "",
+        "operating_profit_guidance: only if the company guides earnings "
+        "at the operating level (e.g. non-IFRS operating profit) instead "
+        "of net income/EPS — set basis to non_gaap for a non-IFRS/"
+        "adjusted operating profit figure. effective_tax_rate: the "
+        "company's last REPORTED effective tax rate as a decimal "
+        "fraction (e.g. 0.29), with reasoning and url; source may be "
+        "null here.",
     ]
     if open_quarter:
         lines += [
@@ -271,11 +297,15 @@ def _parse_entry(entry, key: str, ticker: str, period_label: str) -> dict | None
         return None
     source = entry.get("source")
     if source not in ("guidance", "consensus"):
-        logger.warning(
-            "guidance estimates %s/%s: %s ohne guidance/consensus-Quelle "
-            "(%r) — verworfen", ticker, period_label, key, source,
-        )
-        return None
+        if key in _SOURCE_OPTIONAL_KEYS:
+            # Hilfsgroesse (berichteter Wert): Quellen-Gate entfaellt.
+            source = "reported"
+        else:
+            logger.warning(
+                "guidance estimates %s/%s: %s ohne guidance/consensus-Quelle "
+                "(%r) — verworfen", ticker, period_label, key, source,
+            )
+            return None
     quote = entry.get("quote")
     reasoning = entry.get("reasoning")
     url = entry.get("url")
@@ -433,6 +463,96 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict],
             )
             del parsed[gaap_key]
             del parsed[adj_key]
+
+
+def _derive_ni_from_operating_profit(company, year: int, parsed: dict[str, dict],
+                                     period_type: str = "FY") -> None:
+    """Firmen ohne NI/EPS-Guidance (SAP-Muster): guidet der Emittent das
+    Ergebnis nur auf operativer Ebene, wird NI deterministisch als
+    OP x (1 - effektiver Steuersatz) abgeleitet. Die basis des OP
+    bestimmt den Slot: non_gaap -> adjusted-Sidecar, sonst GAAP-Slot.
+    Laeuft VOR den Gates — die Ableitung durchlaeuft Einheiten-,
+    Vorjahresband- und GAAP<=Non-GAAP-Gate wie ein direkter Schaetzwert.
+    Nur FY: die Hilfsgroessen sind Jahresgroessen."""
+    if period_type != "FY":
+        return
+    op = parsed.get("operating_profit_guidance")
+    tax_info = parsed.get("effective_tax_rate")
+    if op is None or tax_info is None:
+        return
+    tax = tax_info["value"]
+    if Decimal("1") < tax < Decimal("100"):
+        # Prozent-Angabe (29 statt 0.29) tolerieren.
+        tax = tax / Decimal("100")
+    if not (Decimal("0") < tax < Decimal("0.6")):
+        logger.warning(
+            "guidance estimates %s/FY%s: effective_tax_rate=%s unplausibel "
+            "— keine NI-Ableitung", company.ticker, year, tax_info["value"],
+        )
+        return
+    target = "net_income_non_gaap" if op["basis"] == "non_gaap" else "net_income"
+    if target in parsed:
+        # Direkter Konsens/Guidance-Wert hat Vorrang vor der Ableitung.
+        return
+    reasoning = "Abgeleitet: Operating-Profit-Guidance x (1 - Steuersatz)"
+    if op.get("reasoning"):
+        reasoning = f"{reasoning}. {op['reasoning']}"
+    parsed[target] = {
+        "value": op["value"] * (Decimal("1") - tax),
+        "source": op["source"],
+        "basis": "non_gaap" if target == "net_income_non_gaap" else op["basis"],
+        "reasoning": reasoning,
+        "quote": None,
+        "url": op.get("url") or tax_info.get("url"),
+        # Schwaechste Quelle: Sidecar-Write nur in leere adjusted-Slots.
+        "derived": True,
+    }
+    logger.info(
+        "guidance estimates %s/FY%s: %s abgeleitet aus OP-Guidance %s x "
+        "(1 - %s)", company.ticker, year, target, op["value"], tax,
+    )
+
+
+# EPS-Ableitung (Gegenrichtung zum bestehenden eps->NI-Muster in
+# _derive_adjusted_net_income): eps = NI / shares (SNAPSHOT).
+_EPS_FROM_NI_PAIRS = (
+    ("eps_diluted", "net_income"),
+    ("eps_diluted_non_gaap", "net_income_non_gaap"),
+)
+
+
+def _derive_eps_from_net_income(db, company, year: int, parsed: dict[str, dict],
+                                period_type: str = "FY") -> None:
+    """Fehlt der EPS-Schaetzwert, aber NI liegt vor (direkt oder aus der
+    OP-Ableitung): eps = NI / shares_outstanding (SNAPSHOT). Laeuft VOR
+    den Gates (Vorjahresband greift fuer den GAAP-Slot). Nur FY, wie die
+    OP-Ableitung."""
+    if period_type != "FY":
+        return
+    if all(eps_key in parsed for eps_key, _ in _EPS_FROM_NI_PAIRS):
+        return
+    shares = _snapshot_shares(db, company.id)
+    if not shares:
+        return
+    for eps_key, ni_key in _EPS_FROM_NI_PAIRS:
+        if eps_key in parsed:
+            continue
+        ni = parsed.get(ni_key)
+        if ni is None:
+            continue
+        parsed[eps_key] = {
+            "value": ni["value"] / shares,
+            "source": ni["source"],
+            "basis": ni["basis"],
+            "reasoning": "Abgeleitet: Net-Income-Schaetzung / Aktienzahl",
+            "quote": None,
+            "url": ni.get("url"),
+            "derived": True,
+        }
+        logger.info(
+            "guidance estimates %s/FY%s: %s abgeleitet (%s %s / shares %s)",
+            company.ticker, year, eps_key, ni_key, ni["value"], shares,
+        )
 
 
 def _derive_adjusted_net_income(db, company, year: int, parsed: dict[str, dict],
@@ -742,6 +862,13 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
         blocks.append((open_quarter, q_parsed))
     for period_type, parsed in blocks:
         _rebook_by_basis(parsed, company.ticker, year)
+        # NI/EPS-Ableitungen VOR den Gates: abgeleitete Werte laufen
+        # durch dieselben Plausibilitaets-Gates wie direkte Schaetzwerte.
+        _derive_ni_from_operating_profit(company, year, parsed, period_type)
+        _derive_eps_from_net_income(db, company, year, parsed, period_type)
+        # Hilfsgroessen sind keine DB-Keys — nach der Ableitung entfernen.
+        for helper_key in _HELPER_KEYS:
+            parsed.pop(helper_key, None)
         _apply_gates(db, company, year, parsed, period_type)
         _derive_adjusted_net_income(db, company, year, parsed, period_type)
     if not fy_parsed and not q_parsed:

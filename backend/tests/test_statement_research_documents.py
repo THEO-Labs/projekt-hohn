@@ -22,6 +22,20 @@ YEAR = date.today().year - 2  # abgeschlossenes Jahr
 DOC_URL = "https://www.sap.com/docs/investors/q1-statement.pdf"
 PDF_BYTES = b"%PDF-1.4 fake quarterly statement"
 
+# Kalender-FY der Fixture-Firma: Periodenenden fuer das strikte
+# period_end_date-Gate der Dokument-Stufe.
+PERIOD_END = {
+    "FY": f"{YEAR}-12-31", "Q1": f"{YEAR}-03-31", "Q2": f"{YEAR}-06-30",
+    "Q3": f"{YEAR}-09-30", "Q4": f"{YEAR}-12-31",
+}
+
+
+def _doc_entry(pt, value, **kw):
+    """Dokument-Stufen-Entry: period_end_date gesetzt (strikte Stufe 2
+    verwirft Werte ohne Stichtag)."""
+    kw.setdefault("period_end", PERIOD_END[pt])
+    return _entry(value, **kw)
+
 # Original vor dem conftest-Patch sichern (Guard-Tests ohne Live-Netz:
 # die URL faellt vor jedem Request durch _url_allowed).
 _REAL_DOWNLOAD = sr._download_document
@@ -182,8 +196,8 @@ def test_document_values_fill_needy_cells(db, company, monkeypatch):
     _mock_download(monkeypatch)
     doc_payload = {
         "net_income": {
-            "FY": _entry(3_000_000_000, quote="Profit after tax 3,000", url=None),
-            "Q1": _entry(700_000_000, quote="Profit after tax 700", url=None),
+            "FY": _doc_entry("FY", 3_000_000_000, quote="Profit after tax 3,000", url=None),
+            "Q1": _doc_entry("Q1", 700_000_000, quote="Profit after tax 700", url=None),
         },
     }
     doc_calls = _mock_doc_call(monkeypatch, doc_payload)
@@ -214,8 +228,8 @@ def test_stage1_values_not_overwritten_by_stage2(db, company, monkeypatch):
     _mock_stage1(monkeypatch, {"income": _stage1_income()})
     _mock_download(monkeypatch)
     doc_payload = {
-        "revenue": {"FY": _entry(99_000_000_000)},  # gedeckt -> ignorieren
-        "net_income": {"FY": _entry(3_000_000_000)},
+        "revenue": {"FY": _doc_entry("FY", 99_000_000_000)},  # gedeckt -> ignorieren
+        "net_income": {"FY": _doc_entry("FY", 3_000_000_000)},
     }
     _mock_doc_call(monkeypatch, doc_payload)
 
@@ -236,7 +250,7 @@ def test_pdf_document_block_in_api_payload(db, company, monkeypatch):
 
     _mock_stage1(monkeypatch, {"income": _stage1_income()})
     _mock_download(monkeypatch)
-    captured = _fake_client(monkeypatch, {"net_income": {"FY": _entry(3_000_000_000)}})
+    captured = _fake_client(monkeypatch, {"net_income": {"FY": _doc_entry("FY", 3_000_000_000)}})
 
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])
 
@@ -263,7 +277,7 @@ def test_html_fallback_extracts_text_no_document_block(db, company, monkeypatch)
             b"</body></html>")
     _mock_stage1(monkeypatch, {"income": _stage1_income()})
     _mock_download(monkeypatch, result=(html, "html"))
-    captured = _fake_client(monkeypatch, {"net_income": {"FY": _entry(3_000_000_000)}})
+    captured = _fake_client(monkeypatch, {"net_income": {"FY": _doc_entry("FY", 3_000_000_000)}})
 
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])
     db.commit()
@@ -369,10 +383,10 @@ def test_non_ifrs_sidecar_written_with_doc_note(db, company, monkeypatch):
     _mock_stage1(monkeypatch, {"income": payload})
     _mock_download(monkeypatch)
     doc_payload = {
-        "ebitda": {"FY": _entry(5_000_000_000, url=None)},
+        "ebitda": {"FY": _doc_entry("FY", 5_000_000_000, url=None)},
         "net_income_adjusted": {
-            "FY": _entry(3_500_000_000,
-                         quote="Profit after tax (non-IFRS) 3,500", url=None),
+            "FY": _doc_entry("FY", 3_500_000_000,
+                             quote="Profit after tax (non-IFRS) 3,500", url=None),
         },
     }
     _mock_doc_call(monkeypatch, doc_payload)
@@ -399,8 +413,8 @@ def test_sidecar_gate_track_mixup_skipped(db, company, monkeypatch):
     _mock_stage1(monkeypatch, {"income": payload})
     _mock_download(monkeypatch)
     _mock_doc_call(monkeypatch, {
-        "ebitda": {"FY": _entry(5_000_000_000)},
-        "net_income_adjusted": {"FY": _entry(1_000_000_000)},  # >60% daneben
+        "ebitda": {"FY": _doc_entry("FY", 5_000_000_000)},
+        "net_income_adjusted": {"FY": _doc_entry("FY", 1_000_000_000)},  # >60% daneben
     })
 
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])
@@ -411,6 +425,76 @@ def test_sidecar_gate_track_mixup_skipped(db, company, monkeypatch):
     assert ni.numeric_value_adjusted is None
 
 
+# --- Spalten-Gates der Dokument-Stufe ----------------------------------------
+
+
+def test_stage2_missing_period_end_date_discarded(db, company, monkeypatch):
+    """Stufe 2 ist strikt: das Dokument liegt vor, der Stichtag steht in
+    der Tabelle — Werte ohne period_end_date werden verworfen; mit
+    passendem Stichtag geschrieben."""
+    _mock_stage1(monkeypatch, {"income": _stage1_income()})
+    _mock_download(monkeypatch)
+    _mock_doc_call(monkeypatch, {
+        "net_income": {
+            "FY": _doc_entry("FY", 3_000_000_000),
+            "Q1": _entry(700_000_000),  # ohne period_end_date -> skip
+        },
+    })
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+    q1 = _rows(db, company, "net_income", "Q1")[0]
+    assert q1.numeric_value is None
+    assert q1.primary_method == "not_found"
+
+
+def test_stage2_prev_year_column_and_sidecar_discarded(db, company, monkeypatch):
+    """Vorjahresspalten-Gate auch in Stufe 2 — inkl. Sidecar (SAP: die
+    FY2024-adjusted-Serie kam aus der non-IFRS-Tabelle des PDFs)."""
+    payload = _stage1_income()
+    payload["net_income"]["FY"] = _entry(3_000_000_000, url=DOC_URL)
+    _mock_stage1(monkeypatch, {"income": payload})
+    _mock_download(monkeypatch)
+    _mock_doc_call(monkeypatch, {
+        "net_income": {
+            "Q1": _doc_entry("Q1", 700_000_000, column_label=str(YEAR - 1)),
+        },
+        "net_income_adjusted": {
+            "FY": _doc_entry("FY", 3_200_000_000, column_label=str(YEAR - 1)),
+        },
+    })
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "Q1")[0].primary_method == "not_found"
+    ni = _rows(db, company, "net_income", "FY")[0]
+    assert ni.numeric_value == Decimal("3000000000")
+    assert ni.numeric_value_adjusted is None
+
+
+def test_portal_urls_not_document_candidates(db, company, monkeypatch):
+    """Portal-URLs aus Stufe 1 (GuruFocus & Co) sind keine Stufe-2-
+    Dokumentkandidaten — kein Download, kein Dokument-Call."""
+    payload = _stage1_income()
+    for pt in payload["net_income"]:
+        payload["net_income"][pt] = _null_entry(
+            "https://www.gurufocus.com/stock/SAP/summary"
+        )
+    for pt in payload["revenue"]:
+        payload["revenue"][pt]["url"] = "https://www.gurufocus.com/stock/SAP/summary"
+    _mock_stage1(monkeypatch, {"income": payload})
+    downloads = _mock_download(monkeypatch)
+    doc_calls = _mock_doc_call(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+
+    assert downloads == []
+    assert doc_calls == []
+
+
 # --- not_found nach gelesenem Dokument --------------------------------------
 
 
@@ -419,12 +503,13 @@ def test_not_found_stamp_after_document_read(db, company, monkeypatch):
     Platzhalter bleibt (rote Zelle), nur berichtete Perioden."""
     _mock_stage1(monkeypatch, {"income": _stage1_income()})
     _mock_download(monkeypatch)
-    doc_calls = _mock_doc_call(monkeypatch, {"net_income": {"FY": _entry(3_000_000_000)}})
+    doc_calls = _mock_doc_call(monkeypatch, {"net_income": {"FY": _doc_entry("FY", 3_000_000_000)}})
 
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])
     db.commit()
 
     assert len(doc_calls) >= 1
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
     for pt in ("Q1", "Q2", "Q3", "Q4"):
         (row,) = _rows(db, company, "net_income", pt)
         assert row.numeric_value is None
@@ -473,11 +558,11 @@ def test_failed_download_does_not_consume_call_budget(db, company, monkeypatch):
     monkeypatch.setattr(sr, "_download_document", fake_download)
     doc_calls = _mock_doc_call(monkeypatch, {
         "net_income": {
-            "FY": _entry(4_000_000_000),
-            "Q1": _entry(1_000_000_000),
-            "Q2": _entry(1_000_000_000),
-            "Q3": _entry(1_000_000_000),
-            "Q4": _entry(1_000_000_000),
+            "FY": _doc_entry("FY", 4_000_000_000),
+            "Q1": _doc_entry("Q1", 1_000_000_000),
+            "Q2": _doc_entry("Q2", 1_000_000_000),
+            "Q3": _doc_entry("Q3", 1_000_000_000),
+            "Q4": _doc_entry("Q4", 1_000_000_000),
         },
     })
 
@@ -500,13 +585,14 @@ def test_stage2_stops_when_need_satisfied(db, company, monkeypatch):
 
     def _flows(fy, q):
         return {
-            "FY": _entry(fy), "Q1": _entry(q), "Q2": _entry(q),
-            "Q3": _entry(q), "Q4": _entry(q),
+            "FY": _doc_entry("FY", fy), "Q1": _doc_entry("Q1", q),
+            "Q2": _doc_entry("Q2", q), "Q3": _doc_entry("Q3", q),
+            "Q4": _doc_entry("Q4", q),
         }
 
     doc_calls = _mock_doc_call(monkeypatch, {
         "net_income": _flows(4_000_000_000, 1_000_000_000),
-        "eps_diluted": {pt: _entry("1.00") for pt in ("FY", "Q1", "Q2", "Q3", "Q4")},
+        "eps_diluted": {pt: _doc_entry(pt, "1.00") for pt in ("FY", "Q1", "Q2", "Q3", "Q4")},
         "ebitda": _flows(8_000_000_000, 2_000_000_000),
     })
 
@@ -531,8 +617,21 @@ def test_unreported_periods_untouched_by_stage2(db, company, monkeypatch):
     }
     _mock_stage1(monkeypatch, {"income": payload})
     _mock_download(monkeypatch)
+    # Verschobenes FY-Ende: Periodenenden fuer das strikte Stufe-2-Gate
+    # aus derselben Konvention wie der Produktionscode ableiten.
+    from app.values.detail_page import quarter_end_date
+
+    def _q_end(pt):
+        return quarter_end_date(
+            year, pt, company.fiscal_year_end_month, company.fiscal_year_end_day,
+        ).isoformat()
+
     doc_calls = _mock_doc_call(monkeypatch, {
-        "net_income": {pt: _entry(700_000_000) for pt in ("FY", "Q1", "Q2", "Q3", "Q4")},
+        "net_income": {
+            **{pt: _entry(700_000_000, period_end=_q_end(pt))
+               for pt in ("Q1", "Q2", "Q3", "Q4")},
+            "FY": _entry(700_000_000),
+        },
     })
 
     sr.fetch_statement_research(db, company, year, groups=["income"])

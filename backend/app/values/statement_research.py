@@ -21,8 +21,9 @@ temperature 0. Halbjahresberichter (viele DAX-Firmen berichten H1 statt
 Q2) bekommen das Rechenprotokoll Q2 = H1 - Q1 bzw. Q3 = 9M - H1 in den
 Prompt; abgeleitete Quartale markiert das Modell im Feld derived_from.
 
-Der Prompt ist bewusst OHNE Verbots-/Regellisten — die deterministischen
-Code-Gates sind die einzige Verteidigung (Muster guidance_estimates):
+Der Prompt enthaelt nur die Quellen-/Waehrungsregeln (Originalberichte
+statt Finanzportale, Berichtswaehrung) — die eigentliche Verteidigung
+sind die deterministischen Code-Gates (Muster guidance_estimates):
   1. Einheiten-Check: Absolutwerte >= 1 Mio (ausser Per-Share-Keys),
   2. Vorjahresband 40-160% gegen das Vorjahres-Ist DERSELBEN Periode
      (fehlt es: uebersprungen; Sign-Flip/Turnaround erlaubt),
@@ -35,7 +36,29 @@ Code-Gates sind die einzige Verteidigung (Muster guidance_estimates):
   5. Yahoo-Cross-Check (Kundenentscheid: der Marktdaten-Feed schreibt
      fuer Nicht-US keine Werte mehr, er gated nur noch): existiert eine
      Yahoo-Referenz und weicht der Recherche-Wert >35% ab, wird er
-     verworfen; ohne Referenz kein Urteil (_apply_yahoo_gate).
+     verworfen; ohne Referenz kein Urteil (_apply_yahoo_gate),
+  6. Spalten-Gates (SAP-Abnahme-Lektion, _apply_column_gates): jedes
+     Entry traegt column_label (woertliche Spaltenueberschrift) und
+     period_end_date (Stichtag der Spalte). Verworfen wird: (i)
+     period_end_date passt nicht zum Zielperioden-Ende (±21 Tage;
+     fehlend bei Stufe-2-Dokumenten -> verwerfen, Stufe 1 lenient),
+     (ii) column_label nennt eine fremde Jahreszahl (Vorjahresspalten-
+     Falle: adjusted-NI-Serie 2025 war die FY2024-Spalte), (iii)
+     constant-currency-Marker (cc/waehrungsbereinigt; revenue FY2025
+     38.070 war der cc-Wert) bzw. non-IFRS-Marker fuer die IFRS-
+     Zielspur, (iv) Kumulativ-Marker (H1/6M/9M/YTD) fuer ein
+     Einzelquartal ohne derived_from (H1-Buybacks als Q2 gebucht).
+     Sidecars durchlaufen dieselben Checks,
+  7. Portal-Blocklist (_apply_source_gate): GuruFocus/stockanalysis/
+     macrotrends/wisesheets sind keine gueltige Quelle (USD-
+     Drittquellen-Leck: capex Q1-26 kam von GuruFocus in USD) —
+     Werte mit Portal-URL werden verworfen, Portal-URLs sind auch
+     keine Stufe-2-Dokumentkandidaten.
+
+Das H1-Q1/9M-H1/FY-9M-Rechenprotokoll gilt ausdruecklich auch fuer
+eps_diluted (Naeherung — Weighted-Average-Shares differieren leicht)
+und die *_adjusted-Sidecars; abgeleitete Werte (derived_from gesetzt)
+passieren die Persistenz mit den Spalten-Gates.
 
 Schreib-Invarianten wie ueberall: normalize_sign, currency_conflict,
 SAVEPOINT-Slot-Muster (uq_company_values_slot). Schreibrechte: Manual-/
@@ -67,6 +90,7 @@ non-IFRS-Sidecars mit adjustments_note 'Non-IFRS (Berichts-PDF)'.
 Dokument gelesen, Wert nachweislich nicht enthalten -> not_found.
 """
 import logging
+import re
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -112,9 +136,9 @@ STATEMENT_GROUPS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "balance": (
         ("cash_and_equivalents", "Zahlungsmittel und Zahlungsmittelaequivalente (Bilanzstichtag)"),
-        ("st_investments", "kurzfristige Wertpapiere/Finanzanlagen (Bilanzstichtag)"),
-        ("st_debt", "kurzfristige Finanzschulden OHNE Leasingverbindlichkeiten (Anleihen/Bankverbindlichkeiten/Commercial Paper; die Bilanzzeile 'Finanzverbindlichkeiten' enthaelt oft IFRS-16-Leasing — dann die Aufgliederung aus der Note nehmen; nur inkl. Leasing verfuegbar: null)"),
-        ("lt_debt", "langfristige Finanzschulden OHNE Leasingverbindlichkeiten (Anleihen/Bankdarlehen; die Bilanzzeile 'Finanzverbindlichkeiten' enthaelt oft IFRS-16-Leasing — dann die Aufgliederung aus der Note nehmen; nur inkl. Leasing verfuegbar: null)"),
+        ("st_investments", "kurzfristige Wertpapiere/Finanzanlagen (Bilanzstichtag; kurzfristige finanzielle Vermoegenswerte, oft 'Other financial assets (current)')"),
+        ("st_debt", "kurzfristige Finanzschulden OHNE Leasingverbindlichkeiten (Anleihen/Bankverbindlichkeiten/Commercial Paper). Viele IFRS-Bilanzen zeigen nur 'Financial liabilities' (current) inkl. IFRS-16-Leasing — die Aufgliederung (Anleihen/Bank vs. Leases) steht in der Note zu Finanzverbindlichkeiten bzw. im Liquiditaets-/Financial-Position-Abschnitt: diese Note lesen. Steht die Aufgliederung nachweislich nicht im Dokument: 'Financial liabilities' (current) MINUS separat ausgewiesener kurzfristiger Leasingverbindlichkeiten rechnen (beide Zahlen muessen im Dokument stehen, derived_from='fin_liabilities - leases'); sonst null"),
+        ("lt_debt", "langfristige Finanzschulden OHNE Leasingverbindlichkeiten (Anleihen/Bankdarlehen). Viele IFRS-Bilanzen zeigen nur 'Financial liabilities' (non-current) inkl. IFRS-16-Leasing — die Aufgliederung steht in der Note zu Finanzverbindlichkeiten bzw. im Liquiditaets-/Financial-Position-Abschnitt: diese Note lesen. Steht die Aufgliederung nachweislich nicht im Dokument: 'Financial liabilities' (non-current) MINUS separat ausgewiesener langfristiger Leasingverbindlichkeiten rechnen (beide Zahlen muessen im Dokument stehen, derived_from='fin_liabilities - leases'); sonst null"),
     ),
 }
 
@@ -185,6 +209,31 @@ _MARKET_PROVIDER_LABELS = ("Marktdaten-Feed", "Bloomberg")
 # Yahoo-Cross-Check-Gate: weites Band, weil der Feed selbst ungenau ist.
 _YAHOO_XCHECK_TOL = Decimal("0.35")
 
+# --- Spalten-Gates (SAP-Abnahme-Fehlerklassen a+d) ---------------------------
+# period_end_date muss zum Zielperioden-Ende passen (Quartalsversatz von
+# Nicht-Kalender-FYs deckt die Toleranz).
+_PERIOD_END_TOL_DAYS = 21
+_YEAR_IN_LABEL_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+# Constant-Currency-Marker: Substrings + 'cc' als eigenstaendiges Token.
+_CC_LABEL_MARKERS = (
+    "constant currency", "constant currencies", "currency-adjusted",
+    "currency adjusted", "waehrungsbereinigt", "währungsbereinigt",
+)
+_CC_TOKEN_RE = re.compile(r"\bcc\b")
+_NON_IFRS_LABEL_RE = re.compile(r"\bnon[- ]ifrs\b")
+# Kumulativ-Marker: H1/6M/9M/YTD-Spalte als Einzelquartal gebucht
+# (SAP: H1-Buybacks 1.633 als Q2) — nur ohne derived_from verwerfen.
+_CUMULATIVE_LABEL_RE = re.compile(
+    r"\b(?:h1|hy|6m|9m|six months|nine months|ytd)\b"
+)
+
+# Portal-Blocklist (Quellen-Hygiene): Finanzportale liefern umgerechnete
+# USD-Werte und veraltete Staende — keine gueltige Quelle fuer
+# Fundamentals (SAP: capex Q1-26 von GuruFocus in USD).
+_PORTAL_BLOCKLIST = (
+    "gurufocus.com", "stockanalysis.com", "macrotrends.net", "wisesheets.io",
+)
+
 # --- Stufe 2: Dokument-Bruecke ----------------------------------------------
 # Kosten-Deckel: max. 2 Dokument-Calls pro Gruppe/Jahr.
 MAX_DOC_CALLS = 2
@@ -204,7 +253,16 @@ DOC_SIDECAR_NOTE = "Non-IFRS (Berichts-PDF)"
 
 _ENTRY_FIELDS = (
     '{"value": <number|null>, "quote": <string|null>, '
-    '"url": <string|null>, "derived_from": <string|null>}'
+    '"url": <string|null>, "column_label": <string|null>, '
+    '"period_end_date": <"YYYY-MM-DD"|null>, "derived_from": <string|null>}'
+)
+
+# Gemeinsame Feld-Erklaerung fuer beide Stufen (Spalten-Gate-Inputs).
+_COLUMN_FIELDS_EXPLANATION = (
+    "column_label = die EXAKT abgeschriebene Spaltenueberschrift der "
+    "Tabelle, aus der der Wert stammt (z.B. 'Q2 2025', '2024', "
+    "'H1 2026'); period_end_date = Stichtag/Periodenende dieser Spalte "
+    "als ISO-Datum (YYYY-MM-DD)."
 )
 
 
@@ -272,7 +330,9 @@ def _build_system_prompt(company, year: int, group: str) -> str:
             "dann Q2 = H1 - Q1 bzw. Q3 = 9M - H1 (und Q4 = FY - 9M) und "
             'markiere solche abgeleiteten Quartale im Feld derived_from '
             '(z.B. "H1-Q1", "9M-H1", "FY-9M"); direkt berichtete Werte '
-            "haben derived_from null. "
+            "haben derived_from null. Dieses Rechenprotokoll gilt "
+            "ausdruecklich AUCH fuer eps_diluted (Naeherung, "
+            "derived_from setzen) und die *_adjusted-Werte. "
         )
     return (
         f"Extrahiere fuer {company.name} ({company.ticker}) "
@@ -280,11 +340,18 @@ def _build_system_prompt(company, year: int, group: str) -> str:
         "Berichten (Geschaeftsbericht, Halbjahres-/Quartalsmitteilungen "
         f"der IR-Seite) die folgenden {label}-Werte fuer das Gesamtjahr "
         "(FY) und alle verfuegbaren Quartale — exakte Tabellenwerte, "
-        "keine gerundeten Freitextzahlen. Pro Wert: Quelle-URL und "
-        "woertliches Zitat bzw. Tabellenzeile. "
+        "keine gerundeten Freitextzahlen. Werte NUR aus "
+        "Originalberichten und offiziellen Pressemitteilungen der Firma "
+        "(IR-Domain, Firmenmeldungen); Finanzportale (GuruFocus, "
+        "stockanalysis, macrotrends, wisesheets u.ae.) sind KEINE "
+        "gueltige Quelle. Pro Wert: Quelle-URL, woertliches Zitat bzw. "
+        "Tabellenzeile, die exakt abgeschriebene Spaltenueberschrift "
+        "(column_label) und der Stichtag der Spalte (period_end_date). "
         + period_sentence
         + f"Absolute Betraege in {currency}-Basiseinheiten "
-        "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie. Nicht berichtete "
+        "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie — Werte in der "
+        f"Berichtswaehrung der Firma ({currency}), niemals umgerechnete "
+        "Werte von Drittseiten. Nicht berichtete "
         "Perioden: value null. Gib fuer JEDE Periode die URL des "
         "offiziellen Berichts-PDFs/HTML im Feld url an — auch wenn du "
         "den Wert nicht extrahieren kannst (dann value null, url "
@@ -320,7 +387,8 @@ def _build_user_prompt(company, year: int, group: str) -> str:
         "",
         "quote = woertliches Zitat/Tabellenzeile aus dem Bericht; "
         "url = Quelle-URL (URL des offiziellen Berichts auch angeben, "
-        "wenn value null bleibt); derived_from = Rechenweg bei "
+        "wenn value null bleibt); " + _COLUMN_FIELDS_EXPLANATION + " "
+        "derived_from = Rechenweg bei "
         "abgeleiteten Quartalen, sonst null; nicht berichtet = "
         "value null.",
     ]
@@ -380,6 +448,16 @@ def _to_decimal(value) -> Decimal | None:
         return None
 
 
+def _parse_iso_date(value) -> date | None:
+    """ISO-Datum (auch mit Zeitanteil) tolerant parsen; sonst None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except ValueError:
+        return None
+
+
 def _parse_entry(entry) -> dict | None:
     """Ein Perioden-Objekt normalisieren; ohne Wert -> None."""
     if not isinstance(entry, dict):
@@ -390,10 +468,17 @@ def _parse_entry(entry) -> dict | None:
     quote = entry.get("quote")
     url = entry.get("url")
     derived_from = entry.get("derived_from")
+    label = entry.get("column_label")
     return {
         "value": value,
         "quote": quote.strip() if isinstance(quote, str) and quote.strip() else None,
         "url": url if isinstance(url, str) and url.startswith(("http://", "https://")) else None,
+        "column_label": (
+            label.strip()[:120]
+            if isinstance(label, str) and label.strip()
+            else None
+        ),
+        "period_end_date": _parse_iso_date(entry.get("period_end_date")),
         "derived_from": (
             derived_from.strip()[:40]
             if isinstance(derived_from, str) and derived_from.strip()
@@ -501,6 +586,129 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict[str, dict]]) -> 
                 )
                 del base[pt]
                 del adj[pt]
+
+
+def _period_end_target(company, year: int, pt: str) -> date | None:
+    """Erwartetes Periodenende der Zielperiode (FY-Ende bzw. Quartalsende
+    aus der FY-Konvention)."""
+    if pt == "FY":
+        return _fy_end_date(company, year)
+    from app.values.detail_page import quarter_end_date
+
+    return quarter_end_date(
+        year, pt,
+        getattr(company, "fiscal_year_end_month", None),
+        getattr(company, "fiscal_year_end_day", None),
+    )
+
+
+def _column_gate_reason(company, year: int, key: str, pt: str, info: dict,
+                        strict_period_end: bool) -> str | None:
+    """Verwerfungsgrund der Spalten-Gates oder None (Wert passiert).
+
+    (i)   period_end_date passt nicht zum Zielperioden-Ende (±21 Tage);
+          fehlend: Stufe 2 verwirft (Dokument liegt vor, der Stichtag
+          steht in der Tabelle), Stufe 1 lenient.
+    (ii)  column_label nennt eine fremde Jahreszahl — Vorjahresspalten-
+          Falle (SAP: adjusted-NI 2025 war durchgaengig die 2024-Spalte).
+          Erlaubt sind Zieljahr und das Kalenderjahr des Zielperioden-
+          Endes (Nicht-Kalender-FYs).
+    (iii) constant-currency-Marker; non-IFRS-Marker nur fuer die
+          IFRS-Basisspur (Sidecars SIND die non-IFRS-Spur).
+    (iv)  Kumulativ-Marker (H1/6M/9M/YTD) fuer ein Einzelquartal ohne
+          derived_from — kumulierter Wert als Quartal gebucht.
+    """
+    target_end = _period_end_target(company, year, pt)
+    ped = info.get("period_end_date")
+    if ped is None:
+        if strict_period_end:
+            return "period_end_date fehlt (Dokument-Stufe)"
+    elif (
+        target_end is not None
+        and abs((ped - target_end).days) > _PERIOD_END_TOL_DAYS
+    ):
+        return (
+            f"period_end_date {ped.isoformat()} passt nicht zum "
+            f"Zielperioden-Ende {target_end.isoformat()}"
+        )
+    label = info.get("column_label")
+    if not label:
+        return None
+    low = label.lower()
+    years = {int(m) for m in _YEAR_IN_LABEL_RE.findall(label)}
+    allowed = {year}
+    if target_end is not None:
+        allowed.add(target_end.year)
+    if years - allowed:
+        return f"column_label {label!r} nennt fremde Jahreszahl (Vorjahresspalte?)"
+    if any(m in low for m in _CC_LABEL_MARKERS) or _CC_TOKEN_RE.search(low):
+        return f"column_label {label!r} ist eine Constant-Currency-Spalte"
+    if key not in _ADJUSTED_SIDECARS and _NON_IFRS_LABEL_RE.search(low):
+        return f"column_label {label!r} ist eine non-IFRS-Spalte (IFRS-Zielspur)"
+    if (
+        pt in _Q_TYPES
+        and info.get("derived_from") is None
+        and _CUMULATIVE_LABEL_RE.search(low)
+    ):
+        return (
+            f"column_label {label!r} ist kumuliert (H1/9M/YTD), "
+            "Zielperiode aber Einzelquartal ohne derived_from"
+        )
+    return None
+
+
+def _apply_column_gates(company, year: int, parsed: dict[str, dict[str, dict]],
+                        strict_period_end: bool = False) -> None:
+    """Spalten-Gates (Fehlerklasse a der SAP-Abnahme) — mutiert `parsed`
+    in place. Sidecars durchlaufen dieselben Checks (die FY2024-adjusted-
+    Serie kam ueber die Sidecars herein)."""
+    ticker = company.ticker
+    for key in list(parsed):
+        for pt in list(parsed[key]):
+            reason = _column_gate_reason(
+                company, year, key, pt, parsed[key][pt], strict_period_end,
+            )
+            if reason is None:
+                continue
+            logger.warning(
+                "statement research %s/FY%s: Spalten-Gate %s/%s=%s — %s — skip",
+                ticker, year, key, pt, parsed[key][pt]["value"], reason,
+            )
+            del parsed[key][pt]
+        if not parsed[key]:
+            del parsed[key]
+
+
+def _is_portal_url(url) -> bool:
+    """URL gehoert zu einem Finanzportal der Blocklist (inkl. Subdomains)."""
+    if not isinstance(url, str) or not url:
+        return False
+    from urllib.parse import urlsplit
+
+    try:
+        host = (urlsplit(url).hostname or "").strip(".").lower()
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in _PORTAL_BLOCKLIST)
+
+
+def _apply_source_gate(parsed: dict[str, dict[str, dict]], ticker: str,
+                       year: int) -> None:
+    """Quellen-Hygiene (Fehlerklasse d): Werte mit Portal-URL verwerfen
+    (Drittquellen liefern umgerechnete USD-Werte). Mutiert `parsed`."""
+    for key in list(parsed):
+        for pt in list(parsed[key]):
+            url = parsed[key][pt].get("url")
+            if not _is_portal_url(url):
+                continue
+            logger.warning(
+                "statement research %s/FY%s: %s/%s=%s aus Portal-Quelle "
+                "%s — keine gueltige Quelle — skip",
+                ticker, year, key, pt, parsed[key][pt]["value"], url,
+            )
+            del parsed[key][pt]
+        if not parsed[key]:
+            del parsed[key]
 
 
 def _enforce_qsum(parsed: dict[str, dict[str, dict]], ticker: str, year: int) -> None:
@@ -1020,6 +1228,9 @@ def _collect_period_urls(data: dict, group: str) -> dict[str, list[str]]:
             url = info.get("url")
             if not isinstance(url, str) or not url.startswith(("http://", "https://")):
                 continue
+            # Portal-URLs sind keine Berichtsdokumente (Quellen-Hygiene).
+            if _is_portal_url(url):
+                continue
             bucket = urls.setdefault(pt, [])
             if url not in bucket:
                 bucket.append(url)
@@ -1056,9 +1267,15 @@ def _build_doc_system_prompt(company, year: int, group: str) -> str:
         "IFRS-Spalte fuer die Basis-Keys und die non-IFRS-Spalte fuer "
         "die *_adjusted-Keys. Abgeleitete Quartale (z.B. Q2 = H1 - Q1) "
         "nur, wenn BEIDE Bausteine im Dokument stehen — dann "
-        'derived_from setzen (z.B. "H1-Q1"); sonst value null. '
+        'derived_from setzen (z.B. "H1-Q1"); sonst value null. Das gilt '
+        "ausdruecklich AUCH fuer eps_diluted (Naeherung) und die "
+        "*_adjusted-Keys. Gib pro Wert die EXAKT abgeschriebene "
+        "Spaltenueberschrift (column_label) und den Stichtag der Spalte "
+        "(period_end_date, ISO) an — ohne period_end_date wird der Wert "
+        "verworfen. "
         f"Absolute Betraege in {currency}-Basiseinheiten "
-        "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie. Steht ein "
+        "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie — Werte in der "
+        f"Berichtswaehrung ({currency}). Steht ein "
         "angeforderter Wert nachweislich nicht im Dokument: value null. "
         "Antworte NUR mit einem JSON-Objekt nach dem Schema in der "
         "User-Nachricht — kein Text ausserhalb des JSON, keine "
@@ -1104,6 +1321,7 @@ def _build_doc_user_prompt(company, year: int, group: str,
         "",
         "quote = woertliches Zitat/Tabellenzeile aus dem Dokument; "
         "url = Quelle-URL (null erlaubt, Dokument-URL wird ergaenzt); "
+        + _COLUMN_FIELDS_EXPLANATION + " "
         "derived_from = Rechenweg bei abgeleiteten Quartalen, sonst "
         "null; nicht im Dokument = value null.",
     ]
@@ -1238,6 +1456,10 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
                     del parsed[key][pt]
             if not parsed[key]:
                 del parsed[key]
+        # Spalten-Gates: Stufe 2 strikt — das Dokument liegt vor, der
+        # Stichtag steht in der Tabelle; fehlt period_end_date -> skip.
+        _apply_column_gates(company, year, parsed, strict_period_end=True)
+        _apply_source_gate(parsed, company.ticker, year)
         # url-Fallback: Zellen ohne eigene Quelle tragen die Dokument-URL.
         for key in parsed:
             for pt in parsed[key]:
@@ -1333,6 +1555,10 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
                     del parsed[key][pt]
             if not parsed[key]:
                 del parsed[key]
+        # Spalten-Gates: Stufe 1 lenient bei fehlendem period_end_date
+        # (Websuche-Snippets nennen den Stichtag oft nicht).
+        _apply_column_gates(company, year, parsed, strict_period_end=False)
+        _apply_source_gate(parsed, company.ticker, year)
         _apply_gates(db, company, year, parsed)
         _apply_yahoo_gate(parsed, ref_map, company.ticker, year)
         _enforce_qsum(parsed, company.ticker, year)

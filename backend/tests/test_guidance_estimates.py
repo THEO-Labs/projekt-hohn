@@ -281,6 +281,168 @@ def test_second_run_updates_existing_forecast(db, company, monkeypatch):
     assert ni[0].numeric_value_adjusted == Decimal("26000000000")
 
 
+# --- NI/EPS-Ableitung aus Operating-Profit-Guidance (SAP-Muster) ----------
+
+
+def _op_payload(basis="non_gaap", tax_value=0.29, with_tax=True, **overrides):
+    """Payload einer Firma, die kein NI/EPS guidet — nur Operating-Profit-
+    Guidance plus (optional) den berichteten effektiven Steuersatz."""
+    base = {
+        "operating_profit_guidance": {
+            "value": 12_000_000_000, "source": "guidance", "basis": basis,
+            "reasoning": "Operating profit guidance midpoint of 12.0B",
+            "url": "https://example.com/ir/outlook",
+        },
+    }
+    if with_tax:
+        base["effective_tax_rate"] = {
+            "value": tax_value, "source": None,
+            "reasoning": "Last reported effective tax rate of 29%",
+            "url": "https://example.com/ir/annual-report",
+        }
+    base.update(overrides)
+    return base
+
+
+def _helper_rows(db, comp):
+    return (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == comp.id,
+            CompanyValue.value_key.in_(
+                ["operating_profit_guidance", "effective_tax_rate"],
+            ),
+        )
+        .all()
+    )
+
+
+def test_op_guidance_non_ifrs_derives_adjusted_ni_and_eps_sidecars(db, company, monkeypatch):
+    """SAP-Muster: non-IFRS-OP-Guidance x (1 - Steuersatz) fuellt den
+    adjusted-Sidecar von net_income; eps adjusted folgt als NI / shares.
+    Die Hilfsgroessen werden nie als eigene DB-Keys persistiert."""
+    _mock_claude(monkeypatch, _op_payload())
+    _seed_shares(db, company, "1000000000")
+
+    ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
+    db.commit()
+
+    ni = _fy_rows(db, company, "net_income")
+    assert len(ni) == 1
+    assert ni[0].numeric_value is None  # kein GAAP-Wert erfunden
+    assert ni[0].numeric_value_adjusted == Decimal("8520000000")
+    assert "Abgeleitet: Operating-Profit-Guidance x (1 - Steuersatz)" in ni[0].adjustments_source
+    assert "example.com/ir/outlook" in ni[0].adjustments_source
+
+    eps = _fy_rows(db, company, "eps_diluted")
+    assert len(eps) == 1
+    assert eps[0].numeric_value is None
+    assert eps[0].numeric_value_adjusted == Decimal("8.52")
+    assert "Abgeleitet: Net-Income-Schaetzung / Aktienzahl" in eps[0].adjustments_source
+
+    assert _helper_rows(db, company) == []
+
+
+def test_op_guidance_gaap_basis_writes_gaap_slots(db, company, monkeypatch):
+    """GAAP-OP-Guidance -> Ableitung landet im GAAP-Slot (numeric_value),
+    eps folgt als NI / shares; Vorjahresband-Gate wird durchlaufen."""
+    _mock_claude(monkeypatch, _op_payload(basis="gaap"))
+    _seed_shares(db, company, "1000000000")
+    _seed_prev_actuals(db, company, {"net_income": "7000000000"})
+
+    written = ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
+    db.commit()
+
+    assert written == 2  # net_income + eps_diluted
+    ni = _fy_rows(db, company, "net_income")[0]
+    assert ni.numeric_value == Decimal("8520000000")
+    assert ni.is_forecast is True
+    assert ni.primary_method == "web_guidance"
+    assert "Abgeleitet: Operating-Profit-Guidance" in ni.source_name
+
+    eps = _fy_rows(db, company, "eps_diluted")[0]
+    assert eps.numeric_value == Decimal("8.52")
+    assert "Abgeleitet: Net-Income-Schaetzung" in eps.source_name
+
+
+def test_op_guidance_percent_tax_rate_normalized(db, company, monkeypatch):
+    """Steuersatz als Prozentzahl (29 statt 0.29) wird toleriert."""
+    _mock_claude(monkeypatch, _op_payload(basis="gaap", tax_value=29))
+
+    ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
+    db.commit()
+
+    ni = _fy_rows(db, company, "net_income")
+    assert len(ni) == 1
+    assert ni[0].numeric_value == Decimal("8520000000")
+
+
+def test_op_guidance_without_tax_rate_no_derivation(db, company, monkeypatch):
+    """Ohne effektiven Steuersatz keine NI-Ableitung — es bleibt leer
+    statt geraten."""
+    _mock_claude(monkeypatch, _op_payload(with_tax=False))
+    _seed_shares(db, company, "1000000000")
+
+    assert ge.fetch_guidance_estimates(db, company, RUNNING_YEAR) == 0
+    db.commit()
+
+    assert _fy_rows(db, company, "net_income") == []
+    assert _fy_rows(db, company, "eps_diluted") == []
+
+
+def test_op_derivation_respects_prev_year_gate(db, company, monkeypatch):
+    """Die Ableitung unterliegt den bestehenden Gates: liegt das
+    abgeleitete NI ausserhalb des 40-160%-Vorjahresbands, wird es
+    verworfen."""
+    _mock_claude(monkeypatch, _op_payload(basis="gaap"))
+    _seed_prev_actuals(db, company, {"net_income": "3000000000"})  # +184%
+
+    assert ge.fetch_guidance_estimates(db, company, RUNNING_YEAR) == 0
+    db.commit()
+
+    assert _fy_rows(db, company, "net_income") == []
+
+
+def test_op_derivation_does_not_override_direct_consensus(db, company, monkeypatch):
+    """Direkter NI-adj-Konsens hat Vorrang — die OP-Ableitung fuellt nur
+    leere Slots."""
+    payload = _op_payload(
+        net_income_non_gaap={
+            "value": 25_000_000_000, "source": "consensus", "basis": "non_gaap",
+            "quote": "Adjusted net income consensus $25B", "url": None,
+        },
+    )
+    _mock_claude(monkeypatch, payload)
+
+    ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
+    db.commit()
+
+    ni = _fy_rows(db, company, "net_income")
+    assert len(ni) == 1
+    assert ni[0].numeric_value_adjusted == Decimal("25000000000")
+
+
+def test_eps_derived_from_direct_ni_consensus(db, company, monkeypatch):
+    """Auch ohne OP-Guidance: fehlt der EPS-Konsens, aber NI liegt vor,
+    wird eps = NI / shares (SNAPSHOT) abgeleitet."""
+    payload = {
+        "net_income": {
+            "value": 20_000_000_000, "source": "consensus", "basis": "gaap",
+            "quote": "Consensus GAAP net income of $20.0B", "url": None,
+        },
+    }
+    _mock_claude(monkeypatch, payload)
+    _seed_shares(db, company, "5000000000")
+
+    written = ge.fetch_guidance_estimates(db, company, RUNNING_YEAR)
+    db.commit()
+
+    assert written == 2
+    eps = _fy_rows(db, company, "eps_diluted")[0]
+    assert eps.numeric_value == Decimal("4")
+    assert "Abgeleitet: Net-Income-Schaetzung" in eps.source_name
+
+
 # --- Refresh-Verdrahtung (routes.refresh_company_values) ------------------
 
 
@@ -306,16 +468,30 @@ def _setup_refresh(client, db, email, isin):
 
 
 def _patch_refresh_env(monkeypatch):
-    """Refresh-Umfeld isolieren: kein Backfill, keine Calculations, kein
-    Prev-Year-Prefetch. EDGAR-Anker, fetch_guidance_estimates und
-    fetch_statement_research werden durch zaehlende Mocks ersetzt."""
+    """Refresh-Umfeld isolieren: kein Backfill, kein Prev-Year-Prefetch.
+    EDGAR-Anker, fetch_guidance_estimates, fetch_statement_research,
+    Calculations und der historische MCap-Fetch werden durch zaehlende
+    Mocks ersetzt."""
     import app.values.routes as routes
     import app.values.statement_research as sr
 
     monkeypatch.setattr(routes, "_prev_year_needs_backfill",
                         lambda db_, cid_, k, y: False)
-    monkeypatch.setattr(routes, "_run_and_persist_calculations", lambda *a, **kw: [])
     monkeypatch.setattr(routes, "_ensure_previous_year_inputs", lambda *a, **kw: None)
+
+    calc_calls: list[tuple] = []
+
+    def fake_calc(db_, cid_, period_type, period_year):
+        calc_calls.append((period_type, period_year))
+        return []
+
+    monkeypatch.setattr(routes, "_run_and_persist_calculations", fake_calc)
+
+    mcap_calls: list[int] = []
+    monkeypatch.setattr(
+        routes, "_fetch_and_store_historical_mcap",
+        lambda db_, ticker_, cid_, year: mcap_calls.append(year),
+    )
 
     anchor_keys: list[str] = []
 
@@ -340,7 +516,7 @@ def _patch_refresh_env(monkeypatch):
         return 0
 
     monkeypatch.setattr(sr, "fetch_statement_research", fake_statement)
-    return guidance_calls, anchor_keys, statement_calls
+    return guidance_calls, anchor_keys, statement_calls, calc_calls, mcap_calls
 
 
 def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monkeypatch):
@@ -350,7 +526,7 @@ def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monk
     Fortschreibung. Nicht abgedeckte Keys (net_debt) laufen fuer
     US-Filer durch den EDGAR-Anker."""
     cid = _setup_refresh(client, db, "wire-us@example.com", "US0001234567")
-    guidance_calls, anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, anchor_keys, statement_calls, *_ = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -370,7 +546,7 @@ def test_us_refresh_closed_year_no_guidance_call(client, db, monkeypatch):
     """US-Filer, abgeschlossenes Jahr: kein Guidance-Call, alle Keys
     durch den EDGAR-Anker."""
     cid = _setup_refresh(client, db, "wire-closed@example.com", "US0001234567")
-    guidance_calls, anchor_keys, _statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, anchor_keys, _statement_calls, *_ = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -389,7 +565,7 @@ def test_non_us_refresh_uses_statement_and_guidance(client, db, monkeypatch):
     """Nicht-US-Firma, laufendes FY (DE-Umbau): EIN Statement-Lauf (nur
     die Gruppen der angefragten Keys) plus EIN Guidance-Call."""
     cid = _setup_refresh(client, db, "wire-eu@example.com", "DE0001234567")
-    guidance_calls, anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, anchor_keys, statement_calls, *_ = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -409,7 +585,7 @@ def test_non_us_refresh_closed_year_statement_without_guidance(client, db, monke
     """Nicht-US-Firma, abgeschlossenes Jahr: Statement-Recherche laeuft,
     Guidance-Call nicht (der gehoert dem laufenden FY)."""
     cid = _setup_refresh(client, db, "wire-eu-closed@example.com", "DE0001234567")
-    guidance_calls, _anchor_keys, statement_calls = _patch_refresh_env(monkeypatch)
+    guidance_calls, _anchor_keys, statement_calls, *_ = _patch_refresh_env(monkeypatch)
 
     r = client.post(
         f"/api/companies/{cid}/values/refresh",
@@ -422,3 +598,77 @@ def test_non_us_refresh_closed_year_statement_without_guidance(client, db, monke
     assert r.status_code == 200
     assert guidance_calls == []
     assert statement_calls == [("TST", PREV_YEAR, ("income", "cashflow"))]
+
+
+def test_refresh_backfill_year_gets_calc_and_price_anchors_us(client, db, monkeypatch):
+    """Backfill-Fall (consistency_years = [N-1, N]), US-Filer: das
+    abgeschlossene Vorjahr bekommt die historischen Preis-Anker (year:
+    Einstieg, year+1: FY-Ende fuer actual_return) und den FY-Ratio-Satz —
+    nicht nur payload.period_year (SAP-Befund 1d)."""
+    import app.values.routes as routes
+    cid = _setup_refresh(client, db, "wire-prev-us@example.com", "US0001234567")
+    _g, _a, _s, calc_calls, mcap_calls = _patch_refresh_env(monkeypatch)
+    monkeypatch.setattr(routes, "_prev_year_needs_backfill",
+                        lambda db_, cid_, k, y: True)
+
+    r = client.post(
+        f"/api/companies/{cid}/values/refresh",
+        json={
+            "keys": ["net_income"],
+            "period_type": "FY", "period_year": RUNNING_YEAR,
+        },
+    )
+
+    assert r.status_code == 200
+    assert mcap_calls == [PREV_YEAR, RUNNING_YEAR]
+    assert calc_calls == [("FY", PREV_YEAR), ("FY", RUNNING_YEAR)]
+
+
+def test_refresh_backfill_year_gets_calc_and_price_anchors_non_us(client, db, monkeypatch):
+    """Gleiches Wiring fuer Nicht-US-Filer — Vorjahres-Kennzahlen und
+    Preis-Anker sind generisch, nicht US-only."""
+    import app.values.routes as routes
+    cid = _setup_refresh(client, db, "wire-prev-eu@example.com", "DE0001234567")
+    _g, _a, _s, calc_calls, mcap_calls = _patch_refresh_env(monkeypatch)
+    monkeypatch.setattr(routes, "_prev_year_needs_backfill",
+                        lambda db_, cid_, k, y: True)
+
+    r = client.post(
+        f"/api/companies/{cid}/values/refresh",
+        json={
+            "keys": ["net_income"],
+            "period_type": "FY", "period_year": RUNNING_YEAR,
+        },
+    )
+
+    assert r.status_code == 200
+    assert mcap_calls == [PREV_YEAR, RUNNING_YEAR]
+    assert calc_calls == [("FY", PREV_YEAR), ("FY", RUNNING_YEAR)]
+
+
+def test_refresh_existing_price_anchors_not_refetched(client, db, monkeypatch):
+    """Vorhandene market_cap-FY-Anker werden nicht erneut gefetcht
+    (_has_fy_price_anchor-Guard); der Vorjahres-Calc laeuft trotzdem."""
+    import app.values.routes as routes
+    cid = _setup_refresh(client, db, "wire-anchor-guard@example.com", "US0001234567")
+    for yr in (PREV_YEAR, RUNNING_YEAR):
+        db.add(CompanyValue(
+            company_id=cid, value_key="market_cap", period_type="FY",
+            period_year=yr, numeric_value=Decimal("200000000000"),
+        ))
+    db.commit()
+    _g, _a, _s, calc_calls, mcap_calls = _patch_refresh_env(monkeypatch)
+    monkeypatch.setattr(routes, "_prev_year_needs_backfill",
+                        lambda db_, cid_, k, y: True)
+
+    r = client.post(
+        f"/api/companies/{cid}/values/refresh",
+        json={
+            "keys": ["net_income"],
+            "period_type": "FY", "period_year": RUNNING_YEAR,
+        },
+    )
+
+    assert r.status_code == 200
+    assert mcap_calls == []
+    assert calc_calls == [("FY", PREV_YEAR), ("FY", RUNNING_YEAR)]

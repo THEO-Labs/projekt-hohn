@@ -896,6 +896,24 @@ def _fetch_and_store_historical_mcap(
                          f"Marktdaten-Feed ({shares_label}, {anchor_note})", None, None)
 
 
+def _has_fy_price_anchor(db: Session, company_id: UUID, period_year: int) -> bool:
+    """True wenn die FY-Zeile bereits einen Preis-Anker (market_cap)
+    traegt — Guard gegen Doppel-Fetches, gleiches Kriterium wie der
+    next_mcap-Guard in _run_and_persist_calculations."""
+    return (
+        db.query(CompanyValue.id)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == "market_cap",
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == period_year,
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .first()
+        is not None
+    )
+
+
 def _ensure_previous_year_inputs(
     db: Session,
     ticker: str,
@@ -1425,6 +1443,45 @@ def refresh_company_values(
                     db.commit()
                 except Exception as e:
                     logger.error("consistency pass failed for %s FY%s: %s", ticker, cons_year, e)
+                    db.rollback()
+
+            # Vorjahres-Kennzahlen + historische Preis-Anker (strukturell,
+            # US und Nicht-US): der Schluss-Calc unten rechnet nur
+            # payload.period_year — jedes weitere consistency_year
+            # (abgeschlossenes Vorjahr) bekommt hier seinen FY-Ratio-Satz.
+            # Fuer abgeschlossene Jahre vorher die Jahresschluss-Anker
+            # sicherstellen: year (Einstiegs-Anker = Close FY-Ende N-1)
+            # und year+1 (Close FY-Ende N, actual_return braucht den
+            # Folgejahres-Anker). Vorhandene Anker werden nicht erneut
+            # gefetcht (_has_fy_price_anchor); Fehler brechen den Refresh
+            # nie ab.
+            from app.values.provider_anchor import _fy_is_closed as _fy_closed
+            for calc_year in consistency_years:
+                if calc_year == payload.period_year:
+                    continue  # laeuft am Ende des Refresh ohnehin
+                try:
+                    if _fy_closed(company, calc_year):
+                        set_phase(
+                            company_id, "historical_mcap",
+                            f"Historische Preis-Anker (FY{calc_year})",
+                        )
+                        for anchor_year in (calc_year, calc_year + 1):
+                            if not _has_fy_price_anchor(db, company_id, anchor_year):
+                                _fetch_and_store_historical_mcap(
+                                    db, ticker, company_id, anchor_year,
+                                )
+                        db.commit()
+                    set_phase(
+                        company_id, "calculating",
+                        f"Kennzahlen FY{calc_year} berechnen",
+                    )
+                    _run_and_persist_calculations(db, company_id, "FY", calc_year)
+                    db.commit()
+                except Exception as e:
+                    logger.warning(
+                        "prev-year ratios/anchors failed for %s FY%s: %s",
+                        ticker, calc_year, e,
+                    )
                     db.rollback()
 
         # Bei Stammdaten-Only: kein historisches MCap-Fetch, kein Prev-Year-

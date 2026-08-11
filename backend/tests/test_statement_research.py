@@ -39,8 +39,12 @@ def company(db):
 
 
 def _entry(value, quote="Tabellenzeile aus dem Bericht", url="https://ir.example.com/q.pdf",
-           derived_from=None):
-    return {"value": value, "quote": quote, "url": url, "derived_from": derived_from}
+           derived_from=None, column_label=None, period_end=None):
+    return {
+        "value": value, "quote": quote, "url": url,
+        "column_label": column_label, "period_end_date": period_end,
+        "derived_from": derived_from,
+    }
 
 
 def _income_payload(**overrides):
@@ -371,6 +375,232 @@ def test_qsum_within_tolerance_writes_quarters(db, company, monkeypatch):
 
     for q in ("Q1", "Q2", "Q3", "Q4"):
         assert _rows(db, company, "revenue", q)[0].numeric_value is not None
+
+
+# --- Spalten-Gates (SAP-Abnahme-Fehlerklasse a) ----------------------------
+
+
+def test_prev_year_column_label_discarded(db, company, monkeypatch):
+    """column_label nennt eine fremde Jahreszahl (Vorjahresspalten-Falle:
+    SAP-adjusted-NI 2025 war die 2024-Spalte) -> verworfen; Label mit
+    Zieljahr passiert."""
+    payload = {
+        "revenue": {"FY": _entry(40_000_000_000, column_label=str(YEAR - 1))},
+        "net_income": {"FY": _entry(3_000_000_000, column_label=f"FY {YEAR}")},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+
+
+def test_cc_and_non_ifrs_label_discarded(db, company, monkeypatch):
+    """Constant-Currency-Label ('cc'/'constant currency') und non-IFRS-
+    Label fuer die IFRS-Basisspur -> verworfen. Das non-IFRS-Label am
+    Sidecar ist dagegen erwartet und passiert."""
+    payload = {
+        "revenue": {
+            "FY": _entry(38_000_000_000, column_label=f"{YEAR} cc"),
+            "Q1": _entry(9_000_000_000, column_label=f"Q1 {YEAR} constant currency"),
+        },
+        "net_income": {"FY": _entry(3_000_000_000, column_label=f"non-IFRS {YEAR}")},
+        "eps_diluted": {"FY": _entry("3.05", column_label=f"FY {YEAR}")},
+        "eps_diluted_adjusted": {
+            "FY": _entry("3.40", column_label=f"Non-IFRS {YEAR}"),
+        },
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "revenue", "Q1")[0].primary_method == "not_found"
+    assert _rows(db, company, "net_income", "FY")[0].primary_method == "not_found"
+    eps = _rows(db, company, "eps_diluted", "FY")[0]
+    assert eps.numeric_value == Decimal("3.05")
+    assert eps.numeric_value_adjusted == Decimal("3.40")
+
+
+def test_cumulative_label_as_single_quarter_discarded(db, company, monkeypatch):
+    """H1/9M/YTD-Label fuer ein Einzelquartal OHNE derived_from ->
+    verworfen (SAP: H1-Buybacks 1.633 als Q2 gebucht). MIT derived_from
+    (H1-Q1-Ableitung) passiert derselbe Label-Typ."""
+    payload = {
+        "buyback_volume": {
+            "Q2": _entry(1_633_000_000, column_label=f"H1 {YEAR}"),
+        },
+        "dividends": {
+            "Q2": _entry(1_508_000_000, column_label=f"H1 {YEAR}",
+                         derived_from="H1-Q1"),
+        },
+    }
+    _mock_claude(monkeypatch, {"cashflow": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["cashflow"])
+    db.commit()
+
+    assert _rows(db, company, "buyback_volume", "Q2")[0].primary_method == "not_found"
+    div = _rows(db, company, "dividends", "Q2")[0]
+    assert div.numeric_value == Decimal("1508000000")
+    assert div.source_name.startswith("Abgeleitet (H1-Q1):")
+
+
+def test_period_end_mismatch_discarded_stage1_lenient_without(db, company, monkeypatch):
+    """period_end_date passt nicht zum Zielperioden-Ende (±21 Tage) ->
+    verworfen; passender Stichtag und fehlender Stichtag (Stufe 1
+    lenient) passieren."""
+    payload = {
+        "revenue": {
+            "Q1": _entry(9_000_000_000, period_end=f"{YEAR}-12-31"),  # FY-Spalte
+            "Q2": _entry(10_000_000_000, period_end=f"{YEAR}-06-30"),
+        },
+        "net_income": {"FY": _entry(3_000_000_000)},  # ohne Stichtag -> ok
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "Q1")[0].primary_method == "not_found"
+    assert _rows(db, company, "revenue", "Q2")[0].numeric_value == Decimal("10000000000")
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+
+
+def test_sidecar_prev_year_column_discarded(db, company, monkeypatch):
+    """Sidecars durchlaufen dieselben Spalten-Gates: adjusted-Wert aus
+    der Vorjahresspalte wird verworfen, die Basis bleibt (SAP: die
+    FY2024-adjusted-Serie kam ueber die Sidecars herein)."""
+    payload = {
+        "net_income": {"FY": _entry(3_000_000_000, column_label=f"FY {YEAR}")},
+        "net_income_adjusted": {
+            "FY": _entry(3_100_000_000, column_label=str(YEAR - 1)),
+        },
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    ni = _rows(db, company, "net_income", "FY")[0]
+    assert ni.numeric_value == Decimal("3000000000")
+    assert ni.numeric_value_adjusted is None
+
+
+def test_eps_and_adjusted_h1_derivation_passes(db, company, monkeypatch):
+    """Das H1-Q1-Rechenprotokoll gilt auch fuer eps_diluted und die
+    adjusted-Spur: abgeleitete Werte (derived_from gesetzt) passieren
+    die Gates und tragen den Rechenweg im source_name."""
+    payload = {
+        "net_income": {"Q2": _entry(750_000_000, derived_from="H1-Q1")},
+        "eps_diluted": {"Q2": _entry("0.74", derived_from="H1-Q1")},
+        "net_income_adjusted": {"Q2": _entry(800_000_000, derived_from="H1-Q1")},
+        "eps_diluted_adjusted": {"Q2": _entry("0.79", derived_from="H1-Q1")},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    eps = _rows(db, company, "eps_diluted", "Q2")[0]
+    assert eps.numeric_value == Decimal("0.74")
+    assert eps.numeric_value_adjusted == Decimal("0.79")
+    assert eps.source_name.startswith("Abgeleitet (H1-Q1):")
+    ni = _rows(db, company, "net_income", "Q2")[0]
+    assert ni.numeric_value == Decimal("750000000")
+    assert ni.numeric_value_adjusted == Decimal("800000000")
+    assert ni.adjustments_source.startswith("Abgeleitet (H1-Q1):")
+
+
+# --- Quellen-Hygiene (Portal-Blocklist) ------------------------------------
+
+
+def test_portal_url_discarded_official_source_passes(db, company, monkeypatch):
+    """Finanzportal-URLs (GuruFocus & Co, USD-Drittquellen-Leck) sind
+    keine gueltige Quelle -> verworfen; IR-Domain passiert."""
+    payload = {
+        "capex": {"FY": _entry(2_000_000_000,
+                               url="https://www.gurufocus.com/term/capex/SAP")},
+        "operating_cash_flow": {
+            "FY": _entry(9_000_000_000, url="https://ir.example.com/fy.pdf"),
+        },
+    }
+    _mock_claude(monkeypatch, {"cashflow": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["cashflow"])
+    db.commit()
+
+    assert _rows(db, company, "capex", "FY")[0].primary_method == "not_found"
+    ocf = _rows(db, company, "operating_cash_flow", "FY")[0]
+    assert ocf.numeric_value == Decimal("9000000000")
+
+
+def test_portal_blocklist_matching():
+    assert sr._is_portal_url("https://www.gurufocus.com/x") is True
+    assert sr._is_portal_url("https://stockanalysis.com/stocks/sap/") is True
+    assert sr._is_portal_url("https://macrotrends.net/sap") is True
+    assert sr._is_portal_url("https://wisesheets.io/data") is True
+    assert sr._is_portal_url("https://www.sap.com/investors/q1.pdf") is False
+    assert sr._is_portal_url("https://notgurufocus.com/x") is False
+    assert sr._is_portal_url(None) is False
+
+
+# --- Debt-Fallback (fin_liabilities - leases) ------------------------------
+
+
+def test_fin_liabilities_minus_leases_fallback_written(db, company, monkeypatch):
+    """Debt-Fallback (SAP-Muster: Bilanz zeigt nur 'Financial
+    liabilities'): abgeleiteter Wert mit derived_from='fin_liabilities -
+    leases' passiert die Gates und traegt den Rechenweg im source_name."""
+    payload = {
+        "st_debt": {
+            "FY": _entry(1_598_000_000,
+                         quote="Financial liabilities 1,966 minus leases 368",
+                         derived_from="fin_liabilities - leases"),
+        },
+        "lt_debt": {
+            "FY": _entry(4_550_000_000,
+                         quote="Financial liabilities 6,516 minus leases 1,966",
+                         derived_from="fin_liabilities - leases"),
+        },
+    }
+    _mock_claude(monkeypatch, {"balance": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+    db.commit()
+
+    st = _rows(db, company, "st_debt", "FY")[0]
+    assert st.numeric_value == Decimal("1598000000")
+    assert st.source_name.startswith("Abgeleitet (fin_liabilities - leases):")
+    lt = _rows(db, company, "lt_debt", "FY")[0]
+    assert lt.numeric_value == Decimal("4550000000")
+    assert lt.primary_method == "statement_research"
+
+
+# --- Prompt-Inhalte (Spalten-Gates, Quellen-Hygiene, Debt-Mapping) ---------
+
+
+def test_prompts_contain_new_instructions(company):
+    sys_income = sr._build_system_prompt(company, YEAR, "income")
+    assert "column_label" in sys_income
+    assert "period_end_date" in sys_income
+    assert "Finanzportale" in sys_income
+    assert "GuruFocus" in sys_income
+    assert "eps_diluted" in sys_income  # Rechenprotokoll gilt auch fuer EPS
+    assert "Berichtswaehrung" in sys_income
+
+    user_balance = sr._build_user_prompt(company, YEAR, "balance")
+    assert "Financial liabilities" in user_balance
+    assert "fin_liabilities - leases" in user_balance
+    assert "Other financial assets" in user_balance
+    assert "column_label" in user_balance
+
+    doc_sys = sr._build_doc_system_prompt(company, YEAR, "income")
+    assert "period_end_date" in doc_sys
+    assert "eps_diluted" in doc_sys
 
 
 # --- Karenz-Gate: unberichtete Perioden werden nicht angefasst -------------
