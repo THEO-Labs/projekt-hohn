@@ -113,8 +113,8 @@ STATEMENT_GROUPS: dict[str, tuple[tuple[str, str], ...]] = {
     "balance": (
         ("cash_and_equivalents", "Zahlungsmittel und Zahlungsmittelaequivalente (Bilanzstichtag)"),
         ("st_investments", "kurzfristige Wertpapiere/Finanzanlagen (Bilanzstichtag)"),
-        ("st_debt", "kurzfristige Finanzschulden (Bilanzstichtag)"),
-        ("lt_debt", "langfristige Finanzschulden (Bilanzstichtag)"),
+        ("st_debt", "kurzfristige Finanzschulden OHNE Leasingverbindlichkeiten (Anleihen/Bankverbindlichkeiten/Commercial Paper; die Bilanzzeile 'Finanzverbindlichkeiten' enthaelt oft IFRS-16-Leasing — dann die Aufgliederung aus der Note nehmen; nur inkl. Leasing verfuegbar: null)"),
+        ("lt_debt", "langfristige Finanzschulden OHNE Leasingverbindlichkeiten (Anleihen/Bankdarlehen; die Bilanzzeile 'Finanzverbindlichkeiten' enthaelt oft IFRS-16-Leasing — dann die Aufgliederung aus der Note nehmen; nur inkl. Leasing verfuegbar: null)"),
     ),
 }
 
