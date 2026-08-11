@@ -3,7 +3,10 @@
 Q4-/FY-Slots werden mit dem letzten berichteten Quartalsstichtag
 fortgeschrieben (is_forecast=True, calculated). Ersetzbare Slots
 (two_stage_*/not_found/leer) werden ueberschrieben, manual/PDF bleiben.
-net_debt rechnet danach derive_net_debt_from_components neu."""
+net_debt rechnet danach derive_net_debt_from_components neu.
+Abgeschlossene Jahre (FY-Ende + Karenz vorbei) sind kein
+Fortschreibungs-Fall mehr."""
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -18,7 +21,10 @@ from app.values.consistency import (
 )
 from app.values.models import CompanyValue
 
-YEAR = 2026
+# Laufendes Jahr: FY-Ende (Default 31.12.) liegt in der Zukunft — die
+# Fortschreibung greift; ein hartkodiertes Jahr wuerde nach Jahreswechsel
+# unter das Abgeschlossen-Gate fallen.
+YEAR = date.today().year
 
 
 @pytest.fixture
@@ -53,14 +59,14 @@ def _seed(db, comp, key, ptype, value, is_forecast=False, year=YEAR, **kw):
     return row
 
 
-def _rows(db, comp, key, ptype):
+def _rows(db, comp, key, ptype, year=YEAR):
     return (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == comp.id,
             CompanyValue.value_key == key,
             CompanyValue.period_type == ptype,
-            CompanyValue.period_year == YEAR,
+            CompanyValue.period_year == year,
         )
         .order_by(CompanyValue.is_forecast.asc())
         .all()
@@ -169,6 +175,19 @@ def test_reported_q4_actual_feeds_fy_only(db, company):
 def test_no_reported_quarter_noop(db, company):
     """Ohne berichteten Stichtag gibt es nichts fortzuschreiben."""
     assert derive_balance_carry_forward(db, company.id, YEAR) == 0
+
+
+def test_closed_year_no_writes(db, company):
+    """Abgeschlossenes Jahr (FY-Ende + Karenz vorbei): nichts
+    fortzuschreiben — auch mit berichtetem Q3-Stichtag entstehen keine
+    Q4/FY-Forecast-Zeilen (SAP-Befund: Fortschreibung neben dem
+    laengst berichteten FY-Actual)."""
+    closed = YEAR - 2
+    _seed(db, company, "cash_and_equivalents", "Q3", 500, year=closed)
+
+    assert derive_balance_carry_forward(db, company.id, closed) == 0
+    for pt in ("Q4", "FY"):
+        assert _rows(db, company, "cash_and_equivalents", pt, year=closed) == []
 
 
 def test_net_debt_recomputed_from_carried_components(db, company):

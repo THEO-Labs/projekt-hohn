@@ -37,6 +37,12 @@ calculated/statement_research sind ersetzbar. source_name ist
 quote-first ("<quote> | <url>", beginnt nie mit https — bleibt damit
 fuer den naechsten Lauf ersetzbar). Kein Beleg -> null -> not_found-
 Platzhalter (rote Zelle) via stamp_attempt_and_fill_not_found.
+
+Beruehrt werden NUR berichtete Perioden (Periodenende plus
+REPORTING_GRACE_DAYS abgelaufen). Unberichtete Perioden des laufenden
+Jahres bekommen weder Write noch not_found-Stempel — sonst verschattet
+der Actual-Platzhalter die Forecast-Zeile im selben Slot-Paar
+(Detail-Seite wirkt leer).
 """
 import logging
 from datetime import date, datetime, timezone
@@ -171,6 +177,28 @@ def _fy_end_date(company, year: int) -> date:
     except ValueError:
         # 29.02. in Nicht-Schaltjahr — konservativ auf den 28. runden.
         return date(year, m, 28)
+
+
+def _reported_periods(company, year: int, today: date | None = None) -> tuple[str, ...]:
+    """Perioden des Jahres, die nach dem Karenz-Kriterium berichtet sind:
+    Periodenende (FY-Ende bzw. Quartalsende) plus REPORTING_GRACE_DAYS
+    abgelaufen. Nur diese darf der Lauf schreiben oder stempeln."""
+    from app.values.detail_page import REPORTING_GRACE_DAYS, quarter_end_date
+
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+    out: list[str] = []
+    if (today - _fy_end_date(company, year)).days >= REPORTING_GRACE_DAYS:
+        out.append("FY")
+    for q in _Q_TYPES:
+        q_end = quarter_end_date(
+            year, q,
+            getattr(company, "fiscal_year_end_month", None),
+            getattr(company, "fiscal_year_end_day", None),
+        )
+        if q_end is not None and (today - q_end).days >= REPORTING_GRACE_DAYS:
+            out.append(q)
+    return tuple(out)
 
 
 def _build_system_prompt(company, year: int, group: str) -> str:
@@ -610,11 +638,13 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
 
 
 def _persist_group(db, company, year: int, group: str,
-                   parsed: dict[str, dict[str, dict]], now) -> int:
+                   parsed: dict[str, dict[str, dict]], now,
+                   periods_reported: tuple[str, ...]) -> int:
     """Einen geparsten Gruppen-Block persistieren: berichtete Perioden +
-    adjusted-Sidecars; nicht gelieferte/verworfene Perioden bekommen
-    not_found-Platzhalter bzw. einen Refresh-Stempel. Rueckgabe:
-    geschriebene Zeilen."""
+    adjusted-Sidecars; nicht gelieferte/verworfene BERICHTETE Perioden
+    bekommen not_found-Platzhalter bzw. einen Refresh-Stempel.
+    Unberichtete Perioden (Karenz laeuft noch) werden nicht angefasst.
+    Rueckgabe: geschriebene Zeilen."""
     from scripts.two_stage_research import stamp_attempt_and_fill_not_found
 
     written = 0
@@ -622,7 +652,7 @@ def _persist_group(db, company, year: int, group: str,
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
     for key in base_keys:
         periods = parsed.get(key, {})
-        for pt in _PERIODS:
+        for pt in periods_reported:
             info = periods.get(pt)
             if info is None:
                 continue
@@ -630,10 +660,10 @@ def _persist_group(db, company, year: int, group: str,
             if row is not None:
                 written_rows[(key, pt)] = row
                 written += 1
-        # Kein stiller Zustand: Perioden ohne Write dokumentieren
+        # Kein stiller Zustand: berichtete Perioden ohne Write dokumentieren
         # (Stempel auf bestehende Zeilen, not_found-Platzhalter fuer
         # komplett fehlende — rote Zelle im UI).
-        unwritten = [pt for pt in _PERIODS if (key, pt) not in written_rows]
+        unwritten = [pt for pt in periods_reported if (key, pt) not in written_rows]
         if unwritten:
             stamp_attempt_and_fill_not_found(
                 db, company.id, key, year, unwritten,
@@ -673,6 +703,17 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
     if not settings.anthropic_api_key:
         return 0
 
+    # Karenz-Gate: nur berichtete Perioden werden geschrieben/gestempelt.
+    # Ist noch keine Periode des Jahres berichtet, gibt es nichts zu
+    # recherchieren — kein Claude-Call.
+    periods_reported = _reported_periods(company, year)
+    if not periods_reported:
+        logger.info(
+            "statement research %s/FY%s: keine berichtete Periode (Karenz) — skip",
+            company.ticker, year,
+        )
+        return 0
+
     group_names = [g for g in STATEMENT_GROUPS if groups is None or g in groups]
     now = datetime.now(timezone.utc)
     total = 0
@@ -688,9 +729,17 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
         if not data:
             continue
         parsed = _parse_payload(data, group)
+        # Gelieferte Werte unberichteter Perioden verwerfen — als haette
+        # das Modell sie nie geliefert (kein Write, kein Stempel).
+        for key in list(parsed):
+            for pt in list(parsed[key]):
+                if pt not in periods_reported:
+                    del parsed[key][pt]
+            if not parsed[key]:
+                del parsed[key]
         _apply_gates(db, company, year, parsed)
         _enforce_qsum(parsed, company.ticker, year)
-        wrote = _persist_group(db, company, year, group, parsed, now)
+        wrote = _persist_group(db, company, year, group, parsed, now, periods_reported)
         total += wrote
         logger.info(
             "statement research %s/FY%s %s: %d Zeilen geschrieben",

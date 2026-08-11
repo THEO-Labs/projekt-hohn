@@ -1486,6 +1486,7 @@ def refresh_company_values(
                 derive_missing_ocf,
                 derive_net_debt_from_components,
                 derive_open_quarter_from_fy_estimate,
+                derive_q4_instant_from_fy,
                 derive_q4_residual_from_fy,
                 derive_runrate_quarter,
                 derive_sbc_quarters,
@@ -1610,36 +1611,14 @@ def refresh_company_values(
                     # Nur bei GENAU EINEM offenen Quartal eindeutig.
                     open_q = None
                     try:
-                        if us_filer:
-                            from app.values.consistency import _quarter_reported_us
-                            _subs: dict = {}
-                            _open = [
-                                q for q in ("Q1", "Q2", "Q3", "Q4")
-                                if not _quarter_reported_us(company, payload.period_year, q, _subs)
-                            ]
-                        else:
-                            # Nicht-US: Karenz-Kriterium ohne 8-K-Check —
-                            # ein Quartal gilt als berichtet, wenn sein
-                            # Ende REPORTING_GRACE_DAYS zurueckliegt.
-                            from datetime import date as _date_oq
-                            from app.values.detail_page import (
-                                REPORTING_GRACE_DAYS,
-                                quarter_end_date,
-                            )
-                            _today = _date_oq.today()
-                            _open = []
-                            for q in ("Q1", "Q2", "Q3", "Q4"):
-                                _q_end = quarter_end_date(
-                                    payload.period_year, q,
-                                    getattr(company, "fiscal_year_end_month", None),
-                                    getattr(company, "fiscal_year_end_day", None),
-                                )
-                                _reported = (
-                                    _q_end is not None
-                                    and (_today - _q_end).days >= REPORTING_GRACE_DAYS
-                                )
-                                if not _reported:
-                                    _open.append(q)
+                        # Generisches Berichtet-Kriterium: Karenz, US-Filer
+                        # zusaetzlich Item-2.02-8-K (_quarter_reported).
+                        from app.values.consistency import _quarter_reported
+                        _subs: dict = {}
+                        _open = [
+                            q for q in ("Q1", "Q2", "Q3", "Q4")
+                            if not _quarter_reported(company, payload.period_year, q, _subs)
+                        ]
                         if len(_open) == 1:
                             open_q = _open[0]
                     except Exception:
@@ -1665,6 +1644,10 @@ def refresh_company_values(
                     # Bilanz-Schaetzungen, net_debt rechnet danach mit den
                     # fortgeschriebenen Komponenten.
                     derive_balance_carry_forward(db, company_id, cons_year)
+                    # Q4 = FY bei Instant-Keys abgeschlossener Jahre
+                    # (gleicher Stichtag) — VOR der net_debt-Ableitung,
+                    # damit sie die Q4-Komponenten sieht.
+                    derive_q4_instant_from_fy(db, company_id, cons_year)
                     derive_net_debt_from_components(db, company_id, cons_year)
                     derive_missing_ocf(db, company_id, cons_year)
                     # SBC-FY/4-Verteilung ist ein DE-Muster (Annual-only-

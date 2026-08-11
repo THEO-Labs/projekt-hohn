@@ -275,7 +275,19 @@ def _load_rows(
     rows = q.all()
     out: dict[tuple[str, str, int | None], CompanyValue] = {}
     for r in rows:
-        out[(r.value_key, r.period_type, r.period_year)] = r
+        k = (r.value_key, r.period_type, r.period_year)
+        prev = out.get(k)
+        if prev is not None:
+            # Slot-Paar (Actual + Forecast): deterministisch mergen statt
+            # Query-Reihenfolge — Zeile MIT Wert schlaegt leere; haben
+            # beide einen Wert, gewinnt die Actual-Zeile.
+            prev_has = prev.numeric_value is not None or prev.text_value is not None
+            new_has = r.numeric_value is not None or r.text_value is not None
+            if prev_has and (not new_has or not prev.is_forecast):
+                continue
+            if prev_has and new_has and r.is_forecast:
+                continue
+        out[k] = r
     return out
 
 

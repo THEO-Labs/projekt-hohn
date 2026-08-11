@@ -635,16 +635,19 @@ def derive_q4_residual_from_fy(db: Session, company_id: UUID, year: int) -> int:
     return written
 
 
-def _quarter_reported_us(company, year: int, q: str, subs_cache: dict) -> bool:
-    """Berichtet-Kriterium wie im apply_to_db-Gate (nur US-Filer): Quartal
-    beendet UND (Karenz abgelaufen ODER Item-2.02-8-K nach Quartalsende).
-    Der 8-K-Check (Netz) laeuft nur fuer beendete Quartale innerhalb der
-    Karenz; Fetch-Fehler fallen konservativ auf die Karenz-Regel zurueck
-    (Quartal gilt dann als offen)."""
+def _quarter_reported(company, year: int, q: str, subs_cache: dict) -> bool:
+    """Generisches Berichtet-Kriterium der Ableitungen: Quartal beendet
+    UND Karenz (REPORTING_GRACE_DAYS) abgelaufen. US-Filer zusaetzlich
+    wie im apply_to_db-Gate: innerhalb der Karenz gilt ein Quartal mit
+    Item-2.02-8-K nach Quartalsende als berichtet. Nicht-US-Filer (kein
+    EDGAR) haben nur die Karenz-Regel — vorher lieferte das US-Gate hier
+    immer False, wodurch die Ableitungen ALLE Quartale von DE-Firmen als
+    offen behandelten. Der 8-K-Check (Netz) laeuft nur fuer beendete
+    Quartale innerhalb der Karenz; Fetch-Fehler fallen konservativ auf
+    die Karenz-Regel zurueck (Quartal gilt dann als offen)."""
     reported = False
     try:
-        from app.calculations.lock import is_us_company
-        if company is not None and is_us_company(company):
+        if company is not None:
             from app.values.detail_page import (
                 REPORTING_GRACE_DAYS,
                 quarter_end_date,
@@ -659,8 +662,10 @@ def _quarter_reported_us(company, year: int, q: str, subs_cache: dict) -> bool:
                 if (today - p_end).days >= REPORTING_GRACE_DAYS:
                     reported = True
                 else:
-                    from app.values.gaap_bridge import has_reported_8k
-                    reported = has_reported_8k(company.ticker, p_end, subs_cache)
+                    from app.calculations.lock import is_us_company
+                    if is_us_company(company):
+                        from app.values.gaap_bridge import has_reported_8k
+                        reported = has_reported_8k(company.ticker, p_end, subs_cache)
     except Exception as e:
         logger.warning(
             "reported-check failed %s/%s FY%s: %s — Karenz-Regel greift "
@@ -679,11 +684,11 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
     und GENAU EIN Quartal noch keinen berichteten Actual hat. Ersetzt die
     LLM-Schaetzung des offenen Quartals durch Arithmetik (kein LLM-Call,
     kein Trend-Drift). Manuelle und PDF-Zeilen bleiben unangetastet.
-    US-Filer: ein bereits berichtetes Quartal (Karenz abgelaufen ODER
-    Item-2.02-8-K nach Quartalsende) gilt NICHT als offen — sonst
-    ueberschreibt die FY-Guidance ein Quartal, dessen Actual gleich per
-    8-K-Bruecke/XBRL-Anker kommt. Rueckgabe: Anzahl geschriebener
-    Quartals-Zellen.
+    Ein bereits berichtetes Quartal (_quarter_reported: Karenz abgelaufen,
+    US-Filer zusaetzlich Item-2.02-8-K nach Quartalsende) gilt NICHT als
+    offen — sonst ueberschreibt die FY-Guidance ein Quartal, dessen
+    Actual gleich per 8-K-Bruecke/XBRL-Anker bzw. Statement-Recherche
+    kommt. Rueckgabe: Anzahl geschriebener Quartals-Zellen.
     """
     from app.companies.models import Company
     from app.values.persistence import adjusted_is_protected
@@ -699,7 +704,7 @@ def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: in
     def _quarter_already_reported(q: str) -> bool:
         # Memoisierter Wrapper um das gemeinsame Berichtet-Kriterium.
         if q not in reported_memo:
-            reported_memo[q] = _quarter_reported_us(company, year, q, subs_cache)
+            reported_memo[q] = _quarter_reported(company, year, q, subs_cache)
         return reported_memo[q]
 
     for key in sorted(SUMMABLE_QUARTERLY_KEYS):
@@ -1008,7 +1013,7 @@ def derive_declared_dividend_quarter(db: Session, company_id: UUID, year: int) -
     # Berichtetes Quartal ohne DB-Actual (8-K da, XBRL/Bruecke noch nicht
     # durch): nicht fortschreiben — das echte Actual kommt gleich.
     company = db.get(Company, company_id)
-    if _quarter_reported_us(company, year, target_q, {}):
+    if _quarter_reported(company, year, target_q, {}):
         return 0
     src_row = reported[ordered[-1]]
     rate = src_row.numeric_value
@@ -1283,7 +1288,7 @@ def derive_runrate_quarter(db: Session, company_id: UUID, year: int) -> int:
         target_q = open_qs[0]
         # Berichtetes Quartal ohne DB-Actual (8-K da, XBRL/Bruecke noch
         # nicht durch): nicht fortschreiben — das echte Actual kommt gleich.
-        if _quarter_reported_us(company, year, target_q, subs_cache):
+        if _quarter_reported(company, year, target_q, subs_cache):
             continue
         runrate = sum(
             (r.numeric_value for r in reported.values()), Decimal("0")
@@ -1362,9 +1367,24 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
     calculated) werden ueberschrieben — die Two-Stage-Bilanz-Schaetzungen
     sind damit obsolet; manual/PDF und Provider-Actuals bleiben.
     net_debt danach via derive_net_debt_from_components neu rechnen
-    (Aufruf-Reihenfolge im Refresh-Flow). Rueckgabe: Anzahl
-    geschriebener Slots.
+    (Aufruf-Reihenfolge im Refresh-Flow). Abgeschlossene Jahre (FY-Ende
+    plus Karenz vorbei) sind kein Fortschreibungs-Fall — alle Stichtage
+    sind berichtet, die Forecast-Zeile wuerde neben dem FY-Actual
+    stehen; dort fuellt derive_q4_instant_from_fy ein leeres Q4 aus dem
+    FY-Wert. Rueckgabe: Anzahl geschriebener Slots.
     """
+    from app.companies.models import Company
+    from app.values.detail_page import REPORTING_GRACE_DAYS, quarter_end_date
+
+    company = db.get(Company, company_id)
+    fy_end = quarter_end_date(
+        year, "Q4",
+        getattr(company, "fiscal_year_end_month", None) if company else None,
+        getattr(company, "fiscal_year_end_day", None) if company else None,
+    )
+    if fy_end is not None and (date.today() - fy_end).days >= REPORTING_GRACE_DAYS:
+        return 0
+
     rows = _rows_for_year(db, company_id, year)
     written = 0
     for key in sorted(BALANCE_CARRY_FORWARD_KEYS):
@@ -1426,6 +1446,73 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
             target.fetched_at = now
             target.last_refresh_attempt = now
             written += 1
+    db.flush()
+    return written
+
+
+def derive_q4_instant_from_fy(db: Session, company_id: UUID, year: int) -> int:
+    """Instant-Keys (Bilanz): leeres/ersetzbares Q4 aus dem FY-Actual
+    fuellen — gleicher Stichtag, Q4 = FY.
+
+    US-Filer schreiben Q4+FY beide via Bruecke/EDGAR; Nicht-US-Pfade
+    (Provider-Anker, Statement-Recherche) liefern oft nur FY. Generisch,
+    nicht DE-gegated: greift nur, wenn ein FY-Actual mit Wert existiert
+    (de facto abgeschlossenes Jahr) — Forecast-FY zaehlt nicht. Lock-
+    Guards wie _derivation_replaceable; ein ersetzbarer Forecast-Slot
+    (z.B. alte Bilanz-Fortschreibung) wird zum Actual umgezogen.
+    Rueckgabe: Anzahl geschriebener Q4-Zellen.
+    """
+    rows = _rows_for_year(db, company_id, year)
+    written = 0
+    for key in sorted(BALANCE_CARRY_FORWARD_KEYS):
+        fy_actual = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and not r.is_forecast and r.numeric_value is not None),
+            None,
+        )
+        if fy_actual is None:
+            continue
+        slot_rows = [
+            r for r in rows
+            if r.value_key == key and r.period_type == "Q4"
+        ]
+        if any(not _derivation_replaceable(r) for r in slot_rows):
+            continue
+        # Zielzeile: Actual-Slot bevorzugt; existiert nur ein ersetzbarer
+        # Forecast-Slot, wird er zum Actual umgezogen (Muster
+        # derive_missing_fcf — kein Kollisionsrisiko, der Actual-Slot
+        # existiert dann nicht).
+        target = next((r for r in slot_rows if not r.is_forecast), None)
+        if target is None:
+            target = next(iter(slot_rows), None)
+        now = datetime.now(timezone.utc)
+        if target is None:
+            target = CompanyValue(
+                id=uuid4(), company_id=company_id, value_key=key,
+                period_type="Q4", period_year=year, is_forecast=False,
+            )
+            # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden,
+            # Guards erneut anwenden.
+            try:
+                with db.begin_nested():
+                    db.add(target)
+                    db.flush()
+            except IntegrityError:
+                target = _reload_slot(db, company_id, key, "Q4", year, False)
+                if target is None or not _derivation_replaceable(target):
+                    continue
+        target.numeric_value = fy_actual.numeric_value
+        target.source_name = (
+            f"Q4 = FY-Bilanzstichtag (identisch, FY {fy_actual.numeric_value})"
+        )[:4096]
+        target.source_link = None
+        target.primary_method = "calculated"
+        target.is_forecast = False
+        target.currency = fy_actual.currency or target.currency
+        target.fetched_at = now
+        target.last_refresh_attempt = now
+        written += 1
     db.flush()
     return written
 

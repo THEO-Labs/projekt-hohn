@@ -273,8 +273,9 @@ def test_grace_passed_quarter_not_treated_as_open(db, company, monkeypatch):
 
 
 def test_non_us_ended_quarter_still_derived(db, company, monkeypatch):
-    """Nicht-US-Firma: beendetes Quartal bleibt wie bisher offen — keine
-    EDGAR-Anfrage, Ableitung unveraendert."""
+    """Nicht-US-Firma, Karenz NICHT abgelaufen (Q4-Ende 20 Tage her):
+    das Quartal ist offen — keine EDGAR-Anfrage (kein 8-K-Check fuer
+    Nicht-US), Ableitung laeuft."""
     import app.values.adjusted_enrichment as adj
 
     company.isin = "DE0001234567"
@@ -290,6 +291,30 @@ def test_non_us_ended_quarter_still_derived(db, company, monkeypatch):
     assert written == 1
     db.refresh(est)
     assert est.numeric_value == Decimal("130")
+
+
+def test_non_us_grace_passed_quarter_not_treated_as_open(db, company, monkeypatch):
+    """Nicht-US-Firma, Karenz abgelaufen (Q4-Ende 60 Tage her): das
+    Quartal gilt jetzt auch ohne 8-K als berichtet — keine Guidance-
+    Ableitung ueber die per Statement-Recherche kommenden Actuals
+    (SAP-Befund: alle DE-Quartale galten als offen). EDGAR wird fuer
+    Nicht-US nie angefragt."""
+    import app.values.adjusted_enrichment as adj
+
+    company.isin = "DE0001234567"
+    year, _, est = _in_grace_setup(db, company, days_back=60)
+
+    def _boom(ticker):
+        raise AssertionError("non-US darf EDGAR nicht anfragen")
+
+    monkeypatch.setattr(adj, "_resolve_cik", _boom)
+    written = derive_open_quarter_from_fy_estimate(db, company.id, year)
+    db.commit()
+
+    assert written == 0
+    db.refresh(est)
+    assert est.numeric_value == Decimal("999")
+    assert est.primary_method == "two_stage_confirmed"
 
 
 def test_negative_residual_for_net_income_allowed(db, company):

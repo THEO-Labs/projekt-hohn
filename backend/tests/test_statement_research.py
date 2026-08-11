@@ -355,6 +355,95 @@ def test_qsum_within_tolerance_writes_quarters(db, company, monkeypatch):
         assert _rows(db, company, "revenue", q)[0].numeric_value is not None
 
 
+# --- Karenz-Gate: unberichtete Perioden werden nicht angefasst -------------
+
+
+def _running_year(db, company):
+    """FY-Ende ~120 Tage in der Zukunft: Q1/Q2 berichtet (Karenz um),
+    Q3/Q4/FY unberichtet — unabhaengig vom Ausfuehrungsdatum."""
+    from datetime import timedelta
+
+    t = date.today() + timedelta(days=120)
+    company.fiscal_year_end_month = t.month
+    company.fiscal_year_end_day = t.day
+    db.commit()
+    return t.year
+
+
+def test_running_year_unreported_periods_untouched(db, company, monkeypatch):
+    """Laufendes Jahr: nur berichtete Perioden (Karenz abgelaufen) werden
+    geschrieben bzw. not_found-gestempelt. Unberichtete Perioden bleiben
+    komplett ohne Zeile — auch wenn das Modell Werte liefert."""
+    year = _running_year(db, company)
+    payload = {
+        "revenue": {
+            "FY": _entry(40_000_000_000),
+            "Q1": _entry(9_000_000_000),
+            "Q2": _entry(10_000_000_000),
+            "Q3": _entry(10_500_000_000),
+            "Q4": _entry(10_500_000_000),
+        },
+        "net_income": {"FY": _entry(3_000_000_000)},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, year, groups=["income"])
+    db.commit()
+
+    # Berichtete Quartale geschrieben.
+    assert _rows(db, company, "revenue", "Q1", year=year)[0].numeric_value == Decimal("9000000000")
+    assert _rows(db, company, "revenue", "Q2", year=year)[0].numeric_value == Decimal("10000000000")
+    # Unberichtete Perioden: kein Write trotz gelieferter Werte.
+    for pt in ("Q3", "Q4", "FY"):
+        assert _rows(db, company, "revenue", pt, year=year) == []
+    # net_income: FY geliefert, aber unberichtet -> nichts; berichtete
+    # Quartale ohne Beleg -> not_found (rote Zelle).
+    assert _rows(db, company, "net_income", "FY", year=year) == []
+    for pt in ("Q1", "Q2"):
+        (row,) = _rows(db, company, "net_income", pt, year=year)
+        assert row.numeric_value is None
+        assert row.primary_method == "not_found"
+    for pt in ("Q3", "Q4"):
+        assert _rows(db, company, "net_income", pt, year=year) == []
+
+
+def test_running_year_forecast_slot_not_shadowed(db, company, monkeypatch):
+    """SAP-Regression: die Guidance-Forecast-Zeile einer unberichteten
+    Periode bekommt keinen not_found-Actual daneben (der die Forecast-
+    Zelle in der Detail-Seite verschatten wuerde)."""
+    year = _running_year(db, company)
+    fc = _seed(db, company, "revenue", "FY", 42_000_000_000, year=year,
+               is_forecast=True, primary_method="web_guidance")
+    _mock_claude(monkeypatch, {"income": {"revenue": {"Q1": _entry(9_000_000_000)}}})
+
+    sr.fetch_statement_research(db, company, year, groups=["income"])
+    db.commit()
+
+    fy_rows = _rows(db, company, "revenue", "FY", year=year)
+    assert len(fy_rows) == 1
+    db.refresh(fc)
+    assert fc.is_forecast is True
+    assert fc.numeric_value == Decimal("42000000000")
+    assert fc.primary_method == "web_guidance"
+    # Berichtetes Q2 ohne Beleg bekommt weiterhin den not_found-Stempel.
+    assert _rows(db, company, "revenue", "Q2", year=year)[0].primary_method == "not_found"
+
+
+def test_year_without_reported_periods_skips_calls(db, company, monkeypatch):
+    """Noch keine Periode berichtet (Jahr gerade gestartet): kein
+    Claude-Call, keine Writes."""
+    from datetime import timedelta
+
+    t = date.today() + timedelta(days=330)
+    company.fiscal_year_end_month = t.month
+    company.fiscal_year_end_day = t.day
+    db.commit()
+    calls = _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    assert sr.fetch_statement_research(db, company, t.year) == 0
+    assert calls == []
+
+
 # --- Adjusted-Sidecars -----------------------------------------------------
 
 
