@@ -587,7 +587,11 @@ def _parse_payload(data: dict, group: str) -> dict[str, dict[str, dict]]:
 
 
 def _prev_actual(db, company_id, key: str, year: int, period_type: str) -> Decimal | None:
-    """Vorjahres-Ist derselben Periode: FY vs FY, Qx vs Qx."""
+    """Vorjahres-Ist derselben Periode: FY vs FY, Qx vs Qx.
+
+    Nur vertrauenswuerdige Herkunft als Band-Referenz — Altlasten der
+    Two-Stage-Aera haben nachweislich Muellwerte hinterlassen (Siemens
+    EBITDA Q2 '280 Mio'), die sonst korrekte neue Werte blocken."""
     row = (
         db.query(CompanyValue)
         .filter(
@@ -597,6 +601,9 @@ def _prev_actual(db, company_id, key: str, year: int, period_type: str) -> Decim
             CompanyValue.period_year == year - 1,
             CompanyValue.is_forecast.is_(False),
             CompanyValue.numeric_value.isnot(None),
+            CompanyValue.primary_method.in_(
+                ("provider", "statement_research", "manual", "calculated")
+            ),
         )
         .first()
     )
