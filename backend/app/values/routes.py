@@ -1499,6 +1499,21 @@ def refresh_company_values(
                 [payload.period_year - 1] if prev_year_backfill_keys else []
             ) + [payload.period_year]
 
+            # Nicht-US: Quartals-Anker aus den Yahoo-Quartalsstatements —
+            # NACH dem FY-Anker (Key-Loop oben), VOR den Statement-Calls,
+            # damit die Recherche nur noch fuellt, was der Provider nicht
+            # abdeckt (provider-Zeilen sind dort nicht ersetzbar und die
+            # Bedarfspruefung spart ganze Gruppen-Calls ein). Fehler
+            # brechen den Refresh nie ab.
+            if not us_filer:
+                try:
+                    from app.values.provider_anchor import anchor_quarters_with_yahoo
+                    anchor_quarters_with_yahoo(db, company, consistency_years)
+                    db.commit()
+                except Exception as e:
+                    logger.warning("yahoo quarter anchor failed for %s: %s", ticker, e)
+                    db.rollback()
+
             # Nicht-US: EIN Recherche-Call pro Jahr und Statement-Gruppe
             # (max. 3 Calls) ersetzt die Two-Stage-Recherche pro Key.
             # Reihenfolge N-1 vor N, damit das Vorjahresband-Gate die

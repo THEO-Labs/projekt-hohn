@@ -567,3 +567,75 @@ def test_validator_diet_keeps_core_checks_and_clears_legacy_flags(db, company):
     assert "eps_ni_mismatch" in (ni.consistency_flags or "")
     assert capex.consistency_flags is None
     assert all(not f.startswith("unit_scale") for f in active)
+
+
+# --- Bedarfspruefung (Quartals-Anker deckt Gruppen) -------------------------
+
+
+def _cover_group(db, company, group, skip=()):
+    """Alle Basis-Keys der Gruppe fuer FY+Q1-Q4 mit provider-Zeilen
+    fuellen (wie nach FY- und Yahoo-Quartals-Anker)."""
+    keys = [k for k, _ in sr.STATEMENT_GROUPS[group]
+            if k not in sr._ADJUSTED_SIDECARS]
+    for key in keys:
+        for pt in ("FY", "Q1", "Q2", "Q3", "Q4"):
+            if (key, pt) in skip:
+                continue
+            _seed(db, company, key, pt, 5_000_000_000,
+                  primary_method="provider", source_name="Bloomberg")
+
+
+def test_fully_covered_group_skips_claude_call(db, company, monkeypatch):
+    """Gruppe ohne ersetzbare/leere berichtete Zelle (Provider-Anker hat
+    alles gedeckt) -> kein Claude-Call fuer diese Gruppe."""
+    _cover_group(db, company, "income")
+    calls = _mock_claude(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR)
+
+    assert [c[2] for c in calls] == ["cashflow", "balance"]
+
+
+def test_all_groups_covered_zero_claude_calls(db, company, monkeypatch):
+    """Steady State (SAP-artig): Provider deckt alle Gruppen -> 0 Calls."""
+    for group in ("income", "cashflow", "balance"):
+        _cover_group(db, company, group)
+    calls = _mock_claude(monkeypatch, {})
+
+    assert sr.fetch_statement_research(db, company, YEAR) == 0
+    assert calls == []
+
+
+def test_single_uncovered_cell_triggers_group_call(db, company, monkeypatch):
+    """Eine leere berichtete Zelle (z.B. ebitda Q2 fehlt bei Yahoo)
+    genuegt, damit der Gruppen-Call laeuft."""
+    _cover_group(db, company, "income", skip={("ebitda", "Q2")})
+    _cover_group(db, company, "cashflow")
+    _cover_group(db, company, "balance")
+    calls = _mock_claude(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR)
+
+    assert [c[2] for c in calls] == ["income"]
+
+
+def test_replaceable_row_still_triggers_group_call(db, company, monkeypatch):
+    """statement_research-Zeilen sind ersetzbar — eine gedeckte Gruppe
+    aus reinen Recherche-Zeilen wird weiterhin aktualisiert."""
+    _cover_group(db, company, "balance")
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == "lt_debt",
+            CompanyValue.period_type == "Q1",
+        )
+        .one()
+    )
+    row.primary_method = "statement_research"
+    db.commit()
+    calls = _mock_claude(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+
+    assert [c[2] for c in calls] == ["balance"]

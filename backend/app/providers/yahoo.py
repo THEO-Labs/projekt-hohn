@@ -65,6 +65,28 @@ CASHFLOW_ROWS = {
     "dividends": ["Cash Dividends Paid", "Common Stock Dividend Paid"],
 }
 
+# Quartals-Fundamentals (Yahoo liefert die letzten ~5 Quartale). Die
+# Zeilen-Aliase sind identisch mit den Annual-Maps — Yahoo nutzt in den
+# quarterly-DataFrames dieselben Zeilennamen. Abdeckung (DAX-Probe
+# SAP/SIE/ALV/BMW/DTE/BAS, Aug 2026): GuV (revenue/net_income/
+# eps_diluted/ebitda) und Cashflow-Kernzeilen (operating_cash_flow/
+# capex) sind breit gefuellt; ebitda fehlt bei Financials (ALV).
+# st_debt/lt_debt sind bei Halbjahresberichtern oft nur zu H1/FY
+# gefuellt; sbc fehlt ausserhalb SAP meist ganz; dividends/
+# buyback_volume firmenabhaengig (BMW: keine Zeilen, ALV: Cashflow
+# komplett leer). Fehlende Zellen fuellt die Statement-Recherche.
+# st_debt ist hier — anders als bei EDGAR — zugelassen: Yahoo liefert
+# die aggregierte Zeile ("Current Debt"), keine Teilkomponenten.
+QUARTERLY_FINANCIALS_KEYS = ("revenue", "net_income", "eps_diluted", "ebitda")
+QUARTERLY_BALANCE_KEYS = ("cash_and_equivalents", "st_investments", "st_debt", "lt_debt")
+QUARTERLY_CASHFLOW_KEYS = ("operating_cash_flow", "capex", "sbc", "dividends", "buyback_volume")
+
+# Toleranz beim Mapping Quartalsende -> Spaltendatum: Day-Clamping
+# (berechnet 30.12. vs. berichtet 31.12.) und 52/53-Wochen-Fiskaljahre
+# weichen um wenige Tage ab; Quartale liegen ~90 Tage auseinander,
+# 10 Tage sind also eindeutig.
+_QUARTER_COLUMN_TOLERANCE_DAYS = 10
+
 VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
     "stock_price": (0, 1e10),
     "market_cap": (0, 1e16),
@@ -92,11 +114,18 @@ VALUE_SANITY_CHECKS: dict[str, tuple[float, float]] = {
 
 class YahooFinanceProvider:
     name = "Bloomberg"
+    # Marker fuer den Nicht-US-Quartals-Anker (provider_anchor):
+    # unterscheidet den Markt-Provider von den XBRL-Providern in der
+    # Kette, ohne isinstance (Test-Fakes setzen dasselbe Attribut).
+    provider_kind = "market"
     supported_keys = (
         set(INFO_KEY_MAP.keys())
         | set(FINANCIALS_ROWS.keys())
         | set(BALANCE_SHEET_ROWS.keys())
         | set(CASHFLOW_ROWS.keys())
+    )
+    quarterly_supported_keys = frozenset(
+        QUARTERLY_FINANCIALS_KEYS + QUARTERLY_BALANCE_KEYS + QUARTERLY_CASHFLOW_KEYS
     )
 
     def __init__(self) -> None:
@@ -105,6 +134,9 @@ class YahooFinanceProvider:
         self._financials_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._balance_sheet_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._cashflow_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
+        self._q_financials_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
+        self._q_balance_sheet_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
+        self._q_cashflow_cache: TTLCache = TTLCache(maxsize=100, ttl=300)
         self._isin_ticker_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
         self._next_earnings_cache: TTLCache = TTLCache(maxsize=200, ttl=3600)
 
@@ -157,6 +189,24 @@ class YahooFinanceProvider:
             t = self._get_ticker(ticker)
             self._cashflow_cache[ticker] = t.cashflow
         return self._cashflow_cache[ticker]
+
+    def _get_quarterly_financials(self, ticker: str):
+        if ticker not in self._q_financials_cache:
+            t = self._get_ticker(ticker)
+            self._q_financials_cache[ticker] = t.quarterly_financials
+        return self._q_financials_cache[ticker]
+
+    def _get_quarterly_balance_sheet(self, ticker: str):
+        if ticker not in self._q_balance_sheet_cache:
+            t = self._get_ticker(ticker)
+            self._q_balance_sheet_cache[ticker] = t.quarterly_balance_sheet
+        return self._q_balance_sheet_cache[ticker]
+
+    def _get_quarterly_cashflow(self, ticker: str):
+        if ticker not in self._q_cashflow_cache:
+            t = self._get_ticker(ticker)
+            self._q_cashflow_cache[ticker] = t.quarterly_cashflow
+        return self._q_cashflow_cache[ticker]
 
     def _to_decimal(self, value) -> Decimal | None:
         if value is None:
@@ -226,6 +276,78 @@ class YahooFinanceProvider:
                 return self._fetch_from_cashflow(ticker, key, period_year, source_link, abs_value=abs_value)
 
         return None
+
+    def _find_quarter_column(self, df, target_end: date):
+        """Spalte, deren Periodenende dem berechneten Quartalsende am
+        naechsten liegt (max. _QUARTER_COLUMN_TOLERANCE_DAYS Abstand)."""
+        best_col, best_delta = None, None
+        for col in df.columns:
+            try:
+                col_date = col.date() if hasattr(col, "date") else col
+                delta = abs((col_date - target_end).days)
+            except Exception:
+                continue
+            if delta <= _QUARTER_COLUMN_TOLERANCE_DAYS and (
+                best_delta is None or delta < best_delta
+            ):
+                best_col, best_delta = col, delta
+        return best_col
+
+    def fetch_quarterly(
+        self,
+        ticker: str,
+        key: str,
+        period_year: int,
+        quarter: str,
+        fy_end_month: int | None = None,
+        fy_end_day: int | None = None,
+    ) -> ProviderResult | None:
+        """Quartalswert aus den Yahoo-Quartalsstatements (Signatur wie
+        EdgarProvider.fetch_quarterly). Zuordnung Quartal -> Spalte ueber
+        das aus dem FY-Ende berechnete Quartalsende (Fiskaljahres-Versatz:
+        Siemens Sep-Ende -> Q1 endet am 31.12. des Vorjahres); ohne
+        FY-Ende Kalenderjahr-Default. None = Quartal nicht verfuegbar."""
+        from app.values.detail_page import quarter_end_date
+
+        if key not in self.quarterly_supported_keys:
+            return None
+        target_end = quarter_end_date(period_year, quarter, fy_end_month, fy_end_day)
+        if target_end is None:
+            return None
+        try:
+            if key in QUARTERLY_FINANCIALS_KEYS:
+                df, rows = self._get_quarterly_financials(ticker), FINANCIALS_ROWS[key]
+            elif key in QUARTERLY_BALANCE_KEYS:
+                df, rows = self._get_quarterly_balance_sheet(ticker), BALANCE_SHEET_ROWS[key]
+            else:
+                df, rows = self._get_quarterly_cashflow(ticker), CASHFLOW_ROWS[key]
+            if df is None or df.empty:
+                return None
+            col = self._find_quarter_column(df, target_end)
+            if col is None:
+                return None
+            value = self._get_row_value(df, col, rows)
+            if value is None:
+                return None
+            # Wie im FY-Pfad: Rueckkaeufe/Dividenden als Betrag (Yahoo
+            # liefert Cash-Outflows negativ); capex laeuft ueber
+            # normalize_sign im Schreibpfad.
+            if key in {"buyback_volume", "dividends"}:
+                value = abs(value)
+            value = self._sanity_check(key, value)
+            if value is None:
+                return None
+            info = self._get_info(ticker)
+            currency = info.get("currency") if key in CURRENCY_KEYS else None
+            return ProviderResult(
+                value=value, source_name=self.name, source_link=None, currency=currency,
+            )
+        except Exception as e:
+            logger.warning(
+                "Yahoo quarterly fetch failed %s/%s %s FY%s: %s",
+                ticker, key, quarter, period_year, e,
+            )
+            return None
 
     def _fetch_from_balance_sheet(self, ticker: str, key: str, period_year: int, source_link: str) -> ProviderResult | None:
         try:

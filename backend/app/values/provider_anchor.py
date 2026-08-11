@@ -244,9 +244,19 @@ def _quarterly_provider(key: str):
     return None
 
 
-def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter: str) -> bool:
-    """Eine Q-Zelle mit dem Provider-Wert verankern. True wenn geschrieben."""
-    rows = (
+def _quarter_cell_locked(rows) -> bool:
+    """Locks: manuelle ACTUAL-Zeilen und gefuellte PDF-Zeilen sind
+    authoritative. Manuelle FORECAST-Zeilen sperren nur Schaetz-Writer —
+    berichtete Provider-Zahlen duerfen sie ersetzen."""
+    return any(
+        (r.manually_overridden and not r.is_forecast)
+        or (r.from_ir_pdf and r.numeric_value is not None)
+        for r in rows
+    )
+
+
+def _quarter_slot_rows(db, company, key: str, year: int, quarter: str):
+    return (
         db.query(CompanyValue)
         .filter(
             CompanyValue.company_id == company.id,
@@ -256,14 +266,13 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
         )
         .all()
     )
-    # Locks: manuelle ACTUAL-Zeilen und gefuellte PDF-Zeilen sind
-    # authoritative. Manuelle FORECAST-Zeilen sperren nur Schaetz-Writer —
-    # berichtete XBRL-Zahlen duerfen sie ersetzen.
-    for r in rows:
-        if (r.manually_overridden and not r.is_forecast) or (
-            r.from_ir_pdf and r.numeric_value is not None
-        ):
-            return False
+
+
+def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter: str) -> bool:
+    """Eine Q-Zelle mit dem Provider-Wert verankern. True wenn geschrieben."""
+    # Lock-Vorpruefung vor dem Fetch — keinen Provider-Call verschwenden.
+    if _quarter_cell_locked(_quarter_slot_rows(db, company, key, year, quarter)):
+        return False
 
     fy_end_month = getattr(company, "fiscal_year_end_month", None)
     fy_end_day = getattr(company, "fiscal_year_end_day", None)
@@ -285,6 +294,15 @@ def _anchor_one_quarter_cell(db, company, provider, key: str, year: int, quarter
     # sie wuerde durch den apply_to_db-Guard unkorrigierbar und ist
     # schlechter als ein LLM-recherchiertes echtes EBITDA.
     if key == "ebitda" and result.source_name and "EBITDA ~ EBIT" in result.source_name:
+        return False
+    return _write_quarter_result(db, company, key, year, quarter, result)
+
+
+def _write_quarter_result(db, company, key: str, year: int, quarter: str, result) -> bool:
+    """Provider-Quartalsergebnis in den Slot schreiben (gemeinsamer
+    Schreibpfad fuer EDGAR- und Yahoo-Anker). True wenn geschrieben."""
+    rows = _quarter_slot_rows(db, company, key, year, quarter)
+    if _quarter_cell_locked(rows):
         return False
 
     now = datetime.now(timezone.utc)
@@ -458,6 +476,188 @@ def anchor_quarters_with_provider(db, company, years: list[int]) -> int:
                     )
     logger.info(
         "%s quarter anchor: %d Zellen aus EDGAR (Jahre %s)",
+        company.ticker, written, years,
+    )
+    return written
+
+
+# --- Nicht-US-Quartals-Anker (Yahoo) ---------------------------------------
+
+# Bilanz-Keys sind Stichtagswerte: Plausibilitaet gegen den FY-Wert selbst
+# (nicht FY/4), kein qsum-Vergleich.
+_YAHOO_BALANCE_KEYS = frozenset({
+    "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
+})
+# qsum-Gate nur fuer Flow-Keys; eps_diluted ausgenommen (FY != Sigma(Q)
+# wegen Weighted-Average-Diluted-Shares, Muster statement_research).
+_YAHOO_QSUM_KEYS = frozenset({
+    "revenue", "net_income", "ebitda",
+    "operating_cash_flow", "capex", "sbc", "dividends", "buyback_volume",
+})
+# Grobes Faktor-Band Quartalswert vs. Erwartung (FY/4 bzw. FY): faengt
+# Einheiten-/Periodenfehler (Yahoo-Datenfehler) ab, laesst saisonale
+# Schwankung durch.
+_YAHOO_PLAUS_MIN = Decimal("0.1")
+_YAHOO_PLAUS_MAX = Decimal("4")
+# qsum-Toleranz gegen den FY-Anker derselben Quelle.
+_YAHOO_QSUM_TOL = Decimal("0.05")
+
+
+def _market_quarterly_provider(key: str):
+    """Markt-Provider (Yahoo) mit Quartals-Fundamentals in der Kette.
+    Laeuft ueber get_providers, damit der conftest-Netzblock
+    (get_providers -> []) auch diesen Anker hermetisch haelt."""
+    for provider in get_providers(key):
+        if getattr(provider, "provider_kind", None) == "market" and hasattr(
+            provider, "fetch_quarterly"
+        ):
+            return provider
+    return None
+
+
+def _quarter_is_reported(company, year: int, quarter: str, today: date | None = None) -> bool:
+    """Karenz-Kriterium wie consistency._quarter_reported (Nicht-US-Zweig):
+    Quartalsende plus REPORTING_GRACE_DAYS abgelaufen."""
+    from app.values.detail_page import REPORTING_GRACE_DAYS, quarter_end_date
+
+    if today is None:
+        today = date.today()
+    q_end = quarter_end_date(
+        year, quarter,
+        getattr(company, "fiscal_year_end_month", None),
+        getattr(company, "fiscal_year_end_day", None),
+    )
+    return q_end is not None and (today - q_end).days >= REPORTING_GRACE_DAYS
+
+
+def _fy_reference(db, company, key: str, year: int) -> tuple[Decimal | None, bool]:
+    """FY-Referenz fuers Plausibilitaets-Gate: bevorzugt der geankerte
+    Provider-Actual (dieselbe Quelle wie die Quartale), sonst irgendein
+    FY-Actual, sonst die FY-Forecast-Zeile (laufendes Jahr).
+    Rueckgabe (wert, ist_actual) — qsum prueft nur gegen Actuals."""
+    rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year == year,
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .all()
+    )
+    actuals = [r for r in rows if not r.is_forecast]
+    provider_row = next((r for r in actuals if r.primary_method == "provider"), None)
+    if provider_row is not None:
+        return provider_row.numeric_value, True
+    if actuals:
+        return actuals[0].numeric_value, True
+    forecasts = [r for r in rows if r.is_forecast]
+    if forecasts:
+        return forecasts[0].numeric_value, False
+    return None, False
+
+
+def _quarter_value_plausible(key: str, value: Decimal, fy_value: Decimal | None) -> bool:
+    """Faktor-Band 0.1-4 gegen FY/4 (Flow) bzw. FY (Bilanz-Stichtag).
+    Ohne FY-Referenz oder bei Nullwerten kein Urteil (Gate passiert);
+    Vorzeichen bleiben aussen vor (Sign-Flip-Quartale sind legitim,
+    Betragsvergleich reicht gegen Einheiten-/Periodenfehler)."""
+    if fy_value is None or fy_value == 0 or value == 0:
+        return True
+    expected = fy_value if key in _YAHOO_BALANCE_KEYS else fy_value / 4
+    if expected == 0:
+        return True
+    ratio = abs(value) / abs(expected)
+    return _YAHOO_PLAUS_MIN <= ratio <= _YAHOO_PLAUS_MAX
+
+
+def anchor_quarters_with_yahoo(db, company, years: list[int]) -> int:
+    """Quartals-Anker fuer Nicht-US-Filer aus den Yahoo-Quartalsstatements.
+
+    Gegenstueck zu anchor_quarters_with_provider (US/EDGAR): schreibt
+    BERICHTETE Quartale (Karenz abgelaufen) als primary_method='provider',
+    Quelle wie der FY-Anker (Bloomberg-Label). Laeuft NACH dem FY-Anker
+    und VOR der Statement-Recherche — die fuellt danach nur noch, was der
+    Provider nicht abdeckt (provider-Zeilen sind dort nicht ersetzbar).
+
+    Plausibilitaets-Gate gegen den FY-Anker derselben Quelle: Faktor-Band
+    0.1-4 (FY/4 bzw. FY bei Bilanz-Stichtagen) je Quartal, zusaetzlich
+    qsum |Sigma(Q)| vs |FY| < 5% wenn alle 4 Quartale da sind (Verstoss
+    verwirft alle 4 — z.B. Halbjahreswerte in Q-Spalten). Yahoo hat
+    gelegentlich Datenfehler; der FY-Anker ist die Referenz.
+    Rueckgabe: Anzahl geschriebener Zellen.
+    """
+    from app.calculations.lock import is_us_company
+    # Nicht-US only: US-Filer haben EDGAR (anchor_quarters_with_provider).
+    if is_us_company(company):
+        return 0
+    from app.values.statement_research import STATEMENT_RESEARCH_KEYS
+
+    fy_end_month = getattr(company, "fiscal_year_end_month", None)
+    fy_end_day = getattr(company, "fiscal_year_end_day", None)
+    written = 0
+    for key in sorted(STATEMENT_RESEARCH_KEYS):
+        provider = _market_quarterly_provider(key)
+        if provider is None:
+            continue
+        for year in years:
+            quarters = [q for q in ("Q1", "Q2", "Q3", "Q4")
+                        if _quarter_is_reported(company, year, q)]
+            if not quarters:
+                continue
+            fy_ref, fy_is_actual = _fy_reference(db, company, key, year)
+            results: dict[str, object] = {}
+            for quarter in quarters:
+                try:
+                    result = provider.fetch_quarterly(
+                        company.ticker, key, year, quarter,
+                        fy_end_month=fy_end_month, fy_end_day=fy_end_day,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Yahoo-Quartals-Anker fetch failed %s/%s/%s FY%s: %s",
+                        company.ticker, key, quarter, year, e,
+                    )
+                    continue
+                if result is None or not isinstance(result.value, Decimal):
+                    continue
+                if not _quarter_value_plausible(key, result.value, fy_ref):
+                    logger.warning(
+                        "Yahoo-Quartals-Anker %s/%s/%s FY%s: %s ausserhalb "
+                        "Faktor-Band 0.1-4 der FY-Referenz %s — verworfen",
+                        company.ticker, key, quarter, year, result.value, fy_ref,
+                    )
+                    continue
+                results[quarter] = result
+            # qsum-Gate: alle 4 Quartale da und FY-Actual als Referenz —
+            # Betragsvergleich (capex kommt von Yahoo negativ, der FY-Wert
+            # ist sign-normalisiert gespeichert).
+            if (
+                key in _YAHOO_QSUM_KEYS
+                and fy_is_actual
+                and fy_ref not in (None, 0)
+                and all(q in results for q in ("Q1", "Q2", "Q3", "Q4"))
+            ):
+                q_sum = sum(r.value for r in results.values())
+                if abs(abs(q_sum) - abs(fy_ref)) > abs(fy_ref) * _YAHOO_QSUM_TOL:
+                    logger.warning(
+                        "Yahoo-Quartals-Anker %s/%s FY%s: Quartalssumme %s "
+                        "weicht > 5%% vom FY-Anker %s ab — alle 4 verworfen",
+                        company.ticker, key, year, q_sum, fy_ref,
+                    )
+                    results.clear()
+            for quarter, result in results.items():
+                try:
+                    if _write_quarter_result(db, company, key, year, quarter, result):
+                        written += 1
+                except Exception as e:
+                    logger.warning(
+                        "Yahoo-Quartals-Anker write failed %s/%s/%s FY%s: %s",
+                        company.ticker, key, quarter, year, e,
+                    )
+    logger.info(
+        "%s quarter anchor (Yahoo): %d Zellen (Jahre %s)",
         company.ticker, written, years,
     )
     return written

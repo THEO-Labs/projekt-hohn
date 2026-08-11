@@ -682,6 +682,26 @@ def _persist_group(db, company, year: int, group: str,
     return written
 
 
+def _group_needs_research(db, company, year: int, group: str,
+                          periods_reported: tuple[str, ...]) -> bool:
+    """Bedarfspruefung pro Gruppe: hat mindestens EINE berichtete Zelle
+    der Gruppe keinen autoritativen Wert (leer oder ersetzbar per
+    _row_replaceable), lohnt der Claude-Call. Sind alle Zellen durch
+    Provider-/Manual-/PDF-Zeilen gedeckt (Yahoo-Quartals-Anker + FY-
+    Anker), entfaellt er — SAP-artige Faelle brauchen im Steady State
+    0-1 Calls statt 3."""
+    base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
+    for key in base_keys:
+        for pt in periods_reported:
+            rows = _slot_rows(db, company.id, key, pt, year)
+            target = next((r for r in rows if not r.is_forecast), None)
+            if target is None:
+                target = next(iter(rows), None)
+            if target is None or _row_replaceable(target):
+                return True
+    return False
+
+
 def fetch_statement_research(db, company, year: int, cost_tracker=None,
                              groups=None) -> int:
     """Berichtete Fundamentals eines Nicht-US-Filers fuer ein Jahr holen:
@@ -718,6 +738,15 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
     now = datetime.now(timezone.utc)
     total = 0
     for group in group_names:
+        # Bedarfspruefung: Gruppe ohne ersetzbare/leere berichtete Zelle
+        # (alles vom Provider-Anker gedeckt) -> kein Claude-Call.
+        if not _group_needs_research(db, company, year, group, periods_reported):
+            logger.info(
+                "statement research %s/FY%s %s: alle berichteten Zellen "
+                "gedeckt — kein Claude-Call",
+                company.ticker, year, group,
+            )
+            continue
         try:
             data = _call_claude(company, year, group, cost_tracker=cost_tracker)
         except Exception as e:
