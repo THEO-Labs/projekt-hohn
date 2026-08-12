@@ -1427,6 +1427,12 @@ def _upsert_reported(db, company, key: str, pt: str, year: int, info: dict,
         key, info["value"],
         context=f"statement-research {company.ticker}/{pt} FY{year}",
     )
+    # capex ist nicht in ALWAYS_POSITIVE_KEYS (Repo-Konvention), kommt aus
+    # dem Cashflow-Statement aber oft als negativer Abfluss — wir speichern
+    # Betraege (Muster gaap_bridge._FORCE_ABS_KEYS). Sonst stehen FY -739
+    # neben Quartalen +168 und die Delta-Zeilen rechnen Unsinn.
+    if key == "capex" and value is not None:
+        value = abs(value)
 
     if target is None:
         target = CompanyValue(
