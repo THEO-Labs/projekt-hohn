@@ -2,6 +2,7 @@
 Claude-Call pro Firma+Jahr+Statement-Gruppe ersetzt die Two-Stage-
 Recherche fuer Nicht-US-Filer. Hermetisch — der Claude-Call ist via
 _call_claude gemockt, das Refresh-Wiring via monkeypatch auf routes."""
+import logging
 from datetime import date
 from decimal import Decimal
 
@@ -327,7 +328,7 @@ def test_adjusted_below_reported_is_allowed(db, company, monkeypatch):
 
 
 def test_track_mixup_beyond_band_discards_pair(db, company, monkeypatch):
-    """Mehr als 60% Abstand zwischen reported und adjusted ist eine
+    """Mehr als 150% Abstand zwischen reported und adjusted ist eine
     Spur-Verwechslung — beide Werte der Periode werden verworfen.
     (Aufwaerts konstruiert: abwaerts ist die maximale Abweichung -100%
     und kann das 150%-Band nie reissen.)"""
@@ -1437,3 +1438,118 @@ def test_attributable_gate_needs_both_values(db, company, monkeypatch):
     db.commit()
 
     assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3240000000")
+
+
+# --- Interne Konsistenz als Schiedsrichter (SAP-Korrekturlauf) ---------------
+
+
+def _seed_turnaround_prev(db, company):
+    """Vorjahres-Referenzen des SAP-2025-Musters: NI 3,37 Mrd, EPS 2.24."""
+    _seed(db, company, "net_income", "FY", 3_370_000_000, year=PREV,
+          primary_method="provider")
+    _seed(db, company, "eps_diluted", "FY", "2.24", year=PREV,
+          primary_method="provider")
+
+
+def test_prev_band_turnaround_accepted_when_consistent(db, company, monkeypatch, caplog):
+    """SAP-2025-Muster (Falle a): +117%/+178% vs Vorjahr verletzen das
+    Band, NI und EPS passen aber ueber die SNAPSHOT-Aktienzahl zusammen
+    — echter Turnaround, beide Werte werden geschrieben."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_170_000_000, year=None)
+    _seed_turnaround_prev(db, company)
+    payload = {
+        "net_income": {"FY": _entry(7_327_000_000)},
+        "eps_diluted": {"FY": _entry("6.24")},  # implied 7,3008 Mrd -> 0,4%
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    with caplog.at_level(logging.INFO, logger="app.values.statement_research"):
+        sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("7327000000")
+    assert _rows(db, company, "eps_diluted", "FY")[0].numeric_value == Decimal("6.24")
+    assert "Turnaround akzeptiert: NI/EPS intern konsistent" in caplog.text
+
+
+def test_prev_band_violation_inconsistent_pair_discarded(db, company, monkeypatch):
+    """Band verletzt und NI passt NICHT zu EPS x Aktien (>6%): keine
+    Turnaround-Ausnahme — die Werte werden wie bisher verworfen."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_170_000_000, year=None)
+    _seed_turnaround_prev(db, company)
+    payload = {
+        "net_income": {"FY": _entry(7_327_000_000)},  # implied 4,68 Mrd -> +57%
+        "eps_diluted": {"FY": _entry("4.00")},        # +79% vs Vorjahr
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "eps_diluted", "FY")[0].primary_method == "not_found"
+
+
+def test_prev_band_turnaround_without_shares_discarded(db, company, monkeypatch):
+    """Ohne SNAPSHOT-Aktienzahl ist die Konsistenz nicht pruefbar — die
+    Band-Verwerfung greift wie bisher."""
+    _seed_turnaround_prev(db, company)
+    payload = {
+        "net_income": {"FY": _entry(7_327_000_000)},
+        "eps_diluted": {"FY": _entry("6.24")},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "eps_diluted", "FY")[0].primary_method == "not_found"
+
+
+def test_pair_kill_consistent_base_discards_only_sidecar(db, company, monkeypatch, caplog):
+    """SAP-Muster (Falle b): Sidecar 8,169 Mrd war der non-IFRS-
+    Betriebsgewinn, die IFRS-Basis 3,098 Mrd ist intern konsistent —
+    NUR der Sidecar fliegt, Basis und EPS werden geschrieben."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_170_000_000, year=None)
+    payload = {
+        "net_income": {"FY": _entry(3_098_000_000)},
+        "eps_diluted": {"FY": _entry("2.65")},  # implied 3,1005 Mrd -> 0,1%
+        "net_income_adjusted": {"FY": _entry(8_169_000_000)},   # +164% -> Band
+        "eps_diluted_adjusted": {"FY": _entry("8.00")},         # +202% -> Band
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    with caplog.at_level(logging.WARNING, logger="app.values.statement_research"):
+        sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    ni = _rows(db, company, "net_income", "FY")[0]
+    assert ni.numeric_value == Decimal("3098000000")
+    assert ni.numeric_value_adjusted is None
+    eps = _rows(db, company, "eps_diluted", "FY")[0]
+    assert eps.numeric_value == Decimal("2.65")
+    assert eps.numeric_value_adjusted is None
+    assert "Sidecar verworfen, Basis intern konsistent" in caplog.text
+
+
+def test_pair_kill_unverifiable_base_discards_both(db, company, monkeypatch, caplog):
+    """Basis nicht pruefbar (kein EPS im Payload trotz Aktienzahl):
+    bisheriges Verhalten — beide Spuren weg; Log-Text nennt das
+    150%-Band (nicht mehr die alten 60%)."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_170_000_000, year=None)
+    payload = {
+        "net_income": {"FY": _entry(4_000_000_000)},
+        "net_income_adjusted": {"FY": _entry(12_000_000_000)},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    with caplog.at_level(logging.WARNING, logger="app.values.statement_research"):
+        sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    fy = _rows(db, company, "net_income", "FY")[0]
+    assert fy.numeric_value is None
+    assert fy.numeric_value_adjusted is None
+    assert ">150%" in caplog.text
+    assert ">60%" not in caplog.text

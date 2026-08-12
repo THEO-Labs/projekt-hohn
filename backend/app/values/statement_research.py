@@ -26,11 +26,17 @@ statt Finanzportale, Berichtswaehrung) — die eigentliche Verteidigung
 sind die deterministischen Code-Gates (Muster guidance_estimates):
   1. Einheiten-Check: Absolutwerte >= 1 Mio (ausser Per-Share-Keys),
   2. Vorjahresband 40-160% gegen das Vorjahres-Ist DERSELBEN Periode
-     (fehlt es: uebersprungen; Sign-Flip/Turnaround erlaubt),
+     (fehlt es: uebersprungen; Sign-Flip/Turnaround erlaubt). Ausnahme
+     net_income/eps_diluted: ist das Paar intern konsistent
+     (NI ~ EPS x SNAPSHOT-Aktien, _internally_consistent), akzeptiert
+     das Band auch grosse Spruenge — SAPs realer 2024->2025-
+     Restrukturierungs-Turnaround (+134%) wurde sonst verworfen,
   3. Spur-Plausibilitaet bei Paaren: reported vs adjusted duerfen max.
-     60% auseinanderliegen (Non-IFRS darf UNTER reported liegen — es
+     150% auseinanderliegen (Non-IFRS darf UNTER reported liegen — es
      schliesst auch Einmal-Gewinne aus, SAP-Muster; nur klare
-     Spur-Verwechslungen werden verworfen),
+     Spur-Verwechslungen werden verworfen). Ist die GAAP-Seite intern
+     konsistent, fliegt NUR der Sidecar — ein Muell-Sidecar (non-IFRS-
+     Betriebsgewinn statt NI) riss sonst den korrekten IFRS-Wert mit,
   4. qsum-Enforcement: FY + alle 4 Quartale geliefert und Summe > 1%
      daneben -> Quartale verwerfen, FY behalten, loggen,
   5. Yahoo-Cross-Check (Kundenentscheid: der Marktdaten-Feed schreibt
@@ -687,12 +693,25 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict[str, dict]]) -> 
     1. Einheiten-Check: Absolutwerte unter 1 Mio (aber != 0) sind fast
        immer eine fehlende Skalierung (ausser Per-Share-Keys).
     2. Vorjahresband 40-160% gegen das Vorjahres-Ist derselben Periode
-       (fehlt es: uebersprungen; Sign-Flip erlaubt). Sidecars laufen
-       ueber das Paar-Gate, nicht ueber das Band.
-    3. reported <= adjusted + 1% bei Paaren — Verstoss verwirft beide
-       Werte der Periode.
+       (fehlt es: uebersprungen; Sign-Flip erlaubt). Ausnahme
+       net_income/eps_diluted: ist das Paar intern konsistent
+       (_internally_consistent), wird die Band-Verletzung als echter
+       Turnaround akzeptiert (SAP 2025: +134% war korrekt). Sidecars
+       laufen ueber das Paar-Gate, nicht ueber das Band.
+    3. Spur-Paar-Gate (150%-Band reported vs adjusted) — Verstoss
+       verwirft beide Werte der Periode; ist die GAAP-Seite intern
+       konsistent, wird NUR der Sidecar verworfen.
     """
     ticker = company.ticker
+    # SNAPSHOT-Aktienzahl lazy laden — nur noetig, wenn ein NI/EPS-Gate
+    # den Konsistenz-Schiedsrichter befragt.
+    shares_cache: list[Decimal | None] = []
+
+    def _shares() -> Decimal | None:
+        if not shares_cache:
+            shares_cache.append(_shares_snapshot(db, company.id))
+        return shares_cache[0]
+
     for key in list(parsed):
         if key in _PER_SHARE_KEYS:
             continue
@@ -715,6 +734,19 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict[str, dict]]) -> 
             v = parsed[key][pt]["value"]
             sign_flip = (v >= 0) != (prev >= 0)
             if not sign_flip and abs(v / prev - 1) > _PREV_DEVIATION_TOL:
+                # Turnaround-Ausnahme (SAP 2025): passt NI zu EPS x Aktien,
+                # ist der Sprung real — beide Werte bleiben.
+                if (
+                    key in ("net_income", "eps_diluted")
+                    and _internally_consistent(parsed, pt, _shares())
+                ):
+                    logger.info(
+                        "statement research %s/FY%s: %s/%s=%s ausserhalb "
+                        "40-160%% des Vorjahres-Ist %s — Turnaround "
+                        "akzeptiert: NI/EPS intern konsistent",
+                        ticker, year, key, pt, v, prev,
+                    )
+                    continue
                 logger.warning(
                     "statement research %s/FY%s: %s/%s=%s ausserhalb "
                     "40-160%% des Vorjahres-Ist %s — skip",
@@ -736,11 +768,23 @@ def _apply_gates(db, company, year: int, parsed: dict[str, dict[str, dict]]) -> 
             # Non-IFRS darf UNTER reported liegen (schliesst auch Einmal-
             # GEWINNE aus, SAP-Muster) — keine Richtungs-Regel wie im
             # US-GAAP-Pfad. Nur klare Verwechslungen verwerfen: mehr als
-            # 60% Abstand zwischen den Spuren.
+            # 150% Abstand zwischen den Spuren.
             if b_val != 0 and abs(a_val - b_val) > abs(b_val) * _REPORTED_ADJ_BAND:
+                # Ist die GAAP-Seite intern konsistent, ist der Sidecar
+                # der Muell (SAP: non-IFRS-Betriebsgewinn 8,169 Mrd als
+                # NI-Sidecar riss das korrekte IFRS-NI 3,098 Mrd mit).
+                if _internally_consistent(parsed, pt, _shares()):
+                    logger.warning(
+                        "statement research %s/FY%s: %s/%s=%s vs %s=%s "
+                        "weicht >150%% ab — Sidecar verworfen, Basis "
+                        "intern konsistent",
+                        ticker, year, base_key, pt, b_val, adj_key, a_val,
+                    )
+                    del adj[pt]
+                    continue
                 logger.warning(
                     "statement research %s/FY%s: %s/%s=%s vs %s=%s weicht "
-                    ">60%% ab (Spur-Verwechslung?) — beide skip",
+                    ">150%% ab (Spur-Verwechslung?) — beide skip",
                     ticker, year, base_key, pt, b_val, adj_key, a_val,
                 )
                 del base[pt]
@@ -972,6 +1016,35 @@ def _shares_snapshot(db, company_id) -> Decimal | None:
     return row.numeric_value if row else None
 
 
+def _ni_eps_check(parsed: dict[str, dict[str, dict]], pt: str,
+                  shares: Decimal | None) -> tuple[Decimal, Decimal] | None:
+    """Gemeinsame NI-vs-EPS-Kreuzrechnung (Attributable-Gate und
+    Konsistenz-Schiedsrichter, keine Doppelstruktur): liefert
+    (|NI / (EPS x Aktien) - 1|, EPS x Aktien) fuer die Periode — None,
+    wenn nicht pruefbar (net_income/eps_diluted der Periode fehlt,
+    keine Aktienzahl, implied 0)."""
+    if shares is None or shares == 0:
+        return None
+    ni = parsed.get("net_income", {}).get(pt)
+    eps = parsed.get("eps_diluted", {}).get(pt)
+    if ni is None or eps is None:
+        return None
+    implied = eps["value"] * shares
+    if implied == 0:
+        return None
+    return abs(ni["value"] / implied - 1), implied
+
+
+def _internally_consistent(parsed: dict[str, dict[str, dict]], pt: str,
+                           shares: Decimal | None) -> bool:
+    """Interne Konsistenz als Schiedsrichter (SAP-Korrekturlauf):
+    net_income und eps_diluted derselben Periode passen ueber die
+    SNAPSHOT-Aktienzahl zusammen (<= 6%, dieselbe Rechnung wie das
+    Attributable-Gate). Nicht pruefbar -> False."""
+    check = _ni_eps_check(parsed, pt, shares)
+    return check is not None and check[0] <= _ATTRIBUTABLE_TOL
+
+
 def _apply_attributable_gate(db, company, year: int,
                              parsed: dict[str, dict[str, dict]]) -> None:
     """Attributable-Gate (SAP/Siemens-Muster: Konzern-PAT statt
@@ -988,13 +1061,11 @@ def _apply_attributable_gate(db, company, year: int,
     if shares is None or shares == 0:
         return
     for pt in list(ni):
-        e = eps.get(pt)
-        if e is None:
+        check = _ni_eps_check(parsed, pt, shares)
+        if check is None:
             continue
-        implied = e["value"] * shares
-        if implied == 0:
-            continue
-        if abs(ni[pt]["value"] / implied - 1) > _ATTRIBUTABLE_TOL:
+        deviation, implied = check
+        if deviation > _ATTRIBUTABLE_TOL:
             logger.warning(
                 "statement research %s/FY%s: attributable-Verdacht "
                 "net_income/%s=%s vs eps x shares=%s (>6%%) — net_income "
@@ -1328,14 +1399,14 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
     base_val = row.numeric_value
     adj_val = info["value"]
     # Richtungs-frei (Non-IFRS darf unter reported liegen): nur klare
-    # Spur-Verwechslung (>60% Abstand) verwerfen.
+    # Spur-Verwechslung (>150% Abstand) verwerfen.
     if (
         base_val is not None and base_val != 0
         and abs(adj_val - base_val) > abs(base_val) * _REPORTED_ADJ_BAND
     ):
         logger.warning(
             "statement research %s/FY%s: Sidecar %s/%s=%s vs reported %s "
-            "weicht >60%% ab (Spur-Verwechslung?) — Sidecar skip",
+            "weicht >150%% ab (Spur-Verwechslung?) — Sidecar skip",
             company.ticker, year, base_key, pt, adj_val, base_val,
         )
         return False
