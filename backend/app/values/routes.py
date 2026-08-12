@@ -2195,6 +2195,27 @@ def _refresh_fy_from_quarters(
         # Do not override a manually_overridden FY row (user chose to lock it).
         if existing_fy.manually_overridden:
             return
+        # FY-first (Nicht-US-Konvention): ein autoritativer FY-Wert direkt
+        # aus dem Bericht (statement_research) oder vom XBRL/Berichts-
+        # Provider schlaegt die Quartalssumme — Quartale sind Best-Effort
+        # und duerfen einen exakten Jahreswert nie verwaessern. Die
+        # Aggregation fuellt nur leere/abgeleitete/Alt-FY-Zeilen.
+        if (
+            existing_fy.numeric_value is not None
+            and not existing_fy.is_forecast
+            and (existing_fy.primary_method or "") in ("statement_research", "provider")
+        ):
+            # Nur die leere adjusted-Spur darf die Aggregation noch fuellen
+            # (Quartals-adjusted vorhanden, FY-adjusted NULL — Mischsumme).
+            from app.values.persistence import adjusted_is_protected
+            if (
+                fy_adj is not None
+                and existing_fy.numeric_value_adjusted is None
+                and not adjusted_is_protected(existing_fy.adjustments_source)
+            ):
+                existing_fy.numeric_value_adjusted = fy_adj
+                existing_fy.adjustments_note = fy_adj_note
+            return
         existing_fy.numeric_value = fy_value
         # Geschuetzte Adjusted-Werte (Manual, 8-K-Enrichment mit SEC-URL)
         # nie ueberschreiben oder nullen — alle anderen (source NULL oder
