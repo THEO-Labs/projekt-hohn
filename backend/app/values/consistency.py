@@ -676,6 +676,72 @@ def _quarter_reported(company, year: int, q: str, subs_cache: dict) -> bool:
     return reported
 
 
+def derive_clear_stale_forecasts(db: Session, company_id: UUID, year: int) -> int:
+    """Veraltete Forecast-Werte BERICHTETER Perioden leeren.
+
+    Allianz-Fall (Inhaltsreview): Q4 2025 seit 26.02.2026 berichtet, aber
+    die Recherche konnte den Actual nicht liefern (IR-Seite blockt
+    Downloads) — in der Anzeige stand weiter die alte FORECAST-Zeile
+    (NI 1,29 Mrd, 52% unter den echten 2,664 Mrd). Eine veraltete
+    Schaetzung, die wie eine aktuelle Zahl aussieht, ist schlimmer als
+    eine ehrlich leere Zelle.
+
+    Kriterium wie _quarter_reported (Karenz, US-Filer zusaetzlich
+    Item-2.02-8-K); FY analog ueber das FY-Ende (= Q4-Stichtag) + Karenz.
+    Geleert werden Forecast-Zeilen mit numeric_value oder
+    numeric_value_adjusted, die NICHT manually_overridden sind:
+    numeric_value=None, numeric_value_adjusted=None (ausser
+    adjusted_is_protected). Manuelle Forecasts bleiben — die Lock-Regel
+    laesst sie von Actual-Writern abloesen; bis dahin ist der manuelle
+    Wert die bewusste Nutzer-Entscheidung. Existiert fuer die Zelle ein
+    Actual mit Wert, ist die Forecast-Zeile ohnehin verdeckt — sie wird
+    trotzdem geleert (Datenhygiene). Rueckgabe: Anzahl geleerter Zeilen.
+    """
+    from app.companies.models import Company
+    from app.values.persistence import adjusted_is_protected
+
+    company = db.get(Company, company_id)
+    rows = _rows_for_year(db, company_id, year)
+    reported_memo: dict[str, bool] = {}
+    subs_cache: dict = {}
+
+    def _period_reported(pt: str) -> bool:
+        # FY teilt den Stichtag mit Q4 — gleiches Berichtet-Kriterium.
+        q = "Q4" if pt == "FY" else pt
+        if q not in reported_memo:
+            reported_memo[q] = _quarter_reported(company, year, q, subs_cache)
+        return reported_memo[q]
+
+    cleared = 0
+    for row in rows:
+        if not row.is_forecast or row.manually_overridden:
+            continue
+        if row.period_type not in _Q_TYPES + ("FY",):
+            continue
+        adj_clearable = (
+            row.numeric_value_adjusted is not None
+            and not adjusted_is_protected(row.adjustments_source)
+        )
+        # Nichts zu leeren (haelt die Ableitung idempotent — geschuetztes
+        # adjusted allein ist kein Leerungs-Fall).
+        if row.numeric_value is None and not adj_clearable:
+            continue
+        if not _period_reported(row.period_type):
+            continue
+        row.numeric_value = None
+        if adj_clearable:
+            row.numeric_value_adjusted = None
+        row.source_name = "Geraeumt: Periode berichtet, Schaetzung veraltet"
+        cleared += 1
+        logger.info(
+            "stale forecast geraeumt %s/%s/%s FY%s",
+            company_id, row.value_key, row.period_type, year,
+        )
+    if cleared:
+        db.flush()
+    return cleared
+
+
 def derive_open_quarter_from_fy_estimate(db: Session, company_id: UUID, year: int) -> int:
     """Offenes Rest-Quartal deterministisch aus dem FY-Estimate ableiten:
     Q_offen = FY_est (Guidance/Konsens) - Summe(berichtete Quartale).

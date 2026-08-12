@@ -864,6 +864,79 @@ def test_stage2_stops_when_need_satisfied(db, company, monkeypatch):
     assert len(doc_calls) == 1
 
 
+# --- FY-only-Backfill: N+1-Dokumente + Vergleichsspalten-Modus ---------------
+
+
+def test_doc_system_prompt_backfill_mentions_comparative_column(company):
+    """fy_backfill: der Doc-Prompt verlangt die Vorjahres-Vergleichs-
+    spalte des N+1-Berichts; Default-Prompt unveraendert."""
+    sp = sr._build_doc_system_prompt(company, YEAR, "income", fy_backfill=True)
+    assert str(YEAR + 1) in sp
+    assert "Vergleichsspalte" in sp
+    assert "Vergleichsspalte" not in sr._build_doc_system_prompt(company, YEAR, "income")
+
+
+def test_fy_only_document_stage_runs_in_backfill_mode(db, company, monkeypatch):
+    """FY-only-Modus: der Dokument-Call laeuft mit fy_backfill=True
+    (Vergleichsspalten-Prompt), und N+1-Spaltenlabels passieren das
+    Gate, wenn period_end_date auf das N-Jahresende passt."""
+    payload = {"net_income": {"FY": _null_entry()}}
+
+    def fake_stage1(company_, year, group, cost_tracker=None, periods=None):
+        return payload if group == "income" else {}
+
+    monkeypatch.setattr(sr, "_call_claude", fake_stage1)
+    _mock_download(monkeypatch)
+
+    doc_calls: list[dict] = []
+
+    def fake_doc(company_, year, group, needed, doc_bytes, kind, doc_url,
+                 cost_tracker=None, fy_backfill=False):
+        doc_calls.append({"group": group, "fy_backfill": fy_backfill})
+        return {
+            "net_income": {
+                "FY": _doc_entry("FY", 3_000_000_000,
+                                 column_label=f"Q4 {YEAR + 1}"),
+            },
+        }
+
+    monkeypatch.setattr(sr, "_call_claude_document", fake_doc)
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"],
+                                periods=("FY",))
+    db.commit()
+
+    assert doc_calls and doc_calls[0]["fy_backfill"] is True
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3000000000")
+
+
+# --- Bilanz-Stichtags-Gate auch in Stufe 2 -----------------------------------
+
+
+def test_stage2_balance_q4_fy_contradiction_discards_both(db, company, monkeypatch):
+    """Q4/FY-Stichtags-Widerspruch greift auch fuer Dokument-Werte —
+    beide verworfen, not_found-Stempel bleibt."""
+    payload = {
+        "cash_and_equivalents": {
+            pt: _null_entry() for pt in ("FY", "Q1", "Q2", "Q3", "Q4")
+        },
+    }
+    _mock_stage1(monkeypatch, {"balance": payload})
+    _mock_download(monkeypatch)
+    _mock_doc_call(monkeypatch, {
+        "cash_and_equivalents": {
+            "FY": _doc_entry("FY", 15_263_000_000),
+            "Q4": _doc_entry("Q4", 14_495_000_000),
+        },
+    })
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+    db.commit()
+
+    assert _rows(db, company, "cash_and_equivalents", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "cash_and_equivalents", "Q4")[0].primary_method == "not_found"
+
+
 # --- Karenz unveraendert -----------------------------------------------------
 
 

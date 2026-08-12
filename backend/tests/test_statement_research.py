@@ -600,6 +600,11 @@ def test_prompts_contain_new_instructions(company):
     assert "Other financial assets" in user_balance
     assert "column_label" in user_balance
 
+    # Attributable-Negativ-Beispiel (SAP/Siemens-NCI-Muster).
+    user_income = sr._build_user_prompt(company, YEAR, "income")
+    assert "NICHT das Konzernergebnis inkl. Minderheiten" in user_income
+    assert "Siemens" in user_income
+
     doc_sys = sr._build_doc_system_prompt(company, YEAR, "income")
     assert "period_end_date" in doc_sys
     assert "eps_diluted" in doc_sys
@@ -1149,3 +1154,286 @@ def test_fy_only_unreported_fy_no_call(db, company, monkeypatch):
         db, company, current, periods=("FY",)
     ) == 0
     assert calls == []
+
+
+# --- FY-only-Backfill: Vergleichsspalte des Folgejahres (SAP-FY2024-Fix) -----
+
+
+def _mock_claude_fy_only(monkeypatch, payloads: dict):
+    """FY-only-Modus ruft _call_claude mit periods-Kwarg auf."""
+    calls: list[tuple] = []
+
+    def fake(company_, year, group, cost_tracker=None, periods=None):
+        calls.append((group, periods))
+        return payloads.get(group, {})
+
+    monkeypatch.setattr(sr, "_call_claude", fake)
+    return calls
+
+
+def test_fy_only_prompts_demand_next_year_comparative_column(company):
+    """FY-only-Prompts verlangen den Bericht des Folgejahres N+1 und
+    dessen Vorjahres-Vergleichsspalte; der Default-Modus bleibt ohne
+    Vergleichsspalten-Anweisung."""
+    sp = sr._build_system_prompt(company, YEAR, "income", periods=("FY",))
+    assert f"FOLGEJAHRES {YEAR + 1}" in sp
+    assert "Vergleichsspalte" in sp
+    sp_bal = sr._build_system_prompt(company, YEAR, "balance", periods=("FY",))
+    assert "Vergleichsspalte" in sp_bal
+    up = sr._build_user_prompt(company, YEAR, "income", periods=("FY",))
+    assert f"Folgejahres {YEAR + 1}" in up
+    assert "Vergleichsspalte" in up
+    assert "Vergleichsspalte" not in sr._build_system_prompt(company, YEAR, "income")
+    assert "Vergleichsspalte" not in sr._build_user_prompt(company, YEAR, "income")
+
+
+def test_fy_only_next_year_label_needs_matching_period_end(db, company, monkeypatch):
+    """N+1-Label im Spaltenkopf ist im FY-only-Modus erlaubt, wenn
+    period_end_date auf das N-Jahresende passt (Vergleichsspalte im
+    N+1-Bericht); ohne period_end_date bleibt N+1 eine fremde
+    Jahreszahl und wird verworfen."""
+    payload = {
+        "revenue": {
+            "FY": _entry(40_000_000_000, column_label=f"FY {YEAR + 1}",
+                         period_end=f"{YEAR}-12-31"),
+        },
+        "net_income": {
+            "FY": _entry(3_000_000_000, column_label=f"FY {YEAR + 1}"),
+        },
+    }
+    _mock_claude_fy_only(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"],
+                                periods=("FY",))
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].numeric_value == Decimal("40000000000")
+    assert _rows(db, company, "net_income", "FY")[0].primary_method == "not_found"
+
+
+def test_default_mode_next_year_label_still_discarded(db, company, monkeypatch):
+    """Ausserhalb des FY-only-Modus bleibt N+1 eine fremde Jahreszahl —
+    auch mit passendem period_end_date."""
+    payload = {
+        "revenue": {
+            "FY": _entry(40_000_000_000, column_label=f"FY {YEAR + 1}",
+                         period_end=f"{YEAR}-12-31"),
+        },
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"
+
+
+def test_fy_only_copy_detector_discards_neighbor_year_copies(db, company, monkeypatch):
+    """Kopie-Detektor: Wert entspricht exakt (<0,1%) einem vorhandenen
+    N+1- bzw. N-1-Actual desselben Keys -> Spaltenverrutscher der
+    Vergleichsspalte (SAP FY2024: teils FY2023-Werte), verworfen;
+    Keys ohne Nachbar-Referenz passieren."""
+    _seed(db, company, "revenue", "FY", 36_944_000_000, year=YEAR + 1,
+          primary_method="provider")
+    _seed(db, company, "net_income", "FY", 3_100_000_000, year=YEAR - 1,
+          primary_method="statement_research")
+    payload = {
+        "revenue": {"FY": _entry(36_944_000_000)},    # N+1-Kopie -> raus
+        "net_income": {"FY": _entry(3_100_000_000)},  # N-1-Kopie -> raus
+        "eps_diluted": {"FY": _entry("3.05")},        # keine Referenz -> ok
+    }
+    _mock_claude_fy_only(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"],
+                                periods=("FY",))
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "net_income", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "eps_diluted", "FY")[0].numeric_value == Decimal("3.05")
+
+
+def test_fy_only_copy_detector_checks_sidecar_against_adjusted(db, company, monkeypatch):
+    """Sidecars werden gegen die Sidecar-Spalte (numeric_value_adjusted)
+    der Nachbar-Zeilen geprueft — die Basis bleibt, der kopierte
+    adjusted-Wert wird verworfen."""
+    neighbor = _seed(db, company, "net_income", "FY", 3_000_000_000,
+                     year=YEAR + 1, primary_method="provider")
+    neighbor.numeric_value_adjusted = Decimal("3500000000")
+    db.commit()
+    payload = {
+        "net_income": {"FY": _entry(2_800_000_000)},
+        "net_income_adjusted": {"FY": _entry(3_500_000_000)},  # N+1-Kopie
+    }
+    _mock_claude_fy_only(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"],
+                                periods=("FY",))
+    db.commit()
+
+    ni = _rows(db, company, "net_income", "FY")[0]
+    assert ni.numeric_value == Decimal("2800000000")
+    assert ni.numeric_value_adjusted is None
+
+
+def test_copy_detector_inactive_in_default_mode(db, company, monkeypatch):
+    """Ausserhalb des FY-only-Backfills gibt es keinen Kopie-Detektor —
+    ein Wert identisch zum Vorjahr ist im Normalmodus legitim (flache
+    Entwicklung)."""
+    _seed(db, company, "revenue", "FY", 40_000_000_000, year=YEAR - 1,
+          primary_method="provider")
+    payload = {"revenue": {"FY": _entry(40_000_000_000)}}
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "revenue", "FY")[0].numeric_value == Decimal("40000000000")
+
+
+# --- Bilanz-Stichtags-Gates (Siemens-Cash-Klasse) ----------------------------
+
+
+def test_balance_q4_fy_contradiction_discards_both(db, company, monkeypatch):
+    """Instant-Keys: Q4- und FY-Wert derselben Periode muessen identisch
+    sein (gleicher Stichtag) — >1% Abweichung verwirft BEIDE
+    ('Q4/FY-Stichtags-Widerspruch'); identische Werte passieren."""
+    payload = {
+        "cash_and_equivalents": {
+            "FY": _entry(15_263_000_000),
+            "Q4": _entry(14_495_000_000),  # >1% -> Widerspruch
+        },
+        "st_debt": {
+            "FY": _entry(10_343_000_000),
+            "Q4": _entry(10_343_000_000),  # identisch -> ok
+        },
+    }
+    _mock_claude(monkeypatch, {"balance": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+    db.commit()
+
+    assert _rows(db, company, "cash_and_equivalents", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "cash_and_equivalents", "Q4")[0].primary_method == "not_found"
+    assert _rows(db, company, "st_debt", "FY")[0].numeric_value == Decimal("10343000000")
+    assert _rows(db, company, "st_debt", "Q4")[0].numeric_value == Decimal("10343000000")
+
+
+def test_balance_cross_period_copy_discards_later(db, company, monkeypatch):
+    """Identischer Bilanzwert (<0,1%) in zwei Perioden mit
+    unterschiedlichem Zielstichtag ist ein Spaltenverrutscher — die
+    spaetere Periode wird verworfen; Nullwerte sind ausgenommen
+    (st_investments legitim 0 ueber mehrere Quartale)."""
+    payload = {
+        "cash_and_equivalents": {
+            "Q1": _entry(14_270_000_000),
+            "Q3": _entry(14_270_000_000),  # Kopie -> spaeteres Q3 raus
+        },
+        "st_investments": {"Q1": _entry(0), "Q2": _entry(0)},
+    }
+    _mock_claude(monkeypatch, {"balance": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+    db.commit()
+
+    assert _rows(db, company, "cash_and_equivalents", "Q1")[0].numeric_value == Decimal("14270000000")
+    assert _rows(db, company, "cash_and_equivalents", "Q3")[0].primary_method == "not_found"
+    assert _rows(db, company, "st_investments", "Q1")[0].numeric_value == Decimal("0")
+    assert _rows(db, company, "st_investments", "Q2")[0].numeric_value == Decimal("0")
+
+
+def test_flow_keys_not_subject_to_q4_fy_check(db, company, monkeypatch):
+    """Flow-Keys kennen keinen Q4/FY-Zwang — FY ist die Jahressumme,
+    nicht der Q4-Wert."""
+    payload = {
+        "operating_cash_flow": {
+            "FY": _entry(9_000_000_000),
+            "Q4": _entry(2_000_000_000),
+        },
+    }
+    _mock_claude(monkeypatch, {"cashflow": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["cashflow"])
+    db.commit()
+
+    assert _rows(db, company, "operating_cash_flow", "FY")[0].numeric_value == Decimal("9000000000")
+    assert _rows(db, company, "operating_cash_flow", "Q4")[0].numeric_value == Decimal("2000000000")
+
+
+def test_noncalendar_fy_prompts_name_stichtag(db, company):
+    """Vom Kalenderjahr abweichendes FY (Siemens 30.09.): beide
+    System-Prompts nennen den Stichtag explizit ('NICHT der 31.12.');
+    Kalenderjahres-Firmen bekommen keinen Hinweis."""
+    assert "NICHT der 31.12." not in sr._build_system_prompt(company, YEAR, "balance")
+
+    company.fiscal_year_end_month = 9
+    company.fiscal_year_end_day = 30
+    db.commit()
+
+    sp = sr._build_system_prompt(company, YEAR, "balance")
+    assert "NICHT der 31.12." in sp
+    assert f"{YEAR}-09-30" in sp
+    doc_sp = sr._build_doc_system_prompt(company, YEAR, "balance")
+    assert "NICHT der 31.12." in doc_sp
+
+
+# --- Attributable-Gate (NI vs EPS x Aktien) ----------------------------------
+
+
+def test_attributable_gate_discards_ni_keeps_eps(db, company, monkeypatch):
+    """8% Abweichung NI vs EPS x Aktien (NCI-Muster SAP/Siemens:
+    Konzern-PAT statt attributable): net_income verworfen, eps bleibt."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_000_000_000, year=None)
+    payload = {
+        "net_income": {"FY": _entry(3_240_000_000)},  # implied 3,0 Mrd -> +8%
+        "eps_diluted": {"FY": _entry("3.00")},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].primary_method == "not_found"
+    assert _rows(db, company, "eps_diluted", "FY")[0].numeric_value == Decimal("3.00")
+
+
+def test_attributable_gate_tolerates_weighted_share_drift(db, company, monkeypatch):
+    """3% Abweichung (Weighted-vs-Snapshot-Drift) passiert das 6%-Band."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_000_000_000, year=None)
+    payload = {
+        "net_income": {"FY": _entry(3_090_000_000)},  # +3% -> ok
+        "eps_diluted": {"FY": _entry("3.00")},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3090000000")
+
+
+def test_attributable_gate_no_shares_no_verdict(db, company, monkeypatch):
+    """Ohne SNAPSHOT-Aktienzahl kein Urteil — der NI-Wert bleibt trotz
+    Abweichung stehen."""
+    payload = {
+        "net_income": {"FY": _entry(3_240_000_000)},
+        "eps_diluted": {"FY": _entry("3.00")},
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3240000000")
+
+
+def test_attributable_gate_needs_both_values(db, company, monkeypatch):
+    """NI ohne EPS derselben Periode im Payload: kein Urteil."""
+    _seed(db, company, "shares_outstanding", "SNAPSHOT", 1_000_000_000, year=None)
+    payload = {"net_income": {"FY": _entry(3_240_000_000)}}
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    assert _rows(db, company, "net_income", "FY")[0].numeric_value == Decimal("3240000000")

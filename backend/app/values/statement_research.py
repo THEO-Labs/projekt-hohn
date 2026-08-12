@@ -53,7 +53,38 @@ sind die deterministischen Code-Gates (Muster guidance_estimates):
      macrotrends/wisesheets sind keine gueltige Quelle (USD-
      Drittquellen-Leck: capex Q1-26 kam von GuruFocus in USD) —
      Werte mit Portal-URL werden verworfen, Portal-URLs sind auch
-     keine Stufe-2-Dokumentkandidaten.
+     keine Stufe-2-Dokumentkandidaten,
+  8. Bilanz-Stichtags-Gates (_apply_balance_instant_gates, Siemens-
+     Cash-Klasse: 31.12.-Kalenderwerte trotz FY-Ende 30.09., falsch
+     etikettiertes period_end): (a) Q4- und FY-Wert derselben
+     Bilanzperiode muessen identisch sein (gleicher Stichtag) — >1%
+     Abweichung verwirft BEIDE ('Q4/FY-Stichtags-Widerspruch');
+     (b) identischer Wert (<0,1%) in zwei Perioden mit
+     UNTERSCHIEDLICHEM Zielstichtag ist ein Spaltenverrutscher — die
+     spaetere Periode (weiter vom Zielstichtag entfernt) wird
+     verworfen. Der Prompt nennt bei vom Kalenderjahr abweichendem FY
+     explizit den Stichtag ('NICHT der 31.12.'),
+  9. Attributable-Gate (_apply_attributable_gate, SAP/Siemens-Muster:
+     Konzern-PAT statt attributable NI, +2,2%/+8,1% NCI): EPS ist auf
+     attributable gerechnet — liefert der Lauf net_income UND
+     eps_diluted derselben Periode und existiert ein SNAPSHOT
+     shares_outstanding, verwirft |NI/(EPS x Aktien) - 1| > 6% das
+     net_income (EPS bleibt). Toleranz 6% deckt Weighted-vs-Snapshot-
+     Drift, faengt 8%-NCI.
+
+FY-only-Backfill (periods=('FY',), Jahr N): Frische Websuche lieferte
+fuer Backfill-Jahre ohne Vorjahres-Referenzen Muell (SAP FY2024: 10
+von 15 Werten falsch, teils FY2023-Werte). Verlaesslichste Quelle ist
+die VERGLEICHSSPALTE im Bericht des Folgejahres N+1 (Microsoft-
+Comparative-Muster der US-Pipeline): die Prompts beider Stufen
+verlangen den N+1-Bericht (Q4-Statement/Geschaeftsbericht) und die
+Vorjahres-Vergleichsspalte; das Spalten-Gate (ii) erlaubt N+1-Labels
+im Kopf, wenn period_end_date auf das N-Jahresende passt (ohne
+period_end_date bleibt N+1 eine fremde Jahreszahl). Zusaetzlich
+Kopie-Detektor (_apply_backfill_copy_gate): Werte, die exakt (<0,1%)
+einem vorhandenen FY-Actual des Nachbarjahres (N+1/N-1) desselben
+Keys entsprechen, sind Spaltenverrutscher der Vergleichsspalte und
+werden verworfen.
 
 Das H1-Q1/9M-H1/FY-9M-Rechenprotokoll gilt ausdruecklich auch fuer
 eps_diluted (Naeherung — Weighted-Average-Shares differieren leicht)
@@ -134,7 +165,7 @@ _PERIODS = ("FY",) + _Q_TYPES
 STATEMENT_GROUPS: dict[str, tuple[tuple[str, str], ...]] = {
     "income": (
         ("revenue", "Umsatzerloese (Konzern gesamt, nicht Segment)"),
-        ("net_income", "Konzernergebnis den Aktionaeren des Mutterunternehmens zurechenbar (attributable)"),
+        ("net_income", "Konzernergebnis den Aktionaeren des Mutterunternehmens zurechenbar (attributable) — NICHT das Konzernergebnis inkl. Minderheiten; bei Siemens z.B. weist die GuV beide aus"),
         ("eps_diluted", "verwaessertes Ergebnis je Aktie (diluted, Gesamt-Konzern)"),
         ("ebitda", "EBITDA wie im Bericht ausgewiesen (nicht selbst rechnen; sonst null)"),
         ("net_income_adjusted", "bereinigtes Konzernergebnis (Core/adjusted/Non-IFRS) — NUR wenn im Bericht explizit ausgewiesen, sonst null"),
@@ -364,6 +395,38 @@ def _reported_periods(company, year: int, today: date | None = None) -> tuple[st
     return tuple(out)
 
 
+def _is_non_calendar_fy(company) -> bool:
+    """FY-Ende weicht vom Kalenderjahresende (31.12.) ab (Siemens 30.09.)."""
+    m = getattr(company, "fiscal_year_end_month", None) or 12
+    d = getattr(company, "fiscal_year_end_day", None) or 31
+    return (m, d) != (12, 31)
+
+
+def _stichtag_sentence(company, year: int) -> str:
+    """Prompt-Ergaenzung fuer Nicht-Kalender-FYs (Siemens-Cash-Klasse:
+    das Modell lieferte 31.12.-Kalenderwerte statt 30.09.-Stichtag)."""
+    if not _is_non_calendar_fy(company):
+        return ""
+    fy_end = _fy_end_date(company, year).isoformat()
+    return (
+        f"Das Geschaeftsjahr weicht vom Kalenderjahr ab: Stichtag ist "
+        f"der {fy_end}, NICHT der 31.12. "
+    )
+
+
+def _comparative_column_sentence(year: int) -> str:
+    """FY-only-Backfill: die verlaesslichste Quelle fuer FY N ist die
+    Vorjahres-Vergleichsspalte im Bericht des Folgejahres N+1
+    (Microsoft-Comparative-Muster der US-Pipeline)."""
+    return (
+        f"Nimm dafuer den Bericht des FOLGEJAHRES {year + 1} "
+        f"(Q4-Statement bzw. Geschaeftsbericht {year + 1}): dort steht "
+        f"das Geschaeftsjahr {year} als VORJAHRES-Vergleichsspalte "
+        "direkt neben den aktuellen Zahlen — lies die Vergleichsspalte "
+        "und gib deren column_label und period_end_date an. "
+    )
+
+
 def _build_system_prompt(company, year: int, group: str,
                          periods: tuple[str, ...] = _PERIODS) -> str:
     fy_end = _fy_end_date(company, year).isoformat()
@@ -371,18 +434,15 @@ def _build_system_prompt(company, year: int, group: str,
     label = _GROUP_LABELS[group]
     fy_only = tuple(periods) == ("FY",)
     if fy_only:
-        # FY-only-Modus (N-2-Backfill): NUR die Jahres-Spalte —
-        # Geschaeftsbericht bzw. Q4-/Jahresend-Statement, keine Quartale.
+        # FY-only-Modus (N-2-Backfill): NUR die Jahres-Spalte — aus der
+        # Vergleichsspalte des Folgejahres-Berichts, keine Quartale.
         if group == "balance":
             period_sentence = (
                 "Bilanzwerte sind Stichtagswerte: FY = Stand am "
-                "Geschaeftsjahresende. "
+                "Geschaeftsjahresende. " + _comparative_column_sentence(year)
             )
         else:
-            period_sentence = (
-                "Die FY-Spalte steht im Geschaeftsbericht bzw. im "
-                "Q4-/Jahresend-Statement. "
-            )
+            period_sentence = _comparative_column_sentence(year)
         scope_sentence = (
             f"der IR-Seite) die folgenden {label}-Werte NUR fuer das "
             "Gesamtjahr (FY) — keine Quartalswerte, exakte Tabellenwerte, "
@@ -424,6 +484,7 @@ def _build_system_prompt(company, year: int, group: str,
         "Tabellenzeile, die exakt abgeschriebene Spaltenueberschrift "
         "(column_label) und der Stichtag der Spalte (period_end_date). "
         + period_sentence
+        + _stichtag_sentence(company, year)
         + f"Absolute Betraege in {currency}-Basiseinheiten "
         "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie — Werte in der "
         f"Berichtswaehrung der Firma ({currency}), niemals umgerechnete "
@@ -447,6 +508,16 @@ def _build_user_prompt(company, year: int, group: str,
     ]
     for key, desc in specs:
         lines.append(f"- {key}: {desc}")
+    if tuple(periods) == ("FY",):
+        # FY-only-Backfill: Quelle ist die Vergleichsspalte des
+        # Folgejahres-Berichts (siehe _comparative_column_sentence).
+        lines += [
+            "",
+            f"Quelle: Bericht des Folgejahres {year + 1} — die "
+            f"FY-{year}-Werte stehen dort in der Vorjahres-"
+            "Vergleichsspalte (column_label und period_end_date der "
+            "Vergleichsspalte angeben).",
+        ]
     # Schema nennt nur die angeforderten Perioden (FY-only-Modus: nur die
     # FY-Spalte, Quartale tauchen im Prompt nicht auf).
     entry_schema = ", ".join(f'"{pt}": ENTRY' for pt in periods)
@@ -691,7 +762,8 @@ def _period_end_target(company, year: int, pt: str) -> date | None:
 
 
 def _column_gate_reason(company, year: int, key: str, pt: str, info: dict,
-                        strict_period_end: bool) -> str | None:
+                        strict_period_end: bool,
+                        fy_backfill: bool = False) -> str | None:
     """Verwerfungsgrund der Spalten-Gates oder None (Wert passiert).
 
     (i)   period_end_date passt nicht zum Zielperioden-Ende (±21 Tage);
@@ -700,7 +772,10 @@ def _column_gate_reason(company, year: int, key: str, pt: str, info: dict,
     (ii)  column_label nennt eine fremde Jahreszahl — Vorjahresspalten-
           Falle (SAP: adjusted-NI 2025 war durchgaengig die 2024-Spalte).
           Erlaubt sind Zieljahr und das Kalenderjahr des Zielperioden-
-          Endes (Nicht-Kalender-FYs).
+          Endes (Nicht-Kalender-FYs). Im FY-only-Backfill (Quelle ist
+          der N+1-Bericht mit der Vergleichsspalte) ist AUCH N+1
+          erlaubt — aber nur, wenn period_end_date vorliegt (und damit
+          Check (i) auf das N-Jahresende bestanden hat).
     (iii) constant-currency-Marker; non-IFRS-Marker nur fuer die
           IFRS-Basisspur (Sidecars SIND die non-IFRS-Spur).
     (iv)  Kumulativ-Marker (H1/6M/9M/YTD) fuer ein Einzelquartal ohne
@@ -727,6 +802,10 @@ def _column_gate_reason(company, year: int, key: str, pt: str, info: dict,
     allowed = {year}
     if target_end is not None:
         allowed.add(target_end.year)
+    if fy_backfill and ped is not None:
+        # N+1-Bericht: Kopf-Labels nennen das Folgejahr — ok, weil das
+        # gelieferte period_end_date bereits auf das N-Ende passt.
+        allowed.add(year + 1)
     if years - allowed:
         return f"column_label {label!r} nennt fremde Jahreszahl (Vorjahresspalte?)"
     if any(m in low for m in _CC_LABEL_MARKERS) or _CC_TOKEN_RE.search(low):
@@ -746,7 +825,8 @@ def _column_gate_reason(company, year: int, key: str, pt: str, info: dict,
 
 
 def _apply_column_gates(company, year: int, parsed: dict[str, dict[str, dict]],
-                        strict_period_end: bool = False) -> None:
+                        strict_period_end: bool = False,
+                        fy_backfill: bool = False) -> None:
     """Spalten-Gates (Fehlerklasse a der SAP-Abnahme) — mutiert `parsed`
     in place. Sidecars durchlaufen dieselben Checks (die FY2024-adjusted-
     Serie kam ueber die Sidecars herein)."""
@@ -755,6 +835,7 @@ def _apply_column_gates(company, year: int, parsed: dict[str, dict[str, dict]],
         for pt in list(parsed[key]):
             reason = _column_gate_reason(
                 company, year, key, pt, parsed[key][pt], strict_period_end,
+                fy_backfill=fy_backfill,
             )
             if reason is None:
                 continue
@@ -795,6 +876,195 @@ def _apply_source_gate(parsed: dict[str, dict[str, dict]], ticker: str,
                 ticker, year, key, pt, parsed[key][pt]["value"], url,
             )
             del parsed[key][pt]
+        if not parsed[key]:
+            del parsed[key]
+
+
+# --- Bilanz-Stichtags-Gates (Siemens-Cash-Klasse) ---------------------------
+# Instant-Keys (Stichtagswerte): Q4 und FY derselben Periode haben
+# denselben Stichtag — Abweichung > 1% ist ein Etikettier-Fehler.
+_INSTANT_KEYS = frozenset(k for k, _ in STATEMENT_GROUPS["balance"])
+_Q4_FY_CONTRADICTION_TOL = Decimal("0.01")
+# Identischer Wert (<0,1%) in Perioden mit unterschiedlichem Stichtag
+# bzw. exakt ein Nachbarjahres-Actual (Kopie-Detektor des Backfills).
+_VALUE_COPY_TOL = Decimal("0.001")
+# Attributable-Gate: EPS ist auf attributable gerechnet — 6% Toleranz
+# deckt Weighted-vs-Snapshot-Drift, faengt 8%-NCI (Siemens/Healthineers).
+_ATTRIBUTABLE_TOL = Decimal("0.06")
+
+
+def _apply_balance_instant_gates(company, year: int,
+                                 parsed: dict[str, dict[str, dict]]) -> None:
+    """Deterministischer Stichtags-Haertetest fuer Instant-Keys (Bilanz;
+    Siemens-Cash-Klasse: 31.12.-Kalenderwerte mit falsch etikettiertem
+    period_end passierten die Spalten-Gates). Mutiert `parsed` in place.
+
+    (a) Q4- und FY-Wert derselben Periode muessen identisch sein
+        (gleicher Stichtag): > 1% Abweichung -> BEIDE verwerfen.
+    (b) Bilanzwert identisch (<0,1%) mit dem Wert desselben Keys einer
+        ANDEREN Periode (unterschiedlicher Zielstichtag) im selben
+        Payload -> Spaltenverrutscher, die spaetere Periode (weiter vom
+        Zielstichtag entfernt) wird verworfen. Q4/FY (gleicher
+        Stichtag) sind ausgenommen — dort ist Gleichheit Pflicht.
+    """
+    ticker = company.ticker
+    for key in list(parsed):
+        if key not in _INSTANT_KEYS:
+            continue
+        periods = parsed[key]
+        fy = periods.get("FY")
+        q4 = periods.get("Q4")
+        if fy is not None and q4 is not None:
+            fv, qv = fy["value"], q4["value"]
+            denom = max(abs(fv), abs(qv))
+            if denom != 0 and abs(fv - qv) > denom * _Q4_FY_CONTRADICTION_TOL:
+                logger.warning(
+                    "statement research %s/FY%s: Q4/FY-Stichtags-Widerspruch "
+                    "%s: FY=%s vs Q4=%s (>1%%) — beide skip",
+                    ticker, year, key, fv, qv,
+                )
+                del periods["FY"]
+                del periods["Q4"]
+        ordered = sorted(
+            (pt for pt in periods),
+            key=lambda pt: (_period_end_target(company, year, pt) or date.max, pt),
+        )
+        drop: set[str] = set()
+        for i, early in enumerate(ordered):
+            if early in drop:
+                continue
+            for late in ordered[i + 1:]:
+                if late in drop:
+                    continue
+                t_early = _period_end_target(company, year, early)
+                t_late = _period_end_target(company, year, late)
+                if t_early is None or t_late is None or t_early == t_late:
+                    continue
+                ev, lv = periods[early]["value"], periods[late]["value"]
+                if ev == 0 or lv == 0:
+                    continue
+                if abs(lv / ev - 1) <= _VALUE_COPY_TOL:
+                    logger.warning(
+                        "statement research %s/FY%s: %s/%s=%s identisch mit "
+                        "%s (Spaltenverrutscher) — spaetere Periode skip",
+                        ticker, year, key, late, lv, early,
+                    )
+                    drop.add(late)
+        for pt in drop:
+            del periods[pt]
+        if not periods:
+            del parsed[key]
+
+
+def _shares_snapshot(db, company_id) -> Decimal | None:
+    """SNAPSHOT-Aktienzahl (shares_outstanding, period_year None) fuer
+    das Attributable-Gate; fehlt sie, gibt es kein Urteil."""
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == "shares_outstanding",
+            CompanyValue.period_type == "SNAPSHOT",
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .first()
+    )
+    return row.numeric_value if row else None
+
+
+def _apply_attributable_gate(db, company, year: int,
+                             parsed: dict[str, dict[str, dict]]) -> None:
+    """Attributable-Gate (SAP/Siemens-Muster: Konzern-PAT statt
+    attributable NI): EPS ist auf attributable gerechnet — liefert der
+    Payload net_income UND eps_diluted derselben Periode und existiert
+    eine SNAPSHOT-Aktienzahl, wird |NI / (EPS x Aktien) - 1| > 6% als
+    NCI-Verdacht gewertet: net_income verwerfen, eps behalten. Ohne
+    Aktienzahl kein Urteil. Mutiert `parsed` in place."""
+    ni = parsed.get("net_income")
+    eps = parsed.get("eps_diluted")
+    if not ni or not eps:
+        return
+    shares = _shares_snapshot(db, company.id)
+    if shares is None or shares == 0:
+        return
+    for pt in list(ni):
+        e = eps.get(pt)
+        if e is None:
+            continue
+        implied = e["value"] * shares
+        if implied == 0:
+            continue
+        if abs(ni[pt]["value"] / implied - 1) > _ATTRIBUTABLE_TOL:
+            logger.warning(
+                "statement research %s/FY%s: attributable-Verdacht "
+                "net_income/%s=%s vs eps x shares=%s (>6%%) — net_income "
+                "skip, eps bleibt",
+                company.ticker, year, pt, ni[pt]["value"], implied,
+            )
+            del ni[pt]
+    if not ni:
+        del parsed["net_income"]
+
+
+def _neighbor_fy_actuals(db, company_id, key: str, year: int,
+                         adjusted: bool) -> dict[int, Decimal]:
+    """FY-Actuals der Nachbarjahre (N-1/N+1) desselben Keys als
+    Kopie-Referenzen; vertrauenswuerdige Herkunft wie _prev_actual.
+    `adjusted` liest die Sidecar-Spalte (numeric_value_adjusted)."""
+    rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_type == "FY",
+            CompanyValue.period_year.in_((year - 1, year + 1)),
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.primary_method.in_(
+                ("provider", "statement_research", "manual", "calculated")
+            ),
+        )
+        .all()
+    )
+    out: dict[int, Decimal] = {}
+    for r in rows:
+        v = r.numeric_value_adjusted if adjusted else r.numeric_value
+        if v is not None:
+            out[r.period_year] = v
+    return out
+
+
+def _apply_backfill_copy_gate(db, company, year: int,
+                              parsed: dict[str, dict[str, dict]]) -> None:
+    """Kopie-Detektor des FY-only-Backfills: ein Wert, der exakt (<0,1%)
+    einem vorhandenen FY-Actual des Nachbarjahres (N+1/N-1) desselben
+    Keys entspricht, ist ein Spaltenverrutscher der Vergleichsspalte
+    (SAP FY2024: teils FY2023-Werte geliefert) — verwerfen. Sidecars
+    werden gegen die Sidecar-Spalte der Nachbar-Zeilen geprueft.
+    Mutiert `parsed` in place."""
+    ticker = company.ticker
+    for key in list(parsed):
+        base_key = _ADJUSTED_SIDECARS.get(key)
+        refs = _neighbor_fy_actuals(
+            db, company.id, base_key or key, year, adjusted=base_key is not None,
+        )
+        if not refs:
+            continue
+        for pt in list(parsed[key]):
+            v = parsed[key][pt]["value"]
+            if v == 0:
+                continue
+            for ref_year, ref in refs.items():
+                if ref == 0:
+                    continue
+                if abs(v / ref - 1) <= _VALUE_COPY_TOL:
+                    logger.warning(
+                        "statement research %s/FY%s: Kopie-Detektor "
+                        "%s/%s=%s entspricht dem FY%s-Actual %s "
+                        "(Spaltenverrutscher) — skip",
+                        ticker, year, key, pt, v, ref_year, ref,
+                    )
+                    del parsed[key][pt]
+                    break
         if not parsed[key]:
             del parsed[key]
 
@@ -1425,9 +1695,18 @@ def _candidate_docs(period_urls: dict[str, list[str]],
     return order
 
 
-def _build_doc_system_prompt(company, year: int, group: str) -> str:
+def _build_doc_system_prompt(company, year: int, group: str,
+                             fy_backfill: bool = False) -> str:
     currency = getattr(company, "currency", None) or "EUR"
     label = _GROUP_LABELS[group]
+    backfill_sentence = ""
+    if fy_backfill:
+        backfill_sentence = (
+            f"Das Dokument ist ein Bericht des Folgejahres {year + 1}: "
+            f"die Werte fuer {year} stehen in der VORJAHRES-"
+            "Vergleichsspalte — lies diese Vergleichsspalte und gib "
+            "deren column_label und period_end_date an. "
+        )
     return (
         f"Extrahiere aus dem beigefuegten offiziellen Bericht von "
         f"{company.name} ({company.ticker}) die angeforderten "
@@ -1444,7 +1723,9 @@ def _build_doc_system_prompt(company, year: int, group: str) -> str:
         "Spaltenueberschrift (column_label) und den Stichtag der Spalte "
         "(period_end_date, ISO) an — ohne period_end_date wird der Wert "
         "verworfen. "
-        f"Absolute Betraege in {currency}-Basiseinheiten "
+        + backfill_sentence
+        + _stichtag_sentence(company, year)
+        + f"Absolute Betraege in {currency}-Basiseinheiten "
         "(z.B. '5,8 Mrd' -> 5800000000), EPS je Aktie — Werte in der "
         f"Berichtswaehrung ({currency}). Steht ein "
         "angeforderter Wert nachweislich nicht im Dokument: value null. "
@@ -1502,7 +1783,8 @@ def _build_doc_user_prompt(company, year: int, group: str,
 def _call_claude_document(company, year: int, group: str,
                           needed: dict[str, tuple[str, ...]],
                           doc_bytes: bytes, kind: str, doc_url: str,
-                          cost_tracker=None) -> dict | None:
+                          cost_tracker=None,
+                          fy_backfill: bool = False) -> dict | None:
     """EIN Claude-Call mit dem Berichtsdokument: PDF als document-Block
     (base64), HTML als extrahierter Text im Prompt (Muster
     gaap_bridge._clean_html). In Tests gemockt."""
@@ -1537,7 +1819,9 @@ def _call_claude_document(company, year: int, group: str,
             model=EXTRACT_MODEL,
             max_tokens=MAX_TOKENS,
             temperature=0,
-            system=_build_doc_system_prompt(company, year, group),
+            system=_build_doc_system_prompt(
+                company, year, group, fy_backfill=fy_backfill,
+            ),
             messages=[{"role": "user", "content": content}],
         )
 
@@ -1559,13 +1843,16 @@ def _call_claude_document(company, year: int, group: str,
 
 def _document_stage(db, company, year: int, group: str, raw_data: dict,
                     periods_reported: tuple[str, ...], now,
-                    cost_tracker=None, ref_map: dict | None = None) -> int:
+                    cost_tracker=None, ref_map: dict | None = None,
+                    fy_backfill: bool = False) -> int:
     """Stufe 2: verbliebene beduerftige Zellen aus den Berichts-
     Dokumenten der Stufe-1-Antwort fuellen. Max. MAX_DOC_CALLS
     Dokument-Calls (Bilanz: MAX_DOC_CALLS_BALANCE); Downloads mit
     Guards, aus PDFs > MAX_PDF_PAGES wird per Keyword-Match ein
-    Teil-PDF extrahiert (kein Treffer -> skip). Rueckgabe:
-    geschriebene Zeilen."""
+    Teil-PDF extrahiert (kein Treffer -> skip). `fy_backfill`: die
+    Kandidaten sind N+1-Berichte (Vergleichsspalten-Prompt der Stufe 1
+    liefert deren URLs) — Doc-Prompt und Gates laufen im
+    Vergleichsspalten-Modus. Rueckgabe: geschriebene Zeilen."""
     max_doc_calls = MAX_DOC_CALLS_BALANCE if group == "balance" else MAX_DOC_CALLS
     needed = _needy_cells(db, company, year, group, periods_reported)
     if not needed:
@@ -1621,10 +1908,15 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
                     company.ticker, year, group, n_extracted, n_total, url,
                 )
         calls += 1
+        # fy_backfill nur im Backfill-Modus durchreichen — der
+        # Default-Pfad bleibt call-kompatibel (Mocks/Signatur).
+        doc_call_kwargs = {"cost_tracker": cost_tracker}
+        if fy_backfill:
+            doc_call_kwargs["fy_backfill"] = True
         try:
             data = _call_claude_document(
                 company, year, group, needed, doc_bytes, kind, url,
-                cost_tracker=cost_tracker,
+                **doc_call_kwargs,
             )
         except Exception as e:
             logger.warning(
@@ -1643,8 +1935,13 @@ def _document_stage(db, company, year: int, group: str, raw_data: dict,
                 del parsed[key]
         # Spalten-Gates: Stufe 2 strikt — das Dokument liegt vor, der
         # Stichtag steht in der Tabelle; fehlt period_end_date -> skip.
-        _apply_column_gates(company, year, parsed, strict_period_end=True)
+        _apply_column_gates(company, year, parsed, strict_period_end=True,
+                            fy_backfill=fy_backfill)
         _apply_source_gate(parsed, company.ticker, year)
+        _apply_balance_instant_gates(company, year, parsed)
+        _apply_attributable_gate(db, company, year, parsed)
+        if fy_backfill:
+            _apply_backfill_copy_gate(db, company, year, parsed)
         # url-Fallback: Zellen ohne eigene Quelle tragen die Dokument-URL.
         for key in parsed:
             for pt in parsed[key]:
@@ -1708,6 +2005,9 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
         periods_reported = tuple(
             pt for pt in periods_reported if pt in prompt_periods
         )
+    # FY-only-Backfill: Quelle ist die Vergleichsspalte des N+1-Berichts
+    # (Prompts + Gate-Jahresmenge + Kopie-Detektor, siehe Docstring).
+    fy_backfill = prompt_periods == ("FY",)
     if not periods_reported:
         logger.info(
             "statement research %s/FY%s: keine berichtete Periode (Karenz) — skip",
@@ -1759,8 +2059,13 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
                 del parsed[key]
         # Spalten-Gates: Stufe 1 lenient bei fehlendem period_end_date
         # (Websuche-Snippets nennen den Stichtag oft nicht).
-        _apply_column_gates(company, year, parsed, strict_period_end=False)
+        _apply_column_gates(company, year, parsed, strict_period_end=False,
+                            fy_backfill=fy_backfill)
         _apply_source_gate(parsed, company.ticker, year)
+        _apply_balance_instant_gates(company, year, parsed)
+        _apply_attributable_gate(db, company, year, parsed)
+        if fy_backfill:
+            _apply_backfill_copy_gate(db, company, year, parsed)
         _apply_gates(db, company, year, parsed)
         _apply_yahoo_gate(parsed, ref_map, company.ticker, year)
         _enforce_qsum(parsed, company.ticker, year)
@@ -1776,6 +2081,7 @@ def fetch_statement_research(db, company, year: int, cost_tracker=None,
         total += _document_stage(
             db, company, year, group, data, periods_reported, now,
             cost_tracker=cost_tracker, ref_map=ref_map,
+            fy_backfill=fy_backfill,
         )
     db.flush()
     return total

@@ -1278,6 +1278,7 @@ def refresh_company_values(
         if full_fy_refresh and payload.period_year is not None:
             from app.values.consistency import (
                 derive_balance_carry_forward,
+                derive_clear_stale_forecasts,
                 derive_declared_dividend_quarter,
                 derive_gaap_from_adjusted_spread,
                 derive_missing_fcf,
@@ -1500,6 +1501,14 @@ def refresh_company_values(
                     db.rollback()
             for cons_year in consistency_years:
                 try:
+                    # Stale Forecast-Werte berichteter Perioden raeumen —
+                    # NACH den Actual-Writern (Anker/Bruecke/Statement-
+                    # Recherche laufen oben im Flow), VOR den Ableitungen
+                    # und validate_cross_metrics: die Ableitungen bauen
+                    # danach nur noch belegbare Werte neu auf (z.B. die
+                    # Bilanz-Fortschreibung), veraltete Schaetzungen
+                    # berichteter Perioden verschwinden aus der Anzeige.
+                    derive_clear_stale_forecasts(db, company_id, cons_year)
                     # Bilanz-Fortschreibung VOR der net_debt-Ableitung und
                     # VOR validate_cross_metrics: Q4/FY-Staende aus dem
                     # letzten berichteten Stichtag ersetzen aeltere
