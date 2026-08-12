@@ -106,6 +106,23 @@ quote-first ("<quote> | <url>", beginnt nie mit https — bleibt damit
 fuer den naechsten Lauf ersetzbar). Kein Beleg -> null -> not_found-
 Platzhalter (rote Zelle) via stamp_attempt_and_fill_not_found.
 
+Ratsche (first-plausible-wins unter Gleichrangigen, Kontroll-Review-
+Befund: Reruns WUERFELTEN NEU statt zu konvergieren — SAP: 7 zuvor
+korrekte Quartalswerte durch einen Wiederholungslauf beschaedigt):
+eine bestehende statement_research-Zeile MIT Wert wird von einem neuen
+Recherche-Wert NUR ersetzt, wenn sie VERDAECHTIG ist —
+  (a) sie traegt consistency_flags (qsum_mismatch etc.), ODER
+  (b) sie ist Quartals-Zeile eines SUMMABLE-Keys, dessen 4 Quartale
+      der autoritativen FY-Zeile widersprechen (|Summe/FY - 1| > 1%,
+      FY autoritativ = statement_research/Provider-Actual mit Wert).
+Sonst bleibt der alte Wert; weicht der neue um > 1% ab, wird das als
+Diskrepanz geloggt (INFO 'Ratsche'). Gleiches Prinzip fuer die
+adjusted-Sidecars. Fremde ersetzbare Herkuenfte (two_stage_*/web_*/
+calculated/not_found/Markt-Provider) bleiben ersetzbar wie bisher.
+Die Bedarfspruefung (_group_needs_research/_needy_cells) zaehlt
+unverdaechtige eigene Zellen entsprechend NICHT mehr als beduerftig —
+sonst liefen Calls fuer nichts.
+
 Beruehrt werden NUR berichtete Perioden (Periodenende plus
 REPORTING_GRACE_DAYS abgelaufen). Unberichtete Perioden des laufenden
 Jahres bekommen weder Write noch not_found-Stempel — sonst verschattet
@@ -262,6 +279,10 @@ _MARKET_PROVIDER_LABELS = ("Marktdaten-Feed", "Bloomberg")
 
 # Yahoo-Cross-Check-Gate: weites Band, weil der Feed selbst ungenau ist.
 _YAHOO_XCHECK_TOL = Decimal("0.35")
+
+# Ratsche: Diskrepanz-Log-Schwelle (bestehender Wert behalten, neuer
+# Vorschlag weicht > 1% ab).
+_RATCHET_DIFF_TOL = Decimal("0.01")
 
 # --- Spalten-Gates (SAP-Abnahme-Fehlerklassen a+d) ---------------------------
 # period_end_date muss zum Zielperioden-Ende passen (Quartalsversatz von
@@ -1236,7 +1257,11 @@ def _row_replaceable(row: CompanyValue) -> bool:
     ersetzbar (Muster consistency._derivation_replaceable). Markt-
     Provider-Zeilen (Bloomberg-Label, Alt-Bestand des Yahoo-Ankers) sind
     seit dem Kundenentscheid ebenfalls ersetzbar — die Recherche aus
-    offiziellen Berichten loest sie ab."""
+    offiziellen Berichten loest sie ab.
+
+    Eigene statement_research-Zeilen mit Wert bleiben formal ersetzbar,
+    unterliegen aber zusaetzlich der Ratsche (_statement_row_suspect an
+    der Write-Stelle): unverdaechtig -> Wert bleibt."""
     if row.manually_overridden or (row.from_ir_pdf and row.numeric_value is not None):
         return False
     if row.numeric_value is None:
@@ -1248,6 +1273,73 @@ def _row_replaceable(row: CompanyValue) -> bool:
         or pm.startswith("web")
         or _is_market_provider_row(row)
     )
+
+
+def _qsum_contradicts_fy(db, company_id, key: str, year: int) -> bool:
+    """Ratschen-Verdacht (b): alle 4 Quartals-Actuals des Keys existieren
+    und ihre Summe widerspricht der autoritativen FY-Zeile (> 1%). FY
+    autoritativ = Actual mit Wert aus statement_research oder (Nicht-
+    Markt-)Provider. Lokale Nachbildung der qsum-Logik aus
+    consistency.validate_cross_metrics (bewusst kein Import — das
+    Modul-Geflecht wuerde zirkulaer)."""
+    if key not in _QSUM_ENFORCE_KEYS:
+        return False
+    rows = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company_id,
+            CompanyValue.value_key == key,
+            CompanyValue.period_year == year,
+            CompanyValue.period_type.in_(_PERIODS),
+            CompanyValue.is_forecast.is_(False),
+            CompanyValue.numeric_value.isnot(None),
+        )
+        .all()
+    )
+    by_pt: dict[str, CompanyValue] = {}
+    for r in rows:
+        by_pt.setdefault(r.period_type, r)
+    fy = by_pt.get("FY")
+    if (
+        fy is None
+        or fy.numeric_value == 0
+        or (fy.primary_method or "") not in ("statement_research", "provider")
+        or _is_market_provider_row(fy)
+    ):
+        return False
+    if any(q not in by_pt for q in _Q_TYPES):
+        return False
+    q_sum = sum(by_pt[q].numeric_value for q in _Q_TYPES)
+    return abs(q_sum - fy.numeric_value) > abs(fy.numeric_value) * _QSUM_TOL
+
+
+def _statement_row_suspect(db, company_id, row: CompanyValue,
+                           qsum_cache: dict[str, bool] | None = None) -> bool:
+    """Verdachts-Kriterien der Ratsche: (a) die Zeile traegt
+    consistency_flags (qsum_mismatch, eps_ni_mismatch, ...), (b) sie ist
+    Quartals-Zeile eines Keys, dessen Quartale der autoritativen FY-Zeile
+    widersprechen (_qsum_contradicts_fy). `qsum_cache` (pro Lauf und
+    Jahr) memoisiert den qsum-Status je Key fuer die Bedarfspruefung."""
+    if row.consistency_flags:
+        return True
+    if row.period_type not in _Q_TYPES:
+        return False
+    key = row.value_key
+    if qsum_cache is not None and key in qsum_cache:
+        return qsum_cache[key]
+    suspect = _qsum_contradicts_fy(db, company_id, key, row.period_year)
+    if qsum_cache is not None:
+        qsum_cache[key] = suspect
+    return suspect
+
+
+def _ratchet_discrepancy(old: Decimal, new: Decimal) -> bool:
+    """> 1%-Abweichung des neuen Vorschlags vom behaltenen Wert.
+    Betragsvergleich — der neue Wert ist noch nicht durch normalize_sign
+    normalisiert."""
+    if old == 0:
+        return new != 0
+    return abs(abs(new) / abs(old) - 1) > _RATCHET_DIFF_TOL
 
 
 def _compose_source_name(info: dict, year: int) -> str:
@@ -1297,6 +1389,29 @@ def _upsert_reported(db, company, key: str, pt: str, year: int, info: dict,
         target.last_refresh_attempt = now
         return None
 
+    # Ratsche (first-plausible-wins unter Gleichrangigen): eine bestehende
+    # UNVERDAECHTIGE statement_research-Zeile mit Wert behaelt ihren Wert
+    # — Reruns wuerfelten sonst neu statt zu konvergieren (SAP: 7 korrekte
+    # Quartalswerte durch Wiederholungslauf beschaedigt). Verdaechtige
+    # Zeilen (consistency_flags, qsum-Widerspruch zur FY-Zeile) bleiben
+    # ersetzbar.
+    if (
+        target is not None
+        and target.numeric_value is not None
+        and (target.primary_method or "") == "statement_research"
+        and not _statement_row_suspect(db, company.id, target)
+    ):
+        if _ratchet_discrepancy(target.numeric_value, info["value"]):
+            logger.info(
+                "statement research %s/FY%s: Ratsche %s/%s — bestehender "
+                "Wert %s behalten, neuer Vorschlag %s (Diskrepanz >1%%)",
+                company.ticker, year, key, pt,
+                target.numeric_value, info["value"],
+            )
+        target.last_refresh_attempt = now
+        db.flush()
+        return None
+
     currency = company.currency if key in CURRENCY_KEYS else None
     if target is not None and currency_conflict(key, target.currency, currency):
         logger.warning(
@@ -1338,6 +1453,10 @@ def _upsert_reported(db, company, key: str, pt: str, year: int, info: dict,
     target.source_name = _compose_source_name(info, year)
     target.source_link = info.get("url")
     target.primary_method = "statement_research"
+    # Alte Flags beschrieben den ersetzten Wert — der Validator setzt sie
+    # fuer den neuen Wert frisch (sonst bliebe die Zeile fuer die Ratsche
+    # dauerhaft verdaechtig).
+    target.consistency_flags = None
     target.is_forecast = False
     target.manually_overridden = False
     target.from_ir_pdf = False
@@ -1391,6 +1510,24 @@ def _attach_sidecar(db, company, base_key: str, pt: str, year: int,
     if row.manually_overridden or row.from_ir_pdf:
         return False
     if adjusted_is_protected(row.adjustments_source):
+        return False
+    # Sidecar-Ratsche (gleiches Prinzip wie _upsert_reported): ein
+    # bestehender unverdaechtiger adjusted-Wert bleibt. Wurde die
+    # Traeger-Zeile in DIESEM Lauf geschrieben (base_row gesetzt), war
+    # sie verdaechtig/ersetzbar — der Sidecar zieht mit ihr um.
+    if (
+        base_row is None
+        and row.numeric_value_adjusted is not None
+        and not _statement_row_suspect(db, company.id, row)
+    ):
+        if _ratchet_discrepancy(row.numeric_value_adjusted, info["value"]):
+            logger.info(
+                "statement research %s/FY%s: Ratsche Sidecar %s/%s — "
+                "bestehender Wert %s behalten, neuer Vorschlag %s "
+                "(Diskrepanz >1%%)",
+                company.ticker, year, base_key, pt,
+                row.numeric_value_adjusted, info["value"],
+            )
         return False
     # reported <= adjusted auch gegen den DB-Basiswert pruefen — die
     # Dokument-Stufe liefert Sidecars oft ohne Basis-Wert im Payload
@@ -1486,16 +1623,33 @@ def _group_needs_research(db, company, year: int, group: str,
     _row_replaceable), lohnt der Claude-Call. Sind alle Zellen durch
     XBRL-Provider-/Manual-/PDF-Zeilen gedeckt (ESEF-Anker), entfaellt
     er. Markt-Provider-Zellen (Bloomberg-Label) zaehlen als beduerftig
-    — sonst liefe kein Call, der den Alt-Bestand ersetzt."""
+    — sonst liefe kein Call, der den Alt-Bestand ersetzt.
+
+    Ratsche: UNVERDAECHTIGE eigene statement_research-Zellen mit Wert
+    zaehlen NICHT als beduerftig (der Write wuerde ohnehin gehalten —
+    Calls fuer nichts); verdaechtige (consistency_flags/qsum-Widerspruch)
+    zaehlen."""
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
+    qsum_cache: dict[str, bool] = {}
     for key in base_keys:
         for pt in periods_reported:
             rows = _slot_rows(db, company.id, key, pt, year)
             target = next((r for r in rows if not r.is_forecast), None)
             if target is None:
                 target = next(iter(rows), None)
-            if target is None or _row_replaceable(target):
+            if target is None:
                 return True
+            if not _row_replaceable(target):
+                continue
+            if target.numeric_value is None:
+                return True
+            if (target.primary_method or "") == "statement_research":
+                if _statement_row_suspect(db, company.id, target, qsum_cache):
+                    return True
+                continue
+            # two_stage_*/web_*/calculated/Markt-Provider: ersetzbar und
+            # beduerftig wie bisher.
+            return True
     return False
 
 
@@ -1666,9 +1820,12 @@ def _needy_cells(db, company, year: int, group: str,
     Actual-Slot ohne Wert (leer oder not_found-Platzhalter) und nicht
     durch Manual/PDF/XBRL-Provider gesperrt. Markt-Provider-Zellen
     (Bloomberg-Alt-Bestand) zaehlen trotz Wert als beduerftig — die
-    Dokument-Stufe darf sie durch Berichtswerte ersetzen."""
+    Dokument-Stufe darf sie durch Berichtswerte ersetzen. Verdaechtige
+    eigene statement_research-Zellen (Ratsche: consistency_flags/
+    qsum-Widerspruch) zaehlen ebenfalls; unverdaechtige nicht."""
     needed: dict[str, tuple[str, ...]] = {}
     base_keys = [k for k, _ in STATEMENT_GROUPS[group] if k not in _ADJUSTED_SIDECARS]
+    qsum_cache: dict[str, bool] = {}
     for key in base_keys:
         pts = []
         # FY-first (Nicht-US-Konvention: FY-Reihe traegt die H-Rendite):
@@ -1688,6 +1845,10 @@ def _needy_cells(db, company, year: int, group: str,
                 actual is None
                 or actual.numeric_value is None
                 or _is_market_provider_row(actual)
+                or (
+                    (actual.primary_method or "") == "statement_research"
+                    and _statement_row_suspect(db, company.id, actual, qsum_cache)
+                )
             ):
                 pts.append(pt)
         if pts:

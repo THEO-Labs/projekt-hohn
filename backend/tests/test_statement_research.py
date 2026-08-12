@@ -226,8 +226,10 @@ def test_two_stage_and_not_found_rows_replaced(db, company, monkeypatch):
     assert placeholder.primary_method == "statement_research"
 
 
-def test_own_rows_replaceable_on_second_run(db, company, monkeypatch):
-    """Idempotenz: ein zweiter Lauf aktualisiert die eigene Zeile."""
+def test_ratchet_second_run_keeps_unsuspicious_value(db, company, monkeypatch, caplog):
+    """Ratsche: ein zweiter Lauf ersetzt eine unverdaechtige eigene Zeile
+    NICHT — der abweichende neue Vorschlag wird als Diskrepanz geloggt
+    (Kontroll-Review: Reruns wuerfelten neu statt zu konvergieren)."""
     _mock_claude(monkeypatch, {"income": _income_payload()})
     sr.fetch_statement_research(db, company, YEAR, groups=["income"])
     db.commit()
@@ -235,12 +237,97 @@ def test_own_rows_replaceable_on_second_run(db, company, monkeypatch):
     updated = _income_payload()
     updated["revenue"]["FY"] = _entry(41_000_000_000)
     _mock_claude(monkeypatch, {"income": updated})
-    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    with caplog.at_level(logging.INFO, logger="app.values.statement_research"):
+        sr.fetch_statement_research(db, company, YEAR, groups=["income"])
     db.commit()
 
     fy = _rows(db, company, "revenue", "FY")
     assert len(fy) == 1
-    assert fy[0].numeric_value == Decimal("41000000000")
+    assert fy[0].numeric_value == Decimal("40000000000")
+    assert fy[0].primary_method == "statement_research"
+    # Rerun-Versuch ist dokumentiert.
+    assert fy[0].last_refresh_attempt is not None
+    assert any(
+        "Ratsche" in r.message and "41000000000" in r.message
+        for r in caplog.records
+    )
+
+
+def test_ratchet_replaces_flagged_row(db, company, monkeypatch):
+    """Verdacht (a): eine statement_research-Zeile mit consistency_flags
+    (z.B. qsum_mismatch) bleibt ersetzbar — der neue Wert uebernimmt und
+    raeumt die stale Flags."""
+    old = _seed(db, company, "revenue", "FY", 39_000_000_000,
+                primary_method="statement_research",
+                consistency_flags="qsum_mismatch")
+    _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+    db.refresh(old)
+
+    assert old.numeric_value == Decimal("40000000000")
+    assert old.consistency_flags is None
+
+
+def test_ratchet_replaces_quarters_on_qsum_contradiction(db, company, monkeypatch):
+    """Verdacht (b): widersprechen die 4 Quartals-Zeilen eines SUMMABLE-
+    Keys der autoritativen FY-Zeile (>1%), sind sie ersetzbar — die
+    unverdaechtige FY-Zeile selbst bleibt gehalten."""
+    fy = _seed(db, company, "revenue", "FY", 40_000_000_000,
+               primary_method="statement_research")
+    quarters = {
+        q: _seed(db, company, "revenue", q, 9_000_000_000,
+                 primary_method="statement_research")
+        for q in ("Q1", "Q2", "Q3", "Q4")
+    }  # Summe 36 Mrd vs FY 40 Mrd -> qsum-Widerspruch
+    payload = {
+        "revenue": {
+            "FY": _entry(40_000_000_000),
+            "Q1": _entry(10_000_000_000),
+            "Q2": _entry(10_000_000_000),
+            "Q3": _entry(10_000_000_000),
+            "Q4": _entry(10_000_000_000),
+        },
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+    db.refresh(fy)
+
+    assert fy.numeric_value == Decimal("40000000000")  # Ratsche haelt FY
+    for q, row in quarters.items():
+        db.refresh(row)
+        assert row.numeric_value == Decimal("10000000000"), q
+
+
+def test_ratchet_keeps_consistent_quarters(db, company, monkeypatch):
+    """Gegenprobe zu (b): passen die Quartale zur FY-Zeile (<=1%), sind
+    sie unverdaechtig — der Rerun ersetzt sie nicht."""
+    _seed(db, company, "revenue", "FY", 40_000_000_000,
+          primary_method="statement_research")
+    q1 = _seed(db, company, "revenue", "Q1", 10_000_000_000,
+               primary_method="statement_research")
+    for q in ("Q2", "Q3", "Q4"):
+        _seed(db, company, "revenue", q, 10_000_000_000,
+              primary_method="statement_research")
+    payload = {
+        "revenue": {
+            "FY": _entry(41_000_000_000),
+            "Q1": _entry(10_500_000_000),
+            "Q2": _entry(10_500_000_000),
+            "Q3": _entry(10_000_000_000),
+            "Q4": _entry(10_000_000_000),
+        },
+    }
+    _mock_claude(monkeypatch, {"income": payload})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+    db.refresh(q1)
+
+    assert q1.numeric_value == Decimal("10000000000")
 
 
 def test_currency_conflict_blocks_write(db, company, monkeypatch):
@@ -735,6 +822,47 @@ def test_protected_adjusted_not_overwritten(db, company, monkeypatch):
     assert row.adjustments_source == "Manual"
 
 
+def test_sidecar_ratchet_keeps_existing_adjusted(db, company, monkeypatch, caplog):
+    """Sidecar-Ratsche: der bestehende unverdaechtige adjusted-Wert
+    bleibt beim Rerun stehen; der abweichende Vorschlag wird geloggt."""
+    _mock_claude(monkeypatch, {"income": _income_payload()})
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    updated = _income_payload()
+    updated["net_income_adjusted"]["FY"] = _entry(3_200_000_000)
+    _mock_claude(monkeypatch, {"income": updated})
+    with caplog.at_level(logging.INFO, logger="app.values.statement_research"):
+        sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+
+    ni = _rows(db, company, "net_income", "FY")[0]
+    assert ni.numeric_value_adjusted == Decimal("3500000000")
+    assert any(
+        "Ratsche Sidecar" in r.message and "3200000000" in r.message
+        for r in caplog.records
+    )
+
+
+def test_sidecar_follows_replaced_suspicious_base(db, company, monkeypatch):
+    """Wird die verdaechtige Traeger-Zeile neu geschrieben, zieht der
+    Sidecar mit um (keine Ratsche auf frisch geschriebenen Zeilen)."""
+    row = _seed(db, company, "net_income", "FY", 2_000_000_000,
+                primary_method="statement_research",
+                consistency_flags="eps_ni_mismatch")
+    row.numeric_value_adjusted = Decimal("2500000000")
+    row.adjustments_source = "Altes Zitat | https://ir.example.com/alt.pdf"
+    db.commit()
+    _mock_claude(monkeypatch, {"income": _income_payload()})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+    db.commit()
+    db.refresh(row)
+
+    assert row.numeric_value == Decimal("3000000000")
+    assert row.numeric_value_adjusted == Decimal("3500000000")
+
+
 # --- Refresh-Wiring (Backfill-Umleitung) -----------------------------------
 
 
@@ -873,9 +1001,10 @@ def test_single_uncovered_cell_triggers_group_call(db, company, monkeypatch):
     assert [c[2] for c in calls] == ["income"]
 
 
-def test_replaceable_row_still_triggers_group_call(db, company, monkeypatch):
-    """statement_research-Zeilen sind ersetzbar — eine gedeckte Gruppe
-    aus reinen Recherche-Zeilen wird weiterhin aktualisiert."""
+def test_unsuspicious_research_row_no_group_call(db, company, monkeypatch):
+    """Ratsche in der Bedarfspruefung: eine unverdaechtige
+    statement_research-Zelle zaehlt NICHT mehr als beduerftig — die
+    sonst provider-gedeckte Gruppe loest keinen Call aus."""
     _cover_group(db, company, "balance")
     row = (
         db.query(CompanyValue)
@@ -892,7 +1021,85 @@ def test_replaceable_row_still_triggers_group_call(db, company, monkeypatch):
 
     sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
 
+    assert calls == []
+
+
+def test_flagged_research_row_triggers_group_call(db, company, monkeypatch):
+    """Verdaechtige statement_research-Zellen (consistency_flags) zaehlen
+    weiterhin als beduerftig — der Gruppen-Call laeuft."""
+    _cover_group(db, company, "balance")
+    row = (
+        db.query(CompanyValue)
+        .filter(
+            CompanyValue.company_id == company.id,
+            CompanyValue.value_key == "lt_debt",
+            CompanyValue.period_type == "Q1",
+        )
+        .one()
+    )
+    row.primary_method = "statement_research"
+    row.consistency_flags = "unit_scale_suspect"
+    db.commit()
+    calls = _mock_claude(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["balance"])
+
     assert [c[2] for c in calls] == ["balance"]
+
+
+def test_research_covered_groups_zero_calls(db, company, monkeypatch):
+    """Konvergenz-Steady-State: alle Gruppen komplett mit unverdaechtigen
+    statement_research-Zeilen gedeckt (qsum-konsistent: FY = 4x Quartal)
+    -> 0 Calls."""
+    for group in ("income", "cashflow", "balance"):
+        keys = [k for k, _ in sr.STATEMENT_GROUPS[group]
+                if k not in sr._ADJUSTED_SIDECARS]
+        for key in keys:
+            for pt in ("Q1", "Q2", "Q3", "Q4"):
+                _seed(db, company, key, pt, 5_000_000_000,
+                      primary_method="statement_research")
+            _seed(db, company, key, "FY", 20_000_000_000,
+                  primary_method="statement_research")
+    calls = _mock_claude(monkeypatch, {})
+
+    assert sr.fetch_statement_research(db, company, YEAR) == 0
+    assert calls == []
+
+
+def test_qsum_contradicting_quarters_trigger_group_call(db, company, monkeypatch):
+    """Verdacht (b) in der Bedarfspruefung: Quartals-Zellen im qsum-
+    Widerspruch zur FY-Zeile zaehlen als beduerftig."""
+    keys = [k for k, _ in sr.STATEMENT_GROUPS["income"]
+            if k not in sr._ADJUSTED_SIDECARS]
+    for key in keys:
+        for pt in ("Q1", "Q2", "Q3", "Q4"):
+            _seed(db, company, key, pt, 5_000_000_000,
+                  primary_method="statement_research")
+        fy_value = 20_000_000_000 if key != "revenue" else 22_000_000_000
+        _seed(db, company, key, "FY", fy_value,
+              primary_method="statement_research")
+    calls = _mock_claude(monkeypatch, {})
+
+    sr.fetch_statement_research(db, company, YEAR, groups=["income"])
+
+    assert [c[2] for c in calls] == ["income"]
+
+
+def test_needy_cells_ratchet(db, company):
+    """_needy_cells: unverdaechtige statement_research-Zellen sind nicht
+    beduerftig, geflaggte schon; leere Zellen bleiben beduerftig."""
+    _seed(db, company, "net_income", "FY", 4_000_000_000,
+          primary_method="statement_research")
+    _seed(db, company, "net_income", "Q1", 1_000_000_000,
+          primary_method="statement_research",
+          consistency_flags="eps_ni_mismatch")
+    _seed(db, company, "net_income", "Q2", 1_000_000_000,
+          primary_method="statement_research")
+
+    needed = sr._needy_cells(db, company, YEAR, "income",
+                             ("FY", "Q1", "Q2", "Q3", "Q4"))
+
+    assert set(needed["net_income"]) == {"Q1", "Q3", "Q4"}
 
 
 # --- Migration: Markt-Provider-Zeilen (Yahoo-Altbestand) --------------------
