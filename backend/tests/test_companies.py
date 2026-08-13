@@ -69,16 +69,21 @@ def test_accounting_standard_us_gaap_for_us_company(client, db):
 
 
 def test_accounting_standard_ifrs_for_german_company(client, db):
-    # Deutsche Firma -> IFRS
+    # Neuanlage deutscher Firmen ist gesperrt (Produktentscheid Aug 2026);
+    # BESTEHENDE Nicht-US-Firmen liefern weiter IFRS als Standard.
+    from uuid import UUID
+    from app.companies.models import Company
     _user, pid = _login_with_portfolio(client, db)
-    created = client.post(f"/api/portfolios/{pid}/companies",
+    blocked = client.post(f"/api/portfolios/{pid}/companies",
                           json={"name": "BASF", "ticker": "BAS.DE",
                                 "isin": "DE000BASF111", "currency": "EUR"})
-    assert created.status_code == 201
-    assert created.json()["accounting_standard"] == "IFRS"
-    cid = created.json()["id"]
+    assert blocked.status_code == 400
 
-    detail = client.get(f"/api/companies/{cid}/detail")
+    company = Company(portfolio_id=UUID(pid), name="BASF", ticker="BAS.DE",
+                      isin="DE000BASF111", currency="EUR")
+    db.add(company)
+    db.commit()
+    detail = client.get(f"/api/companies/{company.id}/detail")
     assert detail.status_code == 200
     assert detail.json()["company"]["accounting_standard"] == "IFRS"
 

@@ -17,13 +17,15 @@ def _setup(client, db, tickers=("ADS.DE",)):
     db.commit()
     client.post("/api/auth/login", json={"email": "gap@example.com", "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "DAX"}).json()["id"]
+    # Nicht-US-Neuanlage ist per API gesperrt (Produktentscheid) —
+    # Bestands-Firmen direkt per ORM anlegen.
+    from app.companies.models import Company
     cids = {}
     for t in tickers:
-        r = client.post(
-            f"/api/portfolios/{pid}/companies",
-            json={"name": t, "ticker": t, "currency": "EUR"},
-        )
-        cids[t] = UUID(r.json()["id"])
+        company = Company(portfolio_id=UUID(pid), name=t, ticker=t, currency="EUR")
+        db.add(company)
+        db.commit()
+        cids[t] = company.id
     return UUID(pid), cids
 
 

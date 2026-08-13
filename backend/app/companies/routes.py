@@ -78,6 +78,27 @@ def _suggest_currency_from_ticker(ticker: str) -> str | None:
     return _TICKER_SUFFIX_CURRENCY.get(suffix)
 
 
+NON_US_BLOCK_MESSAGE = (
+    "Nicht-US-Unternehmen koennen derzeit nicht angelegt werden: Die "
+    "Datenqualitaet ausserhalb der SEC-Quellen erreicht noch nicht das "
+    "Niveau des US-Pfads. Bestehende Nicht-US-Firmen bleiben nutzbar."
+)
+
+
+def _reject_non_us(isin: str | None, ticker: str | None, currency: str | None) -> None:
+    """Anlage-Sperre fuer Nicht-US-Firmen (Produktentscheid Aug 2026).
+
+    Erkennung: ISIN-Praefix und Yahoo-Ticker-Suffix einer Heimatboerse
+    (.DE/.PA/.L ...). Waehrung ist bewusst KEIN Kriterium (zu aggressiv).
+    Bestehende Nicht-US-Firmen sind nicht betroffen — nur Neuanlage/
+    Umwidmung."""
+    from app.companies.isin import is_us_isin
+    if isin and not is_us_isin(isin):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NON_US_BLOCK_MESSAGE)
+    if ticker and _suggest_currency_from_ticker(ticker):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NON_US_BLOCK_MESSAGE)
+
+
 @portfolio_scoped.post("", response_model=CompanyOut, status_code=status.HTTP_201_CREATED)
 def create_company(
     portfolio_id: UUID,
@@ -87,6 +108,7 @@ def create_company(
 ) -> Company:
     _get_owned_portfolio(db, user, portfolio_id)
     data = payload.model_dump()
+    _reject_non_us(data.get("isin"), data.get("ticker"), data.get("currency"))
     # Currency-Sanity: wenn User USD eingibt aber Ticker-Suffix klare EU/UK/JP-
     # Heimatboerse signalisiert, ueberschreiben — schuetzt vor Currency-Mismatch
     # in Cross-Year-Aggregaten (z.B. Airbus.PA mit USD => Web liefert EUR-Werte
@@ -131,7 +153,18 @@ def update_company(
     db: Session = Depends(get_db),
 ) -> Company:
     company = _get_owned_company(db, user, company_id)
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    # Umgehungsschutz: eine bestehende US-Firma darf nicht per Update in
+    # eine Nicht-US-Firma umgewidmet werden (bestehende Nicht-US-Firmen
+    # bleiben editierbar).
+    from app.companies.isin import is_us_isin
+    if is_us_isin(company.isin) and any(k in changes for k in ("isin", "ticker", "currency")):
+        _reject_non_us(
+            changes.get("isin", company.isin),
+            changes.get("ticker", company.ticker),
+            changes.get("currency", company.currency),
+        )
+    for key, value in changes.items():
         setattr(company, key, value)
     db.commit()
     db.refresh(company)
