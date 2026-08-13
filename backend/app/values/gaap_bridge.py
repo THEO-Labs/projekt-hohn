@@ -88,6 +88,14 @@ _YTD_TOLERANCE = Decimal("0.01")
 # und YTD-Cross-Check ausgenommen (period_end-Check + qsum-Pass greifen).
 _NO_YTD_KEYS = frozenset({"eps_diluted"})
 
+# Q4- und FY-Slot eines Instant-Keys teilen den Bilanzstichtag: >1%
+# Abweichung zu einer autoritativen Gegen-Zeile ist ein Stichtags-
+# Widerspruch (Apple-CP-Klasse; Muster
+# statement_research._apply_balance_instant_gates).
+_Q4_FY_CONTRADICTION_TOL = Decimal("0.01")
+
+_OTHER_INSTANT_SLOT = {"Q4": "FY", "FY": "Q4"}
+
 # Statements stehen im hinteren Teil des Releases; grosszuegiger kappen
 # als beim Reconciliation-Fokus (mehrere Tabellen noetig).
 _TEXT_CAP_CHARS = 60_000
@@ -124,8 +132,12 @@ _SYSTEM_PROMPT = (
     "    cash_and_equivalents: cash and cash equivalents (balance sheet)\n"
     "    st_investments: short-term investment securities / short-term "
     "investments (balance sheet; null if not shown as a separate line)\n"
-    "    st_debt: current maturities of long-term debt / current portion "
-    "of long-term debt (balance sheet)\n"
+    "    st_debt: total short-term debt = the SUM of ALL current debt "
+    "lines shown in the balance sheet: 'Commercial paper' plus 'Term "
+    "debt, current' / 'Current maturities of long-term debt' / 'current "
+    "portion of long-term debt' plus 'Short-term borrowings'. If several "
+    "of these lines exist, ADD them and list each summand in "
+    "st_debt_components; a single line is used as-is.\n"
     "    lt_debt: STRICTLY the balance sheet line 'Long-term debt' "
     "(noncurrent). WARNING: NEVER use a 'total carrying value of debt' or "
     "any debt total from footnotes or prose — those include current "
@@ -149,9 +161,13 @@ _SYSTEM_PROMPT = (
     "release shows a YTD column; null otherwise. For a Q1 release the "
     "three-month figure counts as values, not ytd_values.\n"
     "- Use null for anything not printed in the tables. Do not estimate.\n"
+    "- st_debt_components: when st_debt is a sum of several balance sheet "
+    "lines, list the summands as printed (e.g. 'Commercial paper 7,979 + "
+    "Term debt, current 12,350'); null when a single line was used.\n"
     "Answer with ONLY this JSON object, no prose, no markdown fences:\n"
     '{"period_end_date": "YYYY-MM-DD"|null, '
     '"balance_sheet_date": "YYYY-MM-DD"|null, '
+    '"st_debt_components": string|null, '
     '"values": {"revenue": number|null, "net_income": number|null, '
     '"eps_diluted": number|null, "operating_cash_flow": number|null, '
     '"capex": number|null, "sbc": number|null, "dividends": number|null, '
@@ -359,6 +375,37 @@ def _balance_date_ok(claimed, expected: date) -> bool:
     except ValueError:
         return False
     return abs((claimed_date - expected).days) <= _BALANCE_PERIOD_END_TOLERANCE_DAYS
+
+
+def _q4_fy_contradiction(
+    db, company, key: str, ptype: str, year: int, value: Decimal,
+) -> bool:
+    """Stichtags-Gate der Instant-Keys: traegt der Gegen-Slot (Q4<->FY,
+    identischer Bilanzstichtag) eine autoritative Zeile (kein Bridge-
+    Kandidat) mit >1% Abweichung, wird NICHT geschrieben — nur geloggt."""
+    other = _OTHER_INSTANT_SLOT.get(ptype)
+    if other is None:
+        return False
+    rows = _cell_rows(db, company.id, key, other, year)
+    if _cell_needs_bridge(rows):
+        return False
+    ref = next(
+        (r for r in rows if not r.is_forecast and r.numeric_value is not None),
+        None,
+    )
+    if ref is None:
+        return False
+    denom = max(abs(ref.numeric_value), abs(value))
+    if denom == 0:
+        return False
+    if abs(ref.numeric_value - value) <= denom * _Q4_FY_CONTRADICTION_TOL:
+        return False
+    logger.warning(
+        "%s gaap bridge: Q4/FY-Stichtags-Widerspruch %s FY%s: %s=%s vs "
+        "autoritativ %s=%s (>1%%) — Write uebersprungen",
+        company.ticker, key, year, ptype, value, other, ref.numeric_value,
+    )
+    return True
 
 
 def _write_bridge_value(
@@ -575,6 +622,13 @@ def bridge_gaap_from_earnings_releases(
                         _BALANCE_PERIOD_END_TOLERANCE_DAYS, key,
                     )
                     continue
+                # st_debt ist die Summe aller kurzfristigen Fremdkapital-
+                # Zeilen — die Summanden aus dem Release in die Quelle.
+                note = None
+                if key == "st_debt":
+                    comps = data.get("st_debt_components")
+                    if isinstance(comps, str) and comps.strip():
+                        note = f"st_debt = {comps.strip()[:300]}"
                 # Q4-Stichtag == FY-Ende: derselbe Instant-Wert gehoert in
                 # beide Slots (Verteilung wie beim EDGAR-Instant-Pfad).
                 targets = [ptype]
@@ -587,9 +641,13 @@ def bridge_gaap_from_earnings_releases(
                         _cell_rows(db, company.id, key, tp, year)
                     ):
                         continue
+                    # Stichtags-Gate: autoritative Gegen-Zeile (Q4<->FY)
+                    # mit >1% Abweichung blockt den Write.
+                    if _q4_fy_contradiction(db, company, key, tp, year, v):
+                        continue
                     try:
                         if _write_bridge_value(db, company, key, tp, year, v,
-                                               exhibit_url):
+                                               exhibit_url, note=note):
                             written += 1
                     except InvalidOperation:
                         break

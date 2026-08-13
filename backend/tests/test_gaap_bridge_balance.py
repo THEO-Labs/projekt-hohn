@@ -314,8 +314,9 @@ def test_q4_release_writes_q4_and_fy_slot(db, company, monkeypatch):
 
 def test_cross_slot_write_respects_locks(db, company, monkeypatch):
     """Der Doppel-Write in den zweiten Slot respektiert die Lock-Guards:
-    ein manueller FY-Actual bleibt, der Q4-Slot wird gefuellt."""
-    manual_fy = _seed_row(db, company, "lt_debt", "FY", Decimal("99"),
+    ein manueller FY-Actual bleibt, der Q4-Slot wird gefuellt (Abweichung
+    <1% — innerhalb der Q4/FY-Widerspruchs-Toleranz)."""
+    manual_fy = _seed_row(db, company, "lt_debt", "FY", Decimal("20100000000"),
                           primary_method="manual", manually_overridden=True)
     _patch_q4(monkeypatch, {
         "period_end_date": f"{YEAR}-12-31",
@@ -328,7 +329,124 @@ def test_cross_slot_write_respects_locks(db, company, monkeypatch):
     db.commit()
 
     db.refresh(manual_fy)
-    assert manual_fy.numeric_value == Decimal("99")
+    assert manual_fy.numeric_value == Decimal("20100000000")
     assert manual_fy.manually_overridden is True
     (q4_row,) = _cell(db, company, "lt_debt", "Q4")
     assert q4_row.numeric_value == Decimal("20000000000")
+
+
+def test_st_debt_prompt_requires_sum(db, company, monkeypatch):
+    """st_debt ist als Summe ALLER kurzfristigen Fremdkapital-Zeilen
+    beschrieben (Apple: 'Commercial paper' + 'Term debt, current'), mit
+    st_debt_components fuer die Summanden im Antwort-Schema."""
+    assert "Commercial paper" in _SYSTEM_PROMPT
+    assert "Current maturities of long-term debt" in _SYSTEM_PROMPT
+    assert "Short-term borrowings" in _SYSTEM_PROMPT
+    assert "st_debt_components" in _SYSTEM_PROMPT
+
+
+def test_st_debt_sums_cp_and_term_debt(db, company, monkeypatch):
+    """Apple-Klasse: 'Commercial paper' und 'Term debt, current' sind
+    separate Bilanzzeilen — die Bruecke schreibt die Summe, die Quelle
+    nennt die Summanden."""
+    _patch_q2(monkeypatch, {
+        "period_end_date": f"{YEAR}-06-30",
+        "balance_sheet_date": f"{YEAR}-06-30",
+        "st_debt_components": "Commercial paper 7,979 + Term debt, current 12,350",
+        "values": _values(st_debt=20329000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert written == 1
+    (row,) = _cell(db, company, "st_debt", "Q2")
+    assert row.numeric_value == Decimal("20329000000")
+    assert "Commercial paper 7,979" in row.source_name
+    assert "Term debt, current 12,350" in row.source_name
+
+
+def test_st_debt_single_line_still_ok(db, company, monkeypatch):
+    """Einzelne kurzfristige Fremdkapital-Zeile (keine Summanden): Wert
+    wird unveraendert geschrieben, Quelle ohne Summanden-Note."""
+    _patch_q2(monkeypatch, {
+        "period_end_date": f"{YEAR}-06-30",
+        "balance_sheet_date": f"{YEAR}-06-30",
+        "st_debt_components": None,
+        "values": _values(st_debt=1500000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert written == 1
+    (row,) = _cell(db, company, "st_debt", "Q2")
+    assert row.numeric_value == Decimal("1500000000")
+    assert "st_debt =" not in row.source_name
+
+
+def test_q4_fy_contradiction_blocks_q4_write(db, company, monkeypatch):
+    """Autoritative FY-Zeile (XBRL-Anker, CP+Term-Debt-Summe) vs Bruecken-
+    Q4-Wert mit >1% Abweichung bei identischem Stichtag: der Q4-Write wird
+    geblockt (Apple st_debt Q4=12.350 vs FY=20.329)."""
+    fy = _seed_row(db, company, "st_debt", "FY", Decimal("20329000000"))
+    _patch_q4(monkeypatch, {
+        "period_end_date": f"{YEAR}-12-31",
+        "balance_sheet_date": f"{YEAR}-12-31",
+        "values": _values(st_debt=12350000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert written == 0
+    assert _cell(db, company, "st_debt", "Q4") == []
+    db.refresh(fy)
+    assert fy.numeric_value == Decimal("20329000000")
+
+
+def test_q4_fy_contradiction_blocks_fy_write(db, company, monkeypatch):
+    """Gegenrichtung: autoritative Q4-Zeile vorhanden, die Bruecke will den
+    FY-Slot mit >1% Abweichung fuellen — geblockt."""
+    q4 = _seed_row(db, company, "st_debt", "Q4", Decimal("12350000000"))
+    _patch_q4(monkeypatch, {
+        "period_end_date": f"{YEAR}-12-31",
+        "balance_sheet_date": f"{YEAR}-12-31",
+        "values": _values(st_debt=20329000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(db, company, [YEAR])
+    db.commit()
+
+    assert written == 0
+    assert _cell(db, company, "st_debt", "FY") == []
+    db.refresh(q4)
+    assert q4.numeric_value == Decimal("12350000000")
+
+
+def test_q4_fy_gate_ignores_two_stage_counterpart(db, company, monkeypatch):
+    """Nicht-autoritative Gegen-Zeile (two_stage-Freitext-LLM) blockt
+    nicht: beide Slots werden mit dem Bruecken-Wert ueberschrieben."""
+    _seed_row(db, company, "st_debt", "FY", Decimal("99"),
+              primary_method="two_stage_web")
+    _patch_q4(monkeypatch, {
+        "period_end_date": f"{YEAR}-12-31",
+        "balance_sheet_date": f"{YEAR}-12-31",
+        "values": _values(st_debt=20329000000),
+        "ytd_values": _values(),
+    })
+
+    written = bridge_gaap_from_earnings_releases(
+        db, company, [YEAR], max_llm_calls=1,
+    )
+    db.commit()
+
+    assert written == 2
+    (q4_row,) = _cell(db, company, "st_debt", "Q4")
+    (fy_row,) = _cell(db, company, "st_debt", "FY")
+    assert q4_row.numeric_value == Decimal("20329000000")
+    assert fy_row.numeric_value == Decimal("20329000000")
