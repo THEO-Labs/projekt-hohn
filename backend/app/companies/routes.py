@@ -109,6 +109,28 @@ def create_company(
     _get_owned_portfolio(db, user, portfolio_id)
     data = payload.model_dump()
     _reject_non_us(data.get("isin"), data.get("ticker"), data.get("currency"))
+    # Duplikat-Sperre: derselbe Ticker in einem weiteren Portfolio erzeugte
+    # Parallel-Datenbestaende (SPGI-Fall: Review und Recompute trafen
+    # verschiedene Kopien). Ein Ticker existiert pro Instanz nur einmal.
+    ticker = (data.get("ticker") or "").strip()
+    if ticker:
+        from app.portfolios.models import Portfolio
+        existing = (
+            db.query(Company, Portfolio)
+            .join(Portfolio, Portfolio.id == Company.portfolio_id)
+            .filter(Company.ticker.ilike(ticker))
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"'{ticker}' existiert bereits im Portfolio "
+                    f"'{existing[1].name}'. Doppelte Firmen erzeugen "
+                    "widerspruechliche Datenbestaende — bitte die bestehende "
+                    "Firma nutzen oder zuerst loeschen."
+                ),
+            )
     # Currency-Sanity: wenn User USD eingibt aber Ticker-Suffix klare EU/UK/JP-
     # Heimatboerse signalisiert, ueberschreiben — schuetzt vor Currency-Mismatch
     # in Cross-Year-Aggregaten (z.B. Airbus.PA mit USD => Web liefert EUR-Werte

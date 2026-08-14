@@ -64,3 +64,20 @@ def test_existing_non_us_company_stays_editable(client, portfolio_id, db):
     db.add(company); db.commit()
     r = client.patch(f"/api/companies/{company.id}", json={"name": "SAP SE (Bestand)"})
     assert r.status_code == 200
+
+
+def test_duplicate_ticker_blocked_across_portfolios(client, portfolio_id, db):
+    r1 = _create(client, portfolio_id, isin="US78409V1044", ticker="SPGI")
+    assert r1.status_code == 201
+    r2 = client.post("/api/portfolios", json={"name": "Zweites Portfolio"})
+    pid2 = r2.json()["id"]
+    r3 = _create(client, pid2, isin="US78409V1044", ticker="SPGI")
+    assert r3.status_code == 400
+    assert "existiert bereits" in r3.json()["detail"]
+
+
+def test_duplicate_ticker_case_insensitive(client, portfolio_id):
+    r1 = _create(client, portfolio_id, isin="US78409V1044", ticker="SPGI")
+    assert r1.status_code == 201
+    r2 = _create(client, portfolio_id, isin="US78409V1044", ticker="spgi")
+    assert r2.status_code == 400
