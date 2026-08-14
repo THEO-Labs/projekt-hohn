@@ -348,6 +348,7 @@ function ClickableCell({
     (cell.value !== null &&
       (cell.source_name || cell.source_link || cell.formula || cell.primary_method || cell.is_gaap_fallback)) ||
     cell.primary_method === "not_found" ||
+    cell.primary_method === "not_estimated" ||
     cell.status === "not_yet_reported";
   const clickable = hasMeta;
   return (
@@ -368,9 +369,11 @@ function ClickableCell({
           ? "Periode noch nicht berichtet — Zahlen folgen mit dem naechsten Bericht"
           : cell.primary_method === "not_found"
             ? "Recherche ohne Fund — Wert manuell raussuchen"
-            : cell.is_gaap_fallback
-              ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert"
-              : undefined
+            : cell.primary_method === "not_estimated"
+              ? "Bewusst keine Quartalsschaetzung — Begruendung per Klick"
+              : cell.is_gaap_fallback
+                ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert"
+                : undefined
       }
     >
       {label}
@@ -908,6 +911,7 @@ function CompanyDetailContent({
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> Manuell</span>
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Verified (2-Stage)</span>
           <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-red-500" /> Nicht gefunden — manuell recherchieren</span>
+          <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-slate-400" /> Bewusst nicht geschaetzt (Begruendung per Klick)</span>
         </div>
 
         <CollapsibleCard id={METRICS_ID} title="Overview metrics">

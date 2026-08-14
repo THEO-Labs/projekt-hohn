@@ -1280,6 +1280,7 @@ def refresh_company_values(
                 derive_balance_carry_forward,
                 derive_clear_stale_forecasts,
                 derive_declared_dividend_quarter,
+                derive_explain_open_gaps,
                 derive_gaap_from_adjusted_spread,
                 derive_missing_fcf,
                 derive_missing_ocf,
@@ -1558,6 +1559,12 @@ def refresh_company_values(
                         db, company_id, cons_year, is_us=us_filer,
                         full_checks=False,
                     )
+                    # Ganz am ENDE, nach allen Ableitungen: bewusst leer
+                    # gebliebene Schaetzzellen offener Quartale bekommen
+                    # einen not_estimated-Platzhalter mit ehrlicher
+                    # Begruendung (statt generischem "noch nicht
+                    # berichtet"-Strich im UI).
+                    derive_explain_open_gaps(db, company_id, cons_year)
                     db.commit()
                 except Exception as e:
                     logger.error("consistency pass failed for %s FY%s: %s", ticker, cons_year, e)

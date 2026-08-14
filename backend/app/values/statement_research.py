@@ -263,7 +263,9 @@ _REPORTED_ADJ_BAND = Decimal("1.50")
 # Ersetzbare Herkuenfte (Muster _derivation_replaceable in consistency,
 # erweitert um die eigene Signatur, damit der naechste Lauf seine
 # Vorgaenger-Zeilen aktualisieren darf).
-_REPLACEABLE_METHODS = ("not_found", "calculated", "statement_research")
+_REPLACEABLE_METHODS = (
+    "not_found", "not_estimated", "calculated", "statement_research",
+)
 
 # Markt-Provider-Erkennung (Migration bestehender Yahoo-Werte): der
 # Marktdaten-Feed schreibt primary_method='provider' mit dem Label

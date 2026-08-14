@@ -40,6 +40,11 @@ function cellBadge(cell: {
   if (pm === "not_found") {
     return { text: "Nicht gefunden — manuell recherchieren", dot: "bg-red-500", text_cls: "text-red-700" };
   }
+  if (pm === "not_estimated") {
+    // Bewusst leere Schaetzzelle: neutral grau (wie not_yet_reported),
+    // die Begruendung steht im source_name des Platzhalters.
+    return { text: "Bewusst nicht geschaetzt", dot: "bg-slate-400", text_cls: "text-slate-600" };
+  }
   if (cell.manually_overridden || pm === "manual") {
     return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
   }
@@ -459,6 +464,9 @@ export function cellColorClass(cell: Cell | undefined): string {
   // Periode noch nicht berichtet: dezent grau, NICHT rot — die Firma kann
   // die Zahl noch gar nicht veroeffentlicht haben.
   if (cell?.status === "not_yet_reported" && cell.value == null) return "text-muted-foreground/60 italic";
+  // Bewusst leere Schaetzzelle (systematisch nicht schaetzbar): neutral
+  // grau wie not_yet_reported, NICHT rot — der Jahreswert existiert.
+  if (cell?.primary_method === "not_estimated" && cell.value == null) return "text-muted-foreground/60 italic";
   // Recherche lief, fand aber nichts: rot markieren = manuell raussuchen.
   if (cell?.primary_method === "not_found" && cell.value === null) return "text-red-600 font-semibold";
   if (!cell || cell.value === null) return "text-muted-foreground/60";

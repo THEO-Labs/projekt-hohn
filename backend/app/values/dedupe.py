@@ -25,6 +25,9 @@ _METHOD_RANK = {
     "calculated": 3,
     "web_guidance": 2,
     "not_found": 0,
+    # Bewusst leerer Erklaerungs-Platzhalter — verliert wie not_found
+    # gegen jede andere Herkunft.
+    "not_estimated": 0,
 }
 _METHOD_RANK_DEFAULT = 1
 

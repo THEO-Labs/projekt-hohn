@@ -117,7 +117,7 @@ def _derivation_replaceable(row: CompanyValue) -> bool:
         return True
     pm = row.primary_method or ""
     return (
-        pm in ("not_found", "calculated")
+        pm in ("not_found", "not_estimated", "calculated")
         or pm.startswith("two_stage")
         or pm.startswith("web")
     )
@@ -1666,5 +1666,158 @@ def derive_sbc_quarters(db: Session, company_id: UUID, year: int) -> int:
         target.fetched_at = now
         target.last_refresh_attempt = now
         written += 1
+    db.flush()
+    return written
+
+
+# Erklaertexte fuer bewusst leere Schaetzzellen offener Quartale
+# (primary_method='not_estimated'). Der generische UI-Hinweis "noch nicht
+# berichtet" ist fuer diese Zellen irrefuehrend — sie sind systematisch
+# nicht schaetzbar, der Jahreswert existiert (Kunden-Feedback Aug 2026).
+_NOT_ESTIMATED_TEXTS = {
+    "fcf": (
+        "Keine Quartalsschaetzung: FCF wird als operativer Cashflow minus "
+        "Investitionen berechnet; fuer dieses Quartal liegt keine OCF-/"
+        "Capex-Schaetzung vor. Der Jahreswert ist in der Annual-Spalte "
+        "vorhanden."
+    ),
+    "operating_cash_flow": (
+        "Bewusst keine Modell-Quartalsschaetzung (Quartals-OCF streut in "
+        "Modellantworten stark); der Jahreswert stammt aus dem "
+        "Analystenkonsens."
+    ),
+    "eps_diluted": (
+        "GAAP-EPS je Quartal wird nicht vom Modell geschaetzt, sondern aus "
+        "der Non-GAAP-Schaetzung abgeleitet, sobald die Datenbasis reicht."
+    ),
+}
+_NOT_ESTIMATED_GENERIC = (
+    "Keine belastbare Quartalsschaetzung verfuegbar (weder Guidance noch "
+    "Konsens auf Quartalsebene); der Jahreswert ist vorhanden."
+)
+
+
+def derive_explain_open_gaps(db: Session, company_id: UUID, year: int) -> int:
+    """Bewusst leere Schaetzzellen offener Quartale ehrlich begruenden.
+
+    Fuer offene (unberichtete) Quartale des laufenden FY: hat eine Zelle
+    keinen Wert (weder Actual noch Forecast, GAAP-Spur) und existiert ein
+    FY-Forecast mit Wert (GAAP oder adjusted), wird eine leere Forecast-
+    Platzhalter-Zeile mit primary_method='not_estimated' und erklaerendem
+    source_name geschrieben (key-spezifische Texte, sonst generisch).
+    Laeuft ganz am ENDE des Konsistenz-Blocks — nur was nach allen
+    Ableitungen noch leer ist, bekommt die Erklaerung.
+
+    Guards: nie Werte ueberschreiben — existiert bereits eine (leere)
+    Zeile, werden nur source_name/primary_method gesetzt, und auch das
+    nicht bei manual/not_found/web_guidance (der Direkt-Schaetzungs-
+    Vorrang in derive_open_quarter_from_fy_estimate haengt an
+    'web_guidance'). Adjusted-Sidecars bleiben unangetastet (nur
+    source_name/primary_method der Traeger-Zeile aendern sich). Echte
+    Writer ersetzen die Platzhalter regulaer: numeric_value=None und
+    'not_estimated' sind in allen Replaceable-Kontrakten ersetzbar.
+    Hygiene: not_estimated-Platzhalter inzwischen BERICHTETER Quartale
+    werden auf not_found umgestuft (dort gilt rot/manuell raussuchen).
+    Idempotent. Rueckgabe: Anzahl geschriebener Erklaerungs-Zellen.
+    """
+    from app.companies.models import Company
+    from app.values.detail_page import QUARTERLY_DISPLAY_KEYS
+    from app.values.persistence import NOT_FOUND_SOURCE
+
+    company = db.get(Company, company_id)
+    rows = _rows_for_year(db, company_id, year)
+    reported_memo: dict[str, bool] = {}
+    subs_cache: dict = {}
+
+    def _q_reported(q: str) -> bool:
+        if q not in reported_memo:
+            reported_memo[q] = _quarter_reported(company, year, q, subs_cache)
+        return reported_memo[q]
+
+    now = datetime.now(timezone.utc)
+    written = 0
+
+    # Hygiene: Platzhalter berichteter Quartale sind keine bewusste
+    # Schaetz-Luecke mehr — dort gilt die not_found-Konvention (rot).
+    for r in rows:
+        if (
+            (r.primary_method or "") == "not_estimated"
+            and r.numeric_value is None
+            and r.period_type in _Q_TYPES
+            and _q_reported(r.period_type)
+        ):
+            r.primary_method = "not_found"
+            r.source_name = NOT_FOUND_SOURCE
+            r.last_refresh_attempt = now
+            logger.info(
+                "not_estimated -> not_found (Periode berichtet) %s/%s/%s FY%s",
+                company_id, r.value_key, r.period_type, year,
+            )
+
+    # Zielkeys: die quartalsweise angezeigten Reihen der Detail-Seite.
+    # net_buyback wird serve-time abgeleitet (keine DB-Zeilen).
+    keys = [k for k in QUARTERLY_DISPLAY_KEYS if k != "net_buyback"]
+    for key in keys:
+        fy_est = next(
+            (r for r in rows
+             if r.value_key == key and r.period_type == "FY"
+             and r.is_forecast
+             and (r.numeric_value is not None
+                  or r.numeric_value_adjusted is not None)),
+            None,
+        )
+        if fy_est is None:
+            continue
+        text = _NOT_ESTIMATED_TEXTS.get(key, _NOT_ESTIMATED_GENERIC)
+        for q in _Q_TYPES:
+            if _q_reported(q):
+                continue
+            slot_rows = [
+                r for r in rows
+                if r.value_key == key and r.period_type == q
+            ]
+            # Zelle hat einen Wert (GAAP-Spur oder Text) — nichts zu
+            # erklaeren; authoritative Zeilen nie anfassen.
+            if any(
+                r.numeric_value is not None or r.text_value is not None
+                for r in slot_rows
+            ):
+                continue
+            if any(r.manually_overridden or r.from_ir_pdf for r in slot_rows):
+                continue
+            if not slot_rows:
+                target = CompanyValue(
+                    id=uuid4(), company_id=company_id, value_key=key,
+                    period_type=q, period_year=year, is_forecast=True,
+                    numeric_value=None, source_name=text,
+                    primary_method="not_estimated", currency=fy_est.currency,
+                    fetched_at=now, last_refresh_attempt=now,
+                    manually_overridden=False, from_ir_pdf=False,
+                )
+                # SAVEPOINT pro Insert: bei Race-Kollision Zeile neu laden
+                # und in den Update-Pfad unten wechseln.
+                try:
+                    with db.begin_nested():
+                        db.add(target)
+                        db.flush()
+                    written += 1
+                    continue
+                except IntegrityError:
+                    target = _reload_slot(db, company_id, key, q, year, True)
+                    if target is None:
+                        continue
+                    slot_rows = [target]
+            target = next((r for r in slot_rows if r.is_forecast), slot_rows[0])
+            if target.numeric_value is not None or target.text_value is not None:
+                continue
+            pm = target.primary_method or ""
+            if pm in ("manual", "not_found", "web_guidance"):
+                continue
+            if pm == "not_estimated" and target.source_name == text:
+                continue  # bereits erklaert — idempotent
+            target.source_name = text
+            target.primary_method = "not_estimated"
+            target.last_refresh_attempt = now
+            written += 1
     db.flush()
     return written
