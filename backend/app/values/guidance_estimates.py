@@ -205,7 +205,10 @@ def _build_system_prompt(company, year: int, open_quarter: str | None = None) ->
         "give a one-to-two-sentence reasoning (which guidance/consensus "
         "figure it rests on). Report absolute amounts in "
         f"{currency} base units (e.g. '$5.8 billion' -> 5800000000) and "
-        "EPS per share. Answer with ONLY one JSON object matching the "
+        "EPS per share. If the company has completed or announced a "
+        "spin-off, divestiture or major acquisition, base the estimates "
+        "on the remaining/post-transaction company and say so in the "
+        "reasoning. Answer with ONLY one JSON object matching the "
         "schema in the user message — no prose outside the JSON, no "
         "markdown fences."
     )

@@ -29,11 +29,26 @@ def test_prompt_is_a_simple_chat_question(db, company):
     for banned in ("FORBIDDEN", "Sources in this order", "(a)", "ONLY if",
                    "no projections"):
         assert banned not in sys_prompt
-    assert len(sys_prompt) < 700
+    # Budget 900 statt 700: der Spin-off-/Divestiture-Satz (SPGI-Review)
+    # kostet rund 180 Zeichen zusaetzlich.
+    assert len(sys_prompt) < 900
 
     user_prompt = ge._build_user_prompt(company, RUNNING_YEAR)
     assert '"reasoning": <string|null>' in user_prompt
     assert "which guidance/consensus figure the value rests" in user_prompt
+
+
+def test_prompt_mentions_spin_off_awareness(db, company):
+    """Ein Satz fuer Konzernumbauten: Schaetzungen fuer den verbleibenden
+    Konzern nach Spin-off/Divestiture/Grossakquisition, mit Hinweis im
+    reasoning (SPGI-Review: Mobility-Abspaltung wurde weitergerechnet)."""
+    sys_prompt = ge._build_system_prompt(company, RUNNING_YEAR)
+    assert (
+        "If the company has completed or announced a spin-off, "
+        "divestiture or major acquisition, base the estimates on the "
+        "remaining/post-transaction company and say so in the reasoning."
+        in sys_prompt
+    )
 
 
 def test_reasoning_becomes_source_name(db, company, monkeypatch):

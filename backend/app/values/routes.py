@@ -1641,6 +1641,37 @@ def refresh_company_values(
         set_phase(company_id, "calculating", "Berechnete Werte aktualisieren")
         _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
         db.commit()
+
+        # Daily-Refresh laeuft mit period_type=SNAPSHOT — der Calc oben
+        # rechnet dann nur market_cap_calc. Die kursbasierten FY-Kennzahlen
+        # (PE, PS, EV/EBITDA, Yields, H-Rendite) haengen aber am Live-Kurs
+        # und muessen fuer jedes vorhandene FY-Jahr nachgezogen werden.
+        # Reine Arithmetik, kein LLM; Fehler brechen den Job nie ab.
+        if payload.stammdaten_only:
+            fy_years = (
+                db.query(CompanyValue.period_year)
+                .filter(
+                    CompanyValue.company_id == company_id,
+                    CompanyValue.period_type == "FY",
+                    CompanyValue.period_year.isnot(None),
+                )
+                .distinct()
+                .all()
+            )
+            for (fy_year,) in sorted(fy_years):
+                try:
+                    set_phase(
+                        company_id, "calculating",
+                        f"Kennzahlen FY{fy_year} nachrechnen",
+                    )
+                    _run_and_persist_calculations(db, company_id, "FY", fy_year)
+                    db.commit()
+                except Exception as e:
+                    logger.warning(
+                        "daily FY recalc failed for %s FY%s: %s",
+                        ticker, fy_year, e,
+                    )
+                    db.rollback()
     except Exception:
         finish_job(company_id, status="failed")
         raise
