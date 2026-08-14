@@ -1,11 +1,14 @@
 """Tests fuer den Open-Quarter-Block der Guidance-Estimates: der Call
-fragt das Modell DIREKT nach dem offenen Quartal (statt Q-Residuum aus
+fragt das Modell DIREKT nach JEDEM offenen Quartal (statt Q-Residuum aus
 der FY-Schaetzung zu basteln), schreibt die Q-Werte in die
 Quartals-Forecast-Slots und wendet dieselben drei Gates an (Vorjahresband
-40-160%, GAAP<=NonGAAP+1%, Einheiten-Check). fcf ist nicht mehr
-abfragbar (berechnet aus OCF - |Capex|); die gestrichenen Gates
-(eps x shares vs NI, fcf<=ocf) greifen nicht mehr. Hermetisch — der
-Claude-Call ist via _call_claude gemockt."""
+40-160%, GAAP<=NonGAAP+1%, Einheiten-Check) — pro Quartal. Bei mehreren
+offenen Quartalen (Kalenderjahr-Firmen mitten im Jahr, SPGI/SAP-Muster:
+Q3+Q4) traegt das Schema pro Metric einen Block je Quartalsnamen; das
+Ein-Quartal-Schema (fy/open_quarter) bleibt unveraendert (Regression).
+fcf ist nicht mehr abfragbar (berechnet aus OCF - |Capex|); die
+gestrichenen Gates (eps x shares vs NI, fcf<=ocf) greifen nicht mehr.
+Hermetisch — der Claude-Call ist via _call_claude gemockt."""
 from decimal import Decimal
 
 import app.values.guidance_estimates as ge
@@ -289,6 +292,169 @@ def test_q_unit_gate(db, company, monkeypatch):
     db.commit()
 
     assert _q_rows(db, company, "revenue") == []
+
+
+# --- Mehrere offene Quartale (SPGI/SAP-Muster: Q3+Q4) ---------------------
+
+
+def test_prompt_asks_multiple_open_quarters(db, company):
+    """Zwei offene Quartale: System-Prompt fragt beide, das Schema traegt
+    pro Metric einen fy-Block plus einen Block je Quartalsnamen."""
+    sys_prompt = ge._build_system_prompt(company, RUNNING_YEAR, ["Q3", "Q4"])
+    assert (
+        "Also give the estimates for each of the open quarters Q3 and Q4 "
+        f"FY{RUNNING_YEAR} (the quarters not yet reported)." in sys_prompt
+    )
+    user_prompt = ge._build_user_prompt(company, RUNNING_YEAR, ["Q3", "Q4"])
+    assert (
+        '"revenue": {"fy": <estimate>, "Q3": <estimate>, "Q4": <estimate>}'
+        in user_prompt
+    )
+    assert "where <estimate> =" in user_prompt
+    assert '"open_quarter"' not in user_prompt
+
+
+def test_single_quarter_as_list_matches_str(db, company):
+    """Rueckwaerts-Kompatibilitaet: ["Q4"] erzeugt exakt dieselben
+    Prompts wie der bisherige str-Parameter "Q4"."""
+    assert ge._build_system_prompt(company, RUNNING_YEAR, ["Q4"]) == \
+        ge._build_system_prompt(company, RUNNING_YEAR, "Q4")
+    assert ge._build_user_prompt(company, RUNNING_YEAR, ["Q4"]) == \
+        ge._build_user_prompt(company, RUNNING_YEAR, "Q4")
+
+
+def test_max_tokens_grows_per_extra_quarter(db, company):
+    """Antwort-Budget waechst mit jedem weiteren offenen Quartal
+    (Truncation-Lektion: abgeschnittenes JSON bei zu kleinem Budget)."""
+    assert ge._max_tokens(0) == ge.MAX_TOKENS
+    assert ge._max_tokens(1) == ge.MAX_TOKENS
+    assert ge._max_tokens(2) == ge.MAX_TOKENS + ge.MAX_TOKENS_PER_EXTRA_QUARTER
+    assert ge._max_tokens(4) == ge.MAX_TOKENS + 3 * ge.MAX_TOKENS_PER_EXTRA_QUARTER
+
+
+def test_two_open_quarters_written_to_both_slots(db, company, monkeypatch):
+    """Beide Q-Bloecke werden geparst und in die jeweiligen
+    Quartals-Forecast-Slots geschrieben (inkl. Non-GAAP-Sidecar je
+    Quartal); FY wie bisher."""
+    _mock_claude(monkeypatch, {
+        "revenue": {
+            "fy": _entry(110_000_000_000, source="guidance",
+                         reasoning="FY guidance of $110B."),
+            "Q3": _entry(27_000_000_000,
+                         reasoning="Q3 revenue consensus $27B.",
+                         url="https://example.com/q3"),
+            "Q4": _entry(30_000_000_000,
+                         reasoning="Q4 revenue consensus $30B.",
+                         url="https://example.com/q4"),
+        },
+        "eps_diluted_non_gaap": {
+            "Q3": _entry(1.2, basis="non_gaap",
+                         reasoning="Q3 adjusted EPS consensus $1.20."),
+            "Q4": _entry(1.3, basis="non_gaap",
+                         reasoning="Q4 adjusted EPS consensus $1.30."),
+        },
+    })
+
+    written = ge.fetch_guidance_estimates(
+        db, company, RUNNING_YEAR, open_quarter=["Q3", "Q4"],
+    )
+    db.commit()
+
+    assert _fy_rows(db, company, "revenue")[0].numeric_value == Decimal("110000000000")
+    for q, val, url in (("Q3", "27000000000", "q3"), ("Q4", "30000000000", "q4")):
+        (q_rev,) = _q_rows(db, company, "revenue", q=q)
+        assert q_rev.is_forecast is True
+        assert q_rev.primary_method == "web_guidance"
+        assert q_rev.numeric_value == Decimal(val)
+        assert url in q_rev.source_link
+
+    # Sidecar je Quartal: Traeger-Zeile mit leerem GAAP-Slot.
+    (q3_eps,) = _q_rows(db, company, "eps_diluted", q="Q3")
+    assert q3_eps.numeric_value is None
+    assert q3_eps.numeric_value_adjusted == Decimal("1.2")
+    assert q3_eps.adjustments_note == "Non-GAAP Q3-Estimate (consensus)"
+    (q4_eps,) = _q_rows(db, company, "eps_diluted", q="Q4")
+    assert q4_eps.numeric_value_adjusted == Decimal("1.3")
+
+    # 1x FY (revenue) + 2x Q (revenue); Sidecar-Traeger zaehlen nicht.
+    assert written == 3
+
+
+def test_gates_apply_per_quarter(db, company, monkeypatch):
+    """Vorjahresband je Quartal: der Q3-Ausreisser (vs Q3-Vorjahres-Ist)
+    wird verworfen, der plausible Q4-Wert desselben Keys bleibt."""
+    _mock_claude(monkeypatch, {
+        "revenue": {
+            "Q3": _entry(60_000_000_000),  # 240% von 25B -> Gate
+            "Q4": _entry(26_000_000_000),  # 104% von 25B -> ok
+        },
+    })
+    for q in ("Q3", "Q4"):
+        db.add(CompanyValue(
+            company_id=company.id, value_key="revenue", period_type=q,
+            period_year=PREV_YEAR, numeric_value=Decimal("25000000000"),
+            is_forecast=False, currency="USD", primary_method="provider",
+        ))
+    db.commit()
+
+    ge.fetch_guidance_estimates(
+        db, company, RUNNING_YEAR, open_quarter=["Q3", "Q4"],
+    )
+    db.commit()
+
+    assert _q_rows(db, company, "revenue", q="Q3") == []
+    (q4,) = _q_rows(db, company, "revenue", q="Q4")
+    assert q4.numeric_value == Decimal("26000000000")
+
+
+def test_ocf_and_eps_gaap_dropped_in_every_quarter(db, company, monkeypatch):
+    """Streuungs-Schutz gilt fuer JEDES offene Quartal: OCF und der
+    GAAP-Slot von eps_diluted werden in Q3 UND Q4 verworfen (Arithmetik
+    im Konsistenz-Pass uebernimmt); die FY-Werte bleiben."""
+    _mock_claude(monkeypatch, {
+        "operating_cash_flow": {
+            "fy": _entry(30_000_000_000),
+            "Q3": _entry(9_000_000_000),
+            "Q4": _entry(9_400_000_000),
+        },
+        "eps_diluted": {
+            "fy": _entry(4.0, basis="gaap"),
+            "Q3": _entry(1.0, basis="gaap"),
+            "Q4": _entry(1.1, basis="gaap"),
+        },
+    })
+
+    ge.fetch_guidance_estimates(
+        db, company, RUNNING_YEAR, open_quarter=["Q3", "Q4"],
+    )
+    db.commit()
+
+    assert len(_fy_rows(db, company, "operating_cash_flow")) == 1
+    assert len(_fy_rows(db, company, "eps_diluted")) == 1
+    for q in ("Q3", "Q4"):
+        assert _q_rows(db, company, "operating_cash_flow", q=q) == []
+        assert _q_rows(db, company, "eps_diluted", q=q) == []
+
+
+def test_duplicates_and_invalid_quarters_normalized(db, company, monkeypatch):
+    """Duplikate werden dedupliziert, ungueltige Eintraege verworfen —
+    der Call laeuft mit der bereinigten Liste weiter (kein FY-only-
+    Fallback wie beim komplett ungueltigen str)."""
+    calls = _mock_claude(monkeypatch, {
+        "revenue": {
+            "fy": _entry(110_000_000_000, source="guidance"),
+            "Q4": _entry(30_000_000_000),
+        },
+    })
+
+    ge.fetch_guidance_estimates(
+        db, company, RUNNING_YEAR, open_quarter=["Q4", "Q4", "Q5"],
+    )
+    db.commit()
+
+    assert calls == [("TST", RUNNING_YEAR, ["Q4"])]
+    assert len(_q_rows(db, company, "revenue", q="Q4")) == 1
+    assert len(_fy_rows(db, company, "revenue")) == 1
 
 
 # --- Gestrichene Gates ----------------------------------------------------

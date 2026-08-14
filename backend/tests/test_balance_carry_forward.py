@@ -1,11 +1,13 @@
 """derive_balance_carry_forward: Point-in-Time-Bilanz-Keys
-(cash_and_equivalents, st_investments, st_debt, lt_debt) — unberichtete
-Q4-/FY-Slots werden mit dem letzten berichteten Quartalsstichtag
-fortgeschrieben (is_forecast=True, calculated). Ersetzbare Slots
+(cash_and_equivalents, st_investments, st_debt, lt_debt) — ALLE
+unberichteten Quartals-/FY-Slots nach dem letzten berichteten
+Quartalsstichtag werden fortgeschrieben (is_forecast=True, calculated;
+SPGI-Muster: Q2 berichtet -> Q3, Q4, FY). Ersetzbare Slots
 (two_stage_*/not_found/leer) werden ueberschrieben, manual/PDF bleiben.
 net_debt rechnet danach derive_net_debt_from_components neu.
-Abgeschlossene Jahre (FY-Ende + Karenz vorbei) sind kein
-Fortschreibungs-Fall mehr."""
+Cross-Year-Anker fuellt bewusst weiter nur Q4+FY (Quartalsluecken sind
+akzeptabel, Nicht-US-Konvention). Abgeschlossene Jahre (FY-Ende + Karenz
+vorbei) sind kein Fortschreibungs-Fall mehr."""
 from datetime import date
 from decimal import Decimal
 
@@ -232,18 +234,59 @@ def test_cross_year_prev_q4_anchor_and_fy_preferred(db, company):
 
 
 def test_year_internal_anchor_wins_over_prev_year(db, company):
-    """Jahres-interner Stichtag hat Vorrang vor dem Vorjahres-Anker."""
+    """Jahres-interner Stichtag hat Vorrang vor dem Vorjahres-Anker.
+    Q2-Anchor fuellt seit dem Multi-Quartal-Fix Q3, Q4 UND FY (3 Slots
+    statt frueher 2)."""
     _seed(db, company, "st_debt", "Q2", 500)
     _seed(db, company, "st_debt", "FY", 999, year=YEAR - 1)
 
     written = derive_balance_carry_forward(db, company.id, YEAR)
     db.commit()
 
-    assert written == 2
+    assert written == 3
     (q4,) = _rows(db, company, "st_debt", "Q4")
     assert q4.numeric_value == Decimal("500")
     assert "(Q2)" in q4.source_name
     assert f"FY{YEAR - 1}" not in q4.source_name
+
+
+def test_q2_anchor_fills_all_open_quarters(db, company):
+    """SPGI-Muster: letzter berichteter Stichtag Q2 -> Q3 UND Q4 plus FY
+    werden fortgeschrieben (vorher nur Q4/FY, Q3 blieb leer); Q1 (vor dem
+    Stichtag) bleibt unangetastet."""
+    _seed(db, company, "cash_and_equivalents", "Q2", 500)
+
+    written = derive_balance_carry_forward(db, company.id, YEAR)
+    db.commit()
+
+    assert written == 3
+    for pt in ("Q3", "Q4", "FY"):
+        (row,) = _rows(db, company, "cash_and_equivalents", pt)
+        assert row.numeric_value == Decimal("500")
+        assert row.is_forecast is True
+        assert row.primary_method == "calculated"
+        assert row.source_name == "Fortschreibung letzter Bilanzstichtag (Q2)"
+    assert _rows(db, company, "cash_and_equivalents", "Q1") == []
+
+
+def test_q2_anchor_net_debt_chain_computes_q3(db, company):
+    """SPGI-Real-Fall: alle vier Komponenten aus Q2 fortgeschrieben ->
+    derive_net_debt_from_components rechnet auch das Q3-Forecast."""
+    _seed(db, company, "cash_and_equivalents", "Q2", 500)
+    _seed(db, company, "st_investments", "Q2", 100)
+    _seed(db, company, "st_debt", "Q2", 50)
+    _seed(db, company, "lt_debt", "Q2", 400)
+
+    written = derive_balance_carry_forward(db, company.id, YEAR)
+    derive_net_debt_from_components(db, company.id, YEAR)
+    db.commit()
+
+    assert written == 12  # 4 Keys x (Q3, Q4, FY)
+    for pt in ("Q3", "Q4", "FY"):
+        (nd,) = _rows(db, company, "net_debt", pt)
+        # 50 + 400 - 500 - 100 = -150
+        assert nd.numeric_value == Decimal("-150")
+        assert nd.is_forecast is True
 
 
 def test_cross_year_replaceable_prev_rows_are_no_anchor(db, company):

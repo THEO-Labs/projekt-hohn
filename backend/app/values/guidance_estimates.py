@@ -9,11 +9,14 @@ GAAP-Bruecke) — die Two-Stage-Recherche schaetzte fuers laufende
 Geschaeftsjahr nur noch die FY-Werte, mit ~19 Extractor+Verifier-Paaren
 pro Refresh. Dieses Modul ersetzt das durch einen einzigen Websuche-Call:
 aktuelle offizielle Guidance + Analysten-Konsens fuer alle FY-Schaetzwerte
-auf einmal. Uebergibt der Aufrufer zusaetzlich das offene Quartal
-(open_quarter, Berichtet-Kriterium wie in consistency — hier bewusst
-nicht dupliziert), fragt derselbe Call das Modell DIREKT nach den
-Schaetzwerten dieses Quartals, statt sie als FY-Residuum zu basteln
-(Margen-Bastelei des Modells lieferte unplausible Q-Restwerte).
+auf einmal. Uebergibt der Aufrufer zusaetzlich die offenen Quartale
+(open_quarter: str ODER Liste, Berichtet-Kriterium wie in consistency —
+hier bewusst nicht dupliziert), fragt derselbe Call das Modell DIREKT
+nach den Schaetzwerten JEDES offenen Quartals, statt sie als FY-Residuum
+zu basteln (Margen-Bastelei des Modells lieferte unplausible
+Q-Restwerte). Kalenderjahr-Firmen mitten im Jahr haben ZWEI offene
+Quartale (SPGI/SAP-Muster: Q3+Q4) — frueher fragte der Call nur bei
+GENAU EINEM offenen Quartal, die H2-Quartalszellen blieben leer.
 
 Schreib-Invarianten wie in den uebrigen Pfaden: normalize_sign,
 currency_conflict, Manual-/PDF-Zeilen bleiben unangetastet.
@@ -80,8 +83,44 @@ WEB_SEARCH_MAX_USES = 5
 # Mit open_quarter verdoppelt sich das Antwort-JSON (fy- + Q-Block je
 # Metric, reasoning-Strings): 4096 fuehrte zu abgeschnittenem JSON.
 MAX_TOKENS = 12288
+# Jedes WEITERE offene Quartal haengt einen kompletten Estimate-Block je
+# Metric an — Budget mitwachsen lassen, sonst Truncation (Lektion s.o.).
+MAX_TOKENS_PER_EXTRA_QUARTER = 4096
 
 _Q_TYPES = ("Q1", "Q2", "Q3", "Q4")
+
+
+def _max_tokens(n_open_quarters: int) -> int:
+    """Antwort-Budget: Basis deckt FY + ein offenes Quartal, jedes
+    weitere Quartal bekommt einen eigenen Aufschlag."""
+    extra = max(n_open_quarters - 1, 0)
+    return MAX_TOKENS + extra * MAX_TOKENS_PER_EXTRA_QUARTER
+
+
+def _normalize_open_quarters(open_quarter) -> tuple[list[str], list]:
+    """open_quarter-Argument normalisieren: None, "Q3" oder Liste/Tuple
+    von Quartalen -> (deduplizierte Liste in Q1..Q4-Reihenfolge,
+    verworfene ungueltige Eintraege). Rueckwaerts-kompatibel: der alte
+    str-Parameter bleibt gueltig."""
+    if open_quarter is None:
+        return [], []
+    raw = [open_quarter] if isinstance(open_quarter, str) else list(open_quarter)
+    valid: list[str] = []
+    invalid: list = []
+    for q in raw:
+        if q in _Q_TYPES:
+            if q not in valid:
+                valid.append(q)
+        else:
+            invalid.append(q)
+    valid.sort(key=_Q_TYPES.index)
+    return valid, invalid
+
+
+def _quarters_label(quarters: list[str]) -> str:
+    if len(quarters) <= 1:
+        return "".join(quarters)
+    return ", ".join(quarters[:-1]) + " and " + quarters[-1]
 
 # Schaetz-Keys, die dieser Pfad abdeckt — der Refresh-Key-Loop
 # ueberspringt sie fuer US-Filer im laufenden FY (routes). fcf wird NICHT
@@ -185,14 +224,22 @@ def _fy_end_date(company, year: int) -> date:
         return date(year, m, 28)
 
 
-def _build_system_prompt(company, year: int, open_quarter: str | None = None) -> str:
+def _build_system_prompt(company, year: int,
+                         open_quarter: str | list[str] | None = None) -> str:
     fy_end = _fy_end_date(company, year).isoformat()
     currency = getattr(company, "currency", None) or "USD"
+    open_quarters, _ = _normalize_open_quarters(open_quarter)
     quarter_sentence = ""
-    if open_quarter:
+    if len(open_quarters) == 1:
         quarter_sentence = (
-            f"Also give the estimates for the open quarter {open_quarter} "
+            f"Also give the estimates for the open quarter {open_quarters[0]} "
             f"FY{year} (the quarter not yet reported). "
+        )
+    elif open_quarters:
+        quarter_sentence = (
+            "Also give the estimates for each of the open quarters "
+            f"{_quarters_label(open_quarters)} FY{year} "
+            "(the quarters not yet reported). "
         )
     return (
         f"What are the current fiscal year {year} (ending {fy_end}) "
@@ -214,16 +261,28 @@ def _build_system_prompt(company, year: int, open_quarter: str | None = None) ->
     )
 
 
-def _build_user_prompt(company, year: int, open_quarter: str | None = None) -> str:
+def _build_user_prompt(company, year: int,
+                       open_quarter: str | list[str] | None = None) -> str:
+    open_quarters, _ = _normalize_open_quarters(open_quarter)
     lines = [
         f"Metrics to estimate for {company.name} ({company.ticker}) fiscal year {year}:",
         "",
     ]
     for key, desc in _METRIC_SPECS:
         lines.append(f"- {key}: {desc}")
-    if open_quarter:
+    if len(open_quarters) == 1:
+        # Bestehendes Ein-Quartal-Schema unveraendert (Regression).
         fields = ",\n".join(
             f'  "{key}": {{"fy": <estimate>, "open_quarter": <estimate>}}'
+            for key, _ in _METRIC_SPECS
+        )
+    elif open_quarters:
+        # Mehrere offene Quartale: ein Block je Quartal, Keys sind die
+        # Quartalsnamen — robusteste Struktur (selbsterklaerend, keine
+        # Positions-Abhaengigkeit).
+        q_fields = ", ".join(f'"{q}": <estimate>' for q in open_quarters)
+        fields = ",\n".join(
+            f'  "{key}": {{"fy": <estimate>, {q_fields}}}'
             for key, _ in _METRIC_SPECS
         )
     else:
@@ -251,11 +310,18 @@ def _build_user_prompt(company, year: int, open_quarter: str | None = None) -> s
         "announced program (volume, period, source); null if no "
         "program is announced.",
     ]
-    if open_quarter:
+    if len(open_quarters) == 1:
         lines += [
             "",
             f'"fy" = full fiscal year {year}, "open_quarter" = '
-            f"{open_quarter} FY{year} (the quarter not yet reported).",
+            f"{open_quarters[0]} FY{year} (the quarter not yet reported).",
+        ]
+    elif open_quarters:
+        q_list = ", ".join(f'"{q}"' for q in open_quarters)
+        lines += [
+            "",
+            f'"fy" = full fiscal year {year}; each quarter key ({q_list}) '
+            f"= that quarter of FY{year} (a quarter not yet reported).",
         ]
     lines += [
         "",
@@ -265,7 +331,7 @@ def _build_user_prompt(company, year: int, open_quarter: str | None = None) -> s
         fields,
         "}",
     ]
-    if open_quarter:
+    if open_quarters:
         lines += [
             "",
             f"where <estimate> = {_EST_FIELDS}",
@@ -274,7 +340,7 @@ def _build_user_prompt(company, year: int, open_quarter: str | None = None) -> s
 
 
 def _call_claude(company, year: int, cost_tracker=None,
-                 open_quarter: str | None = None) -> dict | None:
+                 open_quarter: str | list[str] | None = None) -> dict | None:
     """EIN Claude-Call mit Websuche fuer alle FY- (und optional Q-)
     Schaetzwerte. In Tests gemockt (conftest blockt get_client)."""
     import app.llm.claude as claude_mod
@@ -282,11 +348,12 @@ def _call_claude(company, year: int, cost_tracker=None,
     from app.llm.json_utils import extract_json
 
     client = claude_mod.get_client()
+    open_quarters, _ = _normalize_open_quarters(open_quarter)
 
     def _do_call():
         return client.messages.create(
             model=EXTRACT_MODEL,
-            max_tokens=MAX_TOKENS,
+            max_tokens=_max_tokens(len(open_quarters)),
             temperature=0,
             system=_build_system_prompt(company, year, open_quarter),
             tools=[{
@@ -393,31 +460,38 @@ def _parse_entry(entry, key: str, ticker: str, period_label: str) -> dict | None
 
 
 def _parse_payload(data: dict, ticker: str, year: int,
-                   open_quarter: str | None = None) -> tuple[dict[str, dict], dict[str, dict]]:
-    """Antwort in ({key: info} fuer FY, {key: info} fuers offene Quartal)
-    normalisieren. Ohne open_quarter (oder wenn das Modell flach
-    antwortet) ist der Q-Block leer und der Eintrag zaehlt als FY."""
+                   open_quarter: str | list[str] | None = None,
+                   ) -> tuple[dict[str, dict], dict[str, dict[str, dict]]]:
+    """Antwort in ({key: info} fuer FY, {Quartal: {key: info}} je offenem
+    Quartal) normalisieren. Ohne offene Quartale (oder wenn das Modell
+    flach antwortet) sind die Q-Bloecke leer und der Eintrag zaehlt als
+    FY. Akzeptiert pro Metric sowohl Quartalsnamen-Keys ("Q3") als auch
+    das Legacy-Feld "open_quarter" (nur eindeutig bei GENAU einem
+    offenen Quartal)."""
+    open_quarters, _ = _normalize_open_quarters(open_quarter)
     fy: dict[str, dict] = {}
-    q: dict[str, dict] = {}
+    q_blocks: dict[str, dict[str, dict]] = {q: {} for q in open_quarters}
+    nested_keys = {"fy", "open_quarter", *open_quarters}
     for key, _ in _METRIC_SPECS:
         entry = data.get(key)
         if not isinstance(entry, dict):
             continue
-        if open_quarter is not None and ("fy" in entry or "open_quarter" in entry):
+        if open_quarters and any(k in entry for k in nested_keys):
             info = _parse_entry(entry.get("fy"), key, ticker, f"FY{year}")
             if info is not None:
                 fy[key] = info
-            q_info = _parse_entry(
-                entry.get("open_quarter"), key, ticker,
-                f"{open_quarter} FY{year}",
-            )
-            if q_info is not None:
-                q[key] = q_info
+            for q in open_quarters:
+                raw_q = entry.get(q)
+                if raw_q is None and len(open_quarters) == 1:
+                    raw_q = entry.get("open_quarter")
+                q_info = _parse_entry(raw_q, key, ticker, f"{q} FY{year}")
+                if q_info is not None:
+                    q_blocks[q][key] = q_info
         else:
             info = _parse_entry(entry, key, ticker, f"FY{year}")
             if info is not None:
                 fy[key] = info
-    return fy, q
+    return fy, q_blocks
 
 
 def _rebook_by_basis(parsed: dict[str, dict], ticker: str, year: int) -> None:
@@ -917,18 +991,20 @@ def _persist_block(db, company, year: int, parsed: dict[str, dict], now,
 
 
 def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
-                             open_quarter: str | None = None) -> int:
+                             open_quarter: str | list[str] | None = None) -> int:
     """Alle Schaetzwerte des laufenden Geschaeftsjahres mit EINEM
     Claude-Websuche-Call holen und als Forecasts persistieren.
 
-    open_quarter ("Q1".."Q4", optional): Der AUFRUFER soll das offene
-    (noch nicht berichtete) Quartal uebergeben — ermittelt ueber dasselbe
-    Berichtet-Kriterium wie in consistency (dort nicht importierbar ohne
-    Zirkularitaet, deshalb Parameter). Ist es gesetzt, fragt der Call das
-    Modell zusaetzlich DIREKT nach den Schaetzwerten dieses Quartals und
-    schreibt sie in die Quartals-Forecast-Slots (period_type=open_quarter,
-    is_forecast=True, primary_method='web_guidance', Sidecars analog FY).
-    Default None = wie bisher nur FY.
+    open_quarter ("Q1".."Q4" oder Liste davon, optional): Der AUFRUFER
+    soll ALLE offenen (noch nicht berichteten) Quartale uebergeben —
+    ermittelt ueber dasselbe Berichtet-Kriterium wie in consistency (dort
+    nicht importierbar ohne Zirkularitaet, deshalb Parameter). Ist es
+    gesetzt, fragt der Call das Modell zusaetzlich DIREKT nach den
+    Schaetzwerten JEDES dieser Quartale und schreibt sie in die
+    Quartals-Forecast-Slots (period_type=Quartal, is_forecast=True,
+    primary_method='web_guidance', Sidecars analog FY); Gates laufen pro
+    Quartal gegen dasselbe Vorjahresquartal. Rueckwaerts-kompatibel
+    bleibt der einzelne str. Default None = wie bisher nur FY.
 
     Die FY-Werte werden unveraendert geschrieben; die FY-Zeile wird
     spaeter von der Quartalssummen-Aggregation ueberstimmt, sobald alle
@@ -947,16 +1023,17 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
         return 0
     if not settings.anthropic_api_key:
         return 0
-    if open_quarter is not None and open_quarter not in _Q_TYPES:
+    open_quarters, invalid = _normalize_open_quarters(open_quarter)
+    if invalid:
         logger.warning(
-            "guidance estimates %s/FY%s: ungueltiges open_quarter=%r — "
-            "FY-only", company.ticker, year, open_quarter,
+            "guidance estimates %s/FY%s: ungueltige open_quarter-Eintraege "
+            "%r — ignoriert", company.ticker, year, invalid,
         )
-        open_quarter = None
 
     try:
         data = _call_claude(
-            company, year, cost_tracker=cost_tracker, open_quarter=open_quarter,
+            company, year, cost_tracker=cost_tracker,
+            open_quarter=open_quarters or None,
         )
     except Exception as e:
         logger.warning(
@@ -967,18 +1044,18 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
     if not data:
         return 0
 
-    fy_parsed, q_parsed = _parse_payload(data, company.ticker, year, open_quarter)
+    fy_parsed, q_blocks = _parse_payload(data, company.ticker, year, open_quarters)
     # Quartals-Antworten, bei denen das Modell nachweislich streut, werden
     # verworfen — dort uebernimmt die Arithmetik im Konsistenz-Pass:
     # operating_cash_flow (Runrate/FY-Residuum; Modell lieferte z.B. 9.4 Mrd
     # bei 5-6.5 plausibel) und der GAAP-Slot von eps_diluted (Spread-
     # Ableitung aus dem Non-GAAP-Konsens; der Non-GAAP-Sidecar bleibt).
-    q_parsed.pop("operating_cash_flow", None)
-    if "eps_diluted" in q_parsed:
-        q_parsed.pop("eps_diluted")
+    # Der Streuungs-Schutz gilt fuer JEDES offene Quartal.
+    for q_parsed in q_blocks.values():
+        q_parsed.pop("operating_cash_flow", None)
+        q_parsed.pop("eps_diluted", None)
     blocks: list[tuple[str, dict[str, dict]]] = [("FY", fy_parsed)]
-    if open_quarter is not None:
-        blocks.append((open_quarter, q_parsed))
+    blocks += [(q, q_blocks.get(q, {})) for q in open_quarters]
     for period_type, parsed in blocks:
         _rebook_by_basis(parsed, company.ticker, year)
         # NI/EPS-Ableitungen VOR den Gates: abgeleitete Werte laufen
@@ -990,7 +1067,7 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
             parsed.pop(helper_key, None)
         _apply_gates(db, company, year, parsed, period_type)
         _derive_adjusted_net_income(db, company, year, parsed, period_type)
-    if not fy_parsed and not q_parsed:
+    if not any(parsed for _, parsed in blocks):
         return 0
 
     now = datetime.now(timezone.utc)
@@ -1000,10 +1077,12 @@ def fetch_guidance_estimates(db, company, year: int, cost_tracker=None,
             written += _persist_block(db, company, year, parsed, now, period_type)
 
     db.flush()
+    q_summary = ", ".join(
+        f"{q}: {len(q_blocks.get(q, {}))} Werte" for q in open_quarters
+    ) or "kein Q"
     logger.info(
         "guidance estimates %s/FY%s: %d Forecasts geschrieben "
-        "(FY: %d Werte, %s: %d Werte)",
-        company.ticker, year, written, len(fy_parsed),
-        open_quarter or "kein Q", len(q_parsed),
+        "(FY: %d Werte, %s)",
+        company.ticker, year, written, len(fy_parsed), q_summary,
     )
     return written

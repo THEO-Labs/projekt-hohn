@@ -542,6 +542,38 @@ def test_us_refresh_calls_guidance_once_and_skips_estimate_keys(client, db, monk
     assert statement_calls == []  # Statement-Recherche ist Nicht-US-only
 
 
+def test_refresh_passes_all_open_quarters(client, db, monkeypatch):
+    """Das Refresh-Wiring uebergibt ALLE offenen Quartale als Liste
+    (SPGI/SAP-Muster: Q3+Q4 offen) — frueher None bei mehr als einem
+    offenen Quartal, die H2-Quartalszellen blieben leer.
+    _quarter_reported ist gemockt (hermetisch, kein Datums-Drift)."""
+    import app.values.consistency as cons
+    cid = _setup_refresh(client, db, "wire-openq@example.com", "US0001234567")
+    _patch_refresh_env(monkeypatch)
+    monkeypatch.setattr(
+        cons, "_quarter_reported",
+        lambda company, year, q, subs_cache: q in ("Q1", "Q2"),
+    )
+    seen: list = []
+
+    def fake_fetch(db_, company, year, cost_tracker=None, open_quarter=None):
+        seen.append(open_quarter)
+        return 0
+
+    monkeypatch.setattr(ge, "fetch_guidance_estimates", fake_fetch)
+
+    r = client.post(
+        f"/api/companies/{cid}/values/refresh",
+        json={
+            "keys": ["revenue"],
+            "period_type": "FY", "period_year": RUNNING_YEAR,
+        },
+    )
+
+    assert r.status_code == 200
+    assert seen == [["Q3", "Q4"]]
+
+
 def test_us_refresh_closed_year_no_guidance_call(client, db, monkeypatch):
     """US-Filer, abgeschlossenes Jahr: kein Guidance-Call, alle Keys
     durch den EDGAR-Anker."""

@@ -1424,8 +1424,10 @@ def derive_runrate_quarter(db: Session, company_id: UUID, year: int) -> int:
 
 
 def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> int:
-    """Point-in-Time-Bilanz-Keys: unberichtete Q4-/FY-Slots des laufenden
-    FY mit dem letzten berichteten Quartalsstichtag fortschreiben.
+    """Point-in-Time-Bilanz-Keys: ALLE unberichteten Quartals-/FY-Slots
+    nach dem letzten berichteten Quartalsstichtag des laufenden FY
+    fortschreiben (SPGI-Muster: letzter Stichtag Q2 -> Q3 UND Q4 plus FY
+    — vorher nur Q4/FY, die H2-Quartalszelle blieb leer).
 
     Bilanzstaende driften zwischen Stichtagen wenig — die Fortschreibung
     (z.B. Q3-Wert) ersetzt die Two-Stage-Forecast-Recherche fuer diese
@@ -1501,9 +1503,18 @@ def derive_balance_carry_forward(db: Session, company_id: UUID, year: int) -> in
                     src_label = f"FY{year - 1}"
         if src is None:
             continue
-        for pt in ("Q4", "FY"):
-            if pt == src_q:
-                continue
+        # Zielperioden: alle Quartale NACH dem letzten berichteten
+        # Stichtag plus FY (SPGI: Q2 berichtet -> Q3, Q4, FY). Quartale
+        # nach src_q haben per Konstruktion keinen authoritativen Actual;
+        # die Slot-Guards unten gelten unveraendert. Cross-Year-Anker
+        # (src_q None): bewusst weiter nur Q4+FY — Luecken in frueheren
+        # Quartalen sind akzeptabel (Nicht-US-Konvention, die FY-Reihe
+        # traegt die Rendite), dort keine Vorjahres-Flaechenfuellung.
+        if src_q is not None:
+            target_pts = [q for q in _Q_TYPES if q > src_q] + ["FY"]
+        else:
+            target_pts = ["Q4", "FY"]
+        for pt in target_pts:
             slot_rows = [
                 r for r in rows
                 if r.value_key == key and r.period_type == pt

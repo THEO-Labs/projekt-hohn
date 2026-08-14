@@ -1469,26 +1469,27 @@ def refresh_company_values(
                         f"FY-Guidance-Schaetzungen (FY{payload.period_year})",
                     )
                     guid_tracker = CostTracker()
-                    # Offenes Quartal mitgeben: der Call fragt das Modell
-                    # direkt danach, statt Q-Werte als FY-Residuum zu bauen.
-                    # Nur bei GENAU EINEM offenen Quartal eindeutig.
-                    open_q = None
+                    # ALLE offenen Quartale mitgeben: der Call fragt das
+                    # Modell direkt danach, statt Q-Werte als FY-Residuum
+                    # zu bauen. Kalenderjahr-Firmen mitten im Jahr haben
+                    # ZWEI offene Quartale (SPGI/SAP-Muster: Q3+Q4) —
+                    # frueher blieb bei mehreren offenen Quartalen alles
+                    # leer (None nur bei genau einem).
+                    open_qs: list[str] = []
                     try:
                         # Generisches Berichtet-Kriterium: Karenz, US-Filer
                         # zusaetzlich Item-2.02-8-K (_quarter_reported).
                         from app.values.consistency import _quarter_reported
                         _subs: dict = {}
-                        _open = [
+                        open_qs = [
                             q for q in ("Q1", "Q2", "Q3", "Q4")
                             if not _quarter_reported(company, payload.period_year, q, _subs)
                         ]
-                        if len(_open) == 1:
-                            open_q = _open[0]
                     except Exception:
-                        open_q = None
+                        open_qs = []
                     wrote_est = fetch_guidance_estimates(
                         db, company, payload.period_year, cost_tracker=guid_tracker,
-                        open_quarter=open_q,
+                        open_quarter=open_qs or None,
                     )
                     db.commit()
                     if guid_tracker.calls:
@@ -1510,10 +1511,11 @@ def refresh_company_values(
                     # berichteter Perioden verschwinden aus der Anzeige.
                     derive_clear_stale_forecasts(db, company_id, cons_year)
                     # Bilanz-Fortschreibung VOR der net_debt-Ableitung und
-                    # VOR validate_cross_metrics: Q4/FY-Staende aus dem
-                    # letzten berichteten Stichtag ersetzen aeltere
-                    # Bilanz-Schaetzungen, net_debt rechnet danach mit den
-                    # fortgeschriebenen Komponenten.
+                    # VOR validate_cross_metrics: alle unberichteten
+                    # Quartals-/FY-Staende nach dem letzten berichteten
+                    # Stichtag ersetzen aeltere Bilanz-Schaetzungen,
+                    # net_debt rechnet danach mit den fortgeschriebenen
+                    # Komponenten (auch fuer offene Zwischenquartale).
                     derive_balance_carry_forward(db, company_id, cons_year)
                     # Q4 = FY bei Instant-Keys abgeschlossener Jahre
                     # (gleicher Stichtag) — VOR der net_debt-Ableitung,
