@@ -370,13 +370,24 @@ def _try_providers(ticker: str, key: str, payload, fy_end_month, fy_end_day,
     # Stammdaten (ALWAYS_CURRENT_KEYS: stock_price/shares/market_cap)
     # bleiben ausdruecklich auf dem Feed — Marktdaten sind kein
     # Berichtswert.
+    from app.providers.edgar import US_DEBT_BALANCE_KEYS
     skip_market = (
         company is not None
         and key not in ALWAYS_CURRENT_KEYS
         and not is_us_company(company)
     )
+    # US-Filer: Debt-Bilanz-Keys (st_debt/lt_debt) sind EDGAR-only. Yahoos
+    # "Long Term Debt" enthaelt Operating-/Finance-Leases (Natera/Dynatrace
+    # haben keine Finanzschuld) — fehlt das EDGAR-Konzept, bleibt die Zelle
+    # leer statt Leases als Finanzschuld zu ziehen.
+    skip_market_debt = (
+        company is not None
+        and key in US_DEBT_BALANCE_KEYS
+        and is_us_company(company)
+    )
     for provider in get_providers(key):
-        if skip_market and getattr(provider, "provider_kind", None) == "market":
+        is_market = getattr(provider, "provider_kind", None) == "market"
+        if is_market and (skip_market or skip_market_debt):
             continue
         try:
             # Cascading fallback fuer unterschiedliche fetch-Signaturen:
@@ -1292,6 +1303,7 @@ def refresh_company_values(
                 derive_sbc_quarters,
                 validate_cross_metrics,
             )
+            from app.values.period_keys import QUARTERLY_ESTIMATE_KEYS
             # Wenn der Prev-Year-Backfill Keys verarbeitet hat, muss der
             # Konsistenz-Pass auch fuer FY N-1 laufen — sonst bleiben
             # FY/Quartals-Mismatches im Vorjahr ungeflaggt.
@@ -1552,6 +1564,18 @@ def refresh_company_values(
                     # validate_cross_metrics, damit der fcf-Check die
                     # frischen Werte sieht.
                     derive_missing_fcf(db, company_id, [cons_year])
+                    # FY = Summe der Quartale fuer jede voll gefuellte
+                    # Estimate-Reihe (reported + guidance-/abgeleitete
+                    # Quartale). Produktregel: die Quartale gewinnen ueber
+                    # einen direkt geschriebenen FY-Guidance-/Provider-Wert
+                    # (Dynatrace: FY-Buyback-Schaetzung 400M vs Summe der
+                    # Quartals-Schaetzungen 425M -> FY=425M). Laeuft NACH
+                    # dem Guidance-Call und allen Quartals-Ableitungen, VOR
+                    # validate_cross_metrics — damit der qsum-Check fuer
+                    # voll gefuellte Reihen per Konstruktion nicht mehr
+                    # anschlaegt.
+                    for _agg_key in QUARTERLY_ESTIMATE_KEYS:
+                        _refresh_fy_from_quarters(db, company_id, _agg_key, cons_year)
                     # Validator-Diet auch fuer Nicht-US (full_checks=False):
                     # qsum + fcf-Identitaet + eps_ni bleiben; die uebrigen
                     # Checks decken die Schreib-Gates der neuen Pfade ab.
@@ -2232,29 +2256,18 @@ def _refresh_fy_from_quarters(
     )
     source_name = ("Derived Annual = Q1+Q2+Q3+Q4 | " + " | ".join(fy_source_parts))[:4000]
     if existing_fy:
-        # Do not override a manually_overridden FY row (user chose to lock it).
+        # Produktregel (User-Entscheid): sind alle 4 Quartale (bzw. Q4 bei
+        # POINT_IN_TIME) gefuellt, GEWINNEN die Quartale — der FY wird
+        # IMMER aus ihnen neu berechnet und ueberschreibt jeden bestehenden
+        # Direkt-/Provider-/Guidance-FY (auch is_forecast=False,
+        # primary_method='provider'/'statement_research'/'web_guidance').
+        # Bewusste Umkehr der frueheren "authoritative FY beats quarter
+        # sums"-Regel (Commit efbd81e). Gesperrt bleiben nur:
+        #   - manually_overridden (User-Lock),
+        #   - from_ir_pdf mit Wert (authoritatives IR-Berichtsdokument).
         if existing_fy.manually_overridden:
             return
-        # FY-first (Nicht-US-Konvention): ein autoritativer FY-Wert direkt
-        # aus dem Bericht (statement_research) oder vom XBRL/Berichts-
-        # Provider schlaegt die Quartalssumme — Quartale sind Best-Effort
-        # und duerfen einen exakten Jahreswert nie verwaessern. Die
-        # Aggregation fuellt nur leere/abgeleitete/Alt-FY-Zeilen.
-        if (
-            existing_fy.numeric_value is not None
-            and not existing_fy.is_forecast
-            and (existing_fy.primary_method or "") in ("statement_research", "provider")
-        ):
-            # Nur die leere adjusted-Spur darf die Aggregation noch fuellen
-            # (Quartals-adjusted vorhanden, FY-adjusted NULL — Mischsumme).
-            from app.values.persistence import adjusted_is_protected
-            if (
-                fy_adj is not None
-                and existing_fy.numeric_value_adjusted is None
-                and not adjusted_is_protected(existing_fy.adjustments_source)
-            ):
-                existing_fy.numeric_value_adjusted = fy_adj
-                existing_fy.adjustments_note = fy_adj_note
+        if existing_fy.from_ir_pdf and existing_fy.numeric_value is not None:
             return
         existing_fy.numeric_value = fy_value
         # Geschuetzte Adjusted-Werte (Manual, 8-K-Enrichment mit SEC-URL)

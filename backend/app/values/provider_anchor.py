@@ -90,13 +90,20 @@ def _fetch_from_chain(company, key: str, year: int):
     dient dort nur noch als Plausibilitaets-Referenz (yahoo_reference_map
     -> statement_research). US-Filer sind nicht betroffen."""
     from app.calculations.lock import is_us_company
+    from app.providers.edgar import US_DEBT_BALANCE_KEYS
 
-    skip_market = not is_us_company(company)
+    us = is_us_company(company)
+    skip_market = not us
+    # US-Filer: Debt-Bilanz-Keys sind EDGAR-only — Yahoos "Long Term Debt"
+    # enthaelt Leases (Natera/Dynatrace). Fehlt das EDGAR-Konzept, bleibt die
+    # Zelle leer statt Leases als Finanzschuld einzuziehen.
+    skip_market_debt = us and key in US_DEBT_BALANCE_KEYS
     fy_end_month = getattr(company, "fiscal_year_end_month", None)
     fy_end_day = getattr(company, "fiscal_year_end_day", None)
     isin = getattr(company, "isin", None)
     for provider in get_providers(key):
-        if skip_market and getattr(provider, "provider_kind", None) == "market":
+        is_market = getattr(provider, "provider_kind", None) == "market"
+        if is_market and (skip_market or skip_market_debt):
             continue
         try:
             result = None

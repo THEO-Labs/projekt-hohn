@@ -126,19 +126,35 @@ CONCEPT_MAP: dict[str, list[str]] = {
     ],
 }
 
-# EBITDA-Ableitung fuer EDGAR: EBIT (Operating Income) + D&A (Depreciation & Amortization).
-# US-GAAP-Filer reporten EBITDA nicht als single concept (non-GAAP-Kennzahl),
-# wir aggregieren aus zwei Standard-Konzepten.
+# EBITDA-Ableitung fuer EDGAR: EBIT (Operating Income) + D&A (Depreciation AND
+# Amortization). US-GAAP-Filer reporten EBITDA nicht als single concept
+# (non-GAAP-Kennzahl), wir aggregieren aus GAAP-Standard-Konzepten.
+# WICHTIG: EBIT ist STRIKT GAAP OperatingIncomeLoss — nie ein Non-GAAP-/
+# Adjusted-Operating-Income (Intuit-Q4-Fall).
 EBITDA_EBIT_CONCEPTS = [
     "OperatingIncomeLoss",
 ]
-EBITDA_DA_CONCEPTS = [
-    # Voller Cashflow-D&A inkl. Finance-Lease-Amortisation — zuerst, damit
-    # Quartals- und FY-Ableitung dieselbe Basis nutzen.
-    "DepreciationAmortizationAndAccretionNet",
+# Volle Cashflow-D&A INKL. Amortisation immaterieller Werte — diese Konzepte
+# umfassen die Intangible-Amortisation per Definition. Reihenfolge egal fuer
+# die Korrektheit, aber die zusammengesetzten Konzepte zuerst.
+EBITDA_DA_FULL_CONCEPTS = [
     "DepreciationDepletionAndAmortization",
+    "DepreciationAmortizationAndAccretionNet",
     "DepreciationAndAmortization",
+]
+# Reine Abschreibung OHNE Amortisation immaterieller Werte. Alleine als D&A-
+# Summand VERBOTEN (unterzeichnet EBITDA um die Intangible-Amort — der
+# Dynatrace-Fehler: 199 statt 228 Mio). Nur nutzbar, wenn die Intangible-
+# Amortisation separat getaggt ist und addiert wird.
+EBITDA_DEPRECIATION_ONLY_CONCEPTS = [
     "Depreciation",
+]
+# Separat getaggte Amortisation immaterieller Vermoegenswerte — der fehlende
+# Summand, wenn nur "Depreciation" (Abschreibung-only) verfuegbar ist.
+EBITDA_INTANGIBLE_AMORT_CONCEPTS = [
+    "AmortizationOfIntangibleAssets",
+    "AmortizationOfFiniteLivedIntangibleAssets",
+    "FiniteLivedIntangibleAssetsAmortizationExpense",
 ]
 
 FCF_OP_CASH_CONCEPTS = [
@@ -158,6 +174,15 @@ FCF_CAPEX_CONCEPTS = [
 # komponenten, siehe fetch) — ein nackter Instant-Lookup wuerde Teilwerte
 # liefern; Quartale kommen nur ueber die 8-K-Bruecke.
 BALANCE_KEYS = {"cash_and_equivalents", "st_investments", "lt_debt"}
+
+# US-Filer: diese Bilanz-Debt-Keys sind EDGAR-only. Yahoos "Long Term Debt"
+# enthaelt Operating-/Finance-Leases (Natera/Dynatrace haben KEINE Finanz-
+# schuld, nur Operating-Leases — der Marktdaten-Feed ueberzeichnete net_debt
+# um 96-118 Mio). Fehlt das strikte EDGAR-Konzept, bleibt die Zelle LEER:
+# Firma ohne Finanzschuld -> net_debt = -(cash+st_investments), Netto-Cash.
+# Nicht-US bleibt unveraendert (ESEF/statement_research). Genutzt von
+# routes._try_providers und provider_anchor._fetch_from_chain.
+US_DEBT_BALANCE_KEYS = frozenset({"st_debt", "lt_debt"})
 
 # Cashflow-Keys: 10-Qs taggen die meist nur als YTD-Duration. Quartal via
 # YTD-Differenz aus derselben XBRL-Quelle wie das FY — Konsistenz per
@@ -628,6 +653,73 @@ class EdgarProvider:
             return None
         return diff[0], diff[1], diff[2], "ytd_diff"
 
+    def _fy_da_full(
+        self,
+        facts: dict,
+        period_year: int,
+        fy_end_month: int | None,
+        fy_end_day: int | None,
+    ) -> tuple[Decimal, str, str | None] | None:
+        """Volle FY-D&A INKL. Amortisation immaterieller Werte.
+        Returns (value, currency, accession) oder None.
+
+        Prioritaet: zuerst die zusammengesetzten D&A-Konzepte (enthalten die
+        Intangible-Amort per Definition). Nur "Depreciation" (Abschreibung-
+        only) getaggt -> es MUSS AmortizationOfIntangibleAssets separat
+        addiert werden; fehlt das (oder andere Currency), gilt D&A als
+        UNVOLLSTAENDIG -> None (lieber leer als ein zu niedriger EBITDA)."""
+        da, cur, accn = self._find_value(
+            facts, EBITDA_DA_FULL_CONCEPTS, period_year, fy_end_month, fy_end_day
+        )
+        if da is not None:
+            return da, cur, accn
+        dep, dep_cur, dep_accn = self._find_value(
+            facts, EBITDA_DEPRECIATION_ONLY_CONCEPTS, period_year,
+            fy_end_month, fy_end_day,
+        )
+        if dep is None:
+            return None
+        amort, amort_cur, _ = self._find_value(
+            facts, EBITDA_INTANGIBLE_AMORT_CONCEPTS, period_year,
+            fy_end_month, fy_end_day,
+        )
+        if amort is None or amort_cur != dep_cur:
+            return None
+        return dep + amort, dep_cur, dep_accn
+
+    def _q_da_full(
+        self,
+        facts: dict,
+        period_year: int,
+        quarter: str,
+        fy_end_month: int | None,
+        fy_end_day: int | None,
+        target_end: "date",
+    ) -> tuple[Decimal, str] | None:
+        """Volle Quartals-D&A INKL. Intangible-Amort. Returns (value,
+        currency) oder None. Gleiche Konzept-Prioritaet wie _fy_da_full,
+        aber ueber den Quartals-Flow (Standalone-3M oder YTD-Differenz).
+        D&A ist real immer positiv -> forbid_negative_diff."""
+        da = self._q_flow(
+            facts, EBITDA_DA_FULL_CONCEPTS, period_year, quarter,
+            fy_end_month, fy_end_day, target_end, forbid_negative_diff=True,
+        )
+        if da is not None:
+            return da[0], da[1]
+        dep = self._q_flow(
+            facts, EBITDA_DEPRECIATION_ONLY_CONCEPTS, period_year, quarter,
+            fy_end_month, fy_end_day, target_end, forbid_negative_diff=True,
+        )
+        if dep is None:
+            return None
+        amort = self._q_flow(
+            facts, EBITDA_INTANGIBLE_AMORT_CONCEPTS, period_year, quarter,
+            fy_end_month, fy_end_day, target_end, forbid_negative_diff=True,
+        )
+        if amort is None or amort[1] != dep[1]:
+            return None
+        return dep[0] + amort[0], dep[1]
+
     def fetch_quarterly(
         self,
         ticker: str,
@@ -709,26 +801,25 @@ class EdgarProvider:
 
         if key == "ebitda":
             # EBIT nur standalone — Income-Statement-Facts haben 3M-Frames.
+            # STRIKT GAAP OperatingIncomeLoss (nie Non-GAAP/Adjusted-OI).
             ebit = self._find_q_standalone(facts, EBITDA_EBIT_CONCEPTS, target_end)
             if ebit is None:
                 return None
             ebit_val, cur, accn = ebit
-            # D&A ist real immer positiv — negativer YTD-Diff heisst
-            # Restatement-Artefakt, dann D&A als fehlend behandeln
-            # (EBIT-only-Fallback unten greift).
-            da = self._q_flow(
-                facts, EBITDA_DA_CONCEPTS, period_year, quarter,
-                fy_end_month, fy_end_day, target_end,
-                forbid_negative_diff=True,
+            # Volle D&A inkl. Intangible-Amortisation. Ist sie nicht
+            # vollstaendig bestimmbar (nur Depreciation-only ohne separate
+            # Intangible-Amort), liefert _q_da_full None -> KEIN EBITDA
+            # schreiben (lieber leer als ein zu niedriger Wert).
+            da = self._q_da_full(
+                facts, period_year, quarter, fy_end_month, fy_end_day, target_end,
             )
             if da is None:
-                return ProviderResult(
-                    value=ebit_val,
-                    source_name=f"SEC EDGAR {form} ({quarter} FY{period_year}, EBITDA ~ EBIT, D&A nicht in XBRL)",
-                    source_link=self._filing_link(cik, accn),
-                    currency=cur if "ebitda" in CURRENCY_KEYS else None,
-                )
-            da_val, _, _, _ = da
+                return None
+            da_val, da_cur = da
+            # Currency-Kreuzcheck: EBIT und D&A muessen dieselbe Waehrung
+            # tragen, sonst ist die Summe Aepfel-Birnen.
+            if da_cur != cur:
+                return None
             return ProviderResult(
                 value=ebit_val + abs(da_val),
                 source_name=f"SEC EDGAR {form} ({quarter} FY{period_year}, EBITDA = EBIT + D&A)",
@@ -814,22 +905,22 @@ class EdgarProvider:
             )
 
         if key == "ebitda":
+            # EBIT strikt GAAP OperatingIncomeLoss (nie Non-GAAP/Adjusted-OI).
             ebit, cur, accn = self._find_value(facts, EBITDA_EBIT_CONCEPTS, period_year, fy_end_month, fy_end_day)
-            da, _, _ = self._find_value(facts, EBITDA_DA_CONCEPTS, period_year, fy_end_month, fy_end_day)
             if ebit is None:
                 return None
-            # Wenn D&A nicht findbar (selten — manche Filer reporten es nur im
-            # 10-K Notes-Bereich, nicht als XBRL concept), nehmen wir EBIT als
-            # konservative Approximation und markieren das in der Source.
+            # Volle D&A inkl. Amortisation immaterieller Werte. Nicht
+            # vollstaendig bestimmbar -> KEIN EBITDA (lieber leer als ein zu
+            # niedriger Wert; frueher EBIT-only-Approximation, jetzt entfernt).
+            da = self._fy_da_full(facts, period_year, fy_end_month, fy_end_day)
             if da is None:
-                return ProviderResult(
-                    value=ebit,
-                    source_name=f"SEC EDGAR 10-K (EBITDA ≈ EBIT, D&A nicht in XBRL — FY{period_year})",
-                    source_link=self._filing_link(cik, accn),
-                    currency=cur if "ebitda" in CURRENCY_KEYS else None,
-                )
+                return None
+            da_val, da_cur, _ = da
+            # Currency-Kreuzcheck EBIT vs D&A.
+            if da_cur != cur:
+                return None
             return ProviderResult(
-                value=ebit + abs(da),
+                value=ebit + abs(da_val),
                 source_name=f"SEC EDGAR 10-K (EBITDA = EBIT + D&A, FY{period_year})",
                 source_link=self._filing_link(cik, accn),
                 currency=cur if "ebitda" in CURRENCY_KEYS else None,
