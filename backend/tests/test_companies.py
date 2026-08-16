@@ -14,7 +14,8 @@ def _login_with_portfolio(client, db, email="t@example.com"):
 def test_create_and_list_company(client, db):
     _user, pid = _login_with_portfolio(client, db)
     create = client.post(f"/api/portfolios/{pid}/companies",
-                         json={"name": "Apple", "ticker": "AAPL", "currency": "USD"})
+                         json={"name": "Apple", "ticker": "AAPL",
+                               "isin": "US0378331005", "currency": "USD"})
     assert create.status_code == 201
     assert create.json()["ticker"] == "AAPL"
 
@@ -35,7 +36,8 @@ def test_company_in_other_users_portfolio_is_404(client, db):
 def test_update_company(client, db):
     _user, pid = _login_with_portfolio(client, db)
     cid = client.post(f"/api/portfolios/{pid}/companies",
-                      json={"name": "Old", "ticker": "OLD", "currency": "EUR"}).json()["id"]
+                      json={"name": "Old", "ticker": "OLD",
+                            "isin": "US5949181045", "currency": "EUR"}).json()["id"]
     response = client.patch(f"/api/companies/{cid}", json={"name": "New"})
     assert response.status_code == 200
     assert response.json()["name"] == "New"
@@ -44,7 +46,8 @@ def test_update_company(client, db):
 def test_delete_company(client, db):
     _user, pid = _login_with_portfolio(client, db)
     cid = client.post(f"/api/portfolios/{pid}/companies",
-                      json={"name": "X", "ticker": "X", "currency": "EUR"}).json()["id"]
+                      json={"name": "X", "ticker": "X",
+                            "isin": "US02079K3059", "currency": "EUR"}).json()["id"]
     response = client.delete(f"/api/companies/{cid}")
     assert response.status_code == 204
     assert client.get(f"/api/portfolios/{pid}/companies").json() == []
@@ -88,13 +91,14 @@ def test_accounting_standard_ifrs_for_german_company(client, db):
     assert detail.json()["company"]["accounting_standard"] == "IFRS"
 
 
-def test_accounting_standard_ifrs_without_isin(client, db):
-    # Ohne ISIN kein US-Nachweis -> Default IFRS
+def test_create_without_isin_returns_400(client, db):
+    # ISIN-Pflicht (Produktentscheid Aug 2026): Anlage ohne ISIN wird
+    # abgelehnt (frueher lief das als IFRS-Default durch).
     _user, pid = _login_with_portfolio(client, db)
     created = client.post(f"/api/portfolios/{pid}/companies",
                           json={"name": "X", "ticker": "X", "currency": "EUR"})
-    assert created.status_code == 201
-    assert created.json()["accounting_standard"] == "IFRS"
+    assert created.status_code == 400
+    assert "ISIN" in created.json()["detail"]
 
 
 def test_create_company_with_invalid_isin_returns_422(client, db):

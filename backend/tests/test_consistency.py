@@ -24,11 +24,14 @@ def _company(client, db, email):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "EUR"},
-    ).json()
-    return UUID(c["id"])
+    # Nicht-US-Firma direkt per ORM (API-Neuanlage gesperrt: ISIN-Pflicht +
+    # Nicht-US-Block); DE-ISIN haelt is_us_company==False / IFRS.
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                      currency="EUR", isin="DE0007164600")
+    db.add(company)
+    db.commit()
+    return company.id
 
 
 def _seed(db, cid, key, period_type, value, year=2026, is_forecast=True, **kw):

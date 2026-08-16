@@ -130,11 +130,16 @@ def _login_with_company(client, db, email="t@example.com"):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     p = client.post("/api/portfolios", json={"name": "P"}).json()
-    c = client.post(
-        f"/api/portfolios/{p['id']}/companies",
-        json={"name": "Wolters", "ticker": "WKL", "currency": "EUR"},
-    ).json()
-    return user, p["id"], c["id"]
+    # Nicht-US-Firma (Wolters Kluwer) direkt per ORM — API-Neuanlage
+    # gesperrt (ISIN-Pflicht + Nicht-US-Block). DE-ISIN haelt
+    # is_us_company==False / IFRS.
+    from uuid import UUID
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(p["id"]), name="Wolters", ticker="WKL",
+                      currency="EUR", isin="DE0007164600")
+    db.add(company)
+    db.commit()
+    return user, p["id"], str(company.id)
 
 
 def _seed(db, cid, key, period_type, period_year, value=None, primary_method=None):

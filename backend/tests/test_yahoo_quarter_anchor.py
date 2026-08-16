@@ -357,11 +357,15 @@ def _setup_refresh(client, db, email="yqwire@example.com"):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "Deutsche TestCo", "ticker": "DTC", "currency": "EUR"},
-    ).json()
-    return UUID(c["id"])
+    # Nicht-US-Firma direkt per ORM (API-Neuanlage gesperrt); ohne ISIN
+    # bleibt is_us_company==False (Statement-Pfad), keine ISIN-Ticker-
+    # Aufloesung im Refresh.
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="Deutsche TestCo",
+                      ticker="DTC", currency="EUR")
+    db.add(company)
+    db.commit()
+    return company.id
 
 
 def test_non_us_refresh_writes_no_yahoo_fundamentals(client, db, monkeypatch):

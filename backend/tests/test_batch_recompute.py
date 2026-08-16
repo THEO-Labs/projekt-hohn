@@ -17,7 +17,8 @@ def _setup(client, db, n_companies=3):
     for i in range(n_companies):
         client.post(
             f"/api/portfolios/{pid}/companies",
-            json={"name": f"C{i}", "ticker": f"T{i}", "currency": "EUR"},
+            json={"name": f"C{i}", "ticker": f"T{i}",
+                  "isin": "US0378331005", "currency": "EUR"},
         )
     return pid
 

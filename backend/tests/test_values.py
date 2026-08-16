@@ -44,11 +44,19 @@ def _login_with_company(client, db, email="t@example.com", ticker="AAPL"):
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     p = client.post("/api/portfolios", json={"name": "P"}).json()
     pid = p["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "Apple", "ticker": ticker, "currency": "USD"},
-    ).json()
-    return user, pid, c["id"]
+    # Nicht-US-Firma (Statement-Recherche-Pfad) — Neuanlage per API ist
+    # gesperrt (ISIN-Pflicht + Nicht-US-Block), daher direkt per ORM.
+    # Ohne ISIN: is_us_company==False, accounting_standard IFRS; die
+    # ISIN-basierte Ticker-Aufloesung im Refresh bleibt inaktiv (die
+    # Market-Cap-Refresh-Tests mocken nur get_providers, nicht
+    # resolve_ticker_from_isin).
+    from uuid import UUID
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="Apple", ticker=ticker,
+                      currency="USD")
+    db.add(company)
+    db.commit()
+    return user, pid, str(company.id)
 
 
 def _login(client, db, email="catalog@example.com"):

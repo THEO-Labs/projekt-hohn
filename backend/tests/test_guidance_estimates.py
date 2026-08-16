@@ -454,17 +454,14 @@ def _setup_refresh(client, db, email, isin):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "USD"},
-    ).json()
-    cid = UUID(c["id"])
-    comp = db.get(Company, cid)
-    comp.isin = isin
-    comp.fiscal_year_end_month = 12
-    comp.fiscal_year_end_day = 31
+    # Firma direkt per ORM (API-Neuanlage gesperrt: ISIN-Pflicht + Nicht-US-
+    # Block); isin kommt vom Test (US- oder DE-Pfad).
+    comp = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                   currency="USD", isin=isin,
+                   fiscal_year_end_month=12, fiscal_year_end_day=31)
+    db.add(comp)
     db.commit()
-    return cid
+    return comp.id
 
 
 def _patch_refresh_env(monkeypatch):

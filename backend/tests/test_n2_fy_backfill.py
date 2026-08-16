@@ -27,17 +27,15 @@ def _setup(client, db, email="n2backfill@example.com", isin=None):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "EUR"},
-    ).json()
-    cid = UUID(c["id"])
-    if isin:
-        from app.companies.models import Company
-        comp = db.get(Company, cid)
-        comp.isin = isin
-        db.commit()
-    return cid
+    # Firma direkt per ORM (API-Neuanlage gesperrt: ISIN-Pflicht +
+    # Nicht-US-Block). Default ohne ISIN -> Nicht-US/Statement-Pfad;
+    # mit isin=US... -> US-EDGAR-Anker-Pfad.
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                      currency="EUR", isin=isin)
+    db.add(company)
+    db.commit()
+    return company.id
 
 
 def _fy_row(cid, key, year, pm, value=Decimal("1000000000"), **kw):

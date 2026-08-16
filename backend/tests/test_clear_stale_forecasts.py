@@ -210,11 +210,14 @@ def test_refresh_flow_clears_before_validate(client, db, monkeypatch):
     client.post("/api/auth/login",
                 json={"email": "wiring@example.com", "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "EUR"},
-    ).json()
-    cid = UUID(c["id"])
+    # Nicht-US-Firma direkt per ORM (API-Neuanlage gesperrt); ohne ISIN
+    # bleibt is_us_company==False (Statement-Pfad).
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                      currency="EUR")
+    db.add(company)
+    db.commit()
+    cid = company.id
 
     events: list[tuple[str, int]] = []
     monkeypatch.setattr(cons, "derive_clear_stale_forecasts",

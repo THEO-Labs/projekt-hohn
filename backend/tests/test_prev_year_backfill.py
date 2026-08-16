@@ -22,11 +22,15 @@ def _setup(client, db, email="backfill@example.com"):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "EUR"},
-    ).json()
-    return UUID(c["id"])
+    # Nicht-US-Firma direkt per ORM (API-Neuanlage gesperrt: ISIN-Pflicht +
+    # Nicht-US-Block). Ohne ISIN: is_us_company==False (Statement-Pfad),
+    # keine ISIN-Ticker-Aufloesung im Refresh.
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                      currency="EUR")
+    db.add(company)
+    db.commit()
+    return company.id
 
 
 def _fy_row(cid, key, year, pm, is_forecast=False, value=Decimal("1")):

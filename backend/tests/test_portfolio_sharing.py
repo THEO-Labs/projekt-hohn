@@ -25,7 +25,8 @@ def test_member_sees_shared_portfolio_and_companies(client, db):
     _login(client, "owner@example.com")
     pid = client.post("/api/portfolios", json={"name": "DAX"}).json()["id"]
     client.post(f"/api/portfolios/{pid}/companies",
-                json={"name": "TestCo", "ticker": "TST", "currency": "EUR"})
+                json={"name": "TestCo", "ticker": "TST",
+                      "isin": "US0378331005", "currency": "EUR"})
 
     db.add(PortfolioMember(portfolio_id=pid, user_id=member.id))
     db.commit()
@@ -59,7 +60,8 @@ def test_member_can_read_company_detail(client, db):
     _login(client, "owner3@example.com")
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
     cid = client.post(f"/api/portfolios/{pid}/companies",
-                      json={"name": "TestCo", "ticker": "TST", "currency": "EUR"}).json()["id"]
+                      json={"name": "TestCo", "ticker": "TST",
+                            "isin": "US0378331005", "currency": "EUR"}).json()["id"]
     db.add(PortfolioMember(portfolio_id=pid, user_id=member.id))
     db.commit()
 

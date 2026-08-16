@@ -361,11 +361,13 @@ def test_refresh_endpoint_invokes_quarter_anchor_before_consistency(client, db, 
     db.commit()
     client.post("/api/auth/login", json={"email": "qwire@example.com", "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "USD"},
-    ).json()
-    cid = UUID(c["id"])
+    # Firma direkt per ORM (API-Neuanlage gesperrt: ISIN-Pflicht).
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                      currency="USD")
+    db.add(company)
+    db.commit()
+    cid = company.id
 
     monkeypatch.setattr(routes, "_prev_year_needs_backfill",
                         lambda db_, cid_, k, y: False)

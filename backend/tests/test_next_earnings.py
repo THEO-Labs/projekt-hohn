@@ -113,11 +113,13 @@ def _setup(client, db, email):
     db.commit()
     client.post("/api/auth/login", json={"email": email, "password": "pw1234"})
     pid = client.post("/api/portfolios", json={"name": "P"}).json()["id"]
-    c = client.post(
-        f"/api/portfolios/{pid}/companies",
-        json={"name": "TestCo", "ticker": "TST", "currency": "EUR"},
-    ).json()
-    return pid, UUID(c["id"])
+    # Firma direkt per ORM (API-Neuanlage gesperrt: ISIN-Pflicht).
+    from app.companies.models import Company
+    company = Company(portfolio_id=UUID(pid), name="TestCo", ticker="TST",
+                      currency="EUR")
+    db.add(company)
+    db.commit()
+    return pid, company.id
 
 
 def _patch_hook_env(monkeypatch, fake_provider):

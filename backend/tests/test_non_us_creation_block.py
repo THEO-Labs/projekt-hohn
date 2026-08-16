@@ -42,8 +42,9 @@ def test_non_us_ticker_suffix_blocked(client, portfolio_id):
 
 
 def test_currency_alone_is_not_blocked(client, portfolio_id):
-    # Waehrung allein ist kein Kriterium (interne Fixtures/Randfaelle).
-    r = _create(client, portfolio_id, currency="EUR")
+    # Waehrung allein ist kein Kriterium (interne Fixtures/Randfaelle):
+    # US-ISIN + EUR bleibt erlaubt, nur ISIN/Ticker-Suffix blocken.
+    r = _create(client, portfolio_id, isin="US0378331005", currency="EUR")
     assert r.status_code == 201
 
 
