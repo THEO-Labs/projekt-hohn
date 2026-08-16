@@ -123,13 +123,27 @@ def test_derive_net_debt_respects_manual_and_pdf(client, db):
     assert _row(db, cid, "net_debt", "FY").numeric_value == Decimal("5475000000")
 
 
-def test_derive_net_debt_skips_when_component_missing(client, db):
+def test_derive_net_debt_skips_when_cash_missing(client, db):
     cid = _company(client, db, "c7@example.com")
     _seed(db, cid, "st_debt", "FY", 1248e6)
     _seed(db, cid, "net_debt", "FY", 5475e6)
     derive_net_debt_from_components(db, cid, 2026)
     db.commit()
     assert _row(db, cid, "net_debt", "FY").numeric_value == Decimal("5475000000")
+
+
+def test_derive_net_debt_net_cash_when_no_financial_debt(client, db):
+    # Schuldenfreie Firma (US-Filer nach Leasing-Fix: kein st_debt/lt_debt-Tag):
+    # fehlende Finanzschuld = 0 -> net_debt = -(cash + st_investments).
+    cid = _company(client, db, "c7b@example.com")
+    _seed(db, cid, "cash_and_equivalents", "FY", 1097e6)
+    _seed(db, cid, "st_investments", "FY", 75e6)
+    derive_net_debt_from_components(db, cid, 2026)
+    db.commit()
+    row = _row(db, cid, "net_debt", "FY")
+    assert row.numeric_value == Decimal("-1172000000")
+    assert row.primary_method == "calculated"
+    assert "ohne Finanzschuld" in (row.source_name or "")
 
 
 def test_derive_missing_ocf_from_fcf_and_capex(client, db):

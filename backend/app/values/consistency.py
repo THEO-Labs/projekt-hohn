@@ -359,23 +359,43 @@ def derive_net_debt_from_components(db: Session, company_id: UUID, year: int) ->
     written = 0
     for pt in ("FY",) + _Q_TYPES:
         comps = {k: _row_of(rows, k, pt) for k in _NET_DEBT_COMPONENTS}
-        if any(c is None or c.numeric_value is None for c in comps.values()):
+        # Cash ist Pflicht — ohne Cash keine net_debt-Aussage. Fehlende
+        # Schulden-/Investments-Komponenten gelten als 0: eine Firma ohne
+        # Finanzschuld (US-Filer nach dem Leasing-Fix: kein LT/ST-Debt-Tag
+        # -> leer) hat net_debt = -(cash + st_investments), also Netto-Cash.
+        # Ohne diese Regel bliebe net_debt bei schuldenfreien Firmen leer.
+        cash_row = comps["cash_and_equivalents"]
+        if cash_row is None or cash_row.numeric_value is None:
             continue
-        derived = (
-            comps["st_debt"].numeric_value
-            + comps["lt_debt"].numeric_value
-            - comps["cash_and_equivalents"].numeric_value
-            - comps["st_investments"].numeric_value
-        )
+
+        def _cv(key: str):
+            r = comps[key]
+            return (
+                (r.numeric_value, True)
+                if r is not None and r.numeric_value is not None
+                else (Decimal("0"), False)
+            )
+
+        st_debt_v, st_debt_p = _cv("st_debt")
+        lt_debt_v, lt_debt_p = _cv("lt_debt")
+        st_inv_v, _st_inv_p = _cv("st_investments")
+        derived = st_debt_v + lt_debt_v - cash_row.numeric_value - st_inv_v
         target = _row_of(rows, "net_debt", pt)
         if target is not None and (target.manually_overridden or target.from_ir_pdf):
             continue
-        is_forecast = any(bool(c.is_forecast) for c in comps.values())
+        is_forecast = any(
+            bool(c.is_forecast) for c in comps.values() if c is not None
+        )
+        _absent = [
+            k for k, present in (
+                ("st_debt", st_debt_p), ("lt_debt", lt_debt_p),
+            ) if not present
+        ]
+        _note = f" (ohne Finanzschuld: {', '.join(_absent)}=0)" if _absent else ""
         source = (
-            f"Derived (classic): st_debt {comps['st_debt'].numeric_value} + "
-            f"lt_debt {comps['lt_debt'].numeric_value} - "
-            f"cash {comps['cash_and_equivalents'].numeric_value} - "
-            f"st_investments {comps['st_investments'].numeric_value} = {derived}"
+            f"Derived (classic): st_debt {st_debt_v} + lt_debt {lt_debt_v} - "
+            f"cash {cash_row.numeric_value} - st_investments {st_inv_v} "
+            f"= {derived}{_note}"
         )
         now = datetime.now(timezone.utc)
         if target is None:
@@ -400,7 +420,7 @@ def derive_net_debt_from_components(db: Session, company_id: UUID, year: int) ->
         target.source_link = None
         target.primary_method = "calculated"
         target.is_forecast = is_forecast
-        target.currency = comps["st_debt"].currency or target.currency
+        target.currency = cash_row.currency or target.currency
         target.fetched_at = now
         target.last_refresh_attempt = now
         if prev is not None and prev != derived:
