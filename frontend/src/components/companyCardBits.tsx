@@ -182,7 +182,20 @@ export function RefreshActions({
 
   const doFull = async () => {
     if (busy) return;
-    const targetYear = fyEstimateYear ?? new Date().getFullYear();
+    // Geschaeftsjahr-bewusstes Zieljahr: bei frueh endenden Fiskaljahren
+    // (z.B. Dynatrace Maerz, Intuit Juli) ist das Kalenderjahr bereits
+    // abgeschlossen — dann ist das laufende FY year+1. Ohne fyEstimateYear
+    // (frische Firma) sonst falsches, bereits abgeschlossenes Jahr.
+    const runningFyYear = (): number => {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = company.fiscal_year_end_month;
+      const d = company.fiscal_year_end_day;
+      if (!m || !d) return y;
+      const fye = new Date(y, m - 1, d);
+      return now <= fye ? y : y + 1;
+    };
+    const targetYear = fyEstimateYear ?? runningFyYear();
     setFull(true);
     try {
       // Kein await reload/toast hier — der Poller uebernimmt das sobald Backend

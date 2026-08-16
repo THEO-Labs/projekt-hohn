@@ -223,14 +223,19 @@ export function PortfolioDetailPage() {
   };
 
   const handleLookup = async () => {
-    const q = lookupQuery.trim();
+    const q = lookupQuery.trim().toUpperCase();
     if (!q) return;
+    // Nur ISIN-Suche erlaubt (Produktentscheid): die Ticker-Suche liefert
+    // keine ISIN mit, wodurch Firmen ohne ISIN und damit im falschen
+    // (Nicht-US-)Pfad landen konnten.
+    const isIsin = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(q);
+    if (!isIsin) {
+      toast.info("Bitte eine gueltige ISIN eingeben (12 Zeichen). Die Suche per Ticker ist nicht moeglich.");
+      return;
+    }
     setLookupLoading(true);
     try {
-      const isIsin = /^[A-Z]{2}/.test(q) && q.length === 12;
-      const result = isIsin
-        ? await lookupCompany({ isin: q })
-        : await lookupCompany({ ticker: q });
+      const result = await lookupCompany({ isin: q });
       if (!result.name && !result.ticker && !result.isin && !result.currency) {
         toast.info(t.lookupNotFound);
       } else {
@@ -251,7 +256,7 @@ export function PortfolioDetailPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!id || !lookedUp || submitting) return;
+    if (!id || !lookedUp || submitting || !form.isin) return;
     setSubmitting(true);
     try {
       const created = await createCompany(id, {
@@ -445,7 +450,7 @@ export function PortfolioDetailPage() {
               </DialogHeader>
               <form onSubmit={submit} className="space-y-4">
                 <div className="space-y-1.5">
-                  <Label className="text-sm text-muted-foreground">Enter ISIN or ticker</Label>
+                  <Label className="text-sm text-muted-foreground">ISIN eingeben</Label>
                   <div className="flex gap-2">
                     <Input
                       value={lookupQuery}

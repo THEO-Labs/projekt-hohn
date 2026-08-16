@@ -351,7 +351,12 @@ def _call_claude(company, year: int, cost_tracker=None,
     open_quarters, _ = _normalize_open_quarters(open_quarter)
 
     def _do_call():
-        return client.messages.create(
+        # Streaming: bei mehreren offenen Quartalen wird max_tokens gross
+        # genug, dass die API fuer nicht-gestreamte Calls hart abbricht
+        # ("Streaming is required for operations that may take longer than
+        # 10 minutes"). Der Kontextmanager sammelt den Stream und liefert
+        # die finale Message (identische .content/.usage-Struktur).
+        kwargs = dict(
             model=EXTRACT_MODEL,
             max_tokens=_max_tokens(len(open_quarters)),
             temperature=0,
@@ -366,6 +371,8 @@ def _call_claude(company, year: int, cost_tracker=None,
                 "content": _build_user_prompt(company, year, open_quarter),
             }],
         )
+        with client.messages.stream(**kwargs) as stream:
+            return stream.get_final_message()
 
     response = claude_limiter.call(_do_call)
     if cost_tracker is not None:

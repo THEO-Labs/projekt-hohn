@@ -108,6 +108,19 @@ def create_company(
 ) -> Company:
     _get_owned_portfolio(db, user, portfolio_id)
     data = payload.model_dump()
+    # ISIN-Pflicht (Produktentscheid Aug 2026): Firmen duerfen NUR ueber
+    # eine ISIN angelegt werden. Ohne ISIN haengt die US-Erkennung
+    # (is_us_isin) ins Leere — die Firma liefe faelschlich durch den
+    # Nicht-US-Pfad (NTRA/INTU-Bug). Die ISIN ist die eindeutige,
+    # verlaessliche Kennung; die Ticker-Suche liefert sie nicht mit.
+    if not (data.get("isin") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Firmen koennen nur ueber die ISIN angelegt werden. Bitte "
+                "nach der ISIN suchen (die Ticker-Suche liefert keine ISIN)."
+            ),
+        )
     _reject_non_us(data.get("isin"), data.get("ticker"), data.get("currency"))
     # Duplikat-Sperre: derselbe Ticker in einem weiteren Portfolio erzeugte
     # Parallel-Datenbestaende (SPGI-Fall: Review und Recompute trafen

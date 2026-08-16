@@ -56,6 +56,29 @@ def _fy_is_closed(company, year: int) -> bool:
     return year < today.year
 
 
+def running_fy_year(company, today: date | None = None) -> int:
+    """Das aktuell LAUFENDE Geschaeftsjahr (Label = Kalenderjahr des
+    FY-Endes). Bei Firmen mit frueh endendem Geschaeftsjahr (z.B.
+    Dynatrace Maerz, Intuit Juli) ist das Kalenderjahr bereits das
+    ABGESCHLOSSENE FY — das laufende ist dann year+1. Ohne diese Logik
+    schaetzt der Recompute nie das laufende Jahr (nur Actuals des
+    abgeschlossenen), und es entstehen keine Forecasts/H-Rendite.
+    """
+    if today is None:
+        today = date.today()
+    y = today.year
+    m = getattr(company, "fiscal_year_end_month", None)
+    d = getattr(company, "fiscal_year_end_day", None)
+    if not m or not d:
+        return y
+    try:
+        fy_end = date(y, m, d)
+    except ValueError:
+        fy_end = date(y, m, 28)  # 29.02. im Nicht-Schaltjahr
+    # FY dieses Kalenderjahres bereits beendet -> laufendes FY ist y+1.
+    return y if today <= fy_end else y + 1
+
+
 def _fetch_from_chain(company, key: str, year: int):
     """Provider-Kette wie routes._try_providers: kaskadierende kwargs fuer
     die unterschiedlichen fetch-Signaturen (ESEF braucht isin, EDGAR das

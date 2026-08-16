@@ -68,7 +68,15 @@ def _recompute_one(company_id: UUID, owner_id: UUID, api_keys: list[str], year: 
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == owner_id).one()
-        payload = RefreshRequest(keys=api_keys, period_type="FY", period_year=year)
+        # Geschaeftsjahr-bewusst: der Batch uebergibt das Kalenderjahr, das
+        # aber bei frueh endenden Fiskaljahren (Dynatrace Maerz, Intuit
+        # Juli) bereits abgeschlossen ist. Auf das laufende FY normieren,
+        # sonst entstehen keine Schaetzungen/H-Rendite fuers laufende Jahr.
+        from app.companies.models import Company
+        from app.values.provider_anchor import running_fy_year
+        company = db.query(Company).filter(Company.id == company_id).one_or_none()
+        effective_year = running_fy_year(company) if company is not None else year
+        payload = RefreshRequest(keys=api_keys, period_type="FY", period_year=effective_year)
         refresh_company_values(company_id=company_id, payload=payload, user=user, db=db)
         db.commit()
     finally:
