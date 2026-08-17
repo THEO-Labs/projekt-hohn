@@ -318,7 +318,38 @@ class ValueOrchestrator:
             if year == run and not _fy_is_closed(company, year):
                 self._estimate_running_fy(company, year, currency)  # Q4-Schaetzung + Balance-Carry
             else:
-                self._fill_reported_gaps(company, year, currency)   # abgeschlossenes Jahr: nur Luecken
+                self._fill_reported_gaps(company, year, currency)   # abgeschlossenes Jahr: FY-Luecken
+            # EDGAR-Luecken in berichteten Quartalen exakt fuellen (z.B. eps/
+            # st_investments, wo EDGAR das Concept nicht hat).
+            self._fill_quarter_gaps(company, year, currency)
+
+    def _fill_quarter_gaps(self, company, year, currency):
+        """Fuellt in berichteten Quartalen die Keys, die EDGAR nicht liefert
+        (fehlendes XBRL-Concept, z.B. Visa eps/st_investments), exakt aus den
+        Tabellen via Perplexity. primary_method='perplexity' (Actual) -> der
+        EDGAR-Anker ueberschreibt, sobald das Concept doch kommt."""
+        from app.values.schema_builder import fundamental_keys
+        all_keys = fundamental_keys()
+        for q in ("Q1", "Q2", "Q3", "Q4"):
+            if not self._has_reported(company.id, "revenue", year, q):
+                continue  # Quartal (noch) nicht berichtet
+            missing = [k for k in all_keys if not self._has_reported(company.id, k, year, q)]
+            if not missing:
+                continue
+            try:
+                vals = self.perplexity.fetch_quarter_reported(
+                    company_name=company.name, ticker=company.ticker,
+                    fiscal_year=year, quarter=q, keys=missing, currency=currency)
+            except Exception as e:
+                logger.warning("perplexity quarter-gap %s %s FY%s: %s",
+                               getattr(company, "ticker", "?"), q, year, e)
+                continue
+            for key, pv in vals.items():
+                val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+                self._upsert(company.id, key, year, period_type=q, value=val,
+                             source_name="Perplexity (Tabellen-Wert)", source_link=pv.source_url,
+                             currency=currency, primary_method="perplexity", is_forecast=False)
+        self.db.flush()
 
     def _apply_adjusted(self, company, years):
         """Firmen-definierte adjusted/Non-GAAP-Werte fuer berichtete Jahre holen

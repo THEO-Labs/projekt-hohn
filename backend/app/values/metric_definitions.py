@@ -24,7 +24,7 @@ METRIC_DEFINITIONS: dict[str, str] = {
 
 # Kennzahlen, fuer die die Firma zusaetzlich einen Non-GAAP/adjusted-Wert
 # berichtet. Perplexity liefert dann auch das `<key>_adjusted`-Feld.
-ADJUSTED_KEYS: set[str] = {"net_income", "ebitda", "fcf", "revenue", "operating_cash_flow"}
+ADJUSTED_KEYS: set[str] = {"net_income", "eps_diluted", "ebitda", "fcf", "revenue", "operating_cash_flow"}
 
 # Reported-Abfragen: nur offizielle Filings (8-K-Exhibits/10-K liegen auf sec.gov).
 PERIOD_DOMAIN_ALLOWLIST: list[str] = ["sec.gov"]
