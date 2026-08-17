@@ -46,10 +46,9 @@ _DILUTED_SHARE_CONCEPTS = [
 
 
 def _concepts(key: str) -> list[str]:
-    base = CONCEPT_MAP.get(key, [])
-    if key == "st_investments":
-        return base + ["Investments"]
-    return base
+    # CONCEPT_MAP enthaelt fuer st_investments bereits den generischen
+    # "Investments"-Fallback (Visa-Tagging).
+    return CONCEPT_MAP.get(key, [])
 
 
 @dataclass(frozen=True)

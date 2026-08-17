@@ -92,6 +92,10 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "TradingSecurities",
         "InvestmentsCurrent",
         "OtherShortTermInvestments",
+        # Letzter Fallback: generisches "Investments" (Visa taggt seine
+        # kurzfristigen Investment-Securities so, ohne Current-Suffix). Nur
+        # genutzt, wenn KEIN spezifisches Current-Konzept greift.
+        "Investments",
     ],
     "st_debt": [
         "ShortTermBorrowings",
