@@ -150,7 +150,7 @@ Refresh(Firma) [US]
 ## Testing
 
 - **`PerplexityClient`** (respx-gemockt): Agent-API-Antworten inkl. Zitaten + strukturiertem JSON → Schema-Parsing, `null`-Handling, `source_name`/`source_link`-Zuordnung, Adjusted-Felder, Domain-Filter im Request.
-- **`SchemaBuilder`**: Schema enthaelt alle API-Keys mit Definition + Adjusted-Feldern; Domain-Allowlist gesetzt.
+- **`SchemaBuilder`**: Schema enthaelt alle Fundamental-API-Keys (ohne `ALWAYS_CURRENT_KEYS`) mit Definition + Adjusted-Feldern; Stammdaten-Keys sind **nicht** enthalten; Domain-Allowlist gesetzt.
 - **`ValueOrchestrator`**: Prioritaet (Manual > EDGAR > Perplexity), Luecken-Erkennung (nur fehlende Keys werden abgefragt), Forecast/Konsens-Pfad, Adjusted-Befuellung, **Nachweis: keine Gate-Logik greift**, `running_fy_year`-Nutzung.
 - **EDGAR-Anker**: bestehende Tests behalten.
 - **`engine.py`**: Tests unveraendert.
