@@ -3,7 +3,6 @@ import { LoginPage } from "@/pages/LoginPage";
 import { PortfolioListPage } from "@/pages/PortfolioListPage";
 import { PortfolioDetailPage } from "@/pages/PortfolioDetailPage";
 import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
-import { CompanyDashboardPage } from "@/pages/CompanyDashboardPage";
 import { useAuth } from "@/hooks/useAuth";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -33,7 +32,6 @@ export default function App() {
             <Route path="/" element={<PortfolioListPage />} />
             <Route path="/portfolios/:pid" element={<PortfolioDetailPage />} />
             <Route path="/portfolios/:pid/companies/:cid" element={<CompanyDetailPage />} />
-            <Route path="/portfolios/:pid/legacy" element={<CompanyDashboardPage />} />
             <Route path="/portfolios/:pid/manage" element={<Navigate to="../" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </>
