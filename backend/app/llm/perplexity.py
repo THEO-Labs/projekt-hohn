@@ -101,10 +101,11 @@ class PerplexityClient:
         prompt = (
             f"Report the exact as-reported fundamental financial figures for "
             f"{company_name} (ticker {ticker}), fiscal year {fiscal_year}, from its "
-            f"official US-GAAP filings (10-K/10-Q/8-K). Currency {currency}, amounts in "
-            f"millions unless the field says otherwise. Use null for any figure you cannot "
-            f"find in an official filing. Do not estimate. Only these metrics: "
-            f"{', '.join(missing_keys)}."
+            f"official US-GAAP filings (10-K/10-Q/8-K). Report EVERY monetary figure as a "
+            f"plain number in MILLIONS of {currency} — e.g. 391035 means 391.035 billion; "
+            f"never return 391 or 391.0 for a billion-scale figure. eps_diluted stays "
+            f"per-share (e.g. 6.08). Use null for any figure you cannot find in an official "
+            f"filing. Do not estimate. Only these metrics: {', '.join(missing_keys)}."
         )
         payload, url, title = self._post(prompt, build_period_schema(), PERIOD_DOMAIN_ALLOWLIST)
         return self._to_values(payload, missing_keys, url, title)
@@ -114,7 +115,9 @@ class PerplexityClient:
         prompt = (
             f"Report the current Wall-Street analyst consensus estimates for "
             f"{company_name} (ticker {ticker}) for fiscal year {forward_year}. "
-            f"Currency {currency}, amounts in millions unless the field says otherwise. "
+            f"Report EVERY monetary figure as a plain number in MILLIONS of {currency} — "
+            f"e.g. 391035 means 391.035 billion; never return 391 or 391.0 for a "
+            f"billion-scale figure. eps_diluted stays per-share (e.g. 6.08). "
             f"Use null where no consensus is available. Only these metrics: {', '.join(keys)}."
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)

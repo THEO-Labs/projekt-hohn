@@ -35,6 +35,17 @@ def _rank(method: str | None) -> int:
     return _METHOD_RANK.get(method or "", 0)
 
 
+# Monetaere Kennzahlen (in Millionen). eps_diluted ist per-share und wird NICHT
+# einheiten-normalisiert. Perplexity gibt Betraege gelegentlich in Milliarden
+# statt Millionen zurueck (~1000x zu klein) — das korrigiert _unit_fix gegen
+# den EDGAR-Anker.
+_MONETARY_KEYS = frozenset({
+    "revenue", "net_income", "ebitda", "operating_cash_flow", "fcf", "capex",
+    "sbc", "buyback_volume", "dividends",
+    "net_debt", "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
+})
+
+
 @dataclass(frozen=True)
 class AnchorValue:
     value: Decimal
@@ -181,6 +192,44 @@ class ValueOrchestrator:
         run_and_persist_calculations_for_years(self.db, company, [None] + sorted(fy_years))
         self.db.flush()
 
+    def _reference_magnitude(self, company_id, key):
+        """Betrag des juengsten berichteten EDGAR-Werts (provider) fuer key —
+        als Einheiten-Referenz fuer die Perplexity-Skalierung."""
+        row = (
+            self.db.query(CompanyValue)
+            .filter(
+                CompanyValue.company_id == company_id,
+                CompanyValue.value_key == key,
+                CompanyValue.period_type == "FY",
+                CompanyValue.is_forecast.is_(False),
+                CompanyValue.primary_method == "provider",
+                CompanyValue.numeric_value.isnot(None),
+            )
+            .order_by(CompanyValue.period_year.desc())
+            .first()
+        )
+        return abs(row.numeric_value) if row and row.numeric_value else None
+
+    def _unit_fix(self, company_id, key, value):
+        """Einheiten-Angleichung (KEIN Plausibilitaets-Gate): Perplexity gibt
+        Betraege manchmal in Milliarden statt Millionen zurueck. Weicht der Wert
+        um ~1000x vom vertrauten EDGAR-Anker derselben Kennzahl ab, wird er
+        skaliert. Echtes Wachstum ist nie 1000x, daher eindeutig ein
+        Einheiten-Fehler. Nur monetaere Keys; EPS/Ratios bleiben unangetastet."""
+        if key not in _MONETARY_KEYS or value is None or value == 0:
+            return value
+        ref = self._reference_magnitude(company_id, key)
+        if not ref:
+            return value
+        ratio = ref / abs(value)
+        if Decimal("200") <= ratio <= Decimal("5000"):      # Wert ~1000x zu klein (Mrd statt Mio)
+            logger.info("unit-fix %s: %s -> %s (Mrd->Mio, ref=%s)", key, value, value * 1000, ref)
+            return value * Decimal("1000")
+        if Decimal("0.0002") <= ratio <= Decimal("0.005"):  # Wert ~1000x zu gross
+            logger.info("unit-fix %s: %s -> %s (Mio->Mrd, ref=%s)", key, value, value / 1000, ref)
+            return value / Decimal("1000")
+        return value
+
     def _missing_fundamental_keys(self, company_id, year, is_forecast=False):
         from app.values.schema_builder import fundamental_keys
         missing = []
@@ -227,10 +276,12 @@ class ValueOrchestrator:
                 )
                 continue
             for key, pv in vals.items():
-                self._upsert(company.id, key, year, value=Decimal(str(pv.value)),
+                val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+                adj = (self._unit_fix(company.id, key, Decimal(str(pv.adjusted)))
+                       if pv.adjusted is not None else None)
+                self._upsert(company.id, key, year, value=val,
                              source_name=src, source_link=pv.source_url, currency=currency,
-                             primary_method=method, is_forecast=fc,
-                             adjusted=pv.adjusted)
+                             primary_method=method, is_forecast=fc, adjusted=adj)
 
     def _derive_calculations(self, company, years):
         # Lazy import: run_and_persist_calculations_for_years lebt in routes.py.
