@@ -649,6 +649,7 @@ class ValueOrchestrator:
             if self._needs_estimate_completion(company, y):
                 self._running_fy_from_quarters(company, y, currency)
         self.db.flush()  # OCF/capex-Fallback sichtbar machen fuer _derive_fcf
+        self._derive_net_income_from_eps(company, years)  # NI aus EPS-Konsens, wo NI leer
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
         self._derive_eps(company, years)      # eps = NI / Aktien, wo EDGAR/Perplexity leer
         self._derive_net_debt(company, years)
@@ -755,6 +756,34 @@ class ValueOrchestrator:
                              value=orow.numeric_value - abs(cap.numeric_value),
                              source_name="Abgeleitet (OCF − CapEx)", source_link=None,
                              currency=orow.currency, primary_method="derived", is_forecast=fc)
+
+    def _derive_net_income_from_eps(self, company, years):
+        """net_income = eps_diluted × Aktienzahl, NUR wo NI leer aber eps da ist.
+        Der Analysten-KONSENS fuer Schaetzjahre nennt oft nur den EPS (nicht den
+        Net Income) — dann NI aus dem EPS-Konsens ableiten, damit Overview-
+        Kennzahlen (ni_growth, PE) rechenbar sind."""
+        snap = self._existing(company.id, "shares_outstanding", None,
+                              period_type="SNAPSHOT", is_forecast=False)
+        shares = snap.numeric_value if (snap and snap.numeric_value) else None
+        if not shares or shares == 0:
+            return
+        currency = getattr(company, "currency", None) or "USD"
+        for year in years:
+            eps_rows = (self.db.query(CompanyValue)
+                        .filter(CompanyValue.company_id == company.id,
+                                CompanyValue.value_key == "eps_diluted",
+                                CompanyValue.period_year == year,
+                                CompanyValue.numeric_value.isnot(None))
+                        .all())
+            for erow in eps_rows:
+                pt, fc = erow.period_type, erow.is_forecast
+                existing = self._existing(company.id, "net_income", year, period_type=pt, is_forecast=fc)
+                if existing is not None and existing.numeric_value is not None:
+                    continue  # NI schon da -> nicht anfassen
+                self._upsert(company.id, "net_income", year, period_type=pt,
+                             value=erow.numeric_value * shares,
+                             source_name="Abgeleitet (EPS × Aktien)", source_link=None,
+                             currency=currency, primary_method="derived", is_forecast=fc)
 
     def _derive_eps(self, company, years):
         """eps_diluted = net_income / aktuelle Aktienzahl, NUR wo eps leer ist
