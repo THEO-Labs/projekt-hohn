@@ -120,10 +120,22 @@ def test_refresh_dedupes_historical_anchor_years(db, us_company, monkeypatch):
     monkeypatch.setattr(perplexity_mod, "PerplexityClient", NoPplx)
 
     called: list[int] = []
-    monkeypatch.setattr(
-        routes, "_fetch_and_store_historical_mcap",
-        lambda db_, ticker, cid, year: called.append(year),
-    )
+
+    def _fake_mcap(db_, ticker, cid, year):
+        # Produktionsnah: eine market_cap-FY-Zeile schreiben, damit der
+        # _has_fy_price_anchor-Guard greift (sonst holt der spaetere
+        # Calc-Pfad den FY+1-Anker fuer actual_return erneut -> Doppel-Call).
+        called.append(year)
+        from decimal import Decimal
+        from uuid import uuid4
+
+        from app.values.models import CompanyValue
+        db_.add(CompanyValue(id=uuid4(), company_id=cid, value_key="market_cap",
+                             period_type="FY", period_year=year, numeric_value=Decimal("1"),
+                             source_name="test", is_forecast=False, manually_overridden=False))
+        db_.flush()
+
+    monkeypatch.setattr(routes, "_fetch_and_store_historical_mcap", _fake_mcap)
 
     running = orch_mod.running_fy_year(us_company)
     user = _owner(db, us_company)
