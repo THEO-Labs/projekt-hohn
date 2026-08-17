@@ -82,32 +82,3 @@ def test_nonus_filer_market_feed_blocked_for_all_fundamentals():
                       return_value=[_FakeEdgar(), _FakeMarket()]):
         res = provider_anchor._fetch_from_chain(_nonus_company(), "lt_debt", 2024)
     assert res is None
-
-
-# --- routes._try_providers -------------------------------------------------
-
-
-@pytest.mark.parametrize("key", ["st_debt", "lt_debt"])
-def test_try_providers_us_debt_edgar_only(key):
-    from app.values import routes
-    payload = SimpleNamespace(period_type="FY", period_year=2024)
-    with patch.object(routes, "get_providers",
-                      return_value=[_FakeEdgar(), _FakeMarket()]):
-        res = routes._try_providers(
-            "NTRA", key, payload, 12, 31, isin="US6413401098",
-            company=_us_company(),
-        )
-    assert res is None
-
-
-def test_try_providers_us_non_debt_falls_through_to_market():
-    from app.values import routes
-    payload = SimpleNamespace(period_type="FY", period_year=2024)
-    with patch.object(routes, "get_providers",
-                      return_value=[_FakeEdgar(), _FakeMarket()]):
-        res = routes._try_providers(
-            "NTRA", "cash_and_equivalents", payload, 12, 31,
-            isin="US6413401098", company=_us_company(),
-        )
-    assert res is not None
-    assert res.value == Decimal("118000000")

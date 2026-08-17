@@ -168,12 +168,12 @@ def _companies_by_ticker(db, pid):
 
 
 def _mark_two_stage(db, company_id, fetched_at):
-    """Simuliert einen frueheren Two-Stage-Lauf fuer die Firma."""
+    """Simuliert einen frueheren Orchestrator-Lauf (Perplexity) fuer die Firma."""
     from app.values.models import CompanyValue
     db.add(CompanyValue(
         company_id=company_id, value_key="market_cap",
         period_year=2025, period_type="FY",
-        primary_method="two_stage_verified", fetched_at=fetched_at,
+        primary_method="perplexity", fetched_at=fetched_at,
     ))
     db.commit()
 
@@ -305,7 +305,7 @@ def test_stale_when_run_and_earnings_same_day(client, db, monkeypatch):
     comp.next_earnings_date = yesterday
     db.add(CompanyValue(
         company_id=comp.id, value_key="revenue", period_type="FY", period_year=2025,
-        numeric_value=Decimal("1"), primary_method="two_stage_confirmed",
+        numeric_value=Decimal("1"), primary_method="provider",
         fetched_at=datetime.combine(yesterday, datetime.min.time()).replace(tzinfo=timezone.utc),
     ))
     db.commit()

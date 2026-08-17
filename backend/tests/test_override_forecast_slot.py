@@ -129,34 +129,9 @@ def test_override_unreported_prefers_forecast_and_deletes_placeholder(client, db
     assert rows[0].numeric_value == Decimal("100")
 
 
-def test_override_reported_via_8k_targets_actual_slot(client, db):
-    """US-Filer, Periode beendet, Karenz laeuft noch, aber ein Item-2.02-8-K
-    existiert: Verhalten wie bisher — Actual-Slot (amber)."""
-    _seed_catalog(db)
-    _user, _pid, cid = _login_with_company(client, db)
-    fy_end = date.today() - timedelta(days=10)
-    comp = _set_fy_end(db, cid, fy_end)
-    comp.isin = "US0378331005"
-    db.commit()
-
-    with patch(
-        "app.values.gaap_bridge.has_reported_8k", return_value=True
-    ) as mock_8k:
-        response = _override(client, cid, "100", year=fy_end.year)
-    assert response.status_code == 200
-    mock_8k.assert_called_once()
-
-    rows = _slot_rows(db, cid, year=fy_end.year)
-    assert len(rows) == 1
-    assert rows[0].is_forecast is False
-    assert rows[0].manually_overridden is True
-    assert rows[0].primary_method == "manual"
-
-
 def test_override_us_within_grace_no_8k_targets_forecast(client, db):
-    """US-Filer, Periode beendet, Karenz laeuft, kein 8-K (CIK-Aufloesung
-    liefert in Tests None -> has_reported_8k False, kein Netz): Override
-    landet im Forecast-Slot."""
+    """US-Filer, Periode beendet, Karenz laeuft noch: die Periode gilt als
+    nicht berichtet (reine Karenz-Regel) -> Override landet im Forecast-Slot."""
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db)
     fy_end = date.today() - timedelta(days=10)
@@ -174,15 +149,12 @@ def test_override_us_within_grace_no_8k_targets_forecast(client, db):
 
 
 def test_override_grace_expired_targets_actual_slot(client, db):
-    """Abgelaufene Karenz: Actual-Slot wie heute, der 8-K-Check laeuft gar
-    nicht erst (kein Submissions-Fetch, wenn er nichts entscheidet)."""
+    """Abgelaufene Karenz: der Override zielt auf den Actual-Slot."""
     _seed_catalog(db)
     _user, _pid, cid = _login_with_company(client, db)
 
-    with patch("app.values.gaap_bridge.has_reported_8k", MagicMock()) as mock_8k:
-        response = _override(client, cid, "100", year=2024)
+    response = _override(client, cid, "100", year=2024)
     assert response.status_code == 200
-    mock_8k.assert_not_called()
 
     rows = _slot_rows(db, cid, year=2024)
     assert len(rows) == 1
