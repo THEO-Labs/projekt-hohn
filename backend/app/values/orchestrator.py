@@ -447,9 +447,15 @@ class ValueOrchestrator:
                     latest = r
                     break
             if latest is None:
+                # Fallback: letzter Jahresschluss (FY-1) als Proxy (Bilanz aendert
+                # sich langsam) — deckt Keys ab, die EDGAR nur jaehrlich liefert (st_debt).
+                prev = self._existing(company.id, key, year - 1, period_type="FY", is_forecast=False)
+                if prev is not None and prev.numeric_value is not None:
+                    latest = prev
+            if latest is None:
                 continue
             self._upsert(company.id, key, year, period_type="FY", value=latest.numeric_value,
-                         source_name="Carry-Forward (letztes Quartal)", source_link=None,
+                         source_name="Carry-Forward (letzter Stichtag)", source_link=None,
                          currency=latest.currency or currency,
                          primary_method="perplexity_consensus", is_forecast=True)
 
@@ -466,7 +472,9 @@ class ValueOrchestrator:
         for y in years:
             if y == run and not _fy_is_closed(company, y):
                 self._running_fy_from_quarters(company, y, currency)
+        self.db.flush()  # OCF/capex-Fallback sichtbar machen fuer _derive_fcf
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
+        self._derive_eps(company, years)      # eps = NI / Aktien, wo EDGAR/Perplexity leer
         self._derive_net_debt(company, years)
 
     def _running_fy_from_quarters(self, company, year, currency):
@@ -536,6 +544,31 @@ class ValueOrchestrator:
                              value=orow.numeric_value - abs(cap.numeric_value),
                              source_name="Abgeleitet (OCF − CapEx)", source_link=None,
                              currency=orow.currency, primary_method="derived", is_forecast=fc)
+
+    def _derive_eps(self, company, years):
+        """eps_diluted = net_income / aktuelle Aktienzahl, NUR wo eps leer ist
+        (EDGAR hat bei manchen Firmen das Standard-EPS-Concept nicht, z.B. Visa)."""
+        snap = self._existing(company.id, "shares_outstanding", None,
+                              period_type="SNAPSHOT", is_forecast=False)
+        shares = snap.numeric_value if (snap and snap.numeric_value) else None
+        if not shares or shares == 0:
+            return
+        for year in years:
+            ni_rows = (self.db.query(CompanyValue)
+                       .filter(CompanyValue.company_id == company.id,
+                               CompanyValue.value_key == "net_income",
+                               CompanyValue.period_year == year,
+                               CompanyValue.numeric_value.isnot(None))
+                       .all())
+            for nirow in ni_rows:
+                pt, fc = nirow.period_type, nirow.is_forecast
+                existing = self._existing(company.id, "eps_diluted", year, period_type=pt, is_forecast=fc)
+                if existing is not None and existing.numeric_value is not None:
+                    continue  # eps schon da (EDGAR/Perplexity/manual) -> nicht anfassen
+                self._upsert(company.id, "eps_diluted", year, period_type=pt,
+                             value=nirow.numeric_value / shares,
+                             source_name="Abgeleitet (NI / Aktien)", source_link=None,
+                             currency=None, primary_method="derived", is_forecast=fc)
 
     def _derive_net_debt(self, company, years):
         """net_debt = (st_debt + lt_debt) − (cash + st_investments) je Slot, in dem
