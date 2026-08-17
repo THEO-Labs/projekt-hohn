@@ -75,6 +75,13 @@ def no_live_network(monkeypatch):
     import app.llm.claude as claude_mod
 
     monkeypatch.setattr(claude_mod, "get_client", _no_llm_in_tests)
+
+    # Die Bridge zapft fuer frisch berichtete Quartale die Filing-XBRL-Instanz
+    # live bei SEC an. In Tests standardmaessig deaktiviert (kein Netz) — Tests,
+    # die den Filing-Pfad pruefen, patchen _bridge_from_filing/_filing explizit.
+    import app.values.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod.ValueOrchestrator, "_filing", lambda self: None)
     yield
 
 

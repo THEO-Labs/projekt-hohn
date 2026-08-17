@@ -68,7 +68,7 @@ class AnchorValue:
 
 class ValueOrchestrator:
     def __init__(self, *, db, stammdaten_fetch, edgar_fetch, perplexity,
-                 history_years: int = 2, on_phase=None):
+                 history_years: int = 2, on_phase=None, filing_provider=None):
         # history_years=2 -> Zielfenster [running_fy - 1, running_fy] = FY-1 + FY
         # (User-Entscheidung 17.08.2026). Das laufende FY liefert der Konsens,
         # FY-1 die berichteten Ist-Werte; FY-1 ist zugleich der Vorjahres-Anker
@@ -78,6 +78,10 @@ class ValueOrchestrator:
         self.edgar_fetch = edgar_fetch
         self.perplexity = perplexity
         self.history_years = history_years
+        # Filing-XBRL-Provider (exakte Werte aus dem konkreten 10-Q/10-K, wenn
+        # companyfacts noch hinterherhinkt). Lazy erzeugt, siehe _filing.
+        self._filing_provider = filing_provider
+        self._filing_provider_built = filing_provider is not None
         # Optionaler Fortschritts-Callback on_phase(phase: str, label: str).
         # Erlaubt dem Aufrufer (refresh), echte Schritte anzuzeigen, ohne dass
         # der Orchestrator progress.py importiert (saubere Trennung).
@@ -426,11 +430,93 @@ class ValueOrchestrator:
         r = self._existing(company_id, key, year, period_type=period_type, is_forecast=False)
         return r is not None and r.numeric_value is not None
 
+    def _filing(self):
+        """Lazy: Filing-XBRL-Provider erst bei Bedarf bauen (ein HTTP-Client)."""
+        if not self._filing_provider_built:
+            try:
+                from app.providers.edgar_filing import EdgarFilingProvider
+                self._filing_provider = EdgarFilingProvider()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("EdgarFilingProvider nicht verfuegbar: %s", e)
+                self._filing_provider = None
+            self._filing_provider_built = True
+        return self._filing_provider
+
+    def _quarter_prior_sum(self, company_id, key, year, quarter):
+        """Summe der berichteten Standalone-Vorquartale fuer key (fuer die
+        YTD->Quartal-Differenz). Rueckgabe (summe, alle_vorhanden)."""
+        priors = {"Q1": [], "Q2": ["Q1"], "Q3": ["Q1", "Q2"], "Q4": ["Q1", "Q2", "Q3"]}
+        total = Decimal("0")
+        for pq in priors.get(quarter, []):
+            r = self._existing(company_id, key, year, period_type=pq, is_forecast=False)
+            if r is None or r.numeric_value is None:
+                return total, False
+            total += abs(r.numeric_value)
+        return total, True
+
+    def _bridge_from_filing(self, company, year, quarter, currency):
+        """Exakte Quartalswerte aus der XBRL-Instanz des konkreten 10-Q/10-K
+        (companyfacts hinkt frisch eingereichten Filings hinterher). Schreibt
+        Income-Statement (3M direkt), Cashflow (YTD-Differenz gegen Vorquartale)
+        und Bilanz (Instant). primary_method='provider' (SEC-XBRL, autoritativ)
+        -> Perplexity ueberschreibt das nicht. Rueckgabe: Menge gefuellter Keys."""
+        prov = self._filing()
+        if prov is None:
+            return set()
+        fym = getattr(company, "fiscal_year_end_month", None)
+        fyd = getattr(company, "fiscal_year_end_day", None)
+        try:
+            fq = prov.fetch_quarter(ticker=company.ticker, fiscal_year=year,
+                                    quarter=quarter, fy_end_month=fym, fy_end_day=fyd)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("filing-xbrl %s %s FY%s: %s",
+                           getattr(company, "ticker", "?"), quarter, year, e)
+            return set()
+        if fq is None:
+            return set()
+        src = fq.source_url
+        filled: set[str] = set()
+
+        def _put(key, value):
+            self._upsert(company.id, key, year, period_type=quarter,
+                         value=self._unit_fix(company.id, key, value),
+                         source_name="SEC EDGAR (Filing-XBRL)", source_link=src,
+                         currency=currency, primary_method="provider", is_forecast=False)
+            filled.add(key)
+
+        # Income-Statement: direkter 3-Monats-Quartalswert.
+        for key, val in fq.quarter_values.items():
+            _put(key, val)
+        # Cashflow: Quartal = YTD - Summe(Vorquartale). Nur wenn alle
+        # Vorquartale berichtet sind (sonst waere die Differenz falsch).
+        for key, ytd in fq.ytd_values.items():
+            prior, complete = self._quarter_prior_sum(company.id, key, year, quarter)
+            if not complete:
+                continue
+            q_val = ytd - prior
+            if q_val < 0:  # Restatement-Artefakt -> verwerfen
+                continue
+            _put(key, q_val)
+        # eps exakt aus NI/diluted-shares, wenn der Filer beides dimensionslos taggt.
+        if fq.diluted_shares and fq.diluted_shares > 0 and "net_income" in fq.quarter_values:
+            eps_q = fq.quarter_values["net_income"] / fq.diluted_shares
+            self._upsert(company.id, "eps_diluted", year, period_type=quarter,
+                         value=eps_q, source_name="SEC EDGAR (Filing-XBRL)",
+                         source_link=src, currency=currency, primary_method="provider",
+                         is_forecast=False)
+            filled.add("eps_diluted")
+        # Bilanz: Instant am Quartalsende (fuellt st_debt/st_investments, die
+        # EDGAR-companyfacts pro Quartal nicht liefert) -> _carry_forward_balances
+        # nimmt diesen Stichtag statt des Vorjahres-Proxys.
+        for key, val in fq.balance_values.items():
+            _put(key, val)
+        return filled
+
     def _bridge_missing_quarters(self, company, year, currency):
-        """Berichtete Quartale, deren 10-Q-XBRL noch nicht bei EDGAR ist (Lag),
-        via Perplexity aus dem Earnings-Release fuellen. primary_method=
-        'perplexity' (is_forecast=False) -> der EDGAR-Anker (rank provider)
-        ueberschreibt sie, sobald das XBRL nachkommt."""
+        """Berichtete Quartale, deren 10-Q-XBRL noch nicht in der aggregierten
+        companyfacts-API ist (Filing-Lag). Primaerquelle: die XBRL-Instanz des
+        konkreten Filings (exakt). Fallback fuer Keys, die das Filing nicht
+        liefert: Perplexity aus dem Earnings-Release."""
         from datetime import date, timedelta
 
         from app.values.detail_page import quarter_end_date
@@ -445,9 +531,12 @@ class ValueOrchestrator:
             if qend is None or qend + lag > today:
                 continue  # Quartal (noch) nicht berichtet
             if self._has_reported(company.id, "revenue", year, q):
-                continue  # EDGAR hat es bereits
+                continue  # EDGAR (companyfacts) hat es bereits
+            # 1) Exakte Werte aus der Filing-XBRL-Instanz.
+            self._bridge_from_filing(company, year, q, currency)
+            # 2) Perplexity-Fallback nur fuer weiterhin fehlende Keys.
             missing = [k for k in all_keys if not self._has_reported(company.id, k, year, q)]
-            if not missing:
+            if not missing or self.perplexity is None:
                 continue
             try:
                 vals = self.perplexity.fetch_quarter_reported(
