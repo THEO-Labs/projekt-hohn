@@ -30,9 +30,11 @@ def test_perplexity_fills_only_missing(db, us_company):
         perplexity=pplx, history_years=2)
     orch.run(us_company)
     rev = db.query(CompanyValue).filter_by(company_id=us_company.id, value_key="revenue").all()
-    assert any(r.source_name == "Perplexity" and r.numeric_value == Decimal("900") for r in rev)
+    assert any(r.source_name == "Quelle" and r.numeric_value == Decimal("900") for r in rev)
     assert any(r.numeric_value_adjusted == Decimal("950") for r in rev)
-    assert any(r.is_forecast and r.primary_method == "perplexity_consensus" for r in rev)
+    # Laufendes FY ohne berichtete Quartale -> unbestaetigte Schaetzung.
+    assert any(r.is_forecast and r.primary_method in
+               ("perplexity_consensus", "estimate_unanchored") for r in rev)
 
 
 def test_perplexity_skips_keys_already_anchored(db, us_company):

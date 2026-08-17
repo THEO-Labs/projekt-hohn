@@ -113,8 +113,37 @@ def test_yoy_q4_estimate_anchors_to_runrate(db, us_company):
         _q(db, cid, "net_income", 2026, p, v)
     for p, v in [("Q1", 5119), ("Q2", 4577), ("Q3", 5272), ("Q4", 5090)]:
         _q(db, cid, "net_income", 2025, p, v)
-    # Q4 = 5090 * (17502/14968) = 5951.6...
-    est = orch._yoy_q4_estimate(cid, "net_income", 2026)
-    assert 5900 < est < 6000
-    # ohne Vorjahres-Q4 -> None (Perplexity-Fallback)
-    assert orch._yoy_q4_estimate(cid, "revenue", 2026) is None
+    # nur Q4 offen: Q4 = 5090 * (17502/14968) = 5951.6...
+    fills = orch._yoy_quarter_fills(cid, "net_income", 2026)
+    assert set(fills) == {"Q4"} and 5900 < fills["Q4"] < 6000
+    # ohne Vorjahres-Quartale -> leer (Perplexity-Fallback)
+    assert orch._yoy_quarter_fills(cid, "revenue", 2026) == {}
+
+
+def test_yoy_fills_all_missing_quarters_for_fresh_fy(db, us_company):
+    """Gerade gestartetes FY (nur Q1 berichtet): Q2-Q4 = Q(Vorjahr) x g."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    _q(db, cid, "revenue", 2027, "Q1", 110)          # curr Q1
+    for p, v in [("Q1", 100), ("Q2", 100), ("Q3", 100), ("Q4", 100)]:
+        _q(db, cid, "revenue", 2026, p, v)           # Vorjahr flach
+    fills = orch._yoy_quarter_fills(cid, "revenue", 2027)
+    # g = 110/100 = 1.1 -> jedes fehlende Q = 110
+    assert set(fills) == {"Q2", "Q3", "Q4"}
+    assert all(abs(v - Decimal("110")) < Decimal("0.01") for v in fills.values())
+
+
+def test_yoy_clamps_outlier_growth(db, us_company):
+    """Einzelquartals-Ausreisser (6x) wird auf den Clamp (3x) begrenzt."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    _q(db, cid, "buyback_volume", 2027, "Q1", 275)
+    for p, v in [("Q1", 45), ("Q2", 50), ("Q3", 160), ("Q4", 224)]:
+        _q(db, cid, "buyback_volume", 2026, p, v)
+    fills = orch._yoy_quarter_fills(cid, "buyback_volume", 2027)
+    # g = 275/45 = 6.1 -> geclamped auf 3.0; Q2 = 50*3 = 150
+    assert abs(fills["Q2"] - Decimal("150")) < Decimal("0.01")

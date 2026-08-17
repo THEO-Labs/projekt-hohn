@@ -45,6 +45,11 @@ function cellBadge(cell: {
     // die Begruendung steht im source_name des Platzhalters.
     return { text: "Bewusst nicht geschaetzt", dot: "bg-slate-400", text_cls: "text-slate-600" };
   }
+  if (pm === "estimate_unanchored") {
+    // Voll-FY-Schaetzung fuer ein gerade-gestartetes Jahr OHNE ein einziges
+    // berichtetes Quartal — schwaechster Anker, orange gewarnt.
+    return { text: "Schätzung (unbestätigt)", dot: "bg-orange-500", text_cls: "text-orange-700" };
+  }
   if (cell.manually_overridden || pm === "manual") {
     return { text: "Manual", dot: "bg-amber-500", text_cls: "text-amber-800" };
   }
@@ -469,6 +474,9 @@ export function cellColorClass(cell: Cell | undefined): string {
   if (cell?.primary_method === "not_estimated" && cell.value == null) return "text-muted-foreground/60 italic";
   // Recherche lief, fand aber nichts: rot markieren = manuell raussuchen.
   if (cell?.primary_method === "not_found" && cell.value === null) return "text-red-600 font-semibold";
+  // Unbestaetigte Voll-FY-Schaetzung (Jahr ohne berichtete Quartale): orange
+  // warnen — deutlich schwaecher als eine quartals-verankerte Schaetzung.
+  if (cell?.primary_method === "estimate_unanchored" && cell.value != null) return "text-orange-600";
   if (!cell || cell.value === null) return "text-muted-foreground/60";
   if (cell.is_gaap_fallback) return "text-muted-foreground/70";
   // Farbe zeigt den CHARAKTER des Werts, nicht den Eingabeweg: Schaetzungen

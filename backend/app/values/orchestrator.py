@@ -28,6 +28,9 @@ _METHOD_RANK = {
     "derived": 2,   # deterministische Ableitung aus EDGAR-Komponenten (net_debt)
     "perplexity": 1,
     "perplexity_consensus": 1,
+    # Voll-FY-Schaetzung fuer ein gerade-gestartetes Jahr OHNE ein einziges
+    # berichtetes Quartal — schwaechster Anker, in der UI eigens markiert.
+    "estimate_unanchored": 1,
     "not_found": 0,
 }
 
@@ -198,7 +201,7 @@ class ValueOrchestrator:
         # FY-aus-Quartalen-Logik muessen die frisch geschriebenen EDGAR-Anker
         # (FY + Q1-Q3) in der Transaktion sehen (autoflush aus).
         self.db.flush()
-        self._emit("perplexity", "Perplexity-Schätzung")
+        self._emit("perplexity", "Quellen & Schätzung")
         self._apply_perplexity(company, years)
         self.db.flush()
         self._emit("derive", "Ableitungen (FY, Q4, Net Debt)")
@@ -351,7 +354,7 @@ class ValueOrchestrator:
             for key, pv in vals.items():
                 val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
                 self._upsert(company.id, key, year, period_type=q, value=val,
-                             source_name="Perplexity (Tabellen-Wert)", source_link=pv.source_url,
+                             source_name="Quelle", source_link=pv.source_url,
                              currency=currency, primary_method="perplexity", is_forecast=False)
         self.db.flush()
 
@@ -400,28 +403,29 @@ class ValueOrchestrator:
             val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
             adj = (self._unit_fix(company.id, key, Decimal(str(pv.adjusted)))
                    if pv.adjusted is not None else None)
-            self._upsert(company.id, key, year, value=val, source_name="Perplexity",
+            self._upsert(company.id, key, year, value=val, source_name="Quelle",
                          source_link=pv.source_url, currency=currency,
                          primary_method="perplexity", is_forecast=False, adjusted=adj)
 
     def _estimate_running_fy(self, company, year, currency):
         """Laufendes FY. Zwei Faelle:
-        - Q1-Q3 berichtet (spaet im FY, z.B. Sep-FY im August): nur Q4 schaetzen,
-          FY = Q1+Q2+Q3+Q4 (verankert an die Realitaet).
-        - Q1-Q3 (noch) NICHT berichtet (frueh im FY, z.B. Juni-FY im August):
-          KEIN einsames Q4 — das ganze FY direkt schaetzen (Konsens)."""
+        - mindestens ein Quartal berichtet: die noch offenen Quartale
+          deterministisch YoY-verankert schaetzen (Q_i = Q_i(Vorjahr) x
+          YTD-Wachstum); FY = Σ Quartale. Reproduzierbar, kein LLM-Ausreisser.
+        - noch KEIN Quartal berichtet (FY gerade gestartet): das ganze FY direkt
+          per Konsens schaetzen (Perplexity)."""
         flow_keys = sorted(_FLOW_KEYS)
         self._clear_forecast_slots(company.id, year, flow_keys + list(_BALANCE_KEYS) + ["net_debt"],
-                                   ("Q4", "FY"))
+                                   ("Q1", "Q2", "Q3", "Q4", "FY"))
         # A) Bridge: berichtete Quartale, die EDGAR noch nicht im XBRL hat
-        #    (Filing-Lag, nur Press-Release/8-K), aus dem Earnings-Release holen.
+        #    (Filing-Lag), exakt aus der Filing-XBRL-Instanz holen.
         self._bridge_missing_quarters(company, year, currency)
-        reported_q = sum(
-            1 for q in ("Q1", "Q2", "Q3")
-            if self._has_reported(company.id, "revenue", year, q)
+        any_reported = any(
+            self._has_reported(company.id, "revenue", year, q)
+            for q in ("Q1", "Q2", "Q3", "Q4")
         )
-        if reported_q >= 3:
-            self._estimate_q4(company, year, flow_keys, currency)
+        if any_reported:
+            self._estimate_remaining_quarters(company, year, flow_keys, currency)
         else:
             self._estimate_full_fy(company, year, flow_keys, currency)
         self._carry_forward_balances(company, year, currency)
@@ -553,60 +557,69 @@ class ValueOrchestrator:
             for key, pv in vals.items():
                 val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
                 self._upsert(company.id, key, year, period_type=q, value=val,
-                             source_name="Perplexity (Earnings-Release)", source_link=pv.source_url,
+                             source_name="Quelle", source_link=pv.source_url,
                              currency=currency, primary_method="perplexity", is_forecast=False)
         self.db.flush()
 
-    def _yoy_q4_estimate(self, company_id, key, year):
-        """Deterministische, verankerte Q4-Schaetzung: Q4 = Q4(Vorjahr) x
-        YTD-Wachstum (Q1-Q3 dieses FY / Q1-Q3 Vorjahr). Saison-treu (gleiche
-        Quartals-Vergleichsbasis) und reproduzierbar — im Gegensatz zur
-        volatilen LLM-Schaetzung. Rueckgabe None, wenn ein noetiges Quartal
-        fehlt (dann Perplexity-Fallback)."""
-        def q(y, p):
-            r = self._existing(company_id, key, y, period_type=p, is_forecast=False)
-            return r.numeric_value if r is not None and r.numeric_value is not None else None
-        q1, q2, q3 = q(year, "Q1"), q(year, "Q2"), q(year, "Q3")
-        p1, p2, p3, p4 = (q(year - 1, "Q1"), q(year - 1, "Q2"),
-                          q(year - 1, "Q3"), q(year - 1, "Q4"))
-        if None in (q1, q2, q3, p1, p2, p3, p4):
-            return None
-        ytd_prev = p1 + p2 + p3
-        if ytd_prev == 0:
-            return None
-        return p4 * ((q1 + q2 + q3) / ytd_prev)
+    def _reported_quarters(self, company_id, key, year):
+        """dict {Q: numeric_value} der berichteten (is_forecast=False) Quartale."""
+        out = {}
+        for q in ("Q1", "Q2", "Q3", "Q4"):
+            r = self._existing(company_id, key, year, period_type=q, is_forecast=False)
+            if r is not None and r.numeric_value is not None:
+                out[q] = r.numeric_value
+        return out
 
-    def _estimate_q4(self, company, year, flow_keys, currency):
-        """Q4 des laufenden FY schaetzen. Primaer deterministisch (YoY-Run-Rate,
-        an berichtete Quartale verankert); Perplexity nur als Fallback fuer Keys
-        ohne vollstaendige Vorjahres-Quartale."""
-        remaining = []
+    # YoY-Wachstumsfaktor gegen Einzelquartals-Ausreisser (lumpy buyback/capex)
+    # geclamped: eine 6x-Extrapolation aus einem Ausreisser-Q1 wuerde sonst das
+    # ganze FY verzerren.
+    _YOY_CLAMP = (Decimal("0.33"), Decimal("3"))
+
+    def _yoy_quarter_fills(self, company_id, key, year):
+        """Schaetzt die NICHT berichteten Quartale des laufenden FY aus dem
+        Vorjahres-Quartal, skaliert mit dem YTD-Wachstum der berichteten
+        Quartale: Q_i = Q_i(Vorjahr) x g, g = Σ(reported curr)/Σ(same prev),
+        geclamped. Saison-treu (gleiche Quartals-Vergleichsbasis), verankert,
+        reproduzierbar. Rueckgabe {Q: Decimal}; leer, wenn nichts zu fuellen ist
+        oder kein sauberer Anker existiert (dann Perplexity-Fallback via
+        _running_fy_from_quarters)."""
+        reported = self._reported_quarters(company_id, key, year)
+        missing = [q for q in ("Q1", "Q2", "Q3", "Q4") if q not in reported]
+        if not reported or not missing:
+            return {}
+        prev_sum = Decimal("0")
+        for q in reported:
+            r = self._existing(company_id, key, year - 1, period_type=q, is_forecast=False)
+            if r is None or r.numeric_value is None:
+                return {}
+            prev_sum += r.numeric_value
+        curr_sum = sum(reported.values(), Decimal("0"))
+        # YoY-Ratio nur bei gleichgerichtet-positiven Summen sinnvoll (NI kann
+        # negativ sein -> Vorzeichenwechsel -> Perplexity-Fallback).
+        if prev_sum <= 0 or curr_sum <= 0:
+            return {}
+        lo, hi = self._YOY_CLAMP
+        g = max(lo, min(hi, curr_sum / prev_sum))
+        fills = {}
+        for q in missing:
+            r = self._existing(company_id, key, year - 1, period_type=q, is_forecast=False)
+            if r is None or r.numeric_value is None:
+                return {}  # ohne vollstaendige Vorjahres-Quartale kein sauberes ΣQ
+            fills[q] = r.numeric_value * g
+        return fills
+
+    def _estimate_remaining_quarters(self, company, year, flow_keys, currency):
+        """Fuellt noch nicht berichtete Quartale des laufenden FY deterministisch
+        (YoY-skaliert, an berichtete Quartale verankert). FY entsteht danach als
+        Σ Quartale (_running_fy_from_quarters). Keys ohne YoY-Anker bleiben offen
+        und werden dort via Perplexity + Residual + Floor behandelt."""
         for key in flow_keys:
-            q4 = self._yoy_q4_estimate(company.id, key, year)
-            if q4 is None:
-                remaining.append(key)
-                continue
-            self._upsert(company.id, key, year, period_type="Q4",
-                         value=self._unit_fix(company.id, key, q4),
-                         source_name="Q4 = Q4(Vorjahr) × YTD-Wachstum", source_link=None,
-                         currency=currency, primary_method="perplexity_consensus",
-                         is_forecast=True)
-        if not remaining or self.perplexity is None:
-            return
-        try:
-            q4 = self.perplexity.fetch_quarter_estimate(
-                company_name=company.name, ticker=company.ticker,
-                fiscal_year=year, quarter="Q4", keys=remaining, currency=currency)
-        except Exception as e:
-            logger.warning("perplexity Q4-Schaetzung fehlgeschlagen %s FY%s: %s",
-                           getattr(company, "ticker", "?"), year, e)
-            return
-        for key, pv in q4.items():
-            val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
-            self._upsert(company.id, key, year, period_type="Q4", value=val,
-                         source_name="Perplexity (Q4-Schätzung)", source_link=pv.source_url,
-                         currency=currency, primary_method="perplexity_consensus",
-                         is_forecast=True)
+            for q, v in self._yoy_quarter_fills(company.id, key, year).items():
+                self._upsert(company.id, key, year, period_type=q,
+                             value=self._unit_fix(company.id, key, v),
+                             source_name="Q = Q(Vorjahr) × YTD-Wachstum", source_link=None,
+                             currency=currency, primary_method="perplexity_consensus",
+                             is_forecast=True)
 
     def _estimate_full_fy(self, company, year, flow_keys, currency):
         try:
@@ -620,9 +633,9 @@ class ValueOrchestrator:
         for key, pv in vals.items():
             val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
             self._upsert(company.id, key, year, period_type="FY", value=val,
-                         source_name="Perplexity (FY-Schätzung)", source_link=pv.source_url,
-                         currency=currency, primary_method="perplexity_consensus",
-                         is_forecast=True)
+                         source_name="Schätzung – noch kein Quartal berichtet",
+                         source_link=pv.source_url, currency=currency,
+                         primary_method="estimate_unanchored", is_forecast=True)
 
     def _carry_forward_balances(self, company, year, currency):
         """Bilanz-Keys fuers laufende FY: Jahresend-Stichtag ~ letztes berichtetes
@@ -632,15 +645,19 @@ class ValueOrchestrator:
             if fy_actual is not None and fy_actual.numeric_value is not None:
                 continue
             latest = None
-            for q in ("Q3", "Q2", "Q1"):
+            for q in ("Q4", "Q3", "Q2", "Q1"):
                 r = self._existing(company.id, key, year, period_type=q, is_forecast=False)
                 if r is not None and r.numeric_value is not None:
                     latest = r
                     break
             if latest is None:
                 # Fallback: letzter Jahresschluss (FY-1) als Proxy (Bilanz aendert
-                # sich langsam) — deckt Keys ab, die EDGAR nur jaehrlich liefert (st_debt).
-                prev = self._existing(company.id, key, year - 1, period_type="FY", is_forecast=False)
+                # sich langsam) — deckt Keys ab, die EDGAR nur jaehrlich liefert
+                # (st_debt). Auch ein Forecast-Vorjahr (selbst ein Carry-Forward)
+                # ist als Proxy besser als leer — z.B. gerade-gestartetes FY ohne
+                # eigene Quartale, dessen Vorjahres-Bilanz selbst gebridged wurde.
+                prev = (self._existing(company.id, key, year - 1, period_type="FY", is_forecast=False)
+                        or self._existing(company.id, key, year - 1, period_type="FY", is_forecast=True))
                 if prev is not None and prev.numeric_value is not None:
                     latest = prev
             if latest is None:
@@ -708,6 +725,14 @@ class ValueOrchestrator:
                 vals = {}
             for key, pv in vals.items():
                 fy_est = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+                # Floor: ein FY-Flow darf nie unter der Summe der BERICHTETEN
+                # Ist-Quartale liegen (Perplexity unterschaetzt gerade-gestartete
+                # FYs teils grob, z.B. buyback FY=0 trotz Q1-Actual 275). Nur fuer
+                # positive Flows (NI kann negativ sein).
+                reported = self._reported_quarters(company.id, key, year)
+                actual_sum = sum(reported.values(), Decimal("0"))
+                if actual_sum > 0 and fy_est < actual_sum:
+                    fy_est = actual_sum
                 present = {}
                 missingq = []
                 for q in ("Q1", "Q2", "Q3", "Q4"):
@@ -717,9 +742,15 @@ class ValueOrchestrator:
                         present[q] = r.numeric_value
                     else:
                         missingq.append(q)
+                # Kein einziges berichtetes Quartal -> unbestaetigte Schaetzung
+                # (in der UI eigens markiert). Sonst normale Konsens-Schaetzung.
+                unanchored = not reported
                 self._upsert(company.id, key, year, period_type="FY", value=fy_est,
-                             source_name="Perplexity (FY-Schätzung)", source_link=pv.source_url,
-                             currency=currency, primary_method="perplexity_consensus", is_forecast=True)
+                             source_name=("Schätzung – noch kein Quartal berichtet"
+                                          if unanchored else "Schätzung (Konsens)"),
+                             source_link=pv.source_url, currency=currency,
+                             primary_method=("estimate_unanchored" if unanchored
+                                             else "perplexity_consensus"), is_forecast=True)
                 # Genau EIN fehlendes Quartal (typ. Q3 nicht gebridged) -> als
                 # Residuum fuellen, damit Σ Quartale = FY (Konsistenz).
                 if len(missingq) == 1:

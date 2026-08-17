@@ -84,7 +84,7 @@ def test_refresh_persists_edgar_and_perplexity(db, us_company, monkeypatch):
         company_id=us_company.id, value_key="revenue",
         period_type="FY", period_year=closed_year).one()
     assert rev.numeric_value == Decimal("2000")
-    assert rev.source_name == "Perplexity"
+    assert rev.source_name == "Quelle"
     assert rev.primary_method == "perplexity"
 
     # Stammdaten als SNAPSHOT (period_year=None).
