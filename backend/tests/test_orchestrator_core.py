@@ -93,3 +93,28 @@ def test_actual_deletes_manual_forecast_twin(db, us_company):
         perplexity=FakePerplexity(), history_years=1).run(us_company)
     rows = _rows(db, us_company.id, "net_income", 2024)
     assert len(rows) == 1 and rows[0].is_forecast is False and rows[0].numeric_value == Decimal("500")
+
+
+def _q(db, cid, key, year, period, val, forecast=False, method="provider"):
+    from uuid import uuid4
+    db.add(CompanyValue(id=uuid4(), company_id=cid, value_key=key, period_type=period,
+                        period_year=year, numeric_value=Decimal(str(val)), is_forecast=forecast,
+                        source_name="x", primary_method=method, manually_overridden=False))
+    db.flush()
+
+
+def test_yoy_q4_estimate_anchors_to_runrate(db, us_company):
+    """Q4 = Q4(Vorjahr) x YTD-Wachstum, verankert an berichtete Quartale."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    for p, v in [("Q1", 5853), ("Q2", 6021), ("Q3", 5628)]:
+        _q(db, cid, "net_income", 2026, p, v)
+    for p, v in [("Q1", 5119), ("Q2", 4577), ("Q3", 5272), ("Q4", 5090)]:
+        _q(db, cid, "net_income", 2025, p, v)
+    # Q4 = 5090 * (17502/14968) = 5951.6...
+    est = orch._yoy_q4_estimate(cid, "net_income", 2026)
+    assert 5900 < est < 6000
+    # ohne Vorjahres-Q4 -> None (Perplexity-Fallback)
+    assert orch._yoy_q4_estimate(cid, "revenue", 2026) is None

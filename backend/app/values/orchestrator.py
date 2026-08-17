@@ -557,11 +557,46 @@ class ValueOrchestrator:
                              currency=currency, primary_method="perplexity", is_forecast=False)
         self.db.flush()
 
+    def _yoy_q4_estimate(self, company_id, key, year):
+        """Deterministische, verankerte Q4-Schaetzung: Q4 = Q4(Vorjahr) x
+        YTD-Wachstum (Q1-Q3 dieses FY / Q1-Q3 Vorjahr). Saison-treu (gleiche
+        Quartals-Vergleichsbasis) und reproduzierbar — im Gegensatz zur
+        volatilen LLM-Schaetzung. Rueckgabe None, wenn ein noetiges Quartal
+        fehlt (dann Perplexity-Fallback)."""
+        def q(y, p):
+            r = self._existing(company_id, key, y, period_type=p, is_forecast=False)
+            return r.numeric_value if r is not None and r.numeric_value is not None else None
+        q1, q2, q3 = q(year, "Q1"), q(year, "Q2"), q(year, "Q3")
+        p1, p2, p3, p4 = (q(year - 1, "Q1"), q(year - 1, "Q2"),
+                          q(year - 1, "Q3"), q(year - 1, "Q4"))
+        if None in (q1, q2, q3, p1, p2, p3, p4):
+            return None
+        ytd_prev = p1 + p2 + p3
+        if ytd_prev == 0:
+            return None
+        return p4 * ((q1 + q2 + q3) / ytd_prev)
+
     def _estimate_q4(self, company, year, flow_keys, currency):
+        """Q4 des laufenden FY schaetzen. Primaer deterministisch (YoY-Run-Rate,
+        an berichtete Quartale verankert); Perplexity nur als Fallback fuer Keys
+        ohne vollstaendige Vorjahres-Quartale."""
+        remaining = []
+        for key in flow_keys:
+            q4 = self._yoy_q4_estimate(company.id, key, year)
+            if q4 is None:
+                remaining.append(key)
+                continue
+            self._upsert(company.id, key, year, period_type="Q4",
+                         value=self._unit_fix(company.id, key, q4),
+                         source_name="Q4 = Q4(Vorjahr) × YTD-Wachstum", source_link=None,
+                         currency=currency, primary_method="perplexity_consensus",
+                         is_forecast=True)
+        if not remaining or self.perplexity is None:
+            return
         try:
             q4 = self.perplexity.fetch_quarter_estimate(
                 company_name=company.name, ticker=company.ticker,
-                fiscal_year=year, quarter="Q4", keys=flow_keys, currency=currency)
+                fiscal_year=year, quarter="Q4", keys=remaining, currency=currency)
         except Exception as e:
             logger.warning("perplexity Q4-Schaetzung fehlgeschlagen %s FY%s: %s",
                            getattr(company, "ticker", "?"), year, e)
