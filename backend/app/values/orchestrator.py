@@ -45,7 +45,11 @@ class AnchorValue:
 
 class ValueOrchestrator:
     def __init__(self, *, db, stammdaten_fetch, edgar_fetch, perplexity,
-                 history_years: int = 5):
+                 history_years: int = 2):
+        # history_years=2 -> Zielfenster [running_fy - 1, running_fy] = FY-1 + FY
+        # (User-Entscheidung 17.08.2026). Das laufende FY liefert der Konsens,
+        # FY-1 die berichteten Ist-Werte; FY-1 ist zugleich der Vorjahres-Anker
+        # fuer das ni_growth/Delta-Net-Debt des laufenden FY.
         self.db = db
         self.stammdaten_fetch = stammdaten_fetch
         self.edgar_fetch = edgar_fetch

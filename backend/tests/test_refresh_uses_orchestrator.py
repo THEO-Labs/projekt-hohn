@@ -95,6 +95,46 @@ def test_refresh_persists_edgar_and_perplexity(db, us_company, monkeypatch):
     assert mc.source_name == "Market Data Feed"
 
 
+def test_refresh_dedupes_historical_anchor_years(db, us_company, monkeypatch):
+    """Regression: die Preis-Anker-Schleife holte pro Zieljahr (y, y+1) —
+    ueberlappende Jahre (y+1 des einen = y des naechsten) fuehrten dazu, dass
+    dasselbe FY-market_cap zweimal eingefuegt wurde (der autoflush-lose Guard
+    sah die pending Zeile nicht) -> UniqueViolation auf uq_company_values_slot.
+    Jedes Anker-Jahr darf nur EINMAL geholt werden.
+    """
+    import app.config as config_mod
+    import app.llm.perplexity as perplexity_mod
+    import app.values.adapters as adapters
+    import app.values.orchestrator as orch_mod
+    import app.values.routes as routes
+
+    monkeypatch.setattr(routes, "get_providers", lambda key: [])
+    monkeypatch.setattr(config_mod.settings, "perplexity_api_key", None)
+    monkeypatch.setattr(adapters, "yahoo_stammdaten", lambda company: {})
+    monkeypatch.setattr(adapters, "edgar_anchor", lambda company, years: {})
+
+    class NoPplx:
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(perplexity_mod, "PerplexityClient", NoPplx)
+
+    called: list[int] = []
+    monkeypatch.setattr(
+        routes, "_fetch_and_store_historical_mcap",
+        lambda db_, ticker, cid, year: called.append(year),
+    )
+
+    running = orch_mod.running_fy_year(us_company)
+    user = _owner(db, us_company)
+    payload = RefreshRequest(keys=["net_income"], period_type="FY", period_year=running)
+    routes.refresh_company_values(
+        company_id=us_company.id, payload=payload, user=user, db=db)
+
+    assert called, "historical anchor loop did not run"
+    assert len(called) == len(set(called)), f"anchor years not deduped: {called}"
+
+
 def test_stammdaten_only_skips_fundamentals(db, us_company, monkeypatch):
     import app.values.adapters as adapters
     import app.llm.perplexity as perplexity_mod

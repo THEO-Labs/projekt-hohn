@@ -651,18 +651,25 @@ def refresh_company_values(
         # actual_return (Einstiegs-Anker Close FY-Ende N-1, Folgejahres-Anker
         # N fuer actual_return). Vorhandene Anker werden nicht erneut geholt.
         set_phase(company_id, "historical_mcap", "Historische Preis-Anker")
-        for y in orch.target_years(company):
-            for anchor_year in (y, y + 1):
-                if _has_fy_price_anchor(db, company_id, anchor_year):
-                    continue
-                try:
-                    _fetch_and_store_historical_mcap(db, ticker, company_id, anchor_year)
-                except Exception as e:
-                    logger.warning(
-                        "historical mcap FY%s failed for %s: %s",
-                        anchor_year, ticker, e,
-                    )
-                    continue
+        # Jedes Zieljahr braucht seinen Einstiegs-Anker (Close FY-Ende N-1) und
+        # den Folgejahres-Anker N+1 (actual_return). Anker-Jahre ueberschneiden
+        # sich (y+1 des einen = y des naechsten) -> DEDUP als Set, sonst wird
+        # dasselbe FY-market_cap zweimal eingefuegt (der _has_fy_price_anchor-
+        # Guard sieht die im selben Lauf noch nicht geflushte Zeile nicht) und
+        # der Unique-Index uq_company_values_slot schlaegt zu.
+        target = orch.target_years(company)
+        anchor_years = sorted(set(target) | {y + 1 for y in target})
+        for anchor_year in anchor_years:
+            if _has_fy_price_anchor(db, company_id, anchor_year):
+                continue
+            try:
+                _fetch_and_store_historical_mcap(db, ticker, company_id, anchor_year)
+            except Exception as e:
+                logger.warning(
+                    "historical mcap FY%s failed for %s: %s",
+                    anchor_year, ticker, e,
+                )
+                continue
         db.flush()
 
         set_phase(company_id, "acquiring", "Werte beschaffen (EDGAR/Perplexity)")
