@@ -184,19 +184,3 @@ class PerplexityClient:
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), PERIOD_DOMAIN_ALLOWLIST)
         return self._to_values(payload, keys, url, title)
-
-    def fetch_quarter_estimate(self, *, company_name: str, ticker: str, fiscal_year: int,
-                               quarter: str, keys: list[str], currency: str) -> dict[str, PerplexityValue]:
-        prompt = (
-            f"Estimate {company_name}'s (ticker {ticker}) {quarter} results for fiscal year "
-            f"{fiscal_year} (only this single fiscal quarter). The earlier quarters of this "
-            f"fiscal year are already reported — estimate ONLY {quarter}, using the company's "
-            f"own official guidance for the quarter/full year, current analyst consensus and "
-            f"the recent quarterly run-rate. Report EVERY monetary figure as the FULL amount "
-            f"in {currency} with all digits — e.g. 95000000000 for 95 billion. Do NOT scale "
-            f"to thousands, millions or billions. eps_diluted stays per-share (e.g. 1.60). "
-            f"Provide a numeric estimate for every metric you can reasonably project; use null "
-            f"only if you truly have no basis. Only these metrics: {', '.join(keys)}."
-        )
-        payload, url, title = self._post(prompt, build_consensus_schema(keys), None)
-        return self._to_values(payload, keys, url, title)
