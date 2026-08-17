@@ -101,11 +101,11 @@ class PerplexityClient:
         prompt = (
             f"Report the exact as-reported fundamental financial figures for "
             f"{company_name} (ticker {ticker}), fiscal year {fiscal_year}, from its "
-            f"official US-GAAP filings (10-K/10-Q/8-K). Report EVERY monetary figure as a "
-            f"plain number in MILLIONS of {currency} — e.g. 391035 means 391.035 billion; "
-            f"never return 391 or 391.0 for a billion-scale figure. eps_diluted stays "
-            f"per-share (e.g. 6.08). Use null for any figure you cannot find in an official "
-            f"filing. Do not estimate. Only these metrics: {', '.join(missing_keys)}."
+            f"official US-GAAP filings (10-K/10-Q/8-K). Report EVERY monetary figure as the "
+            f"FULL amount in {currency} with all digits — e.g. 391035000000 for 391 billion. "
+            f"Do NOT scale to thousands, millions or billions. eps_diluted stays per-share "
+            f"(e.g. 6.08). Use null for any figure you cannot find in an official filing. "
+            f"Do not estimate. Only these metrics: {', '.join(missing_keys)}."
         )
         payload, url, title = self._post(prompt, build_period_schema(), PERIOD_DOMAIN_ALLOWLIST)
         return self._to_values(payload, missing_keys, url, title)
@@ -115,9 +115,9 @@ class PerplexityClient:
         prompt = (
             f"Report the current Wall-Street analyst consensus estimates for "
             f"{company_name} (ticker {ticker}) for fiscal year {forward_year}. "
-            f"Report EVERY monetary figure as a plain number in MILLIONS of {currency} — "
-            f"e.g. 391035 means 391.035 billion; never return 391 or 391.0 for a "
-            f"billion-scale figure. eps_diluted stays per-share (e.g. 6.08). "
+            f"Report EVERY monetary figure as the FULL amount in {currency} with all digits "
+            f"— e.g. 391035000000 for 391 billion. Do NOT scale to thousands, millions or "
+            f"billions. eps_diluted stays per-share (e.g. 6.08). "
             f"Use null where no consensus is available. Only these metrics: {', '.join(keys)}."
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)

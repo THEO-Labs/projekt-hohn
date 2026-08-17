@@ -211,24 +211,29 @@ class ValueOrchestrator:
         return abs(row.numeric_value) if row and row.numeric_value else None
 
     def _unit_fix(self, company_id, key, value):
-        """Einheiten-Angleichung (KEIN Plausibilitaets-Gate): Perplexity gibt
-        Betraege manchmal in Milliarden statt Millionen zurueck. Weicht der Wert
-        um ~1000x vom vertrauten EDGAR-Anker derselben Kennzahl ab, wird er
-        skaliert. Echtes Wachstum ist nie 1000x, daher eindeutig ein
-        Einheiten-Fehler. Nur monetaere Keys; EPS/Ratios bleiben unangetastet."""
+        """Einheiten-Angleichung (KEIN Plausibilitaets-Gate): das System speichert
+        absolute Betraege (EDGAR-XBRL). Perplexity liefert teils in Tausend/
+        Millionen/Milliarden. Weicht der Wert um einen 1000er-Faktor (>30x) vom
+        vertrauten EDGAR-Anker derselben Kennzahl ab, wird er in 1000er-Schritten
+        angeglichen. Echtes Wachstum ist nie >30x, daher eindeutig ein Einheiten-
+        Fehler. Nur monetaere Keys; EPS/Ratios bleiben unangetastet."""
         if key not in _MONETARY_KEYS or value is None or value == 0:
             return value
         ref = self._reference_magnitude(company_id, key)
         if not ref:
             return value
-        ratio = ref / abs(value)
-        if Decimal("200") <= ratio <= Decimal("5000"):      # Wert ~1000x zu klein (Mrd statt Mio)
-            logger.info("unit-fix %s: %s -> %s (Mrd->Mio, ref=%s)", key, value, value * 1000, ref)
-            return value * Decimal("1000")
-        if Decimal("0.0002") <= ratio <= Decimal("0.005"):  # Wert ~1000x zu gross
-            logger.info("unit-fix %s: %s -> %s (Mio->Mrd, ref=%s)", key, value, value / 1000, ref)
-            return value / Decimal("1000")
-        return value
+        v = value
+        guard = 0
+        while abs(v) > 0 and ref / abs(v) > 30 and guard < 6:  # zu klein -> hoch
+            v *= 1000
+            guard += 1
+        guard = 0
+        while abs(v) > 0 and abs(v) / ref > 30 and guard < 6:  # zu gross -> runter
+            v /= 1000
+            guard += 1
+        if v != value:
+            logger.info("unit-fix %s: %s -> %s (ref=%s)", key, value, v, ref)
+        return v
 
     def _missing_fundamental_keys(self, company_id, year, is_forecast=False):
         from app.values.schema_builder import fundamental_keys
@@ -239,9 +244,18 @@ class ValueOrchestrator:
             if actual is not None and (actual.numeric_value is not None
                                        or actual.primary_method in ("manual", "provider")):
                 continue
-            row = actual if not is_forecast else self._existing(company_id, k, year, is_forecast=True)
-            if row is None or (row.numeric_value is None
-                               and row.primary_method not in ("manual", "provider")):
+            if is_forecast:
+                # Konsens ist zeitkritisch -> bei jedem Refresh NEU holen (aktuelle
+                # Schaetzung + Einheiten-Fix greifen). Nur ein manueller Forecast-
+                # Override wird nicht angefasst.
+                frow = self._existing(company_id, k, year, is_forecast=True)
+                if frow is not None and frow.manually_overridden:
+                    continue
+                missing.append(k)
+                continue
+            # Reported-Jahr: nur wirklich fehlende, nicht-provider/nicht-manuelle Zellen.
+            if actual is None or (actual.numeric_value is None
+                                  and actual.primary_method not in ("manual", "provider")):
                 missing.append(k)
         return missing
 
