@@ -45,7 +45,7 @@ class AnchorValue:
 
 class ValueOrchestrator:
     def __init__(self, *, db, stammdaten_fetch, edgar_fetch, perplexity,
-                 history_years: int = 2):
+                 history_years: int = 2, on_phase=None):
         # history_years=2 -> Zielfenster [running_fy - 1, running_fy] = FY-1 + FY
         # (User-Entscheidung 17.08.2026). Das laufende FY liefert der Konsens,
         # FY-1 die berichteten Ist-Werte; FY-1 ist zugleich der Vorjahres-Anker
@@ -55,6 +55,17 @@ class ValueOrchestrator:
         self.edgar_fetch = edgar_fetch
         self.perplexity = perplexity
         self.history_years = history_years
+        # Optionaler Fortschritts-Callback on_phase(phase: str, label: str).
+        # Erlaubt dem Aufrufer (refresh), echte Schritte anzuzeigen, ohne dass
+        # der Orchestrator progress.py importiert (saubere Trennung).
+        self.on_phase = on_phase
+
+    def _emit(self, phase: str, label: str) -> None:
+        if self.on_phase is not None:
+            try:
+                self.on_phase(phase, label)
+            except Exception:  # noqa: BLE001 - Fortschritt darf nie den Lauf brechen
+                pass
 
     # ---- helpers ---------------------------------------------------------
     def _existing(self, company_id, key, year, period_type="FY", is_forecast=False):
@@ -140,10 +151,14 @@ class ValueOrchestrator:
 
     def run(self, company):
         years = self.target_years(company)
+        self._emit("stammdaten", "Stammdaten (Kurs/MCap)")
         self._apply_stammdaten(company)
+        self._emit("edgar", "EDGAR-XBRL-Werte")
         self._apply_edgar(company, years)
+        self._emit("perplexity", "Perplexity-Recherche")
         self._apply_perplexity(company, years)   # Task 6
         self.db.flush()
+        self._emit("calculating", "Kennzahlen berechnen")
         self._derive_calculations(company, years)  # Task 6 (engine.py)
         self.db.flush()
 

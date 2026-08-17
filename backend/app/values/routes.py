@@ -54,7 +54,7 @@ from app.providers.registry import get_providers
 from app.values.always_current import ALWAYS_CURRENT_KEYS
 from app.values.currency_keys import CURRENCY_KEYS
 from app.values.models import CompanyValue, ValueDefinition
-from app.values.progress import cleanup_old_jobs, finish_job, get_job, set_phase, start_job
+from app.values.progress import cleanup_old_jobs, finish_job, get_job, set_phase, start_job, update_job
 from app.values.schemas import (
     CompanyValueOut,
     OverrideRequest,
@@ -294,6 +294,12 @@ def run_and_persist_calculations_for_years(db: Session, company: Company, years:
     for year in years:
         try:
             _run_and_persist_calculations(db, company.id, "FY", year)
+            # Nach JEDEM Jahr flushen: _run_and_persist_calculations schreibt bei
+            # jedem Aufruf auch die SNAPSHOT-Stammdaten-Calc (market_cap_calc,
+            # period_year=None). Ohne Flush sieht die Existenzpruefung des
+            # naechsten Jahres (autoflush aus) die pending SNAPSHOT-Zeile nicht
+            # -> zweite INSERT -> UniqueViolation. Flush macht daraus ein Update.
+            db.flush()
         except Exception as e:  # noqa: BLE001 - pro Jahr isolieren, s. u.
             failures += 1
             last_exc = e
@@ -615,9 +621,13 @@ def refresh_company_values(
         )
         if settings.perplexity_api_key else None
     )
+    def _progress(phase: str, label: str) -> None:
+        set_phase(company_id, phase, label)
+        update_job(company_id, label)
+
     orch = ValueOrchestrator(
         db=db, stammdaten_fetch=yahoo_stammdaten,
-        edgar_fetch=edgar_anchor, perplexity=client,
+        edgar_fetch=edgar_anchor, perplexity=client, on_phase=_progress,
     )
 
     # Stammdaten-Only-Modus ("Daily Numbers"-Button): nur die Live-API-
@@ -640,9 +650,12 @@ def refresh_company_values(
 
     # Full-Modus: Geschaeftsjahr-Ende sicherstellen (running_fy_year/
     # target_years haengen daran) -> historische Preis-Anker -> orch.run.
-    start_job(company_id, 1)
+    # 6 Schritte: FY-Ende, Historik-Anker + die 4 Orchestrator-Phasen
+    # (Stammdaten, EDGAR, Perplexity, Berechnung) via _progress-Callback.
+    start_job(company_id, 6)
     try:
         set_phase(company_id, "fiscal_year_end", "Geschaeftsjahr-Ende ermitteln")
+        update_job(company_id, "Geschaeftsjahr-Ende")
         _ensure_company_fy_end(db, company)
         db.flush()
 
@@ -651,6 +664,7 @@ def refresh_company_values(
         # actual_return (Einstiegs-Anker Close FY-Ende N-1, Folgejahres-Anker
         # N fuer actual_return). Vorhandene Anker werden nicht erneut geholt.
         set_phase(company_id, "historical_mcap", "Historische Preis-Anker")
+        update_job(company_id, "Historische Preis-Anker")
         # Jedes Zieljahr braucht seinen Einstiegs-Anker (Close FY-Ende N-1) und
         # den Folgejahres-Anker N+1 (actual_return). Anker-Jahre ueberschneiden
         # sich (y+1 des einen = y des naechsten) -> DEDUP als Set, sonst wird
@@ -672,7 +686,8 @@ def refresh_company_values(
                 continue
         db.flush()
 
-        set_phase(company_id, "acquiring", "Werte beschaffen (EDGAR/Perplexity)")
+        # orch.run emittiert selbst die Phasen stammdaten/edgar/perplexity/
+        # calculating via _progress-Callback (echte fortschreitende Schritte).
         orch.run(company)
 
         # Naechster Earnings-Termin (die Batch-Stale-Auswahl haengt daran).
