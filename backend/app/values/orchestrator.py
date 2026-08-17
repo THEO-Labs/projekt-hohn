@@ -166,6 +166,11 @@ class ValueOrchestrator:
         self._apply_stammdaten(company)
         self._emit("edgar", "EDGAR-XBRL-Werte")
         self._apply_edgar(company, years)
+        # Flush VOR Perplexity: der Unit-Fix (_reference_magnitude) muss die
+        # frisch geschriebenen EDGAR-Anker in der Transaktion sehen koennen —
+        # ohne Flush (autoflush aus) ist die Referenz None und die Einheiten-
+        # Angleichung greift nicht.
+        self.db.flush()
         self._emit("perplexity", "Perplexity-Recherche")
         self._apply_perplexity(company, years)   # Task 6
         self.db.flush()
