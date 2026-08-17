@@ -179,8 +179,9 @@ def test_repair_net_income_gaap_replaces_outlier(db, us_company):
     assert "GAAP-Marge" in ni.source_name
 
 
-def test_repair_keeps_plausible_ni(db, us_company):
-    """Ein plausibler KI-NI (nahe Anker) bleibt unangetastet ('KI findet es')."""
+def test_repair_keeps_plausible_ni_with_quarters(db, us_company):
+    """Jahr MIT berichteten Quartalen: ein plausibler KI-NI (nahe Anker) bleibt
+    unangetastet ('KI findet es'). Ohne Quartale wird dagegen der Anker genutzt."""
     orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
                              edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
                              history_years=2)
@@ -188,6 +189,8 @@ def test_repair_keeps_plausible_ni(db, us_company):
     for y, q in [(2026, "Q1"), (2026, "Q2"), (2026, "Q3"), (2025, "Q4")]:
         _q(db, cid, "net_income", y, q, 100_000_000)
         _q(db, cid, "revenue", y, q, 1_000_000_000)
+    # 2027 hat ein berichtetes Q1 -> Actuals-verankert -> plausibler Konsens bleibt
+    _q(db, cid, "net_income", 2027, "Q1", 130_000_000)
     _q(db, cid, "revenue", 2027, "FY", 5_000_000_000, forecast=True, method="perplexity_consensus")
     _q(db, cid, "net_income", 2027, "FY", 550_000_000, forecast=True, method="perplexity_consensus")
     orch._repair_net_income_gaap(us_company, [2026, 2027])
@@ -195,3 +198,23 @@ def test_repair_keeps_plausible_ni(db, us_company):
     ni = db.query(CompanyValue).filter_by(company_id=cid, value_key="net_income",
                                           period_year=2027, period_type="FY", is_forecast=True).one()
     assert ni.numeric_value == Decimal("550000000")  # 550M vs Anker 500M -> plausibel, behalten
+
+
+def test_no_quarter_year_uses_margin_anchor(db, us_company):
+    """Jahr OHNE Ist-Quartale: der (volatile) Konsens-NI wird durch den stabilen
+    Vorjahres-Marge-Anker ersetzt -> ni_growth ~ Umsatzwachstum."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    # Vorjahr 2026: Volljahres-Marge 20% (NI 1000M / rev 5000M)
+    _q(db, cid, "net_income", 2026, "FY", 1_000_000_000)
+    _q(db, cid, "revenue", 2026, "FY", 5_000_000_000)
+    # 2027: Konsens-Umsatz 5500M, KI-NI 900M (zu hoch) -> Anker 20% × 5500 = 1100M
+    _q(db, cid, "revenue", 2027, "FY", 5_500_000_000, forecast=True, method="estimate_unanchored")
+    _q(db, cid, "net_income", 2027, "FY", 900_000_000, forecast=True, method="estimate_unanchored")
+    orch._repair_net_income_gaap(us_company, [2027])
+    db.flush()
+    ni = db.query(CompanyValue).filter_by(company_id=cid, value_key="net_income",
+                                          period_year=2027, period_type="FY", is_forecast=True).one()
+    assert abs(ni.numeric_value - Decimal("1100000000")) < Decimal("1000000")  # Anker, nicht 900M

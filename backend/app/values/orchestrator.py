@@ -738,7 +738,10 @@ class ValueOrchestrator:
             anchor = margin * rev.numeric_value
             ni = self._existing(company.id, "net_income", year, period_type="FY", is_forecast=True)
             cur = ni.numeric_value if (ni is not None) else None
-            if cur is not None:
+            has_q = bool(self._reported_quarters(company.id, "net_income", year))
+            if has_q and cur is not None:
+                # Jahr MIT berichteten Quartalen: NI ist an die Ist-Quartale
+                # verankert (Σ Actuals + Q4). Nur grobe Ausreisser reparieren.
                 ratio = (cur / anchor) if anchor != 0 else None
                 plausible = (
                     abs(cur) <= rev.numeric_value
@@ -746,15 +749,15 @@ class ValueOrchestrator:
                     and (ratio is not None and Decimal("0.5") <= ratio <= Decimal("2"))
                 )
                 if plausible:
-                    continue  # KI-Wert ok
-                label = "GAAP-Marge × Umsatz (KI-Wert verworfen)"
-                method = ni.primary_method
+                    continue
+                label, method = "GAAP-Marge × Umsatz (KI-Wert verworfen)", ni.primary_method
             else:
-                # NI fehlt -> aus dem Anker ableiten; Markierung wie ein
-                # Schaetzwert (0 berichtete Quartale -> unbestaetigt).
-                label = "GAAP-Marge × Umsatz (KI ohne net_income)"
-                has_q = bool(self._reported_quarters(company.id, "revenue", year))
-                method = "perplexity_consensus" if has_q else "estimate_unanchored"
+                # Jahr OHNE Ist-Quartale: der LLM-NI-Konsens ist run-to-run zu
+                # instabil (Intuit: 15530/5511/null) fuers Headline-Metric.
+                # Deterministischer GAAP-Anker (Vorjahres-Marge × Konsens-Umsatz)
+                # -> ni_growth ~ Umsatzwachstum, reproduzierbar & GAAP-konsistent.
+                label = "GAAP-Marge × Umsatz (Vorjahres-Marge)"
+                method = "estimate_unanchored"
             logger.info("NI-Anker %s FY%s: KI=%s -> %s (Marge %.3f)",
                         company.ticker, year, cur, anchor, float(margin))
             self._upsert(company.id, "net_income", year, period_type="FY", value=anchor,
