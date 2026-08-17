@@ -67,21 +67,6 @@ def no_live_network(monkeypatch):
 
     monkeypatch.setattr(anchor_mod, "get_providers", lambda key: [])
 
-    # Die 8-K-Adjusted-Anreicherung (adjusted_enrichment.py) ruft EDGAR
-    # (Submissions/Exhibits) direkt — CIK-Aufloesung default None, sonst
-    # fetcht jeder Refresh-Test mit US-ISIN live. Enrichment-Tests patchen
-    # _resolve_cik explizit.
-    import app.values.adjusted_enrichment as adj_mod
-
-    monkeypatch.setattr(adj_mod, "_resolve_cik", lambda ticker: None)
-
-    # Die Dokument-Stufe der Statement-Recherche (statement_research.py)
-    # laedt Berichts-PDFs via httpx — Default None (kein Live-Netz).
-    # Dokument-Tests patchen _download_document explizit.
-    import app.values.statement_research as sr_mod
-
-    monkeypatch.setattr(sr_mod, "_download_document", lambda url: None)
-
     # Kein Test darf real gegen die Anthropic-API laufen. Tests, die
     # LLM-Pfade brauchen, mocken get_client bzw. die _call_claude-Ebene.
     def _no_llm_in_tests():
