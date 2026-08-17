@@ -87,15 +87,15 @@ def select_stale_companies(db, portfolio_id: UUID) -> list:
     """Firmen, deren Earnings nach dem letzten Recherche-Lauf liegen.
 
     Stale-Kriterium:
-    - keine company_values-Zeile mit primary_method LIKE 'two_stage%'
-      oder 'statement_research' (Nicht-US-Pfad seit dem DE-Umbau)
-      -> stale, die Firma wurde nie gerechnet;
+    - keine company_values-Zeile mit einer Beschaffungs-Methode des neuen
+      Orchestrators (primary_method IN ('perplexity', 'perplexity_consensus',
+      'provider')) -> stale, die Firma wurde nie gerechnet;
     - sonst: next_earnings_date existiert, liegt in der Vergangenheit
       (strikt vor heute — Earnings am selben Tag koennen noch ausstehen)
       UND nach dem Datum des juengsten Recherche-fetched_at;
     - Firmen ohne next_earnings_date sind NICHT stale (keine Info).
     """
-    from sqlalchemy import func as sa_func, or_
+    from sqlalchemy import func as sa_func
 
     from app.companies.models import Company
     from app.values.models import CompanyValue
@@ -105,9 +105,8 @@ def select_stale_companies(db, portfolio_id: UUID) -> list:
         .join(Company, Company.id == CompanyValue.company_id)
         .filter(
             Company.portfolio_id == portfolio_id,
-            or_(
-                CompanyValue.primary_method.like("two_stage%"),
-                CompanyValue.primary_method == "statement_research",
+            CompanyValue.primary_method.in_(
+                ("perplexity", "perplexity_consensus", "provider")
             ),
         )
         .group_by(CompanyValue.company_id)

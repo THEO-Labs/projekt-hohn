@@ -1178,593 +1178,94 @@ def refresh_company_values(
                 ticker = resolved
                 company.ticker = ticker
                 db.flush()
-    updated = []
+    # Werte-Beschaffung laeuft komplett ueber den ValueOrchestrator:
+    # Stammdaten (Feed) -> EDGAR-Anker (direkt, KEINE Provider-Chain) ->
+    # Perplexity (Luecken/Konsens) -> engine.py-Ableitung. Prioritaet pro
+    # Zelle: Manual > provider(EDGAR) > perplexity. Imports lazy, um jede
+    # Modul-Ladereihenfolge-/Zyklus-Frage zu vermeiden.
+    from app.config import settings
+    from app.llm.perplexity import PerplexityClient
+    from app.values.adapters import edgar_anchor, yahoo_stammdaten
+    from app.values.orchestrator import ValueOrchestrator
 
-    # Stammdaten-Only-Modus: nur die Live-API-Stammdaten-Keys refreshen
-    # (Market Cap, Stock Price, Shares Outstanding) — kein FY-Fundamental-
-    # Web-Research. "Daily Numbers"-Button im UI.
-    if payload.stammdaten_only:
-        effective_keys = [k for k in payload.keys if k in ALWAYS_CURRENT_KEYS]
-    else:
-        effective_keys = payload.keys
+    def _company_value_rows() -> list[CompanyValue]:
+        rows = (
+            db.query(CompanyValue)
+            .filter(CompanyValue.company_id == company_id)
+            .all()
+        )
+        for cv in rows:
+            db.refresh(cv)
+        return rows
 
-    # Full-FY-Refresh (not stammdaten_only): Provider-Anker + neue
-    # Recherche-Fluesse (US: EDGAR/8-K-Bruecke/Guidance; Nicht-US:
-    # statement_research/Guidance) statt Per-Key-LLM-Recherche.
-    full_fy_refresh = (
-        not payload.stammdaten_only
-        and payload.period_type == "FY"
-        and payload.period_year is not None
+    client = PerplexityClient(
+        api_key=settings.perplexity_api_key,
+        model=settings.perplexity_model,
+        base_url=settings.perplexity_base_url,
+    )
+    orch = ValueOrchestrator(
+        db=db, stammdaten_fetch=yahoo_stammdaten,
+        edgar_fetch=edgar_anchor, perplexity=client,
     )
 
-    # US-Filer: abgeschlossene Jahre deckt EDGAR-Anker + 8-K-Bruecke +
-    # Residuum, das laufende FY der gebuendelte Guidance-Call +
-    # deterministische Ableitungen.
-    us_filer = is_us_company(company)
-
-    # Laufendes (nicht abgeschlossenes) FY: EIN fetch_guidance_estimates-
-    # Call vor dem Konsistenz-Pass deckt die Estimate-Keys ab — fuer US-
-    # UND Nicht-US-Filer. Die US-spezifischen Key-Loop-Skips (EDGAR-Anker
-    # + Bilanz-Fortschreibung ersetzen dort die Recherche) haengen weiter
-    # am kombinierten US-Gate.
-    guidance_fy = False
-    if full_fy_refresh:
+    # Stammdaten-Only-Modus ("Daily Numbers"-Button): nur die Live-API-
+    # Stammdaten-Keys refreshen (Market Cap, Stock Price, Shares) + naechsten
+    # Earnings-Termin + Neuberechnung. Kein EDGAR/Perplexity, kein Historik-Fetch.
+    if payload.stammdaten_only:
+        start_job(company_id, 1)
         try:
-            from app.values.provider_anchor import _fy_is_closed
-            guidance_fy = not _fy_is_closed(company, payload.period_year)
-        except Exception as e:
-            logger.warning("guidance-estimate gate failed for %s: %s", ticker, e)
-            guidance_fy = False
-    us_guidance_fy = us_filer and guidance_fy
-
-    # Precompute prev-year backfill list: ein FY-N-Refresh fuellt FY N-1
-    # fuer jeden Key ohne frische Anker-/Recherche-Zeile mit. Skip
-    # already-good rows so a second Refresh full click stays cheap.
-    research_eligible_keys: list[str] = []
-    prev_year_backfill_keys: list[str] = []
-    if full_fy_refresh:
-        for k in effective_keys:
-            if k in ALWAYS_CURRENT_KEYS or k in CALCULATED_KEYS:
-                continue
-            research_eligible_keys.append(k)
-            if _prev_year_needs_backfill(db, company_id, k, payload.period_year - 1):
-                prev_year_backfill_keys.append(k)
-
-    total_steps = len(effective_keys) + len(prev_year_backfill_keys)
-    start_job(company_id, total_steps)
-    try:
-        # Pro Key committen: ein Fehler (und der zugehoerige Rollback) in
-        # Key N darf die bereits erfolgreich geschriebenen Keys 1..N-1
-        # nicht mit verwerfen. mark_success erst NACH erfolgreichem Commit.
-        from app.values.consistency import BALANCE_CARRY_FORWARD_KEYS
-        from app.values.guidance_estimates import GUIDANCE_ESTIMATE_KEYS
-        for key in effective_keys:
-            update_job(company_id, key)
-            # US-Filer, laufendes FY: Estimate-Keys deckt der gebuendelte
-            # Guidance-Call (unten, vor dem Konsistenz-Pass) ab. Berichtete
-            # Quartale ankert der Quartals-Anker im Konsistenz-Block.
-            if us_guidance_fy and key in GUIDANCE_ESTIMATE_KEYS:
-                continue
-            # Bilanz-Keys fuers laufende FY: die Fortschreibung des letzten
-            # berichteten Bilanzstichtags (derive_balance_carry_forward im
-            # Konsistenz-Block) deckt sie ab. Berichtete Quartale ankern
-            # Quartals-Anker + 8-K-Bruecke.
-            if us_guidance_fy and key in BALANCE_CARRY_FORWARD_KEYS:
-                continue
-            updated_before = len(updated)
-            try:
-                if (
-                    full_fy_refresh
-                    and key not in ALWAYS_CURRENT_KEYS
-                    and key not in CALCULATED_KEYS
-                ):
-                    if us_filer:
-                        # US: nur EDGAR-XBRL ankern — keine LLM-Recherche.
-                        # Luecken schliessen 8-K-Bruecke + Residuum-Pass.
-                        wrote = _anchor_us_key_periods(
-                            db=db, key=key, company=company,
-                            company_id=company_id, updated=updated,
-                            year=payload.period_year,
-                        )
-                    else:
-                        # Nicht-US: Provider-First-FY-Anker (nur ESEF —
-                        # der Markt-Feed schreibt keine Fundamentals mehr)
-                        # fuer abgeschlossene Jahre. Die LLM-Recherche
-                        # laeuft danach EINMAL pro Jahr als Statement-
-                        # Call-Trio (statement_research, vor dem
-                        # Konsistenz-Pass).
-                        wrote = _anchor_fy_after_apply(
-                            db, company, key, payload.period_year, updated,
-                        )
-                else:
-                    wrote = _process_one_key(
-                        db=db,
-                        key=key,
-                        ticker=ticker,
-                        company=company,
-                        company_id=company_id,
-                        payload=payload,
-                        updated=updated,
-                    )
-                db.commit()
-                if wrote:
-                    mark_success(company_id)
-            except Exception as e:
-                logger.error("Unexpected error processing key=%s for company=%s: %s", key, ticker, e)
-                db.rollback()
-                # Verworfene Instanzen des fehlgeschlagenen Keys aus
-                # `updated` entfernen — db.refresh am Ende darf keine nie
-                # committeten Zeilen anfassen.
-                del updated[updated_before:]
-
-        # Stammdaten-Only (Daily-Refresh): naechsten Earnings-Termin
-        # mitpflegen — hoechstens alle 24h (earnings_checked_at-TTL).
-        if payload.stammdaten_only:
+            set_phase(company_id, "stammdaten", "Live-Stammdaten aktualisieren")
+            orch.run_stammdaten_only(company)
             _maybe_refresh_next_earnings(db, company, ticker)
             db.commit()
+        except Exception:
+            db.rollback()
+            finish_job(company_id, status="failed")
+            raise
+        else:
+            finish_job(company_id)
+        return _company_value_rows()
 
-        # Prev-year backfill: fuer die Recherche-Keys ohne frische
-        # FY-N-1-Zeile laeuft der Anker-/Recherche-Pfad auch fuer FY N-1.
-        if prev_year_backfill_keys:
-            prev_year = payload.period_year - 1
-            for key in prev_year_backfill_keys:
-                update_job(company_id, f"{key} (FY{prev_year})")
-                updated_before = len(updated)
+    # Full-Modus: Geschaeftsjahr-Ende sicherstellen (running_fy_year/
+    # target_years haengen daran) -> historische Preis-Anker -> orch.run.
+    start_job(company_id, 1)
+    try:
+        set_phase(company_id, "fiscal_year_end", "Geschaeftsjahr-Ende ermitteln")
+        _ensure_company_fy_end(db, company)
+        db.flush()
+
+        # Historische Preis-Anker VOR orch.run: der Derive-Schritt am Ende von
+        # run() braucht market_cap je FY fuer die Yields-Denominatoren und
+        # actual_return (Einstiegs-Anker Close FY-Ende N-1, Folgejahres-Anker
+        # N fuer actual_return). Vorhandene Anker werden nicht erneut geholt.
+        set_phase(company_id, "historical_mcap", "Historische Preis-Anker")
+        for y in orch.target_years(company):
+            for anchor_year in (y, y + 1):
+                if _has_fy_price_anchor(db, company_id, anchor_year):
+                    continue
                 try:
-                    if us_filer:
-                        # US: Vorjahres-Backfill nur via EDGAR-Anker.
-                        wrote = _anchor_us_key_periods(
-                            db=db, key=key, company=company,
-                            company_id=company_id, updated=updated,
-                            year=prev_year,
-                        )
-                    else:
-                        # Nicht-US: Provider-Anker; die Recherche-Luecken
-                        # fuellt der Statement-Lauf fuer FY N-1 unten.
-                        wrote = _anchor_fy_after_apply(
-                            db, company, key, prev_year, updated,
-                        )
-                    db.commit()
-                    if wrote:
-                        mark_success(company_id)
-                except Exception as e:
-                    logger.error(
-                        "prev-year backfill failed for %s / %s / FY%s: %s",
-                        ticker, key, prev_year, e,
-                    )
-                    db.rollback()
-                    del updated[updated_before:]
-
-        # Cross-Metrik-Konsistenz: net_debt aus Komponenten ableiten (eine
-        # Definition ueber alle Jahre) und Kern-Identitaeten pruefen/flaggen.
-        if full_fy_refresh and payload.period_year is not None:
-            from app.values.consistency import (
-                derive_balance_carry_forward,
-                derive_clear_stale_forecasts,
-                derive_declared_dividend_quarter,
-                derive_explain_open_gaps,
-                derive_gaap_from_adjusted_spread,
-                derive_missing_fcf,
-                derive_missing_ocf,
-                derive_net_debt_from_components,
-                derive_open_quarter_from_fy_estimate,
-                derive_q4_instant_from_fy,
-                derive_q4_residual_from_fy,
-                derive_runrate_quarter,
-                derive_sbc_quarters,
-                validate_cross_metrics,
-            )
-            from app.values.period_keys import QUARTERLY_ESTIMATE_KEYS
-            # Wenn der Prev-Year-Backfill Keys verarbeitet hat, muss der
-            # Konsistenz-Pass auch fuer FY N-1 laufen — sonst bleiben
-            # FY/Quartals-Mismatches im Vorjahr ungeflaggt.
-            consistency_years = (
-                [payload.period_year - 1] if prev_year_backfill_keys else []
-            ) + [payload.period_year]
-
-            # FY-only-Backfill fuer N-2 (User-Konvention: die H-Rendite
-            # rechnet auf FY-Basis — die FY-Changes des VORJAHRES (N-1)
-            # brauchen die FY-N-2-Anker). Fehlt der Kernanker (net_income
-            # FY leer/ersetzbar), laeuft einmalig: Nicht-US ein FY-only-
-            # Statement-Lauf (periods=('FY',), 1-3 Calls, kein Quartals-
-            # Backfill — Konvention); US der EDGAR-FY-Anker fuer die
-            # Kern-Keys (der Key-Loop/Prev-Year-Backfill decken nur
-            # N/N-1). Danach net_debt aus den Komponenten, damit
-            # Delta-ND/H-Rendite N-1 rechnen. Laeuft VOR der Statement-
-            # Recherche fuer N-1/N, damit das Vorjahresband-Gate die
-            # N-2-Actuals sieht. Fehler brechen den Refresh nie ab.
-            n2_year = payload.period_year - 2
-            n2_backfilled = False
-            if _n2_fy_anchor_missing(db, company_id, n2_year):
-                try:
-                    set_phase(
-                        company_id, "n2_fy_backfill",
-                        f"FY-Anker FY{n2_year} nachladen",
-                    )
-                    if us_filer:
-                        from app.values.provider_anchor import (
-                            anchor_fy_with_provider,
-                        )
-                        for n2_key in _N2_FY_ANCHOR_KEYS:
-                            try:
-                                if anchor_fy_with_provider(
-                                    db, company, n2_key, n2_year,
-                                ):
-                                    n2_backfilled = True
-                            except Exception as e:
-                                logger.warning(
-                                    "n2 fy anchor failed %s/%s FY%s: %s",
-                                    ticker, n2_key, n2_year, e,
-                                )
-                    else:
-                        from app.values.statement_research import (
-                            fetch_statement_research,
-                        )
-                        from app.llm.cost_tracker import CostTracker
-                        n2_tracker = CostTracker()
-                        wrote_n2 = fetch_statement_research(
-                            db, company, n2_year,
-                            cost_tracker=n2_tracker, periods=("FY",),
-                        )
-                        n2_backfilled = wrote_n2 > 0
-                        if n2_tracker.calls:
-                            logger.info(
-                                "n2 fy backfill %s: %d Zeilen, %d Claude-"
-                                "Calls, %.4f USD",
-                                ticker, wrote_n2, n2_tracker.calls,
-                                n2_tracker.spent_usd,
-                            )
-                    if n2_backfilled:
-                        derive_net_debt_from_components(db, company_id, n2_year)
-                    db.commit()
+                    _fetch_and_store_historical_mcap(db, ticker, company_id, anchor_year)
                 except Exception as e:
                     logger.warning(
-                        "n2 fy backfill failed for %s FY%s: %s",
-                        ticker, n2_year, e,
+                        "historical mcap FY%s failed for %s: %s",
+                        anchor_year, ticker, e,
                     )
-                    db.rollback()
-                    n2_backfilled = False
+                    continue
+        db.flush()
 
-            # Nicht-US: EIN Recherche-Call pro Jahr und Statement-Gruppe
-            # (max. 3 Calls) statt Recherche pro Key.
-            # Reihenfolge N-1 vor N, damit das Vorjahresband-Gate die
-            # frischen N-1-Actuals sieht. Nur die Gruppen der angefragten
-            # Keys. Der Yahoo-Feed schreibt keine Quartale mehr
-            # (Kundenentscheid) — er liefert nur noch die Cross-Check-
-            # Referenzen innerhalb von fetch_statement_research.
-            # Fehler brechen den Refresh nie ab.
-            if not us_filer:
-                try:
-                    from app.values.statement_research import (
-                        fetch_statement_research,
-                        groups_for_keys,
-                    )
-                    from app.llm.cost_tracker import CostTracker
-                    stmt_groups = groups_for_keys(research_eligible_keys)
-                    if stmt_groups:
-                        stmt_tracker = CostTracker()
-                        for stmt_year in consistency_years:
-                            set_phase(
-                                company_id, "statement_research",
-                                f"Statement-Recherche (FY{stmt_year})",
-                            )
-                            fetch_statement_research(
-                                db, company, stmt_year,
-                                cost_tracker=stmt_tracker, groups=stmt_groups,
-                            )
-                            db.commit()
-                        if stmt_tracker.calls:
-                            logger.info(
-                                "statement research %s: %d Claude-Calls, %.4f USD",
-                                ticker, stmt_tracker.calls, stmt_tracker.spent_usd,
-                            )
-                except Exception as e:
-                    logger.warning("statement research failed for %s: %s", ticker, e)
-                    db.rollback()
+        set_phase(company_id, "acquiring", "Werte beschaffen (EDGAR/Perplexity)")
+        orch.run(company)
 
-            # Quartals-Anker (Gegenstueck zum FY-Anker im Key-Loop):
-            # gefilte Quartale mit exakten
-            # EDGAR-XBRL-Werten ueberschreiben — VOR dem Konsistenz-Pass,
-            # damit validate_cross_metrics die finalen Werte prueft.
-            # Fehler duerfen den Refresh nicht abbrechen.
-            try:
-                from app.values.provider_anchor import anchor_quarters_with_provider
-                anchor_quarters_with_provider(db, company, consistency_years)
-                db.commit()
-            except Exception as e:
-                logger.warning("quarter anchor failed for %s: %s", ticker, e)
-                db.rollback()
-            # GAAP-Bruecke fuer das Release-zu-10-Q-Fenster: Zahlen aus dem
-            # 8-K-Earnings-Release fuellen not_found/Estimate-Zellen, bis
-            # das 10-Q-XBRL in der companyfacts-API ankommt und der Anker
-            # die provider-Zeilen ueberschreibt. Fehler brechen nie ab.
-            try:
-                from app.values.gaap_bridge import bridge_gaap_from_earnings_releases
-                from app.llm.cost_tracker import CostTracker
-                bridge_tracker = CostTracker()
-                bridge_gaap_from_earnings_releases(
-                    db, company, consistency_years, cost_tracker=bridge_tracker,
-                )
-                db.commit()
-                if bridge_tracker.calls:
-                    logger.info(
-                        "gaap bridge %s: %d Claude-Calls, %.4f USD",
-                        ticker, bridge_tracker.calls, bridge_tracker.spent_usd,
-                    )
-            except Exception as e:
-                logger.warning("gaap bridge failed for %s: %s", ticker, e)
-                db.rollback()
-            # Non-GAAP-Anreicherung aus 8-K-Earnings-Releases: der
-            # Anker-Pfad liefert keine Adjusted-Werte. Fill-only-NULL;
-            # Fehler brechen den Refresh nie ab.
-            try:
-                from app.values.adjusted_enrichment import (
-                    enrich_adjusted_from_earnings_releases,
-                )
-                from app.llm.cost_tracker import CostTracker
-                # Der Refresh-Flow hat keinen flowweiten CostTracker —
-                # eigener Tracker fuer das Kosten-Logging der
-                # Enrichment-Calls.
-                adj_tracker = CostTracker()
-                enrich_adjusted_from_earnings_releases(
-                    db, company, consistency_years, cost_tracker=adj_tracker,
-                )
-                db.commit()
-                if adj_tracker.calls:
-                    logger.info(
-                        "adjusted enrichment %s: %d Claude-Calls, %.4f USD",
-                        ticker, adj_tracker.calls, adj_tracker.spent_usd,
-                    )
-            except Exception as e:
-                logger.warning("adjusted enrichment failed for %s: %s", ticker, e)
-                db.rollback()
-            # FY-Guidance-Estimates fuers laufende FY (US- und Nicht-US-
-            # Filer): EIN Claude-Call ersetzt die uebersprungenen bzw.
-            # nicht mehr recherchierten Estimate-Keys. Muss VOR dem
-            # Konsistenz-Pass laufen, damit
-            # derive_open_quarter_from_fy_estimate die frischen
-            # FY-Forecasts sieht. Fehler brechen den Refresh nie ab.
-            if guidance_fy:
-                try:
-                    from app.values.guidance_estimates import fetch_guidance_estimates
-                    from app.llm.cost_tracker import CostTracker
-                    set_phase(
-                        company_id, "guidance_estimates",
-                        f"FY-Guidance-Schaetzungen (FY{payload.period_year})",
-                    )
-                    guid_tracker = CostTracker()
-                    # ALLE offenen Quartale mitgeben: der Call fragt das
-                    # Modell direkt danach, statt Q-Werte als FY-Residuum
-                    # zu bauen. Kalenderjahr-Firmen mitten im Jahr haben
-                    # ZWEI offene Quartale (SPGI/SAP-Muster: Q3+Q4) —
-                    # frueher blieb bei mehreren offenen Quartalen alles
-                    # leer (None nur bei genau einem).
-                    open_qs: list[str] = []
-                    try:
-                        # Generisches Berichtet-Kriterium: Karenz, US-Filer
-                        # zusaetzlich Item-2.02-8-K (_quarter_reported).
-                        from app.values.consistency import _quarter_reported
-                        _subs: dict = {}
-                        open_qs = [
-                            q for q in ("Q1", "Q2", "Q3", "Q4")
-                            if not _quarter_reported(company, payload.period_year, q, _subs)
-                        ]
-                    except Exception:
-                        open_qs = []
-                    wrote_est = fetch_guidance_estimates(
-                        db, company, payload.period_year, cost_tracker=guid_tracker,
-                        open_quarter=open_qs or None,
-                    )
-                    db.commit()
-                    if guid_tracker.calls:
-                        logger.info(
-                            "guidance estimates %s: %d FY-Werte, %d Claude-Calls, %.4f USD",
-                            ticker, wrote_est, guid_tracker.calls, guid_tracker.spent_usd,
-                        )
-                except Exception as e:
-                    logger.warning("guidance estimates failed for %s: %s", ticker, e)
-                    db.rollback()
-            for cons_year in consistency_years:
-                try:
-                    # Stale Forecast-Werte berichteter Perioden raeumen —
-                    # NACH den Actual-Writern (Anker/Bruecke/Statement-
-                    # Recherche laufen oben im Flow), VOR den Ableitungen
-                    # und validate_cross_metrics: die Ableitungen bauen
-                    # danach nur noch belegbare Werte neu auf (z.B. die
-                    # Bilanz-Fortschreibung), veraltete Schaetzungen
-                    # berichteter Perioden verschwinden aus der Anzeige.
-                    derive_clear_stale_forecasts(db, company_id, cons_year)
-                    # Bilanz-Fortschreibung VOR der net_debt-Ableitung und
-                    # VOR validate_cross_metrics: alle unberichteten
-                    # Quartals-/FY-Staende nach dem letzten berichteten
-                    # Stichtag ersetzen aeltere Bilanz-Schaetzungen,
-                    # net_debt rechnet danach mit den fortgeschriebenen
-                    # Komponenten (auch fuer offene Zwischenquartale).
-                    derive_balance_carry_forward(db, company_id, cons_year)
-                    # Q4 = FY bei Instant-Keys abgeschlossener Jahre
-                    # (gleicher Stichtag) — VOR der net_debt-Ableitung,
-                    # damit sie die Q4-Komponenten sieht.
-                    derive_q4_instant_from_fy(db, company_id, cons_year)
-                    derive_net_debt_from_components(db, company_id, cons_year)
-                    derive_missing_ocf(db, company_id, cons_year)
-                    # SBC-FY/4-Verteilung entfernt (Pilot-Befund SAP: die
-                    # Gleichverteilung ueberschrieb echte Quartalswerte,
-                    # 423.75 statt dokumentierter 420). Yahoo-Quartals-
-                    # Anker, Statement-Recherche und Runrate decken SBC.
-                    # Q4-Restwert (ebitda/revenue/net_income): EDGAR liefert
-                    # Q4 fuer Income-Keys strukturell nicht (kein 3M-Frame
-                    # im 10-K).
-                    derive_q4_residual_from_fy(db, company_id, cons_year)
-                    # Offenes Rest-Quartal deterministisch aus dem FY-
-                    # Estimate (Guidance/Konsens) statt LLM-Schaetzung.
-                    derive_open_quarter_from_fy_estimate(db, company_id, cons_year)
-                    # GAAP-EPS/NI aus dem beobachteten GAAP/Non-GAAP-
-                    # Abstand: braucht die adjusted-Residuen der Zeile
-                    # darueber, VOR derive_missing_fcf/validate.
-                    derive_gaap_from_adjusted_spread(db, company_id, cons_year)
-                    # Deklarierte Dividendenrate NACH der Guidance-Ableitung:
-                    # die Fortschreibung des zuletzt berichteten Quartals
-                    # schlaegt das FY-Guidance-Residuum (calculated ist
-                    # ersetzbar).
-                    derive_declared_dividend_quarter(db, company_id, cons_year)
-                    # SBC/Buyback-Runrate NUR als Fallback ohne FY-Konsens
-                    # (nach derive_open_quarter: der Konsens-Pfad hat
-                    # Vorrang), VOR derive_missing_fcf.
-                    derive_runrate_quarter(db, company_id, cons_year)
-                    # fcf = OCF - Capex als berechneter Wert — VOR
-                    # validate_cross_metrics, damit der fcf-Check die
-                    # frischen Werte sieht.
-                    derive_missing_fcf(db, company_id, [cons_year])
-                    # FY = Summe der Quartale fuer jede voll gefuellte
-                    # Estimate-Reihe (reported + guidance-/abgeleitete
-                    # Quartale). Produktregel: die Quartale gewinnen ueber
-                    # einen direkt geschriebenen FY-Guidance-/Provider-Wert
-                    # (Dynatrace: FY-Buyback-Schaetzung 400M vs Summe der
-                    # Quartals-Schaetzungen 425M -> FY=425M). Laeuft NACH
-                    # dem Guidance-Call und allen Quartals-Ableitungen, VOR
-                    # validate_cross_metrics — damit der qsum-Check fuer
-                    # voll gefuellte Reihen per Konstruktion nicht mehr
-                    # anschlaegt.
-                    for _agg_key in QUARTERLY_ESTIMATE_KEYS:
-                        _refresh_fy_from_quarters(db, company_id, _agg_key, cons_year)
-                    # Validator-Diet auch fuer Nicht-US (full_checks=False):
-                    # qsum + fcf-Identitaet + eps_ni bleiben; die uebrigen
-                    # Checks decken die Schreib-Gates der neuen Pfade ab.
-                    validate_cross_metrics(
-                        db, company_id, cons_year, is_us=us_filer,
-                        full_checks=False,
-                    )
-                    # Ganz am ENDE, nach allen Ableitungen: bewusst leer
-                    # gebliebene Schaetzzellen offener Quartale bekommen
-                    # einen not_estimated-Platzhalter mit ehrlicher
-                    # Begruendung (statt generischem "noch nicht
-                    # berichtet"-Strich im UI).
-                    derive_explain_open_gaps(db, company_id, cons_year)
-                    db.commit()
-                except Exception as e:
-                    logger.error("consistency pass failed for %s FY%s: %s", ticker, cons_year, e)
-                    db.rollback()
-
-            # Vorjahres-Kennzahlen + historische Preis-Anker (strukturell,
-            # US und Nicht-US): der Schluss-Calc unten rechnet nur
-            # payload.period_year — jedes weitere consistency_year
-            # (abgeschlossenes Vorjahr) bekommt hier seinen FY-Ratio-Satz.
-            # Fuer abgeschlossene Jahre vorher die Jahresschluss-Anker
-            # sicherstellen: year (Einstiegs-Anker = Close FY-Ende N-1)
-            # und year+1 (Close FY-Ende N, actual_return braucht den
-            # Folgejahres-Anker). Vorhandene Anker werden nicht erneut
-            # gefetcht (_has_fy_price_anchor); Fehler brechen den Refresh
-            # nie ab.
-            from app.values.provider_anchor import _fy_is_closed as _fy_closed
-            for calc_year in consistency_years:
-                if calc_year == payload.period_year:
-                    continue  # laeuft am Ende des Refresh ohnehin
-                try:
-                    if _fy_closed(company, calc_year):
-                        set_phase(
-                            company_id, "historical_mcap",
-                            f"Historische Preis-Anker (FY{calc_year})",
-                        )
-                        for anchor_year in (calc_year, calc_year + 1):
-                            if not _has_fy_price_anchor(db, company_id, anchor_year):
-                                _fetch_and_store_historical_mcap(
-                                    db, ticker, company_id, anchor_year,
-                                )
-                        db.commit()
-                    set_phase(
-                        company_id, "calculating",
-                        f"Kennzahlen FY{calc_year} berechnen",
-                    )
-                    _run_and_persist_calculations(db, company_id, "FY", calc_year)
-                    db.commit()
-                except Exception as e:
-                    logger.warning(
-                        "prev-year ratios/anchors failed for %s FY%s: %s",
-                        ticker, calc_year, e,
-                    )
-                    db.rollback()
-
-            # H-Rendite N-1 nach erfolgreichem N-2-Backfill: ni_growth/
-            # Delta-ND des Vorjahres rechnen mit den frischen FY-N-2-
-            # Ankern. Gezielter Zusatz-Call — nur wenn N-1 nicht ohnehin
-            # als consistency_year gerechnet wurde (der Loop oben deckt
-            # diesen Fall bereits ab).
-            n1_year = payload.period_year - 1
-            if n2_backfilled and n1_year not in consistency_years:
-                try:
-                    set_phase(
-                        company_id, "calculating",
-                        f"Kennzahlen FY{n1_year} berechnen",
-                    )
-                    _run_and_persist_calculations(db, company_id, "FY", n1_year)
-                    db.commit()
-                except Exception as e:
-                    logger.warning(
-                        "n2 backfill ratios failed for %s FY%s: %s",
-                        ticker, n1_year, e,
-                    )
-                    db.rollback()
-
-        # Bei Stammdaten-Only: kein historisches MCap-Fetch, kein Prev-Year-
-        # Refresh — die haben mit den taeglichen Live-Werten nichts zu tun.
-        if not payload.stammdaten_only and payload.period_type == "FY" and payload.period_year is not None:
-            from datetime import date
-            current_calendar_year = date.today().year
-            if payload.period_year < current_calendar_year:
-                set_phase(company_id, "historical_mcap", f"Historische Market Cap (31.12.{payload.period_year})")
-                _fetch_and_store_historical_mcap(db, ticker, company_id, payload.period_year)
-                db.commit()
-
-            set_phase(company_id, "prev_year_inputs", f"Vorjahres-Daten holen (FY{payload.period_year - 1})")
-            _ensure_previous_year_inputs(db, ticker, company, company_id, payload.period_year)
-            db.commit()
-
-        # Calculations laufen IMMER — auch bei Stammdaten-Only, damit
-        # market_cap_calc + abhaengige Multiples (PE, EV/EBITDA, FCF-Yield)
-        # mit den neuen Live-Stammdaten neu berechnet werden.
-        set_phase(company_id, "calculating", "Berechnete Werte aktualisieren")
-        _run_and_persist_calculations(db, company_id, payload.period_type, payload.period_year)
+        # Naechster Earnings-Termin (die Batch-Stale-Auswahl haengt daran).
+        _maybe_refresh_next_earnings(db, company, ticker)
         db.commit()
-
-        # Daily-Refresh laeuft mit period_type=SNAPSHOT — der Calc oben
-        # rechnet dann nur market_cap_calc. Die kursbasierten FY-Kennzahlen
-        # (PE, PS, EV/EBITDA, Yields, H-Rendite) haengen aber am Live-Kurs
-        # und muessen fuer jedes vorhandene FY-Jahr nachgezogen werden.
-        # Reine Arithmetik, kein LLM; Fehler brechen den Job nie ab.
-        if payload.stammdaten_only:
-            fy_years = (
-                db.query(CompanyValue.period_year)
-                .filter(
-                    CompanyValue.company_id == company_id,
-                    CompanyValue.period_type == "FY",
-                    CompanyValue.period_year.isnot(None),
-                )
-                .distinct()
-                .all()
-            )
-            for (fy_year,) in sorted(fy_years):
-                try:
-                    set_phase(
-                        company_id, "calculating",
-                        f"Kennzahlen FY{fy_year} nachrechnen",
-                    )
-                    _run_and_persist_calculations(db, company_id, "FY", fy_year)
-                    db.commit()
-                except Exception as e:
-                    logger.warning(
-                        "daily FY recalc failed for %s FY%s: %s",
-                        ticker, fy_year, e,
-                    )
-                    db.rollback()
     except Exception:
+        db.rollback()
         finish_job(company_id, status="failed")
         raise
     else:
         finish_job(company_id)
-
-    for cv in updated:
-        db.refresh(cv)
-    return updated
+    return _company_value_rows()
 
 
 @values_router.post("/{company_id}/values/calculate", response_model=list[CompanyValueOut])

@@ -143,6 +143,25 @@ class ValueOrchestrator:
         self._derive_calculations(company, years)  # Task 6 (engine.py)
         self.db.flush()
 
+    def run_stammdaten_only(self, company):
+        """Daily-Numbers-Modus: nur die Live-Stammdaten (Feed) refreshen, KEIN
+        EDGAR/Perplexity. Danach die berechneten Werte fuer den Snapshot und
+        jedes bereits vorhandene FY-Jahr neu ableiten (die kursbasierten
+        Multiples haengen am Live-Kurs)."""
+        self._apply_stammdaten(company)
+        self.db.flush()
+        from app.values.routes import run_and_persist_calculations_for_years
+        fy_years = [
+            y for (y,) in self.db.query(CompanyValue.period_year)
+            .filter(CompanyValue.company_id == company.id,
+                    CompanyValue.period_type == "FY",
+                    CompanyValue.period_year.isnot(None))
+            .distinct().all()
+        ]
+        # None = Snapshot-Rechnung (market_cap_calc); plus jedes vorhandene FY.
+        run_and_persist_calculations_for_years(self.db, company, [None] + sorted(fy_years))
+        self.db.flush()
+
     def _missing_fundamental_keys(self, company_id, year, is_forecast=False):
         from app.values.schema_builder import fundamental_keys
         missing = []
