@@ -695,6 +695,7 @@ class ValueOrchestrator:
         self.db.flush()
         self._repair_net_income_gaap(company, years)  # KI-NI gegen GAAP-Marge verifizieren
         self._fill_missing_forward_flows(company, years)  # dividends/buyback/... fortschreiben
+        self.db.flush()  # gefuellte OCF/capex sichtbar machen fuer _derive_fcf
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
         self._derive_eps(company, years)      # eps = NI / Aktien (GAAP-konsistent)
         self._derive_net_debt(company, years)
