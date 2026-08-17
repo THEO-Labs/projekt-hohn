@@ -475,6 +475,17 @@ def _fetch_and_store_historical_mcap(
         return
     fy_month, fy_day = _ensure_company_fy_end(db, company)
     anchor_year = period_year - 1
+    # Anker-Datum in der Zukunft (z.B. Folgejahres-Anker eines laufenden FY,
+    # dessen Ende noch nicht erreicht ist) -> es gibt keinen Schlusskurs; nicht
+    # fetchen, sonst greift der Feed den letzten verfuegbaren Kurs und legt einen
+    # fabrizierten "FY-Ende"-Wert ab.
+    from datetime import date as _d
+    try:
+        _anchor_date = _d(anchor_year, fy_month, fy_day)
+    except ValueError:
+        _anchor_date = _d(anchor_year, 12, 31)
+    if _anchor_date > _d.today():
+        return
     try:
         result = provider.fetch_historical_market_cap(ticker, anchor_year, fy_month, fy_day)
     except Exception as e:

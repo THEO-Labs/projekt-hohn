@@ -60,6 +60,12 @@ _BALANCE_KEYS = frozenset({
     "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
 })
 
+# Diese Keys NIE vom LLM holen: Schulden-Stichtagswerte werden vom LLM
+# halluziniert (Natera: 362M/694M statt real 80M Kreditlinie). Sie kommen
+# ausschliesslich aus EDGAR/Filing-XBRL (provider); fehlen sie, ist die Firma
+# faktisch schuldenfrei -> net_debt = Netto-Cash (korrekt).
+_LLM_EXCLUDED_KEYS = frozenset({"st_debt", "lt_debt"})
+
 
 @dataclass(frozen=True)
 class AnchorValue:
@@ -280,6 +286,8 @@ class ValueOrchestrator:
         from app.values.schema_builder import fundamental_keys
         missing = []
         for k in fundamental_keys():
+            if k in _LLM_EXCLUDED_KEYS:
+                continue  # Schulden nur aus EDGAR/Filing, nie vom LLM
             # Ein geankerter/manueller ACTUAL blockiert auch die Forecast-Abfrage.
             actual = self._existing(company_id, k, year, is_forecast=False)
             if actual is not None and (actual.numeric_value is not None
@@ -345,7 +353,7 @@ class ValueOrchestrator:
         for q in ("Q1", "Q2", "Q3", "Q4"):
             if not self._has_reported(company.id, "revenue", year, q):
                 continue  # Quartal (noch) nicht berichtet
-            missing = [k for k in all_keys if not self._has_reported(company.id, k, year, q)]
+            missing = [k for k in all_keys if k not in _LLM_EXCLUDED_KEYS and not self._has_reported(company.id, k, year, q)]
             if not missing:
                 continue
             try:
@@ -543,7 +551,7 @@ class ValueOrchestrator:
             # 1) Exakte Werte aus der Filing-XBRL-Instanz.
             self._bridge_from_filing(company, year, q, currency)
             # 2) Perplexity-Fallback nur fuer weiterhin fehlende Keys.
-            missing = [k for k in all_keys if not self._has_reported(company.id, k, year, q)]
+            missing = [k for k in all_keys if k not in _LLM_EXCLUDED_KEYS and not self._has_reported(company.id, k, year, q)]
             if not missing or self.perplexity is None:
                 continue
             try:
@@ -663,10 +671,69 @@ class ValueOrchestrator:
         for y in years:
             if self._needs_estimate_completion(company, y):
                 self._running_fy_from_quarters(company, y, currency)
-        self.db.flush()  # OCF/capex-Fallback sichtbar machen fuer _derive_fcf
+        self.db.flush()
+        self._repair_net_income_gaap(company, years)  # KI-NI gegen GAAP-Marge verifizieren
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
         self._derive_eps(company, years)      # eps = NI / Aktien (GAAP-konsistent)
         self._derive_net_debt(company, years)
+
+    def _ttm_gaap_net_margin(self, company_id, year):
+        """GAAP-Nettomarge der letzten 4 BERICHTETEN Quartale (provider),
+        rueckwaerts ab dem juengsten berichteten Quartal. Fallback: letztes
+        vollstaendig berichtetes FY. Anker fuer die NI-Plausibilitaet."""
+        quarters = []
+        for y in (year, year - 1, year - 2):
+            for q in ("Q4", "Q3", "Q2", "Q1"):
+                ni = self._existing(company_id, "net_income", y, period_type=q, is_forecast=False)
+                rv = self._existing(company_id, "revenue", y, period_type=q, is_forecast=False)
+                if (ni is not None and ni.numeric_value is not None
+                        and rv is not None and rv.numeric_value):
+                    quarters.append((ni.numeric_value, rv.numeric_value))
+        if len(quarters) >= 4:
+            ni_sum = sum(n for n, _ in quarters[:4])
+            rv_sum = sum(r for _, r in quarters[:4])
+            return (ni_sum / rv_sum) if rv_sum else None
+        # Fallback: letztes berichtetes FY (Provider-Anker).
+        for y in (year - 1, year - 2):
+            ni = self._existing(company_id, "net_income", y, period_type="FY", is_forecast=False)
+            rv = self._existing(company_id, "revenue", y, period_type="FY", is_forecast=False)
+            if (ni is not None and ni.numeric_value is not None
+                    and rv is not None and rv.numeric_value and _rank(ni.primary_method) >= 2):
+                return ni.numeric_value / rv.numeric_value
+        return None
+
+    def _repair_net_income_gaap(self, company, years):
+        """Der KI-recherchierte net_income kann GAAP/Non-GAAP oder Einheiten
+        verwechseln (Intuit 22B, DT 500M-Hybrid). Gegen einen GAAP-Anker
+        pruefen: letzte berichtete GAAP-Marge × (Konsens-)Umsatz. Ist der
+        Schaetzwert grob unplausibel (NI > Umsatz, >2x/<0.5x Anker, falsches
+        Vorzeichen), auf den Anker reparieren. Der KI-Wert bleibt, wenn er
+        plausibel ist ('KI findet es, wir verifizieren nur')."""
+        for year in years:
+            ni = self._existing(company.id, "net_income", year, period_type="FY", is_forecast=True)
+            if ni is None or ni.numeric_value is None:
+                continue  # nur Schaetz-NI pruefen (Actuals unangetastet)
+            rev = self._existing(company.id, "revenue", year, period_type="FY", is_forecast=False) \
+                or self._existing(company.id, "revenue", year, period_type="FY", is_forecast=True)
+            if rev is None or not rev.numeric_value or rev.numeric_value <= 0:
+                continue
+            margin = self._ttm_gaap_net_margin(company.id, year)
+            if margin is None:
+                continue
+            anchor = margin * rev.numeric_value
+            cur = ni.numeric_value
+            ratio = (cur / anchor) if anchor != 0 else None
+            implausible = (
+                abs(cur) > rev.numeric_value                       # NI > Umsatz: unmoeglich
+                or (anchor > 0) != (cur > 0)                       # Vorzeichen kippt
+                or (ratio is not None and (ratio < Decimal("0.5") or ratio > Decimal("2")))
+            )
+            if implausible:
+                logger.info("NI-Repair %s FY%s: KI=%s -> Anker=%s (Marge %.3f)",
+                            company.ticker, year, cur, anchor, float(margin))
+                self._upsert(company.id, "net_income", year, period_type="FY", value=anchor,
+                             source_name="GAAP-Marge × Umsatz (KI-Wert verworfen)", source_link=None,
+                             currency=rev.currency, primary_method=ni.primary_method, is_forecast=True)
 
     def _running_fy_from_quarters(self, company, year, currency):
         """Laufendes FY-Flow = Q1+Q2+Q3 (Actuals) + Q4 (Schaetzung). Verankert an

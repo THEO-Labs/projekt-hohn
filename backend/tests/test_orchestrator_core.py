@@ -155,3 +155,43 @@ def test_fy_floor_never_below_reported_actuals(db, us_company):
     fy = db.query(CompanyValue).filter_by(
         company_id=cid, value_key="buyback_volume", period_year=2027, period_type="FY").one()
     assert fy.numeric_value >= Decimal("275000000")  # Floor: >= Q1-Actual
+
+
+def test_repair_net_income_gaap_replaces_outlier(db, us_company):
+    """KI-NI-Ausreisser (EPS-als-Milliarden) wird auf GAAP-Marge×Umsatz repariert."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    # Berichtete GAAP-Marge ~10% (letzte 4 Quartale je NI 100 / rev 1000)
+    for y, q in [(2026, "Q1"), (2026, "Q2"), (2026, "Q3"), (2025, "Q4")]:
+        _q(db, cid, "net_income", y, q, 100_000_000)
+        _q(db, cid, "revenue", y, q, 1_000_000_000)
+    # Konsens-Umsatz 2027 = 5B (Forecast); NI-Ausreisser 22B (unmoeglich, > Umsatz)
+    _q(db, cid, "revenue", 2027, "FY", 5_000_000_000, forecast=True, method="perplexity_consensus")
+    _q(db, cid, "net_income", 2027, "FY", 22_000_000_000, forecast=True, method="estimate_unanchored")
+    orch._repair_net_income_gaap(us_company, [2026, 2027])
+    db.flush()
+    ni = db.query(CompanyValue).filter_by(company_id=cid, value_key="net_income",
+                                          period_year=2027, period_type="FY", is_forecast=True).one()
+    # Repariert auf ~10% × 5B = 500M
+    assert abs(ni.numeric_value - Decimal("500000000")) < Decimal("1000000")
+    assert "GAAP-Marge" in ni.source_name
+
+
+def test_repair_keeps_plausible_ni(db, us_company):
+    """Ein plausibler KI-NI (nahe Anker) bleibt unangetastet ('KI findet es')."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    for y, q in [(2026, "Q1"), (2026, "Q2"), (2026, "Q3"), (2025, "Q4")]:
+        _q(db, cid, "net_income", y, q, 100_000_000)
+        _q(db, cid, "revenue", y, q, 1_000_000_000)
+    _q(db, cid, "revenue", 2027, "FY", 5_000_000_000, forecast=True, method="perplexity_consensus")
+    _q(db, cid, "net_income", 2027, "FY", 550_000_000, forecast=True, method="perplexity_consensus")
+    orch._repair_net_income_gaap(us_company, [2026, 2027])
+    db.flush()
+    ni = db.query(CompanyValue).filter_by(company_id=cid, value_key="net_income",
+                                          period_year=2027, period_type="FY", is_forecast=True).one()
+    assert ni.numeric_value == Decimal("550000000")  # 550M vs Anker 500M -> plausibel, behalten
