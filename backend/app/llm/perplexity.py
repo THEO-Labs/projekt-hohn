@@ -1,6 +1,12 @@
-"""Duenner Client fuer die Perplexity Agent-API (POST /v1/agent).
-Strukturierte Ausgabe via response_format json_schema; Quellen aus citations.
+"""Duenner Client fuer die Perplexity Sonar API (POST /chat/completions).
+Strukturierte Ausgabe via response_format json_schema; Quellen aus citations;
+Domain-Filter via search_domain_filter; Suchtiefe via web_search_options.
 Keine Gates, kein Retry-Zoo — 429/5xx werden vom Aufrufer/rate_limiter behandelt.
+
+Hinweis: Die neue /v1/agent-API akzeptiert die sonar-Modelle NICHT
+("model sonar-pro is not supported"). Die klassische /chat/completions-API
+liefert mit sonar-pro strukturiertes JSON + citations und ist bis 27.09.2026
+unterstuetzt — die nutzen wir.
 """
 
 import logging
@@ -33,22 +39,23 @@ class PerplexityClient:
 
     def _post(self, input_text: str, response_format: dict,
               domain_filter: list[str] | None) -> tuple[dict, str | None, str | None]:
-        web = {"type": "web_search", "search_context_size": "high"}
-        if domain_filter:
-            web["filters"] = {"search_domain_filter": domain_filter}
         body = {
             "model": self._model,
-            "input": input_text,
+            "messages": [{"role": "user", "content": input_text}],
             "response_format": response_format,
-            "tools": [web],
+            "web_search_options": {"search_context_size": "high"},
             "stream": False,
         }
+        if domain_filter:
+            body["search_domain_filter"] = domain_filter
         with httpx.Client(timeout=self._timeout) as client:
-            r = client.post(f"{self._base}/v1/agent", json=body,
+            r = client.post(f"{self._base}/chat/completions", json=body,
                             headers={"Authorization": f"Bearer {self._key}"})
             r.raise_for_status()
             data = r.json()
-        payload = self._parse_output(data.get("output_text"))
+        choices = data.get("choices") or []
+        content = (choices[0].get("message") or {}).get("content") if choices else None
+        payload = self._parse_output(content)
         url, title = self._first_citation(data)
         return payload, url, title
 
