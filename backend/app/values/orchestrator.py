@@ -459,17 +459,22 @@ class ValueOrchestrator:
         from app.values.provider_anchor import _fy_is_closed
         from app.values.quarter_residual import derive_q4_from_fy_residual
         run = years[-1]
+        currency = getattr(company, "currency", None) or "USD"
         closed = [y for y in years if _fy_is_closed(company, y)]
         if closed:
             derive_q4_from_fy_residual(self.db, company, closed)
         for y in years:
             if y == run and not _fy_is_closed(company, y):
-                self._running_fy_from_quarters(company, y)
+                self._running_fy_from_quarters(company, y, currency)
+        self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
         self._derive_net_debt(company, years)
 
-    def _running_fy_from_quarters(self, company, year):
+    def _running_fy_from_quarters(self, company, year, currency):
         """Laufendes FY-Flow = Q1+Q2+Q3 (Actuals) + Q4 (Schaetzung). Verankert an
-        die berichtete Realitaet -> FY nie unter YTD, kein negatives Q4."""
+        die berichtete Realitaet -> FY nie unter YTD, kein negatives Q4. Keys mit
+        unvollstaendigen Quartalen (z.B. capex/OCF nicht im Earnings-Release) ->
+        volle FY-Schaetzung als Fallback. fcf wird separat abgeleitet."""
+        incomplete = []
         for key in _FLOW_KEYS:
             fy_actual = self._existing(company.id, key, year, is_forecast=False)
             if fy_actual is not None and fy_actual.numeric_value is not None:
@@ -485,12 +490,52 @@ class ValueOrchestrator:
                     break
                 qsum += r.numeric_value
                 cur = cur or r.currency
-            if not complete:
-                continue
-            self._upsert(company.id, key, year, period_type="FY",
-                         value=normalize_sign(key, qsum, context=f"fy-from-q {company.ticker} FY{year}"),
-                         source_name="FY = Q1+Q2+Q3+Q4 (Q4 geschätzt)", source_link=None,
-                         currency=cur, primary_method="perplexity_consensus", is_forecast=True)
+            if complete:
+                self._upsert(company.id, key, year, period_type="FY",
+                             value=normalize_sign(key, qsum, context=f"fy-from-q {company.ticker} FY{year}"),
+                             source_name="FY = Q1+Q2+Q3+Q4 (Q4 geschätzt)", source_link=None,
+                             currency=cur, primary_method="perplexity_consensus", is_forecast=True)
+            else:
+                incomplete.append(key)
+        incomplete = [k for k in incomplete if k != "fcf"]  # fcf = OCF−CapEx (abgeleitet)
+        if incomplete and self.perplexity is not None:
+            try:
+                vals = self.perplexity.fetch_consensus(
+                    company_name=company.name, ticker=company.ticker,
+                    forward_year=year, keys=incomplete, currency=currency)
+            except Exception as e:
+                logger.warning("perplexity FY-Fallback %s FY%s: %s",
+                               getattr(company, "ticker", "?"), year, e)
+                vals = {}
+            for key, pv in vals.items():
+                val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+                self._upsert(company.id, key, year, period_type="FY", value=val,
+                             source_name="Perplexity (FY-Schätzung)", source_link=pv.source_url,
+                             currency=currency, primary_method="perplexity_consensus", is_forecast=True)
+
+    def _derive_fcf(self, company, years):
+        """fcf = OCF − |CapEx| je Slot (Konvention: FCF nie eigenstaendig
+        schaetzen). Ueberschreibt nur nicht-manuelle/nicht-provider fcf."""
+        for year in years:
+            ocf_rows = (self.db.query(CompanyValue)
+                        .filter(CompanyValue.company_id == company.id,
+                                CompanyValue.value_key == "operating_cash_flow",
+                                CompanyValue.period_year == year,
+                                CompanyValue.numeric_value.isnot(None))
+                        .all())
+            for orow in ocf_rows:
+                pt, fc = orow.period_type, orow.is_forecast
+                fexist = self._existing(company.id, "fcf", year, period_type=pt, is_forecast=fc)
+                if fexist is not None and (fexist.manually_overridden
+                                           or fexist.primary_method == "provider"):
+                    continue
+                cap = self._existing(company.id, "capex", year, period_type=pt, is_forecast=fc)
+                if cap is None or cap.numeric_value is None:
+                    continue
+                self._upsert(company.id, "fcf", year, period_type=pt,
+                             value=orow.numeric_value - abs(cap.numeric_value),
+                             source_name="Abgeleitet (OCF − CapEx)", source_link=None,
+                             currency=orow.currency, primary_method="derived", is_forecast=fc)
 
     def _derive_net_debt(self, company, years):
         """net_debt = (st_debt + lt_debt) − (cash + st_investments) je Slot, in dem
