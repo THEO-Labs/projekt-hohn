@@ -218,3 +218,46 @@ def test_no_quarter_year_uses_margin_anchor(db, us_company):
     ni = db.query(CompanyValue).filter_by(company_id=cid, value_key="net_income",
                                           period_year=2027, period_type="FY", is_forecast=True).one()
     assert abs(ni.numeric_value - Decimal("1100000000")) < Decimal("1000000")  # Anker, nicht 900M
+
+
+def test_estimate_clears_hallucinated_fy_actual(db, us_company):
+    """Ungefiltes Jahr: ein per Perplexity als Ist gespeicherter (halluzinierter)
+    FY-net_income wird in _estimate_running_fy geloescht (blockiert sonst die
+    Quartals-Vervollstaendigung). Provider-Quartale bleiben."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    for p, v in [("Q1", 446), ("Q2", 693), ("Q3", 3064)]:
+        _q(db, cid, "net_income", 2026, p, v * 1_000_000)
+    _q(db, cid, "net_income", 2026, "FY", 1139 * 1_000_000, method="perplexity")  # halluziniert < ΣQ
+    orch._estimate_running_fy(us_company, 2026, "USD")
+    db.flush()
+    ni_fy = db.query(CompanyValue).filter_by(
+        company_id=cid, value_key="net_income", period_year=2026,
+        period_type="FY", is_forecast=False).one_or_none()
+    assert ni_fy is None  # Halluzinat entfernt
+    # Provider-Quartale unangetastet
+    assert db.query(CompanyValue).filter_by(
+        company_id=cid, value_key="net_income", period_year=2026, period_type="Q3").one().numeric_value == Decimal("3064000000")
+
+
+def test_fill_missing_forward_flows(db, us_company):
+    """0-Quartals-Jahr: fehlende Forward-Flows werden aus dem Vorjahr ×
+    Umsatzwachstum fortgeschrieben (damit H-Return-Komponenten rechnen)."""
+    orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
+                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             history_years=2)
+    cid = us_company.id
+    for k, v in [("revenue", 100), ("dividends", 10), ("buyback_volume", 20), ("sbc", 5)]:
+        _q(db, cid, k, 2025, "FY", v * 1_000_000, method="provider")
+    _q(db, cid, "revenue", 2026, "FY", 110 * 1_000_000, forecast=True, method="estimate_unanchored")
+    orch._fill_missing_forward_flows(us_company, [2026])
+    db.flush()
+
+    def fyv(key):
+        return orch._fy_value(cid, key, 2026)
+    # growth 110/100 = 1.1
+    assert abs(fyv("dividends") - Decimal("11000000")) < Decimal("1000")
+    assert abs(fyv("buyback_volume") - Decimal("22000000")) < Decimal("1000")
+    assert abs(fyv("sbc") - Decimal("5500000")) < Decimal("1000")

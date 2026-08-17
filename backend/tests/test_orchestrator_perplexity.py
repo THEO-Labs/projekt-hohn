@@ -24,10 +24,15 @@ class FakePplx:
 
 
 def test_perplexity_fills_only_missing(db, us_company):
+    from app.values.orchestrator import AnchorValue
     pplx = FakePplx()
     orch = ValueOrchestrator(
         db=db, stammdaten_fetch=lambda c: {},
-        edgar_fetch=lambda c, years: {},   # nichts vom Anker -> alles offen
+        # Abgeschlossenes Jahr MIT echtem EDGAR-Anker (net_income) -> gilt als
+        # gefiltes 10-K -> _fill_reported_gaps holt die revenue-Luecke via
+        # Perplexity (fetch_period). Ohne Anker waere es ein ungefiltes Jahr.
+        edgar_fetch=lambda c, years: {("net_income", years[0]): AnchorValue(
+            Decimal("500"), "SEC EDGAR", "https://sec.gov/e", "USD")},
         perplexity=pplx, history_years=2)
     orch.run(us_company)
     rev = db.query(CompanyValue).filter_by(company_id=us_company.id, value_key="revenue").all()

@@ -329,15 +329,20 @@ class ValueOrchestrator:
         from app.values.provider_anchor import _fy_is_closed
         currency = getattr(company, "currency", None) or "USD"
         for year in years:
-            # Abgeschlossenes FY: berichtete FY-Luecken via Perplexity holen
-            # (as-reported). Fuellt fuer voll gefilte Jahre alle Restluecken.
-            if _fy_is_closed(company, year):
+            needs_est = self._needs_estimate_completion(company, year)
+            # Abgeschlossenes UND vollstaendig gefiltes FY (echter EDGAR-FY-Anker):
+            # berichtete FY-Restluecken via Perplexity (as-reported) holen. NICHT
+            # fuer ein gerade beendetes, aber noch nicht gefiledes 10-K — dort
+            # halluziniert Perplexity einen "as-reported" FY-Wert (Intuit FY2026:
+            # NI 1139M statt ~4500M), der als Ist die Quartals-Vervollstaendigung
+            # blockiert.
+            if _fy_is_closed(company, year) and not needs_est:
                 self._fill_reported_gaps(company, year, currency)
             # Jahr ohne vollstaendigen EDGAR-Jahreswert (laufendes FY ODER gerade
             # beendetes FY mit noch nicht gefiledem 10-K): berichtete Quartale
             # exakt bridgen + Bilanz-Carry. Die FY-Schaetzung (Guidance/Konsens,
             # an die Quartale grundiert) folgt in _finalize.
-            if self._needs_estimate_completion(company, year):
+            if needs_est:
                 self._estimate_running_fy(company, year, currency)
             # EDGAR-Luecken in berichteten Quartalen exakt fuellen (z.B. eps/
             # st_investments, wo EDGAR das Concept nicht hat).
@@ -429,6 +434,22 @@ class ValueOrchestrator:
         flow_keys = sorted(_FLOW_KEYS)
         self._clear_forecast_slots(company.id, year, flow_keys + list(_BALANCE_KEYS) + ["net_debt"],
                                    ("Q1", "Q2", "Q3", "Q4", "FY"))
+        # Halluzinierte FY-"Ist"-Werte aus einem frueheren Lauf entfernen: fuer
+        # ein noch nicht vollstaendig gefiltes Jahr kann es keinen echten
+        # as-reported FY-Wert geben. Ein per Perplexity als Ist gespeicherter
+        # FY-Flow (nicht provider/manual) blockiert sonst die Quartals-
+        # Vervollstaendigung (_running_fy_from_quarters ueberspringt Keys mit
+        # vorhandenem Ist). Provider-/Manual-Werte bleiben unangetastet.
+        (self.db.query(CompanyValue)
+         .filter(CompanyValue.company_id == company.id,
+                 CompanyValue.value_key.in_(flow_keys),
+                 CompanyValue.period_type == "FY",
+                 CompanyValue.period_year == year,
+                 CompanyValue.is_forecast.is_(False),
+                 CompanyValue.manually_overridden.is_(False),
+                 CompanyValue.primary_method.notin_(["provider", "manual"]))
+         .delete(synchronize_session=False))
+        self.db.flush()
         # Bridge: berichtete Quartale, die die aggregierte companyfacts-API noch
         # nicht hat (Filing-Lag), exakt aus der XBRL-Instanz des Filings holen.
         self._bridge_missing_quarters(company, year, currency)
@@ -673,9 +694,45 @@ class ValueOrchestrator:
                 self._running_fy_from_quarters(company, y, currency)
         self.db.flush()
         self._repair_net_income_gaap(company, years)  # KI-NI gegen GAAP-Marge verifizieren
+        self._fill_missing_forward_flows(company, years)  # dividends/buyback/... fortschreiben
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
         self._derive_eps(company, years)      # eps = NI / Aktien (GAAP-konsistent)
         self._derive_net_debt(company, years)
+
+    def _fy_value(self, company_id, key, year):
+        """FY-Wert eines Keys (Ist bevorzugt, sonst Forecast) oder None."""
+        r = (self._existing(company_id, key, year, period_type="FY", is_forecast=False)
+             or self._existing(company_id, key, year, period_type="FY", is_forecast=True))
+        return r.numeric_value if (r is not None and r.numeric_value is not None) else None
+
+    def _fill_missing_forward_flows(self, company, years):
+        """0-Quartals-Zukunftsjahre: der Konsens laesst dividends/buyback/sbc/OCF/
+        capex oft weg -> die H-Return-Komponenten (dividend_yield,
+        net_buyback_yield, fcf_yield) fehlen und die H-Return bleibt leer.
+        Fehlende Forward-Flows aus dem Vorjahr fortschreiben, skaliert mit dem
+        Umsatzwachstum (Ratio zur Umsatzbasis konstant gehalten). Nur Jahre ganz
+        ohne berichtete Quartale (mit Quartalen greift _running_fy_from_quarters)."""
+        keys = ["dividends", "buyback_volume", "sbc", "operating_cash_flow", "capex"]
+        for year in years:
+            if not self._needs_estimate_completion(company, year):
+                continue
+            if self._reported_quarters(company.id, "revenue", year):
+                continue
+            rev, rev_prev = self._fy_value(company.id, "revenue", year), \
+                self._fy_value(company.id, "revenue", year - 1)
+            if not rev or not rev_prev or rev_prev <= 0:
+                continue
+            growth = rev / rev_prev
+            for key in keys:
+                if self._fy_value(company.id, key, year) is not None:
+                    continue  # schon vorhanden (Konsens/Ist)
+                prev = self._fy_value(company.id, key, year - 1)
+                if prev is None:
+                    continue
+                self._upsert(company.id, key, year, period_type="FY", value=prev * growth,
+                             source_name="Fortgeschrieben (Vorjahr × Umsatzwachstum)",
+                             source_link=None, currency=company.currency or "USD",
+                             primary_method="estimate_unanchored", is_forecast=True)
 
     def _ttm_gaap_net_margin(self, company_id, year):
         """GAAP-Nettomarge als Anker fuer die NI-Plausibilitaet. Bevorzugt die
