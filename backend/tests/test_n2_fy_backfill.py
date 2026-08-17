@@ -13,10 +13,22 @@ from uuid import UUID
 from app.auth.models import User
 from app.auth.security import hash_password
 from app.values.models import CompanyValue
-from app.values.routes import _N2_FY_ANCHOR_KEYS, _n2_fy_anchor_missing
+from app.values.routes import (
+    _N2_FY_ANCHOR_KEYS,
+    _N2_GATE_KEYS,
+    _n2_fy_anchor_missing,
+)
 
 YEAR = date.today().year
 N2 = YEAR - 2
+
+
+def _seed_gate_keys(db, cid, pm, **kw):
+    """Alle Gate-Kern-Keys fuer N-2 frisch setzen (das Gate ist erst dann
+    erfuellt, wenn jeder von ihnen einen authoritativen FY-Actual hat)."""
+    for key in _N2_GATE_KEYS:
+        db.add(_fy_row(cid, key, N2, pm, **kw))
+    db.commit()
 
 
 def _setup(client, db, email="n2backfill@example.com", isin=None):
@@ -56,9 +68,16 @@ def test_criterion_no_row_missing(client, db):
 
 def test_criterion_statement_and_provider_rows_are_fresh(client, db):
     cid = _setup(client, db)
+    _seed_gate_keys(db, cid, "statement_research")
+    assert _n2_fy_anchor_missing(db, cid, N2) is False
+
+
+def test_criterion_partial_gate_keys_still_missing(client, db):
+    """Nur net_income frisch, aber ebitda/fcf/... fehlen -> Backfill noetig."""
+    cid = _setup(client, db)
     db.add(_fy_row(cid, "net_income", N2, "statement_research"))
     db.commit()
-    assert _n2_fy_anchor_missing(db, cid, N2) is False
+    assert _n2_fy_anchor_missing(db, cid, N2) is True
 
 
 def test_criterion_replaceable_rows_missing(client, db):
@@ -71,8 +90,7 @@ def test_criterion_replaceable_rows_missing(client, db):
 
 def test_criterion_manual_row_is_authoritative(client, db):
     cid = _setup(client, db)
-    db.add(_fy_row(cid, "net_income", N2, None, manually_overridden=True))
-    db.commit()
+    _seed_gate_keys(db, cid, None, manually_overridden=True)
     assert _n2_fy_anchor_missing(db, cid, N2) is False
 
 
@@ -139,8 +157,7 @@ def test_refresh_skips_backfill_when_n2_fresh(client, db, monkeypatch):
     """N-2 vorhanden (statement_research-Zeile mit Wert) -> kein Call,
     kein gezielter N-1-Kennzahlen-Lauf."""
     cid = _setup(client, db)
-    db.add(_fy_row(cid, "net_income", N2, "statement_research"))
-    db.commit()
+    _seed_gate_keys(db, cid, "statement_research")
     stmt_calls, nd_calls, calc_calls = _patch_refresh_env(monkeypatch)
 
     r = client.post(

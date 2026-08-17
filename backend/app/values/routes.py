@@ -539,35 +539,67 @@ _N2_FY_ANCHOR_KEYS = (
     "st_investments",
     "st_debt",
     "lt_debt",
+    # Cashflow-/Kapitalrueckfluss-/Ergebnis-Keys: EDGAR fuellt sie fuers
+    # abgeschlossene FY N-2 aus dem 10-K genauso wie die Kern-Keys. Fehlten
+    # sie hier, blieb das N-2-Jahr (bei frueh endenden Fiskaljahren das
+    # angezeigte Vor-Vorjahr, z.B. Intuit/Dynatrace FY2025) halb leer.
+    "ebitda",
+    "operating_cash_flow",
+    "fcf",
+    "capex",
+    "sbc",
+    "buyback_volume",
+    "dividends",
+    "shares_outstanding",
+)
+
+# Keys, die jedes reale operative 10-K enthaelt — an ihnen entscheidet das
+# Gate, ob der N-2-Backfill laufen muss. Firmenspezifische Posten
+# (buyback_volume/dividends/Debt) bleiben aussen vor, sonst wuerde der
+# Backfill bei Firmen ohne Rueckkauf/Dividende/Schuld bei jedem Refresh
+# erneut anlaufen.
+_N2_GATE_KEYS = (
+    "net_income",
+    "revenue",
+    "ebitda",
+    "operating_cash_flow",
+    "fcf",
+    "capex",
+    "sbc",
+    "cash_and_equivalents",
 )
 
 
 def _n2_fy_anchor_missing(db: Session, company_id: UUID, year: int) -> bool:
-    """FY-Kernanker fuer N-2 fehlt: keine net_income-FY-Actual-Zeile mit
-    Wert aus frischer/authoritativer Herkunft (provider/statement_research/
-    two_stage_*/manual/PDF). Leer, not_found, calculated und web_*-Reste
-    zaehlen als fehlend — dann lohnt der FY-only-Backfill."""
-    row = (
-        db.query(CompanyValue)
-        .filter(
+    """FY-Anker fuer N-2 fehlt: mindestens einer der Gate-Kern-Keys hat
+    keine FY-Actual-Zeile mit Wert aus frischer/authoritativer Herkunft
+    (provider/statement_research/two_stage_*/manual/PDF). Leer, not_found,
+    calculated und web_*-Reste zaehlen als fehlend — dann lohnt der
+    FY-only-Backfill (deckt jetzt auch Cashflow-/Rueckfluss-Keys ab)."""
+    rows = {
+        r.value_key: r
+        for r in db.query(CompanyValue).filter(
             CompanyValue.company_id == company_id,
-            CompanyValue.value_key == "net_income",
+            CompanyValue.value_key.in_(_N2_GATE_KEYS),
             CompanyValue.period_type == "FY",
             CompanyValue.period_year == year,
             CompanyValue.is_forecast.is_(False),
             CompanyValue.numeric_value.isnot(None),
         )
-        .first()
-    )
-    if row is None:
-        return True
-    if row.manually_overridden or row.from_ir_pdf:
-        return False
-    pm = row.primary_method or ""
-    return not (
-        pm.startswith("two_stage_")
-        or pm in ("provider", "statement_research", "manual", "pdf")
-    )
+    }
+    for key in _N2_GATE_KEYS:
+        row = rows.get(key)
+        if row is None:
+            return True
+        if row.manually_overridden or row.from_ir_pdf:
+            continue
+        pm = row.primary_method or ""
+        if not (
+            pm.startswith("two_stage_")
+            or pm in ("provider", "statement_research", "manual", "pdf")
+        ):
+            return True
+    return False
 
 
 def _process_one_key(
