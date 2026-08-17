@@ -113,12 +113,14 @@ class PerplexityClient:
     def fetch_consensus(self, *, company_name: str, ticker: str, forward_year: int,
                         keys: list[str], currency: str) -> dict[str, PerplexityValue]:
         prompt = (
-            f"Report the current Wall-Street analyst consensus estimates for "
-            f"{company_name} (ticker {ticker}) for fiscal year {forward_year}. "
-            f"Report EVERY monetary figure as the FULL amount in {currency} with all digits "
-            f"— e.g. 391035000000 for 391 billion. Do NOT scale to thousands, millions or "
-            f"billions. eps_diluted stays per-share (e.g. 6.08). "
-            f"Use null where no consensus is available. Only these metrics: {', '.join(keys)}."
+            f"Provide your best estimate of {company_name}'s (ticker {ticker}) fiscal year "
+            f"{forward_year} figures, based on the company's guidance, current Wall-Street "
+            f"analyst consensus and recent run-rate. Report EVERY monetary figure as the "
+            f"FULL amount in {currency} with all digits — e.g. 391035000000 for 391 billion. "
+            f"Do NOT scale to thousands, millions or billions. eps_diluted stays per-share "
+            f"(e.g. 6.08). Provide a numeric estimate for every metric you can reasonably "
+            f"project; use null only if you truly have no basis. Only these metrics: "
+            f"{', '.join(keys)}."
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)
         return self._to_values(payload, keys, url, title)

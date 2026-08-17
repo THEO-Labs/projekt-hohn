@@ -225,6 +225,7 @@ class ValueOrchestrator:
         if key not in _MONETARY_KEYS or value is None or value == 0:
             return value
         ref = self._reference_magnitude(company_id, key)
+        logger.info("unit-fix probe %s: in=%s ref=%s", key, value, ref)  # TEMP debug
         if not ref:
             return value
         v = value
@@ -264,6 +265,20 @@ class ValueOrchestrator:
                 missing.append(k)
         return missing
 
+    def _clear_forecast(self, company_id, year, keys):
+        """Alte (nicht-manuelle) Forecast-Zellen der Keys leeren, bevor der
+        Konsens neu geholt wird — sonst bleiben stale/falsch-skalierte Werte
+        stehen, wenn das Modell einen Key diesmal nicht liefert."""
+        (self.db.query(CompanyValue)
+         .filter(CompanyValue.company_id == company_id,
+                 CompanyValue.value_key.in_(list(keys)),
+                 CompanyValue.period_type == "FY",
+                 CompanyValue.period_year == year,
+                 CompanyValue.is_forecast.is_(True),
+                 CompanyValue.manually_overridden.is_(False))
+         .delete(synchronize_session=False))
+        self.db.flush()
+
     def _apply_perplexity(self, company, years):
         if self.perplexity is None:
             logger.warning("kein Perplexity-Client — Gap-Fill uebersprungen fuer %s",
@@ -279,6 +294,7 @@ class ValueOrchestrator:
                 continue
             try:
                 if forward:
+                    self._clear_forecast(company.id, year, keys)
                     vals = self.perplexity.fetch_consensus(
                         company_name=company.name, ticker=company.ticker,
                         forward_year=year, keys=keys, currency=currency)
