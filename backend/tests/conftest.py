@@ -110,3 +110,32 @@ def client(db):
     app.dependency_overrides[get_db] = override_get_db
     yield TestClient(app)
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def us_company(db):
+    """Minimal US-Company fuer Orchestrator-/Provider-Tests (ISIN-Pflicht
+    seit den ISIN-only-Company-Creation-Commits). Direkt per ORM angelegt
+    (kein API-Client noetig) — Pattern wie tests/test_balance_carry_forward.py.
+    """
+    from app.auth.models import User
+    from app.auth.security import hash_password
+    from app.companies.models import Company
+    from app.portfolios.models import Portfolio
+    from tests.test_values import _seed_catalog
+
+    _seed_catalog(db)
+    user = User(email="orchestrator@example.com", password_hash=hash_password("pw1234"))
+    db.add(user)
+    db.flush()
+    portfolio = Portfolio(name="P", owner_user_id=user.id)
+    db.add(portfolio)
+    db.flush()
+    company = Company(
+        portfolio_id=portfolio.id, name="TestCo US", ticker="TST",
+        isin="US0001234567", currency="USD",
+        fiscal_year_end_month=12, fiscal_year_end_day=31,
+    )
+    db.add(company)
+    db.commit()
+    return company
