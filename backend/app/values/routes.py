@@ -652,7 +652,7 @@ def refresh_company_values(
     # target_years haengen daran) -> historische Preis-Anker -> orch.run.
     # 8 Schritte: FY-Ende, Historik-Anker + 6 Orchestrator-Phasen (Stammdaten,
     # EDGAR, Quartale, Perplexity, Ableitungen, Berechnung).
-    start_job(company_id, 8)
+    start_job(company_id, 9)
     try:
         set_phase(company_id, "fiscal_year_end", "Geschaeftsjahr-Ende ermitteln")
         update_job(company_id, "Geschaeftsjahr-Ende")

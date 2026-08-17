@@ -200,6 +200,9 @@ class ValueOrchestrator:
         self._emit("derive", "Ableitungen (FY, Q4, Net Debt)")
         self._finalize_estimates(company, years)
         self.db.flush()
+        self._emit("adjusted", "Adjusted / Non-GAAP")
+        self._apply_adjusted(company, years)
+        self.db.flush()
         self._emit("calculating", "Kennzahlen berechnen")
         self._derive_calculations(company, years)
         self.db.flush()
@@ -316,6 +319,35 @@ class ValueOrchestrator:
                 self._estimate_running_fy(company, year, currency)  # Q4-Schaetzung + Balance-Carry
             else:
                 self._fill_reported_gaps(company, year, currency)   # abgeschlossenes Jahr: nur Luecken
+
+    def _apply_adjusted(self, company, years):
+        """Firmen-definierte adjusted/Non-GAAP-Werte fuer berichtete Jahre holen
+        und als numeric_value_adjusted auf die bestehenden GAAP-Zeilen setzen
+        (GAAP-Wert bleibt unangetastet)."""
+        if self.perplexity is None:
+            return
+        from app.values.metric_definitions import ADJUSTED_KEYS
+        from app.values.provider_anchor import _fy_is_closed
+        keys = sorted(ADJUSTED_KEYS)
+        currency = getattr(company, "currency", None) or "USD"
+        for year in years:
+            if not _fy_is_closed(company, year):
+                continue  # nur berichtete (abgeschlossene) Jahre
+            try:
+                vals = self.perplexity.fetch_adjusted(
+                    company_name=company.name, ticker=company.ticker,
+                    fiscal_year=year, keys=keys, currency=currency)
+            except Exception as e:
+                logger.warning("perplexity adjusted %s FY%s: %s",
+                               getattr(company, "ticker", "?"), year, e)
+                continue
+            for key, pv in vals.items():
+                row = self._existing(company.id, key, year, is_forecast=False)
+                if row is None or row.numeric_value is None:
+                    continue
+                row.numeric_value_adjusted = self._unit_fix(
+                    company.id, key, Decimal(str(pv.value)))
+        self.db.flush()
 
     def _fill_reported_gaps(self, company, year, currency):
         keys = self._missing_fundamental_keys(company.id, year, is_forecast=False)

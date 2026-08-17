@@ -127,6 +127,22 @@ class PerplexityClient:
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)
         return self._to_values(payload, keys, url, title)
 
+    def fetch_adjusted(self, *, company_name: str, ticker: str, fiscal_year: int,
+                       keys: list[str], currency: str) -> dict[str, PerplexityValue]:
+        """Firmen-definierte ADJUSTED / Non-GAAP-Werte (adjusted NI/EBITDA/FCF …)
+        aus der Non-GAAP-Reconciliation des Earnings-Release."""
+        prompt = (
+            f"Report {company_name}'s (ticker {ticker}) company-defined ADJUSTED / NON-GAAP "
+            f"figures for fiscal year {fiscal_year}, exactly as the company presents them in "
+            f"its earnings release / non-GAAP reconciliation (e.g. adjusted net income, "
+            f"adjusted EBITDA, adjusted free cash flow). Report the FULL amount in {currency} "
+            f"with all digits — e.g. 8500000000 for 8.5 billion. Do NOT scale. Use null if the "
+            f"company does NOT report an adjusted/non-GAAP figure for a metric (do not just "
+            f"repeat the GAAP number). Only these metrics: {', '.join(keys)}."
+        )
+        payload, url, title = self._post(prompt, build_consensus_schema(keys), PERIOD_DOMAIN_ALLOWLIST)
+        return self._to_values(payload, keys, url, title)
+
     def fetch_quarter_reported(self, *, company_name: str, ticker: str, fiscal_year: int,
                                quarter: str, keys: list[str], currency: str) -> dict[str, PerplexityValue]:
         """Berichtete (nicht geschaetzte) Quartals-Actuals aus dem Earnings-
