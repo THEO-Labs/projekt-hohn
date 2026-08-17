@@ -571,18 +571,33 @@ class ValueOrchestrator:
         return out
 
     def _reported_actuals_context(self, company_id, year, keys):
-        """Kompakter Kontext der bereits BERICHTETEN Quartale (fuers Grounding
-        der Konsens/Guidance-Abfrage — damit die Schaetzung an der Realitaet
-        haengt und keine Ausreisser liefert). Werte in Mio, lesbar fuer das LLM."""
+        """Kompakter Kontext fuers Grounding der Konsens/Guidance-Abfrage: die
+        bereits BERICHTETEN Quartale dieses FY + der letzte bekannte Vorjahres-
+        Jahreswert (GAAP-Groessenordnungs-Anker). Verhindert Ausreisser und die
+        GAAP/Non-GAAP-Verwechslung. Werte in Mio, lesbar fuers LLM."""
+        def fmt(r, key):
+            if r is None or r.numeric_value is None:
+                return None
+            if key == "eps_diluted":
+                return f"{key}={r.numeric_value:.2f}/sh"
+            return f"{key}={r.numeric_value / 1_000_000:.0f}m"
         lines = []
         for q in ("Q1", "Q2", "Q3", "Q4"):
-            parts = []
-            for key in keys:
-                r = self._existing(company_id, key, year, period_type=q, is_forecast=False)
-                if r is not None and r.numeric_value is not None:
-                    parts.append(f"{key}={r.numeric_value / 1_000_000:.0f}m")
+            parts = [p for key in keys
+                     if (p := fmt(self._existing(company_id, key, year, period_type=q,
+                                                 is_forecast=False), key))]
             if parts:
-                lines.append(f"{q}: " + ", ".join(parts))
+                lines.append(f"FY{year} {q} actual: " + ", ".join(parts))
+        # Vorjahres-Jahreswert als GAAP-Anker (Actual bevorzugt, sonst Schaetzung).
+        prior_parts = []
+        for key in keys:
+            r = (self._existing(company_id, key, year - 1, period_type="FY", is_forecast=False)
+                 or self._existing(company_id, key, year - 1, period_type="FY", is_forecast=True))
+            p = fmt(r, key)
+            if p:
+                prior_parts.append(p)
+        if prior_parts:
+            lines.append(f"FY{year - 1} full-year (GAAP anchor): " + ", ".join(prior_parts))
         return " | ".join(lines)
 
     def _has_full_fy_anchor(self, company_id, year):
@@ -649,9 +664,8 @@ class ValueOrchestrator:
             if self._needs_estimate_completion(company, y):
                 self._running_fy_from_quarters(company, y, currency)
         self.db.flush()  # OCF/capex-Fallback sichtbar machen fuer _derive_fcf
-        self._derive_net_income_from_eps(company, years)  # NI aus EPS-Konsens, wo NI leer
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
-        self._derive_eps(company, years)      # eps = NI / Aktien, wo EDGAR/Perplexity leer
+        self._derive_eps(company, years)      # eps = NI / Aktien (GAAP-konsistent)
         self._derive_net_debt(company, years)
 
     def _running_fy_from_quarters(self, company, year, currency):
@@ -757,37 +771,12 @@ class ValueOrchestrator:
                              source_name="Abgeleitet (OCF − CapEx)", source_link=None,
                              currency=orow.currency, primary_method="derived", is_forecast=fc)
 
-    def _derive_net_income_from_eps(self, company, years):
-        """net_income = eps_diluted × Aktienzahl, NUR wo NI leer aber eps da ist.
-        Der Analysten-KONSENS fuer Schaetzjahre nennt oft nur den EPS (nicht den
-        Net Income) — dann NI aus dem EPS-Konsens ableiten, damit Overview-
-        Kennzahlen (ni_growth, PE) rechenbar sind."""
-        snap = self._existing(company.id, "shares_outstanding", None,
-                              period_type="SNAPSHOT", is_forecast=False)
-        shares = snap.numeric_value if (snap and snap.numeric_value) else None
-        if not shares or shares == 0:
-            return
-        currency = getattr(company, "currency", None) or "USD"
-        for year in years:
-            eps_rows = (self.db.query(CompanyValue)
-                        .filter(CompanyValue.company_id == company.id,
-                                CompanyValue.value_key == "eps_diluted",
-                                CompanyValue.period_year == year,
-                                CompanyValue.numeric_value.isnot(None))
-                        .all())
-            for erow in eps_rows:
-                pt, fc = erow.period_type, erow.is_forecast
-                existing = self._existing(company.id, "net_income", year, period_type=pt, is_forecast=fc)
-                if existing is not None and existing.numeric_value is not None:
-                    continue  # NI schon da -> nicht anfassen
-                self._upsert(company.id, "net_income", year, period_type=pt,
-                             value=erow.numeric_value * shares,
-                             source_name="Abgeleitet (EPS × Aktien)", source_link=None,
-                             currency=currency, primary_method="derived", is_forecast=fc)
-
     def _derive_eps(self, company, years):
-        """eps_diluted = net_income / aktuelle Aktienzahl, NUR wo eps leer ist
-        (EDGAR hat bei manchen Firmen das Standard-EPS-Concept nicht, z.B. Visa)."""
+        """eps_diluted = net_income / aktuelle Aktienzahl. Fuellt leere eps
+        (EDGAR hat bei manchen Firmen das Standard-EPS-Concept nicht, z.B. Visa)
+        UND ersetzt Konsens-/Schaetz-eps (oft Non-GAAP, z.B. Intuit ~$19 statt
+        GAAP ~$12) durch den GAAP-konsistenten Wert aus GAAP-NI/Aktien. Ein
+        berichteter (provider) oder manueller eps bleibt unangetastet."""
         snap = self._existing(company.id, "shares_outstanding", None,
                               period_type="SNAPSHOT", is_forecast=False)
         shares = snap.numeric_value if (snap and snap.numeric_value) else None
@@ -803,8 +792,9 @@ class ValueOrchestrator:
             for nirow in ni_rows:
                 pt, fc = nirow.period_type, nirow.is_forecast
                 existing = self._existing(company.id, "eps_diluted", year, period_type=pt, is_forecast=fc)
-                if existing is not None and existing.numeric_value is not None:
-                    continue  # eps schon da (EDGAR/Perplexity/manual) -> nicht anfassen
+                if existing is not None and existing.numeric_value is not None and (
+                        existing.manually_overridden or existing.primary_method == "provider"):
+                    continue  # GAAP-Actual/manuell -> behalten
                 self._upsert(company.id, "eps_diluted", year, period_type=pt,
                              value=nirow.numeric_value / shares,
                              source_name="Abgeleitet (NI / Aktien)", source_link=None,

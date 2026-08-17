@@ -130,7 +130,7 @@ def test_reported_actuals_context_grounds_estimate(db, us_company):
     _q(db, cid, "net_income", 2026, "Q1", 5_853_000_000)
     _q(db, cid, "net_income", 2026, "Q2", 6_021_000_000)
     ctx = orch._reported_actuals_context(cid, 2026, ["net_income"])
-    assert "Q1: net_income=5853m" in ctx and "Q2: net_income=6021m" in ctx
+    assert "Q1 actual: net_income=5853m" in ctx and "Q2 actual: net_income=6021m" in ctx
 
 
 def test_fy_floor_never_below_reported_actuals(db, us_company):

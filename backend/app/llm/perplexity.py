@@ -123,24 +123,27 @@ class PerplexityClient:
         grounding = ""
         if reported_context:
             grounding = (
-                f" IMPORTANT — the following quarters of THIS fiscal year are already "
-                f"reported as ACTUALS (values in millions of {currency}): {reported_context}. "
-                f"Your full-year figure for each accumulating flow metric MUST be consistent "
-                f"with and at least as large as the sum of these reported quarters; apply the "
-                f"remaining guidance/consensus only to the quarters not yet reported."
+                f" GROUNDING — the following ACTUALS are already known for this company "
+                f"(values in millions of {currency} unless per-share): {reported_context}. "
+                f"Your full-year figures MUST be a realistic GAAP progression from these; for "
+                f"each accumulating flow metric the full year must be at least the sum of the "
+                f"already-reported quarters of THIS fiscal year."
             )
         prompt = (
             f"Estimate {company_name}'s (ticker {ticker}) fiscal year {forward_year} "
             f"full-year figures. Base the estimate STRICTLY on two grounded sources: (1) the "
             f"company's OWN official guidance / outlook (from its latest earnings release, "
             f"earnings call or 10-Q/10-K outlook), and (2) the current published Wall-Street "
-            f"ANALYST CONSENSUS estimate. Do NOT merely extrapolate past quarters — use "
-            f"actual guidance and consensus numbers.{grounding} Report EVERY monetary figure "
-            f"as the FULL amount in {currency} with all digits — e.g. 391035000000 for 391 "
-            f"billion. Do NOT scale to thousands, millions or billions. eps_diluted stays "
-            f"per-share (e.g. 6.08). Provide a numeric estimate for every metric you can "
-            f"reasonably project from guidance/consensus; use null only if you truly have no "
-            f"basis. Only these metrics: {', '.join(keys)}."
+            f"ANALYST CONSENSUS estimate. Do NOT merely extrapolate past quarters.{grounding} "
+            f"CRITICAL: report GAAP AS-REPORTED figures ONLY — never non-GAAP / adjusted / "
+            f"core figures (for many software companies GAAP net income and GAAP diluted EPS "
+            f"are far LOWER than the heavily-marketed non-GAAP numbers; use the GAAP ones). "
+            f"You MUST provide net_income (GAAP) whenever you provide revenue or eps. Report "
+            f"EVERY monetary figure as the FULL amount in {currency} with all digits — e.g. "
+            f"391035000000 for 391 billion. Do NOT scale. eps_diluted stays per-share GAAP "
+            f"(e.g. 6.08). Prefer the company's own filings / IR page as source. Provide a "
+            f"numeric estimate for every metric you can reasonably project; use null only if "
+            f"you truly have no basis. Only these metrics: {', '.join(keys)}."
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)
         return self._to_values(payload, keys, url, title)
