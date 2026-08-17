@@ -41,13 +41,6 @@ def update_job(company_id: UUID, current_key: str, completed_delta: int = 1, suc
                 job["successful"] = job.get("successful", 0) + 1
 
 
-def mark_success(company_id: UUID) -> None:
-    with _LOCK:
-        job = _JOBS.get(company_id)
-        if job:
-            job["successful"] = job.get("successful", 0) + 1
-
-
 def finish_job(company_id: UUID, status: str = "done") -> None:
     with _LOCK:
         job = _JOBS.get(company_id)

@@ -146,20 +146,33 @@ function MetricValue({
   const toneCls = tone ? tone(value) : cell ? cellColorClass(cell) : value == null ? "text-muted-foreground/70" : "text-foreground";
   const clickable = !!cell && !!onOpen && value !== null;
   const clickCls = clickable ? "cursor-pointer rounded px-1 -mx-1 transition-colors hover:bg-muted/50" : "";
+  // H-Return rechnerisch nicht aussagekraeftig (Backend consistency_flags:
+  // Verlust-/Nahe-Null-Basis oder gedeckeltes Wachstum) -> orange "n.a."-Marker.
+  const warn = value !== null ? (cell?.consistency_flags || null) : null;
   return (
-    <span
-      className={`text-[13px] font-semibold tabular-nums ${toneCls} ${clickCls}`}
-      title={cell?.is_gaap_fallback ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert" : undefined}
-      onClick={
-        clickable
-          ? (e) => {
-              e.stopPropagation();
-              onOpen!(cell!, label, (e.currentTarget as HTMLElement).getBoundingClientRect());
-            }
-          : undefined
-      }
-    >
-      {label}
+    <span className="inline-flex items-center gap-1">
+      <span
+        className={`text-[13px] font-semibold tabular-nums ${toneCls} ${clickCls}`}
+        title={warn ?? (cell?.is_gaap_fallback ? "Non-GAAP nicht separat reported — zeigt GAAP-Wert" : undefined)}
+        onClick={
+          clickable
+            ? (e) => {
+                e.stopPropagation();
+                onOpen!(cell!, label, (e.currentTarget as HTMLElement).getBoundingClientRect());
+              }
+            : undefined
+        }
+      >
+        {label}
+      </span>
+      {warn && (
+        <span
+          title={warn}
+          className="shrink-0 rounded border border-orange-400 bg-orange-100 px-1 py-0.5 text-[9px] font-bold uppercase text-orange-700"
+        >
+          n. a.
+        </span>
+      )}
     </span>
   );
 }
@@ -183,6 +196,7 @@ function cvToMetricCell(
     fetched_at: cv?.fetched_at ?? null,
     primary_method: cv?.primary_method ?? "calculated",
     manually_overridden: cv?.manually_overridden ?? false,
+    consistency_flags: cv?.consistency_flags ?? null,
     formula: FORMULAS[valueKey] ?? null,
     value_key: valueKey,
     period_label: periodLabel,

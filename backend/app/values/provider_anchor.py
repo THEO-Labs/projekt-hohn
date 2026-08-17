@@ -436,50 +436,6 @@ def _write_quarter_result(db, company, key: str, year: int, quarter: str, result
     return True
 
 
-def anchor_key_periods_with_provider(db, company, key: str, year: int) -> set[str]:
-    """Provider-First-Anker fuer EINEN Key und EIN Jahr (vor der LLM-
-    Recherche): FY via der bestehenden FY-Anker-Logik (Abgeschlossen-Gate
-    liegt in anchor_fy_with_provider selbst), Q1-Q4 via der Quartals-
-    Anker-Zelle. Alle Locks/Guards der bestehenden Anker gelten
-    unveraendert.
-
-    Rueckgabe: Menge der Perioden ("FY", "Q1", ...), die danach als
-    provider-Actual mit Wert im Slot stehen — auch wenn sie schon vor dem
-    Aufruf provider waren.
-    """
-    try:
-        anchor_fy_with_provider(db, company, key, year)
-    except Exception as e:
-        logger.warning(
-            "Key-Anker FY failed %s/%s/FY%s: %s", company.ticker, key, year, e,
-        )
-    if key not in QUARTER_ANCHOR_EXCLUDED_KEYS:
-        provider = _quarterly_provider(key)
-        if provider is not None:
-            for quarter in ("Q1", "Q2", "Q3", "Q4"):
-                try:
-                    _anchor_one_quarter_cell(db, company, provider, key, year, quarter)
-                except Exception as e:
-                    logger.warning(
-                        "Key-Anker cell failed %s/%s/%s FY%s: %s",
-                        company.ticker, key, quarter, year, e,
-                    )
-    rows = (
-        db.query(CompanyValue.period_type)
-        .filter(
-            CompanyValue.company_id == company.id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_year == year,
-            CompanyValue.period_type.in_(("FY", "Q1", "Q2", "Q3", "Q4")),
-            CompanyValue.is_forecast.is_(False),
-            CompanyValue.primary_method == "provider",
-            CompanyValue.numeric_value.isnot(None),
-        )
-        .all()
-    )
-    return {r.period_type for r in rows}
-
-
 def anchor_quarters_with_provider(db, company, years: list[int]) -> int:
     """Ueberschreibt Q1-Q4-Zellen mit exakten XBRL-Quartalswerten (EDGAR).
 

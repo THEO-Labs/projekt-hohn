@@ -30,22 +30,6 @@ Q4_RESIDUAL_KEYS = (
 )
 
 
-def _reported_row(db, company_id, key: str, period_type: str, year: int):
-    """Reported (nicht-forecast) Zeile im Slot; bevorzugt eine mit Wert."""
-    return (
-        db.query(CompanyValue)
-        .filter(
-            CompanyValue.company_id == company_id,
-            CompanyValue.value_key == key,
-            CompanyValue.period_type == period_type,
-            CompanyValue.period_year == year,
-            CompanyValue.is_forecast.is_(False),
-        )
-        .order_by(CompanyValue.numeric_value.isnot(None).desc())
-        .first()
-    )
-
-
 def _val(row) -> Decimal | None:
     return row.numeric_value if row is not None else None
 
