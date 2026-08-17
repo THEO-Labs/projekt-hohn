@@ -346,6 +346,9 @@ class ValueOrchestrator:
         flow_keys = sorted(_FLOW_KEYS)
         self._clear_forecast_slots(company.id, year, flow_keys + list(_BALANCE_KEYS) + ["net_debt"],
                                    ("Q4", "FY"))
+        # A) Bridge: berichtete Quartale, die EDGAR noch nicht im XBRL hat
+        #    (Filing-Lag, nur Press-Release/8-K), aus dem Earnings-Release holen.
+        self._bridge_missing_quarters(company, year, currency)
         reported_q = sum(
             1 for q in ("Q1", "Q2", "Q3")
             if self._has_reported(company.id, "revenue", year, q)
@@ -359,6 +362,44 @@ class ValueOrchestrator:
     def _has_reported(self, company_id, key, year, period_type):
         r = self._existing(company_id, key, year, period_type=period_type, is_forecast=False)
         return r is not None and r.numeric_value is not None
+
+    def _bridge_missing_quarters(self, company, year, currency):
+        """Berichtete Quartale, deren 10-Q-XBRL noch nicht bei EDGAR ist (Lag),
+        via Perplexity aus dem Earnings-Release fuellen. primary_method=
+        'perplexity' (is_forecast=False) -> der EDGAR-Anker (rank provider)
+        ueberschreibt sie, sobald das XBRL nachkommt."""
+        from datetime import date, timedelta
+
+        from app.values.detail_page import quarter_end_date
+        from app.values.schema_builder import fundamental_keys
+        today = date.today()
+        lag = timedelta(days=35)  # Earnings ~3-5 Wochen nach Quartalsende
+        fym = getattr(company, "fiscal_year_end_month", None)
+        fyd = getattr(company, "fiscal_year_end_day", None)
+        all_keys = fundamental_keys()
+        for q in ("Q1", "Q2", "Q3"):
+            qend = quarter_end_date(year, q, fym, fyd)
+            if qend is None or qend + lag > today:
+                continue  # Quartal (noch) nicht berichtet
+            if self._has_reported(company.id, "revenue", year, q):
+                continue  # EDGAR hat es bereits
+            missing = [k for k in all_keys if not self._has_reported(company.id, k, year, q)]
+            if not missing:
+                continue
+            try:
+                vals = self.perplexity.fetch_quarter_reported(
+                    company_name=company.name, ticker=company.ticker,
+                    fiscal_year=year, quarter=q, keys=missing, currency=currency)
+            except Exception as e:
+                logger.warning("perplexity bridge %s %s FY%s: %s",
+                               getattr(company, "ticker", "?"), q, year, e)
+                continue
+            for key, pv in vals.items():
+                val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+                self._upsert(company.id, key, year, period_type=q, value=val,
+                             source_name="Perplexity (Earnings-Release)", source_link=pv.source_url,
+                             currency=currency, primary_method="perplexity", is_forecast=False)
+        self.db.flush()
 
     def _estimate_q4(self, company, year, flow_keys, currency):
         try:

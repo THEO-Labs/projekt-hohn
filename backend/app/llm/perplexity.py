@@ -127,6 +127,23 @@ class PerplexityClient:
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)
         return self._to_values(payload, keys, url, title)
 
+    def fetch_quarter_reported(self, *, company_name: str, ticker: str, fiscal_year: int,
+                               quarter: str, keys: list[str], currency: str) -> dict[str, PerplexityValue]:
+        """Berichtete (nicht geschaetzte) Quartals-Actuals aus dem Earnings-
+        Release / 8-K — fuer Quartale, deren 10-Q-XBRL noch nicht bei EDGAR ist
+        (Filing-Lag). Domain-gefiltert auf offizielle Quellen."""
+        prompt = (
+            f"Report {company_name}'s (ticker {ticker}) ACTUAL reported {quarter} results "
+            f"for fiscal year {fiscal_year}, as published in its most recent earnings "
+            f"release / press release / 8-K (the 10-Q XBRL may not be filed yet). These are "
+            f"REPORTED actuals, NOT estimates. Report EVERY monetary figure as the FULL "
+            f"amount in {currency} with all digits — e.g. 8500000000 for 8.5 billion. Do NOT "
+            f"scale to thousands, millions or billions. eps_diluted stays per-share. Use null "
+            f"for any figure not stated in the release. Only these metrics: {', '.join(keys)}."
+        )
+        payload, url, title = self._post(prompt, build_consensus_schema(keys), PERIOD_DOMAIN_ALLOWLIST)
+        return self._to_values(payload, keys, url, title)
+
     def fetch_quarter_estimate(self, *, company_name: str, ticker: str, fiscal_year: int,
                                quarter: str, keys: list[str], currency: str) -> dict[str, PerplexityValue]:
         prompt = (
