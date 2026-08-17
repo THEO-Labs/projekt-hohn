@@ -114,8 +114,10 @@ class PerplexityClient:
                         keys: list[str], currency: str) -> dict[str, PerplexityValue]:
         prompt = (
             f"Provide your best estimate of {company_name}'s (ticker {ticker}) fiscal year "
-            f"{forward_year} figures, based on the company's guidance, current Wall-Street "
-            f"analyst consensus and recent run-rate. Report EVERY monetary figure as the "
+            f"{forward_year} figures. PRIORITIZE the company's OWN most recent official "
+            f"guidance / outlook (from its latest earnings release, 10-Q/10-K outlook or "
+            f"earnings call); combine it with current Wall-Street analyst consensus and the "
+            f"recent quarterly run-rate. Report EVERY monetary figure as the "
             f"FULL amount in {currency} with all digits — e.g. 391035000000 for 391 billion. "
             f"Do NOT scale to thousands, millions or billions. eps_diluted stays per-share "
             f"(e.g. 6.08). Provide a numeric estimate for every metric you can reasonably "

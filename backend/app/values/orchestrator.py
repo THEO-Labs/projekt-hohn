@@ -225,7 +225,6 @@ class ValueOrchestrator:
         if key not in _MONETARY_KEYS or value is None or value == 0:
             return value
         ref = self._reference_magnitude(company_id, key)
-        logger.info("unit-fix probe %s: in=%s ref=%s", key, value, ref)  # TEMP debug
         if not ref:
             return value
         v = value
