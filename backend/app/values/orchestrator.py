@@ -548,10 +548,26 @@ class ValueOrchestrator:
                                getattr(company, "ticker", "?"), year, e)
                 vals = {}
             for key, pv in vals.items():
-                val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
-                self._upsert(company.id, key, year, period_type="FY", value=val,
+                fy_est = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+                present = {}
+                missingq = []
+                for q in ("Q1", "Q2", "Q3", "Q4"):
+                    r = (self._existing(company.id, key, year, period_type=q, is_forecast=False)
+                         or self._existing(company.id, key, year, period_type=q, is_forecast=True))
+                    if r is not None and r.numeric_value is not None:
+                        present[q] = r.numeric_value
+                    else:
+                        missingq.append(q)
+                self._upsert(company.id, key, year, period_type="FY", value=fy_est,
                              source_name="Perplexity (FY-Schätzung)", source_link=pv.source_url,
                              currency=currency, primary_method="perplexity_consensus", is_forecast=True)
+                # Genau EIN fehlendes Quartal (typ. Q3 nicht gebridged) -> als
+                # Residuum fuellen, damit Σ Quartale = FY (Konsistenz).
+                if len(missingq) == 1:
+                    resid = fy_est - sum(present.values(), Decimal("0"))
+                    self._upsert(company.id, key, year, period_type=missingq[0], value=resid,
+                                 source_name="Geschätzt (Q = FY − andere Quartale)", source_link=None,
+                                 currency=currency, primary_method="perplexity_consensus", is_forecast=True)
 
     def _derive_fcf(self, company, years):
         """fcf = OCF − |CapEx| je Slot (Konvention: FCF nie eigenstaendig

@@ -101,11 +101,13 @@ class PerplexityClient:
         prompt = (
             f"Report the exact as-reported fundamental financial figures for "
             f"{company_name} (ticker {ticker}), fiscal year {fiscal_year}, from its "
-            f"official US-GAAP filings (10-K/10-Q/8-K). Report EVERY monetary figure as the "
-            f"FULL amount in {currency} with all digits — e.g. 391035000000 for 391 billion. "
-            f"Do NOT scale to thousands, millions or billions. eps_diluted stays per-share "
-            f"(e.g. 6.08). Use null for any figure you cannot find in an official filing. "
-            f"Do not estimate. Only these metrics: {', '.join(missing_keys)}."
+            f"official US-GAAP filings (10-K/10-Q/8-K). Use the EXACT figures from the "
+            f"consolidated financial-statement TABLES, NOT rounded numbers from the narrative "
+            f"(e.g. 11633000000, never 11600000000). Report EVERY monetary figure as the "
+            f"FULL EXACT amount in {currency} with all digits — e.g. 391035000000 for 391 "
+            f"billion. Do NOT scale to thousands, millions or billions. eps_diluted stays "
+            f"per-share (e.g. 6.08). Use null for any figure you cannot find in an official "
+            f"filing. Do not estimate. Only these metrics: {', '.join(missing_keys)}."
         )
         payload, url, title = self._post(prompt, build_period_schema(), PERIOD_DOMAIN_ALLOWLIST)
         return self._to_values(payload, missing_keys, url, title)
@@ -152,10 +154,14 @@ class PerplexityClient:
             f"Report {company_name}'s (ticker {ticker}) ACTUAL reported {quarter} results "
             f"for fiscal year {fiscal_year}, as published in its most recent earnings "
             f"release / press release / 8-K (the 10-Q XBRL may not be filed yet). These are "
-            f"REPORTED actuals, NOT estimates. Report EVERY monetary figure as the FULL "
-            f"amount in {currency} with all digits — e.g. 8500000000 for 8.5 billion. Do NOT "
-            f"scale to thousands, millions or billions. eps_diluted stays per-share. Use null "
-            f"for any figure not stated in the release. Only these metrics: {', '.join(keys)}."
+            f"REPORTED actuals, NOT estimates. CRITICAL: take the EXACT figures from the "
+            f"condensed consolidated financial-statement TABLES (in the 8-K earnings-release "
+            f"exhibit or the 10-Q), NOT the rounded numbers in the press-release "
+            f"narrative/headline — e.g. report 11633000000, never the rounded 11600000000. "
+            f"Report EVERY monetary figure as the FULL EXACT amount in {currency} with all "
+            f"digits. Do NOT scale to thousands, millions or billions. eps_diluted stays "
+            f"per-share (exact, e.g. 2.98). Use null for any figure not in the tables. "
+            f"Only these metrics: {', '.join(keys)}."
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), PERIOD_DOMAIN_ALLOWLIST)
         return self._to_values(payload, keys, url, title)
