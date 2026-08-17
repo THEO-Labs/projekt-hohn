@@ -87,6 +87,7 @@ CONCEPT_MAP: dict[str, list[str]] = {
         "ShortTermInvestments",
         "AvailableForSaleSecuritiesCurrent",
         "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+        "DebtSecuritiesAvailableForSaleCurrent",
         "HeldToMaturitySecuritiesCurrent",
         "TradingSecurities",
         "InvestmentsCurrent",
