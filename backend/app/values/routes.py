@@ -292,6 +292,19 @@ def _run_and_persist_calculations(
     return updated
 
 
+def run_and_persist_calculations_for_years(db: Session, company: Company, years: list[int]) -> None:
+    """Leitet die CALCULATED-Werte (H-Rendite, Multiples, Margen) fuer jedes
+    Jahr ab, indem der bestehende _run_and_persist_calculations-Pfad pro FY
+    aufgerufen wird. Formeln bleiben in engine.py."""
+    for year in years:
+        try:
+            _run_and_persist_calculations(db, company.id, "FY", year)
+        except Exception as e:
+            logger.warning(
+                "Calc-Ableitung fehlgeschlagen %s/FY%s: %s", company.ticker, year, e,
+            )
+
+
 def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:
     company = db.query(Company).filter(Company.id == company_id).one_or_none()
     if not company:

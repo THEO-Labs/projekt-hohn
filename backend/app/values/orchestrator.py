@@ -143,9 +143,48 @@ class ValueOrchestrator:
         self._derive_calculations(company, years)  # Task 6 (engine.py)
         self.db.flush()
 
-    # In Task 5 noch No-ops, in Task 6 implementiert:
+    def _missing_fundamental_keys(self, company_id, year, is_forecast=False):
+        from app.values.schema_builder import fundamental_keys
+        missing = []
+        for k in fundamental_keys():
+            # Ein geankerter/manueller ACTUAL blockiert auch die Forecast-Abfrage.
+            actual = self._existing(company_id, k, year, is_forecast=False)
+            if actual is not None and (actual.numeric_value is not None
+                                       or actual.primary_method in ("manual", "provider")):
+                continue
+            row = self._existing(company_id, k, year, is_forecast=is_forecast)
+            if row is None or (row.numeric_value is None
+                               and row.primary_method not in ("manual", "provider")):
+                missing.append(k)
+        return missing
+
     def _apply_perplexity(self, company, years):
-        return
+        from app.values.provider_anchor import _fy_is_closed
+        currency = getattr(company, "currency", None) or "USD"
+        run = years[-1]
+        for year in years:
+            forward = (year == run) and not _fy_is_closed(company, year)
+            keys = self._missing_fundamental_keys(company.id, year, is_forecast=forward)
+            if not keys:
+                continue
+            if forward:
+                vals = self.perplexity.fetch_consensus(
+                    company_name=company.name, ticker=company.ticker,
+                    forward_year=year, keys=keys, currency=currency)
+                method, fc, src = "perplexity_consensus", True, "Perplexity"
+            else:
+                vals = self.perplexity.fetch_period(
+                    company_name=company.name, ticker=company.ticker,
+                    fiscal_year=year, missing_keys=keys, currency=currency)
+                method, fc, src = "perplexity", False, "Perplexity"
+            for key, pv in vals.items():
+                self._upsert(company.id, key, year, value=Decimal(str(pv.value)),
+                             source_name=src, source_link=pv.source_url, currency=currency,
+                             primary_method=method, is_forecast=fc,
+                             adjusted=pv.adjusted)
 
     def _derive_calculations(self, company, years):
-        return
+        # Lazy import: run_and_persist_calculations_for_years lebt in routes.py.
+        # Lazy vermeidet den Zyklus routes -> orchestrator -> routes.
+        from app.values.routes import run_and_persist_calculations_for_years
+        run_and_persist_calculations_for_years(self.db, company, years)
