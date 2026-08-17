@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from app.llm.perplexity import PerplexityValue
 from app.values.models import CompanyValue
 from app.values.orchestrator import AnchorValue, ValueOrchestrator
 
@@ -103,47 +104,54 @@ def _q(db, cid, key, year, period, val, forecast=False, method="provider"):
     db.flush()
 
 
-def test_yoy_q4_estimate_anchors_to_runrate(db, us_company):
-    """Q4 = Q4(Vorjahr) x YTD-Wachstum, verankert an berichtete Quartale."""
+def test_has_full_fy_anchor(db, us_company):
+    """Vollstaendiger Jahres-Anker = Provider-FY-Wert ODER alle 4 Quartale."""
     orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
                              edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
                              history_years=2)
     cid = us_company.id
-    for p, v in [("Q1", 5853), ("Q2", 6021), ("Q3", 5628)]:
-        _q(db, cid, "net_income", 2026, p, v)
-    for p, v in [("Q1", 5119), ("Q2", 4577), ("Q3", 5272), ("Q4", 5090)]:
-        _q(db, cid, "net_income", 2025, p, v)
-    # nur Q4 offen: Q4 = 5090 * (17502/14968) = 5951.6...
-    fills = orch._yoy_quarter_fills(cid, "net_income", 2026)
-    assert set(fills) == {"Q4"} and 5900 < fills["Q4"] < 6000
-    # ohne Vorjahres-Quartale -> leer (Perplexity-Fallback)
-    assert orch._yoy_quarter_fills(cid, "revenue", 2026) == {}
+    # Nur 3 Quartale, kein FY -> kein voller Anker
+    for p, v in [("Q1", 100), ("Q2", 100), ("Q3", 100)]:
+        _q(db, cid, "revenue", 2026, p, v)
+    assert orch._has_full_fy_anchor(cid, 2026) is False
+    assert orch._needs_estimate_completion(us_company, 2026) is True
+    # Provider-FY-Anker -> voller Anker
+    _q(db, cid, "revenue", 2025, "FY", 400, method="provider")
+    assert orch._has_full_fy_anchor(cid, 2025) is True
+    assert orch._needs_estimate_completion(us_company, 2025) is False
 
 
-def test_yoy_fills_all_missing_quarters_for_fresh_fy(db, us_company):
-    """Gerade gestartetes FY (nur Q1 berichtet): Q2-Q4 = Q(Vorjahr) x g."""
+def test_reported_actuals_context_grounds_estimate(db, us_company):
+    """Der Grounding-Kontext listet die berichteten Quartale (in Mio)."""
     orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
                              edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
                              history_years=2)
     cid = us_company.id
-    _q(db, cid, "revenue", 2027, "Q1", 110)          # curr Q1
-    for p, v in [("Q1", 100), ("Q2", 100), ("Q3", 100), ("Q4", 100)]:
-        _q(db, cid, "revenue", 2026, p, v)           # Vorjahr flach
-    fills = orch._yoy_quarter_fills(cid, "revenue", 2027)
-    # g = 110/100 = 1.1 -> jedes fehlende Q = 110
-    assert set(fills) == {"Q2", "Q3", "Q4"}
-    assert all(abs(v - Decimal("110")) < Decimal("0.01") for v in fills.values())
+    _q(db, cid, "net_income", 2026, "Q1", 5_853_000_000)
+    _q(db, cid, "net_income", 2026, "Q2", 6_021_000_000)
+    ctx = orch._reported_actuals_context(cid, 2026, ["net_income"])
+    assert "Q1: net_income=5853m" in ctx and "Q2: net_income=6021m" in ctx
 
 
-def test_yoy_clamps_outlier_growth(db, us_company):
-    """Einzelquartals-Ausreisser (6x) wird auf den Clamp (3x) begrenzt."""
+def test_fy_floor_never_below_reported_actuals(db, us_company):
+    """FY-Flow-Schaetzung darf nie unter der Summe berichteter Ist-Quartale
+    liegen (Guidance/Konsens-Floor)."""
+    class LowballPplx:
+        def fetch_period(self, **k):
+            return {}
+
+        def fetch_consensus(self, *, keys, **k):
+            # Konsens meldet absurd niedrig (200M < Q1-Actual 275M) -> Floor greift.
+            return {"buyback_volume": PerplexityValue(
+                Decimal("200000000"), None, "https://x", None)}
+
     orch = ValueOrchestrator(db=db, stammdaten_fetch=lambda c: {},
-                             edgar_fetch=lambda c, y: {}, perplexity=FakePerplexity(),
+                             edgar_fetch=lambda c, y: {}, perplexity=LowballPplx(),
                              history_years=2)
     cid = us_company.id
-    _q(db, cid, "buyback_volume", 2027, "Q1", 275)
-    for p, v in [("Q1", 45), ("Q2", 50), ("Q3", 160), ("Q4", 224)]:
-        _q(db, cid, "buyback_volume", 2026, p, v)
-    fills = orch._yoy_quarter_fills(cid, "buyback_volume", 2027)
-    # g = 275/45 = 6.1 -> geclamped auf 3.0; Q2 = 50*3 = 150
-    assert abs(fills["Q2"] - Decimal("150")) < Decimal("0.01")
+    _q(db, cid, "buyback_volume", 2027, "Q1", 275_000_000)  # berichtetes Q1
+    orch._running_fy_from_quarters(us_company, 2027, "USD")
+    db.flush()
+    fy = db.query(CompanyValue).filter_by(
+        company_id=cid, value_key="buyback_volume", period_year=2027, period_type="FY").one()
+    assert fy.numeric_value >= Decimal("275000000")  # Floor: >= Q1-Actual

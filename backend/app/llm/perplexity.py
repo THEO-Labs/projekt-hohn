@@ -113,18 +113,34 @@ class PerplexityClient:
         return self._to_values(payload, missing_keys, url, title)
 
     def fetch_consensus(self, *, company_name: str, ticker: str, forward_year: int,
-                        keys: list[str], currency: str) -> dict[str, PerplexityValue]:
+                        keys: list[str], currency: str,
+                        reported_context: str | None = None) -> dict[str, PerplexityValue]:
+        """Voll-Jahres-Schaetzung aus der GUIDANCE der Company (Outlook aus dem
+        letzten Earnings-Release/Call) und dem ANALYSTEN-KONSENS — KEINE
+        mechanische Hochrechnung. Wenn `reported_context` gesetzt ist (bereits
+        berichtete Quartale dieses FY), muss die Jahresschaetzung damit
+        konsistent sein (Anker gegen Ausreisser)."""
+        grounding = ""
+        if reported_context:
+            grounding = (
+                f" IMPORTANT — the following quarters of THIS fiscal year are already "
+                f"reported as ACTUALS (values in millions of {currency}): {reported_context}. "
+                f"Your full-year figure for each accumulating flow metric MUST be consistent "
+                f"with and at least as large as the sum of these reported quarters; apply the "
+                f"remaining guidance/consensus only to the quarters not yet reported."
+            )
         prompt = (
-            f"Provide your best estimate of {company_name}'s (ticker {ticker}) fiscal year "
-            f"{forward_year} figures. PRIORITIZE the company's OWN most recent official "
-            f"guidance / outlook (from its latest earnings release, 10-Q/10-K outlook or "
-            f"earnings call); combine it with current Wall-Street analyst consensus and the "
-            f"recent quarterly run-rate. Report EVERY monetary figure as the "
-            f"FULL amount in {currency} with all digits — e.g. 391035000000 for 391 billion. "
-            f"Do NOT scale to thousands, millions or billions. eps_diluted stays per-share "
-            f"(e.g. 6.08). Provide a numeric estimate for every metric you can reasonably "
-            f"project; use null only if you truly have no basis. Only these metrics: "
-            f"{', '.join(keys)}."
+            f"Estimate {company_name}'s (ticker {ticker}) fiscal year {forward_year} "
+            f"full-year figures. Base the estimate STRICTLY on two grounded sources: (1) the "
+            f"company's OWN official guidance / outlook (from its latest earnings release, "
+            f"earnings call or 10-Q/10-K outlook), and (2) the current published Wall-Street "
+            f"ANALYST CONSENSUS estimate. Do NOT merely extrapolate past quarters — use "
+            f"actual guidance and consensus numbers.{grounding} Report EVERY monetary figure "
+            f"as the FULL amount in {currency} with all digits — e.g. 391035000000 for 391 "
+            f"billion. Do NOT scale to thousands, millions or billions. eps_diluted stays "
+            f"per-share (e.g. 6.08). Provide a numeric estimate for every metric you can "
+            f"reasonably project from guidance/consensus; use null only if you truly have no "
+            f"basis. Only these metrics: {', '.join(keys)}."
         )
         payload, url, title = self._post(prompt, build_consensus_schema(keys), None)
         return self._to_values(payload, keys, url, title)

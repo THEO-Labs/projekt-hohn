@@ -17,7 +17,8 @@ class FakePplx:
                                                "https://sec.gov/r", None)}
         return {}
 
-    def fetch_consensus(self, *, company_name, ticker, forward_year, keys, currency):
+    def fetch_consensus(self, *, company_name, ticker, forward_year, keys, currency,
+                        reported_context=None):
         self.consensus_calls.append(forward_year)
         return {"revenue": PerplexityValue(Decimal("1100"), None, "https://x/c", None)}
 

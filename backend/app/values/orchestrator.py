@@ -320,12 +320,17 @@ class ValueOrchestrator:
             return
         from app.values.provider_anchor import _fy_is_closed
         currency = getattr(company, "currency", None) or "USD"
-        run = years[-1]
         for year in years:
-            if year == run and not _fy_is_closed(company, year):
-                self._estimate_running_fy(company, year, currency)  # Q4-Schaetzung + Balance-Carry
-            else:
-                self._fill_reported_gaps(company, year, currency)   # abgeschlossenes Jahr: FY-Luecken
+            # Abgeschlossenes FY: berichtete FY-Luecken via Perplexity holen
+            # (as-reported). Fuellt fuer voll gefilte Jahre alle Restluecken.
+            if _fy_is_closed(company, year):
+                self._fill_reported_gaps(company, year, currency)
+            # Jahr ohne vollstaendigen EDGAR-Jahreswert (laufendes FY ODER gerade
+            # beendetes FY mit noch nicht gefiledem 10-K): berichtete Quartale
+            # exakt bridgen + Bilanz-Carry. Die FY-Schaetzung (Guidance/Konsens,
+            # an die Quartale grundiert) folgt in _finalize.
+            if self._needs_estimate_completion(company, year):
+                self._estimate_running_fy(company, year, currency)
             # EDGAR-Luecken in berichteten Quartalen exakt fuellen (z.B. eps/
             # st_investments, wo EDGAR das Concept nicht hat).
             self._fill_quarter_gaps(company, year, currency)
@@ -408,26 +413,17 @@ class ValueOrchestrator:
                          primary_method="perplexity", is_forecast=False, adjusted=adj)
 
     def _estimate_running_fy(self, company, year, currency):
-        """Laufendes FY. Zwei Faelle:
-        - mindestens ein Quartal berichtet: die noch offenen Quartale
-          deterministisch YoY-verankert schaetzen (Q_i = Q_i(Vorjahr) x
-          YTD-Wachstum); FY = Σ Quartale. Reproduzierbar, kein LLM-Ausreisser.
-        - noch KEIN Quartal berichtet (FY gerade gestartet): das ganze FY direkt
-          per Konsens schaetzen (Perplexity)."""
+        """Ein noch nicht vollstaendig berichtetes FY vorbereiten: alte Forecasts
+        leeren, berichtete Quartale exakt aus der Filing-XBRL holen (Bridge),
+        Bilanz-Stichtag uebernehmen. Die eigentliche FY-Schaetzung (Guidance /
+        Analysten-Konsens, an die berichteten Quartale grundiert) macht danach
+        _running_fy_from_quarters — bewusst KEINE mechanische Hochrechnung."""
         flow_keys = sorted(_FLOW_KEYS)
         self._clear_forecast_slots(company.id, year, flow_keys + list(_BALANCE_KEYS) + ["net_debt"],
                                    ("Q1", "Q2", "Q3", "Q4", "FY"))
-        # A) Bridge: berichtete Quartale, die EDGAR noch nicht im XBRL hat
-        #    (Filing-Lag), exakt aus der Filing-XBRL-Instanz holen.
+        # Bridge: berichtete Quartale, die die aggregierte companyfacts-API noch
+        # nicht hat (Filing-Lag), exakt aus der XBRL-Instanz des Filings holen.
         self._bridge_missing_quarters(company, year, currency)
-        any_reported = any(
-            self._has_reported(company.id, "revenue", year, q)
-            for q in ("Q1", "Q2", "Q3", "Q4")
-        )
-        if any_reported:
-            self._estimate_remaining_quarters(company, year, flow_keys, currency)
-        else:
-            self._estimate_full_fy(company, year, flow_keys, currency)
         self._carry_forward_balances(company, year, currency)
 
     def _has_reported(self, company_id, key, year, period_type):
@@ -530,7 +526,11 @@ class ValueOrchestrator:
         fym = getattr(company, "fiscal_year_end_month", None)
         fyd = getattr(company, "fiscal_year_end_day", None)
         all_keys = fundamental_keys()
-        for q in ("Q1", "Q2", "Q3"):
+        # Q4 einbeziehen: ein gerade beendetes FY, dessen 10-K noch nicht gefiled
+        # ist (companyfacts leer), aber dessen Q4-Earnings-Release/8-K schon
+        # draussen ist -> exakt bridgen. Die Lag-Pruefung schuetzt vor noch nicht
+        # berichteten Quartalen.
+        for q in ("Q1", "Q2", "Q3", "Q4"):
             qend = quarter_end_date(year, q, fym, fyd)
             if qend is None or qend + lag > today:
                 continue  # Quartal (noch) nicht berichtet
@@ -570,72 +570,38 @@ class ValueOrchestrator:
                 out[q] = r.numeric_value
         return out
 
-    # YoY-Wachstumsfaktor gegen Einzelquartals-Ausreisser (lumpy buyback/capex)
-    # geclamped: eine 6x-Extrapolation aus einem Ausreisser-Q1 wuerde sonst das
-    # ganze FY verzerren.
-    _YOY_CLAMP = (Decimal("0.33"), Decimal("3"))
+    def _reported_actuals_context(self, company_id, year, keys):
+        """Kompakter Kontext der bereits BERICHTETEN Quartale (fuers Grounding
+        der Konsens/Guidance-Abfrage — damit die Schaetzung an der Realitaet
+        haengt und keine Ausreisser liefert). Werte in Mio, lesbar fuer das LLM."""
+        lines = []
+        for q in ("Q1", "Q2", "Q3", "Q4"):
+            parts = []
+            for key in keys:
+                r = self._existing(company_id, key, year, period_type=q, is_forecast=False)
+                if r is not None and r.numeric_value is not None:
+                    parts.append(f"{key}={r.numeric_value / 1_000_000:.0f}m")
+            if parts:
+                lines.append(f"{q}: " + ", ".join(parts))
+        return " | ".join(lines)
 
-    def _yoy_quarter_fills(self, company_id, key, year):
-        """Schaetzt die NICHT berichteten Quartale des laufenden FY aus dem
-        Vorjahres-Quartal, skaliert mit dem YTD-Wachstum der berichteten
-        Quartale: Q_i = Q_i(Vorjahr) x g, g = Σ(reported curr)/Σ(same prev),
-        geclamped. Saison-treu (gleiche Quartals-Vergleichsbasis), verankert,
-        reproduzierbar. Rueckgabe {Q: Decimal}; leer, wenn nichts zu fuellen ist
-        oder kein sauberer Anker existiert (dann Perplexity-Fallback via
-        _running_fy_from_quarters)."""
-        reported = self._reported_quarters(company_id, key, year)
-        missing = [q for q in ("Q1", "Q2", "Q3", "Q4") if q not in reported]
-        if not reported or not missing:
-            return {}
-        prev_sum = Decimal("0")
-        for q in reported:
-            r = self._existing(company_id, key, year - 1, period_type=q, is_forecast=False)
-            if r is None or r.numeric_value is None:
-                return {}
-            prev_sum += r.numeric_value
-        curr_sum = sum(reported.values(), Decimal("0"))
-        # YoY-Ratio nur bei gleichgerichtet-positiven Summen sinnvoll (NI kann
-        # negativ sein -> Vorzeichenwechsel -> Perplexity-Fallback).
-        if prev_sum <= 0 or curr_sum <= 0:
-            return {}
-        lo, hi = self._YOY_CLAMP
-        g = max(lo, min(hi, curr_sum / prev_sum))
-        fills = {}
-        for q in missing:
-            r = self._existing(company_id, key, year - 1, period_type=q, is_forecast=False)
-            if r is None or r.numeric_value is None:
-                return {}  # ohne vollstaendige Vorjahres-Quartale kein sauberes ΣQ
-            fills[q] = r.numeric_value * g
-        return fills
+    def _has_full_fy_anchor(self, company_id, year):
+        """True, wenn das Jahr wirklich BERICHTET ist: irgendeine Kern-Kennzahl
+        hat einen EDGAR-Provider-FY-Anker (dann ist der 10-K gefiled und EDGAR
+        hat die vollen Statements), ODER alle vier Quartale liegen als Actuals
+        vor. Nur dann ist keine Schaetz-Vervollstaendigung noetig."""
+        for key in ("revenue", "net_income", "operating_cash_flow"):
+            fy = self._existing(company_id, key, year, period_type="FY", is_forecast=False)
+            if fy is not None and fy.numeric_value is not None and _rank(fy.primary_method) >= 2:
+                return True
+        return len(self._reported_quarters(company_id, "revenue", year)) == 4
 
-    def _estimate_remaining_quarters(self, company, year, flow_keys, currency):
-        """Fuellt noch nicht berichtete Quartale des laufenden FY deterministisch
-        (YoY-skaliert, an berichtete Quartale verankert). FY entsteht danach als
-        Σ Quartale (_running_fy_from_quarters). Keys ohne YoY-Anker bleiben offen
-        und werden dort via Perplexity + Residual + Floor behandelt."""
-        for key in flow_keys:
-            for q, v in self._yoy_quarter_fills(company.id, key, year).items():
-                self._upsert(company.id, key, year, period_type=q,
-                             value=self._unit_fix(company.id, key, v),
-                             source_name="Q = Q(Vorjahr) × YTD-Wachstum", source_link=None,
-                             currency=currency, primary_method="perplexity_consensus",
-                             is_forecast=True)
-
-    def _estimate_full_fy(self, company, year, flow_keys, currency):
-        try:
-            vals = self.perplexity.fetch_consensus(
-                company_name=company.name, ticker=company.ticker,
-                forward_year=year, keys=flow_keys, currency=currency)
-        except Exception as e:
-            logger.warning("perplexity FY-Schaetzung fehlgeschlagen %s FY%s: %s",
-                           getattr(company, "ticker", "?"), year, e)
-            return
-        for key, pv in vals.items():
-            val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
-            self._upsert(company.id, key, year, period_type="FY", value=val,
-                         source_name="Schätzung – noch kein Quartal berichtet",
-                         source_link=pv.source_url, currency=currency,
-                         primary_method="estimate_unanchored", is_forecast=True)
+    def _needs_estimate_completion(self, company, year):
+        """Ein Jahr braucht Schaetz-Vervollstaendigung (berichtete Quartale +
+        Guidance/Konsens), wenn EDGAR keinen vollstaendigen berichteten
+        Jahreswert liefert — deckt das laufende FY UND ein gerade beendetes FY
+        ab, dessen 10-K noch nicht gefiled ist (z.B. Intuit im August)."""
+        return not self._has_full_fy_anchor(company.id, year)
 
     def _carry_forward_balances(self, company, year, currency):
         """Bilanz-Keys fuers laufende FY: Jahresend-Stichtag ~ letztes berichtetes
@@ -668,17 +634,19 @@ class ValueOrchestrator:
                          primary_method="perplexity_consensus", is_forecast=True)
 
     def _finalize_estimates(self, company, years):
-        """Nach EDGAR + Perplexity: abgeschlossene Jahre Q4=FY−Q1-Q3; laufendes
-        FY = Q1+Q2+Q3+Q4(geschaetzt); net_debt deterministisch aus Komponenten."""
-        from app.values.provider_anchor import _fy_is_closed
+        """Nach EDGAR + Perplexity: vollstaendig berichtete Jahre Q4=FY−Q1-Q3;
+        noch offene Jahre FY = Q1..Q4 (fehlende Quartale Guidance/Konsens);
+        net_debt deterministisch aus Komponenten."""
         from app.values.quarter_residual import derive_q4_from_fy_residual
-        run = years[-1]
         currency = getattr(company, "currency", None) or "USD"
-        closed = [y for y in years if _fy_is_closed(company, y)]
-        if closed:
-            derive_q4_from_fy_residual(self.db, company, closed)
+        # Vollstaendig berichtete Jahre (EDGAR-FY-Anker): Q4 = FY − 9M-YTD.
+        anchored = [y for y in years if self._has_full_fy_anchor(company.id, y)]
+        if anchored:
+            derive_q4_from_fy_residual(self.db, company, anchored)
+        # Offene Jahre (laufendes FY oder gerade beendetes ohne 10-K): FY aus
+        # berichteten Quartalen + Guidance/Konsens fuer den Rest.
         for y in years:
-            if y == run and not _fy_is_closed(company, y):
+            if self._needs_estimate_completion(company, y):
                 self._running_fy_from_quarters(company, y, currency)
         self.db.flush()  # OCF/capex-Fallback sichtbar machen fuer _derive_fcf
         self._derive_fcf(company, years)      # fcf = OCF − CapEx (nach OCF/capex)
@@ -715,10 +683,15 @@ class ValueOrchestrator:
                 incomplete.append(key)
         incomplete = [k for k in incomplete if k != "fcf"]  # fcf = OCF−CapEx (abgeleitet)
         if incomplete and self.perplexity is not None:
+            # Grounding: die bereits berichteten Quartale mitgeben, damit die
+            # Guidance/Konsens-Schaetzung realistisch verankert ist (verhindert
+            # LLM-Ausreisser wie Q4-NI 3600 statt ~6000).
+            reported_context = self._reported_actuals_context(company.id, year, incomplete)
             try:
                 vals = self.perplexity.fetch_consensus(
                     company_name=company.name, ticker=company.ticker,
-                    forward_year=year, keys=incomplete, currency=currency)
+                    forward_year=year, keys=incomplete, currency=currency,
+                    reported_context=reported_context)
             except Exception as e:
                 logger.warning("perplexity FY-Fallback %s FY%s: %s",
                                getattr(company, "ticker", "?"), year, e)
