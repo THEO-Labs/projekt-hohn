@@ -1,18 +1,16 @@
 """XBRL-Provider-Anker fuer abgeschlossene Geschaeftsjahre.
 
-Der FY-Refresh laeuft ueber die Two-Stage-LLM-Pipeline (Websuche). Fuer
-bereits abgeschlossene Jahre sind die strukturierten XBRL-Provider
-(EDGAR fuer US, ESEF fuer EU) die verlaesslichere Quelle: maschinen-
-lesbare Filings schlagen LLM-Recherche. Dieses Modul ueberschreibt nach
-dem Two-Stage-Apply die FY-Zeile mit dem Provider-Wert, sofern die
-Provider-Kette einen liefert.
+Fuer bereits abgeschlossene Jahre ist der strukturierte EDGAR-XBRL-Wert
+die verlaesslichere Quelle: maschinenlesbare Filings schlagen die
+Perplexity-Recherche. Dieses Modul ueberschreibt die FY-Zeile mit dem
+Provider-Wert, sofern die Provider-Kette einen liefert.
 
-Invarianten wie im Refresh-Schreibpfad (routes._process_one_key):
-Sign-Normalisierung via persistence.normalize_sign, Currency-Konflikt
-blockt den Write (nur last_refresh_attempt wird gestempelt). Lock-
-Kontrakt: manuelle ACTUAL-Zeilen und from_ir_pdf bleiben unangetastet;
-manuelle FORECAST-Zeilen (Schaetz-Override) duerfen durch berichtete
-XBRL-Zahlen ersetzt werden.
+Invarianten wie im Orchestrator-Schreibpfad: Sign-Normalisierung via
+persistence.normalize_sign, Currency-Konflikt blockt den Write (nur
+last_refresh_attempt wird gestempelt). Lock-Kontrakt: manuelle
+ACTUAL-Zeilen und from_ir_pdf bleiben unangetastet; manuelle
+FORECAST-Zeilen (Schaetz-Override) duerfen durch berichtete XBRL-Zahlen
+ersetzt werden.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -80,15 +78,13 @@ def running_fy_year(company, today: date | None = None) -> int:
 
 
 def _fetch_from_chain(company, key: str, year: int):
-    """Provider-Kette wie routes._try_providers: kaskadierende kwargs fuer
-    die unterschiedlichen fetch-Signaturen (ESEF braucht isin, EDGAR das
-    FY-Ende, Yahoo nur die Minimal-Signatur).
+    """Provider-Kette mit kaskadierenden kwargs fuer die unterschiedlichen
+    fetch-Signaturen (EDGAR braucht das FY-Ende, Yahoo nur die
+    Minimal-Signatur).
 
     Kundenentscheid: fuer Nicht-US-Firmen schreibt der Marktdaten-Feed
-    (provider_kind='market', Yahoo) keine Fundamental-Werte mehr — nur
-    offizielle Quellen (ESEF-XBRL) bleiben als Anker-Wertequelle. Er
-    dient dort nur noch als Plausibilitaets-Referenz (yahoo_reference_map
-    -> statement_research). US-Filer sind nicht betroffen."""
+    (provider_kind='market', Yahoo) keine Fundamental-Werte mehr. US-Filer
+    sind nicht betroffen."""
     from app.calculations.lock import is_us_company
     from app.providers.edgar import US_DEBT_BALANCE_KEYS
 
@@ -132,7 +128,7 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     Provider-Wert (XBRL schlaegt LLM als FY-Anker).
 
     Nur fuer abgeschlossene Geschaeftsjahre; laufende Jahre gehoeren der
-    Estimate-/Two-Stage-Pipeline. Rueckgabe True wenn geschrieben wurde.
+    Perplexity-Estimate-Pipeline. Rueckgabe True wenn geschrieben wurde.
     """
     if not _fy_is_closed(company, year):
         return False
@@ -244,7 +240,7 @@ def anchor_fy_with_provider(db, company, key: str, year: int) -> bool:
     row.numeric_value = value
     row.text_value = None
     # Currency nur setzen wenn der Provider eine liefert — sonst bestehendes
-    # Label (z.B. aus dem Two-Stage-Write) erhalten.
+    # Label (z.B. aus dem Perplexity-Write) erhalten.
     if result.currency is not None:
         row.currency = result.currency
     row.source_name = result.source_name
@@ -487,9 +483,9 @@ def anchor_key_periods_with_provider(db, company, key: str, year: int) -> set[st
 def anchor_quarters_with_provider(db, company, years: list[int]) -> int:
     """Ueberschreibt Q1-Q4-Zellen mit exakten XBRL-Quartalswerten (EDGAR).
 
-    Gegenstueck zu anchor_fy_with_provider: Im Volllauf schreibt die
-    Two-Stage-Recherche die Quartale zuerst — dieser Pass zieht danach die
-    strukturierten 10-Q/10-K-Werte drueber (primary_method='provider').
+    Gegenstueck zu anchor_fy_with_provider: dieser Pass zieht die
+    strukturierten 10-Q/10-K-Werte ueber etwaige Perplexity-Quartale
+    (primary_method='provider').
     Nicht gefilte Quartale (fetch_quarterly -> None) bleiben Schaetzungen.
     Rueckgabe: Anzahl geschriebener Zellen.
     """

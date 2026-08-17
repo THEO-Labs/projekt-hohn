@@ -1,31 +1,23 @@
 """Company-Values API: Werte-Refresh + Manual-Override + Calculations.
 
-Daten-Pipeline (Stand: ESEF-Iteration, PDF-Auto-Extraction deaktiviert):
+Der Werte-Refresh laeuft komplett ueber den ValueOrchestrator (US-only):
 
   STAMMDATEN (immer Live-Snapshot)
-    - stock_price / market_cap / shares_outstanding -> Yahoo-Provider
+    - stock_price / market_cap / shares_outstanding -> Yahoo-Feed
     - market_cap_calc = stock_price * shares (in calculation_engine)
 
-  FY-BACKTESTS (abgeschlossene Geschaeftsjahre)
-    Provider-Chain in _try_providers (EDGAR > ESEF > Yahoo):
-      - US-Filer (ISIN US...): EDGAR-XBRL liefert FY-Werte aus 10-K/20-F
-      - EU-Filer (NL/FR/ES/IT/SE/...): ESEF-XBRL via filings.xbrl.org
-      - Yahoo-Fallback nur noch fuer US-Filer (Kundenentscheid: der
-        Marktdaten-Feed ist fuer Nicht-US keine Fundamental-Wertequelle)
-    Nicht-US ohne ESEF (Munich Re, Allianz, ...): Statement-Recherche
-    (statement_research: EIN Call pro Firma+Jahr+Statement-Gruppe;
-    Yahoo dient dort nur noch als Cross-Check-Referenz).
-
-  FY-ESTIMATES (laufendes FY, period_year >= current_year)
-    US- UND Nicht-US-Filer: EIN gebuendelter Guidance-Call
-    (guidance_estimates) + deterministische Ableitungen (Carry-Forward,
-    Residuen) — keine LLM-Recherche pro Key.
+  FUNDAMENTALS (abgeschlossene + laufendes FY)
+    ValueOrchestrator.run pro Zelle mit fester Prioritaet
+    Manual > provider(EDGAR) > perplexity:
+      1. EDGAR-XBRL-Anker (direkt, 10-K/10-Q) fuer abgeschlossene Perioden
+      2. Perplexity fuellt Luecken bzw. bildet Konsens (laufendes FY,
+         nicht von EDGAR gedeckte Keys)
 
   CALCULATED FELDER (FCF-Yield, EV/EBITDA, Hohn-Return, ...)
-    calculation_engine.calculate_fy nach Werte-Refresh.
+    calculation_engine (engine.py) nach dem Werte-Refresh.
 
-  ADJUSTED-WERTE (NI/EBITDA/FCF non-GAAP)
-    US: 8-K-Reconciliation (adjusted_enrichment) + Guidance-Sidecars.
+  Stammdaten-Only-Modus ("Daily Numbers"): nur der Live-Feed-Snapshot
+  + Neuberechnung, kein EDGAR/Perplexity.
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -1228,8 +1220,8 @@ def _refresh_fy_from_quarters(
         # Produktregel (User-Entscheid): sind alle 4 Quartale (bzw. Q4 bei
         # POINT_IN_TIME) gefuellt, GEWINNEN die Quartale — der FY wird
         # IMMER aus ihnen neu berechnet und ueberschreibt jeden bestehenden
-        # Direkt-/Provider-/Guidance-FY (auch is_forecast=False,
-        # primary_method='provider'/'statement_research'/'web_guidance').
+        # Direkt-/Provider-/Perplexity-FY (auch is_forecast=False,
+        # primary_method='provider'/'perplexity').
         # Bewusste Umkehr der frueheren "authoritative FY beats quarter
         # sums"-Regel (Commit efbd81e). Gesperrt bleiben nur:
         #   - manually_overridden (User-Lock),

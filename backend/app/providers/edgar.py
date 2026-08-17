@@ -180,8 +180,8 @@ BALANCE_KEYS = {"cash_and_equivalents", "st_investments", "lt_debt"}
 # schuld, nur Operating-Leases — der Marktdaten-Feed ueberzeichnete net_debt
 # um 96-118 Mio). Fehlt das strikte EDGAR-Konzept, bleibt die Zelle LEER:
 # Firma ohne Finanzschuld -> net_debt = -(cash+st_investments), Netto-Cash.
-# Nicht-US bleibt unveraendert (ESEF/statement_research). Genutzt von
-# routes._try_providers und provider_anchor._fetch_from_chain.
+# Genutzt vom FY-Anker (provider_anchor._fetch_from_chain), der den
+# Marktdaten-Feed fuer diese Keys bei US-Filern uebergeht.
 US_DEBT_BALANCE_KEYS = frozenset({"st_debt", "lt_debt"})
 
 # Cashflow-Keys: 10-Qs taggen die meist nur als YTD-Duration. Quartal via
