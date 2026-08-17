@@ -23,6 +23,8 @@ services:
       ALLOWED_ORIGINS: https://hohn.18-196-0-127.sslip.io,http://18.196.0.127,http://localhost
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY:-}
+      PERPLEXITY_MODEL: ${PERPLEXITY_MODEL:-sonar-pro}
       IR_DOCS_ROOT: /data/ir-docs
       HOHN_LOCK_DISABLED: 'true'
     expose:
