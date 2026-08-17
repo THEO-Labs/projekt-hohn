@@ -530,8 +530,12 @@ class ValueOrchestrator:
             qend = quarter_end_date(year, q, fym, fyd)
             if qend is None or qend + lag > today:
                 continue  # Quartal (noch) nicht berichtet
-            if self._has_reported(company.id, "revenue", year, q):
-                continue  # EDGAR (companyfacts) hat es bereits
+            rev = self._existing(company.id, "revenue", year, period_type=q, is_forecast=False)
+            if rev is not None and rev.numeric_value is not None and rev.primary_method == "provider":
+                continue  # companyfacts hat das Quartal schon exakt (kein Bridge noetig)
+            # Sonst: Quartal ist berichtet, aber noch nicht (oder nur via alter
+            # Perplexity-Bridge) da -> exakte Filing-XBRL holen (ueberschreibt
+            # stale Perplexity-Werte, primary_method=provider).
             # 1) Exakte Werte aus der Filing-XBRL-Instanz.
             self._bridge_from_filing(company, year, q, currency)
             # 2) Perplexity-Fallback nur fuer weiterhin fehlende Keys.
