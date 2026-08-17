@@ -265,6 +265,8 @@ def build_consensus_schema(keys: list[str]) -> dict:
 
 **Kontext:** Reuse `app/llm/rate_limiter.py` (429-Backoff) und `app/llm/json_utils.py` (tolerantes JSON-Parsen) wenn vorhanden; sonst `json.loads`. httpx synchron (wie andere Provider). Citations werden an ALLE Werte des Calls gehaengt (ein Call = eine Firma+Periode).
 
+> **Bewusste Abweichung von der Spec:** Die Spec nennt `stream: true` als Schutz vor dem frueheren >10-min-Hard-Error. Da hier ein Call = eine Firma+Periode (kleines, gebundenes strukturiertes JSON) ist, nutzt der Client `stream: false` mit 120s-Timeout — einfacher + robusteres JSON-Parsing. Falls ein Modell doch laenger braucht, spaeter auf Streaming + Citation-Parsing umstellen.
+
 - [ ] **Step 1: Failing test** (respx-gemockt)
 
 ```python
@@ -480,6 +482,10 @@ def test_edgar_values_persisted_1to1(db, us_company):
     r = _rows(db, us_company.id, "net_income", 2024)
     assert len(r) == 1 and r[0].numeric_value == Decimal("500")
     assert r[0].source_name == "SEC EDGAR" and r[0].primary_method == "provider"
+    # Stammdaten liegen als SNAPSHOT (period_year=None), nicht als FY
+    mc = db.query(CompanyValue).filter_by(company_id=us_company.id, value_key="market_cap",
+                                          period_type="SNAPSHOT", period_year=None).one()
+    assert mc.numeric_value == Decimal("1000") and mc.source_name == "Market Data Feed"
 
 def test_manual_override_never_touched(db, us_company):
     db.add(CompanyValue(company_id=us_company.id, value_key="net_income", period_type="FY",
@@ -497,7 +503,7 @@ def test_manual_override_never_touched(db, us_company):
     assert len(r) == 1 and r[0].numeric_value == Decimal("999")  # unveraendert
 ```
 
-> Falls `conftest.py` noch keine `us_company`-Fixture hat: eine minimale hinzufuegen (US-ISIN, ticker, fiscal_year_end 12/31). Bestehende Company-Factory-Muster in `tests/conftest.py` folgen.
+> **Fixtures:** `tests/conftest.py` hat NUR eine `db`-Fixture, KEINE Company-Factory und keine `us_company`-Fixture. Eine minimale `us_company`-Fixture neu anlegen (Portfolio + `Company(portfolio_id=.., name=.., ticker=.., isin=<gueltige US-ISIN, US...>, currency="USD", fiscal_year_end_month=12, fiscal_year_end_day=31)`). Inline-Muster fuer Company-Anlage stehen z.B. in `tests/test_consistency_estimates.py:29` und `tests/test_clear_stale_forecasts.py:216` (ISIN ist seit den letzten Commits Pflicht). Die Fixture in `conftest.py` ablegen, damit Task 6 sie mitnutzt.
 
 - [ ] **Step 2: Run — expect FAIL**
 - [ ] **Step 3: Implement** `orchestrator.py` (Kern; Perplexity-Fuellung folgt in Task 6):
@@ -541,10 +547,14 @@ class ValueOrchestrator:
         self.history_years = history_years
 
     # ---- helpers ---------------------------------------------------------
-    def _existing(self, company_id, key, year, period_type="FY"):
+    def _existing(self, company_id, key, year, period_type="FY", is_forecast=False):
+        # is_forecast gehoert zum Unique-Index: eine Slot kann Actual UND
+        # Forecast fuehren. Immer den gemeinten Zwilling holen (sonst
+        # MultipleResultsFound).
         return (self.db.query(CompanyValue)
                 .filter_by(company_id=company_id, value_key=key,
-                           period_year=year, period_type=period_type)
+                           period_year=year, period_type=period_type,
+                           is_forecast=is_forecast)
                 .one_or_none())
 
     def _writable(self, row) -> bool:
@@ -559,7 +569,7 @@ class ValueOrchestrator:
     def _upsert(self, company_id, key, year, *, value, source_name, source_link,
                 currency, primary_method, is_forecast=False, adjusted=None,
                 period_type="FY"):
-        row = self._existing(company_id, key, year, period_type)
+        row = self._existing(company_id, key, year, period_type, is_forecast)
         if not self._writable(row):
             return
         value = normalize_sign(key, value)
@@ -581,6 +591,12 @@ class ValueOrchestrator:
         row.manually_overridden = False
         row.fetched_at = now
         row.last_refresh_attempt = now
+        # Ein berichteter (Actual-)Wert weicht einen etwaigen Forecast-Zwilling
+        # desselben Slots — sonst zeigt das UI stale Schaetzung neben Ist.
+        if not is_forecast and year is not None:
+            twin = self._existing(company_id, key, year, period_type, is_forecast=True)
+            if twin is not None and not twin.manually_overridden:
+                self.db.delete(twin)
 
     # ---- flow ------------------------------------------------------------
     def target_years(self, company) -> list[int]:
@@ -591,8 +607,11 @@ class ValueOrchestrator:
         for key, (val, cur) in (self.stammdaten_fetch(company) or {}).items():
             if key not in ALWAYS_CURRENT_KEYS:
                 continue
+            # Stammdaten liegen als SNAPSHOT/period_year=None (so liest sie
+            # _run_and_persist_calculations); NICHT als FY.
             self._upsert(company.id, key, None, value=val, source_name="Market Data Feed",
-                         source_link=None, currency=cur, primary_method="market_feed")
+                         source_link=None, currency=cur, primary_method="market_feed",
+                         period_type="SNAPSHOT")
 
     def _apply_edgar(self, company, years):
         for (key, year), av in (self.edgar_fetch(company, years) or {}).items():
@@ -683,11 +702,16 @@ def test_perplexity_skips_keys_already_anchored(db, us_company):
 - [ ] **Step 3: Implement** — `_apply_perplexity` + `_derive_calculations`:
 
 ```python
-    def _missing_fundamental_keys(self, company_id, year):
+    def _missing_fundamental_keys(self, company_id, year, is_forecast=False):
         from app.values.schema_builder import fundamental_keys
         missing = []
         for k in fundamental_keys():
-            row = self._existing(company_id, k, year)
+            # Ein geankerter/manueller ACTUAL blockiert auch die Forecast-Abfrage.
+            actual = self._existing(company_id, k, year, is_forecast=False)
+            if actual is not None and (actual.numeric_value is not None
+                                       or actual.primary_method in ("manual", "provider")):
+                continue
+            row = self._existing(company_id, k, year, is_forecast=is_forecast)
             if row is None or (row.numeric_value is None
                                and row.primary_method not in ("manual", "provider")):
                 missing.append(k)
@@ -699,7 +723,7 @@ def test_perplexity_skips_keys_already_anchored(db, us_company):
         run = years[-1]
         for year in years:
             forward = (year == run) and not _fy_is_closed(company, year)
-            keys = self._missing_fundamental_keys(company.id, year)
+            keys = self._missing_fundamental_keys(company.id, year, is_forecast=forward)
             if not keys:
                 continue
             if forward:
@@ -719,11 +743,13 @@ def test_perplexity_skips_keys_already_anchored(db, us_company):
                              adjusted=pv.adjusted)
 
     def _derive_calculations(self, company, years):
-        from app.values.persistence import run_and_persist_calculations_for_years
+        # Lazy import: run_and_persist_calculations_for_years lebt in routes.py.
+        # Lazy vermeidet den Zyklus routes -> orchestrator -> routes.
+        from app.values.routes import run_and_persist_calculations_for_years
         run_and_persist_calculations_for_years(self.db, company, years)
 ```
 
-> **Step 3b:** In `persistence.py` eine schlanke, oeffentliche `run_and_persist_calculations_for_years(db, company, years)` bereitstellen, die die bestehende `_run_and_persist_calculations`-Logik pro Jahr kapselt (Stammdaten-Map + FY-Map laden, `calculate_stammdaten`/`calculate_fy` rufen, `_persist_calc_results`). Falls die bestehende Funktion bereits genau das tut, nur duenn wrappen — **keine** Neu-Implementierung der Formeln (die bleiben in `engine.py`).
+> **Step 3b (WICHTIG — korrekte Datei):** Die bestehende Kalkulations-Persistenz-Funktion heisst `_run_and_persist_calculations(db, company_id, period_type, period_year)` und liegt zusammen mit ihren Helfern `_persist_calc_results` und `_load_value_map` in **`backend/app/values/routes.py`** (NICHT in `persistence.py`). Dort eine schlanke, oeffentliche `run_and_persist_calculations_for_years(db, company, years)` **in `routes.py`** anlegen, die pro Jahr `_run_and_persist_calculations(db, company.id, "FY", year)` ruft (die Funktion liest Stammdaten aus SNAPSHOT + FY-Map, ruft `calculate_stammdaten`/`calculate_fy`, persistiert via `_persist_calc_results`). **Keine** Neu-Implementierung der Formeln (bleiben in `engine.py`). Der Orchestrator importiert diese Funktion **lazy in der Methode** (siehe oben), sonst entsteht der Import-Zyklus `routes → orchestrator → routes`.
 
 - [ ] **Step 4: Run — expect PASS**
 - [ ] **Step 5: Commit** `git commit -am "feat(values): orchestrator perplexity gap-fill + consensus + calc derive"`
@@ -778,6 +804,7 @@ def test_perplexity_skips_keys_already_anchored(db, us_company):
 
 - [ ] **Step 1:** Grep nach Importen der zu loeschenden Module: `cd backend && grep -rl "statement_research\|guidance_estimates\|import consistency\|from app.values.consistency\|gaap_bridge\|adjusted_enrichment\|providers.esef\|import esef" app | sort -u`
 - [ ] **Step 2:** Pro Treffer den Import/Aufruf entfernen (die Funktionalitaet ist im Orchestrator ersetzt). `_fy_is_closed` und `running_fy_year` in `provider_anchor.py` behalten.
+- [ ] **Step 2b (BLOCKER fuer die Suite):** `backend/tests/conftest.py` hat eine **autouse** Fixture (`no_live_network`), die `app.values.adjusted_enrichment` (ca. Zeilen 74-76) und `app.values.statement_research` (ca. Zeilen 81-83) importiert + monkeypatcht. Diese beiden Monkeypatch-Bloecke ersatzlos entfernen, sonst wirft die autouse-Fixture bei JEDEM Test `ModuleNotFoundError` in der Collection und Step 5 ist unerreichbar. Nach dem Entfernen pruefen, dass keine weiteren Referenzen auf geloeschte Module in `conftest.py` stehen.
 - [ ] **Step 3:** Module + zugehoerige Testdateien loeschen. `git rm <dateien>`
 - [ ] **Step 4:** `cd backend && uv run ruff check app && uv run python -c "import app.main"` — muss ohne ImportError durchlaufen (Compile-Check; **Services nicht starten** — der User startet selbst).
 - [ ] **Step 5:** `cd backend && uv run pytest -q` — komplette Suite gruen (verbliebene Tests). Rot markierte Alt-Tests, die geloeschte Features pruefen, mit-loeschen (nicht anpassen).
