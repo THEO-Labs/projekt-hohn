@@ -25,6 +25,7 @@ _METHOD_RANK = {
     "manual": 3,
     "provider": 2,
     "market_feed": 2,
+    "derived": 2,   # deterministische Ableitung aus EDGAR-Komponenten (net_debt)
     "perplexity": 1,
     "perplexity_consensus": 1,
     "not_found": 0,
@@ -43,6 +44,17 @@ _MONETARY_KEYS = frozenset({
     "revenue", "net_income", "ebitda", "operating_cash_flow", "fcf", "capex",
     "sbc", "buyback_volume", "dividends",
     "net_debt", "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
+})
+
+# Flow-Kennzahlen (ueber Quartale summierbar): laufendes FY = Q1+Q2+Q3+Q4.
+_FLOW_KEYS = frozenset({
+    "revenue", "net_income", "ebitda", "operating_cash_flow", "fcf", "capex",
+    "sbc", "buyback_volume", "dividends", "eps_diluted",
+})
+# Bilanz-Kennzahlen (Stichtag): laufendes FY = letztes berichtetes Quartal
+# (Carry-Forward). net_debt wird NICHT geschaetzt, sondern abgeleitet.
+_BALANCE_KEYS = frozenset({
+    "cash_and_equivalents", "st_investments", "st_debt", "lt_debt",
 })
 
 
@@ -160,22 +172,36 @@ class ValueOrchestrator:
                          source_link=av.source_link, currency=av.currency,
                          primary_method="provider")
 
+    def _apply_edgar_quarters(self, company, years):
+        """EDGAR-XBRL-Quartale (Q1-Q4 Actuals). Muss VOR der Perplexity-Q4-
+        Schaetzung + FY-aus-Quartalen laufen."""
+        from app.values.provider_anchor import anchor_quarters_with_provider
+        try:
+            anchor_quarters_with_provider(self.db, company, years)
+        except Exception as e:
+            logger.warning("quarter anchor failed for %s: %s",
+                           getattr(company, "ticker", "?"), e)
+
     def run(self, company):
         years = self.target_years(company)
         self._emit("stammdaten", "Stammdaten (Kurs/MCap)")
         self._apply_stammdaten(company)
         self._emit("edgar", "EDGAR-XBRL-Werte")
         self._apply_edgar(company, years)
-        # Flush VOR Perplexity: der Unit-Fix (_reference_magnitude) muss die
-        # frisch geschriebenen EDGAR-Anker in der Transaktion sehen koennen —
-        # ohne Flush (autoflush aus) ist die Referenz None und die Einheiten-
-        # Angleichung greift nicht.
+        self._emit("quarters", "EDGAR-Quartale")
+        self._apply_edgar_quarters(company, years)
+        # Flush VOR Perplexity: der Unit-Fix (_reference_magnitude) + die
+        # FY-aus-Quartalen-Logik muessen die frisch geschriebenen EDGAR-Anker
+        # (FY + Q1-Q3) in der Transaktion sehen (autoflush aus).
         self.db.flush()
-        self._emit("perplexity", "Perplexity-Recherche")
-        self._apply_perplexity(company, years)   # Task 6
+        self._emit("perplexity", "Perplexity-Schätzung")
+        self._apply_perplexity(company, years)
+        self.db.flush()
+        self._emit("derive", "Ableitungen (FY, Q4, Net Debt)")
+        self._finalize_estimates(company, years)
         self.db.flush()
         self._emit("calculating", "Kennzahlen berechnen")
-        self._derive_calculations(company, years)  # Task 6 (engine.py)
+        self._derive_calculations(company, years)
         self.db.flush()
 
     def run_stammdaten_only(self, company):
@@ -264,14 +290,13 @@ class ValueOrchestrator:
                 missing.append(k)
         return missing
 
-    def _clear_forecast(self, company_id, year, keys):
-        """Alte (nicht-manuelle) Forecast-Zellen der Keys leeren, bevor der
-        Konsens neu geholt wird — sonst bleiben stale/falsch-skalierte Werte
-        stehen, wenn das Modell einen Key diesmal nicht liefert."""
+    def _clear_forecast_slots(self, company_id, year, keys, period_types):
+        """Alte (nicht-manuelle) Forecast-Zellen der Keys/Perioden leeren, bevor
+        neu geschaetzt wird — sonst bleiben stale Werte stehen."""
         (self.db.query(CompanyValue)
          .filter(CompanyValue.company_id == company_id,
                  CompanyValue.value_key.in_(list(keys)),
-                 CompanyValue.period_type == "FY",
+                 CompanyValue.period_type.in_(list(period_types)),
                  CompanyValue.period_year == year,
                  CompanyValue.is_forecast.is_(True),
                  CompanyValue.manually_overridden.is_(False))
@@ -280,42 +305,147 @@ class ValueOrchestrator:
 
     def _apply_perplexity(self, company, years):
         if self.perplexity is None:
-            logger.warning("kein Perplexity-Client — Gap-Fill uebersprungen fuer %s",
+            logger.warning("kein Perplexity-Client — Schaetzung uebersprungen fuer %s",
                            getattr(company, "ticker", "?"))
             return
         from app.values.provider_anchor import _fy_is_closed
         currency = getattr(company, "currency", None) or "USD"
         run = years[-1]
         for year in years:
-            forward = (year == run) and not _fy_is_closed(company, year)
-            keys = self._missing_fundamental_keys(company.id, year, is_forecast=forward)
-            if not keys:
+            if year == run and not _fy_is_closed(company, year):
+                self._estimate_running_fy(company, year, currency)  # Q4-Schaetzung + Balance-Carry
+            else:
+                self._fill_reported_gaps(company, year, currency)   # abgeschlossenes Jahr: nur Luecken
+
+    def _fill_reported_gaps(self, company, year, currency):
+        keys = self._missing_fundamental_keys(company.id, year, is_forecast=False)
+        if not keys:
+            return
+        try:
+            vals = self.perplexity.fetch_period(
+                company_name=company.name, ticker=company.ticker,
+                fiscal_year=year, missing_keys=keys, currency=currency)
+        except Exception as e:
+            logger.warning("perplexity fetch_period fehlgeschlagen %s FY%s: %s",
+                           getattr(company, "ticker", "?"), year, e)
+            return
+        for key, pv in vals.items():
+            val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+            adj = (self._unit_fix(company.id, key, Decimal(str(pv.adjusted)))
+                   if pv.adjusted is not None else None)
+            self._upsert(company.id, key, year, value=val, source_name="Perplexity",
+                         source_link=pv.source_url, currency=currency,
+                         primary_method="perplexity", is_forecast=False, adjusted=adj)
+
+    def _estimate_running_fy(self, company, year, currency):
+        """Laufendes FY: nur das Q4-Flow schaetzen (einzelnes Quartal aus
+        Guidance) + Bilanz per Carry-Forward. FY = Q1+Q2+Q3+Q4 rechnet
+        _finalize_estimates."""
+        flow_keys = sorted(_FLOW_KEYS)
+        # Alte Q4-/FY-Forecast-Zellen leeren (Q4 wird neu geschaetzt, FY neu berechnet).
+        self._clear_forecast_slots(company.id, year, flow_keys + list(_BALANCE_KEYS) + ["net_debt"],
+                                   ("Q4", "FY"))
+        try:
+            q4 = self.perplexity.fetch_quarter_estimate(
+                company_name=company.name, ticker=company.ticker,
+                fiscal_year=year, quarter="Q4", keys=flow_keys, currency=currency)
+        except Exception as e:
+            logger.warning("perplexity Q4-Schaetzung fehlgeschlagen %s FY%s: %s",
+                           getattr(company, "ticker", "?"), year, e)
+            q4 = {}
+        for key, pv in q4.items():
+            val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+            self._upsert(company.id, key, year, period_type="Q4", value=val,
+                         source_name="Perplexity (Q4-Schätzung)", source_link=pv.source_url,
+                         currency=currency, primary_method="perplexity_consensus",
+                         is_forecast=True)
+        self._carry_forward_balances(company, year, currency)
+
+    def _carry_forward_balances(self, company, year, currency):
+        """Bilanz-Keys fuers laufende FY: Jahresend-Stichtag ~ letztes berichtetes
+        Quartal (Carry-Forward). Deterministisch, keine Schaetzung."""
+        for key in _BALANCE_KEYS:
+            fy_actual = self._existing(company.id, key, year, is_forecast=False)
+            if fy_actual is not None and fy_actual.numeric_value is not None:
                 continue
-            try:
-                if forward:
-                    self._clear_forecast(company.id, year, keys)
-                    vals = self.perplexity.fetch_consensus(
-                        company_name=company.name, ticker=company.ticker,
-                        forward_year=year, keys=keys, currency=currency)
-                    method, fc, src = "perplexity_consensus", True, "Perplexity"
-                else:
-                    vals = self.perplexity.fetch_period(
-                        company_name=company.name, ticker=company.ticker,
-                        fiscal_year=year, missing_keys=keys, currency=currency)
-                    method, fc, src = "perplexity", False, "Perplexity"
-            except Exception as e:
-                logger.warning(
-                    "perplexity fetch fehlgeschlagen %s FY%s: %s — Zellen bleiben offen",
-                    getattr(company, "ticker", "?"), year, e,
-                )
+            latest = None
+            for q in ("Q3", "Q2", "Q1"):
+                r = self._existing(company.id, key, year, period_type=q, is_forecast=False)
+                if r is not None and r.numeric_value is not None:
+                    latest = r
+                    break
+            if latest is None:
                 continue
-            for key, pv in vals.items():
-                val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
-                adj = (self._unit_fix(company.id, key, Decimal(str(pv.adjusted)))
-                       if pv.adjusted is not None else None)
-                self._upsert(company.id, key, year, value=val,
-                             source_name=src, source_link=pv.source_url, currency=currency,
-                             primary_method=method, is_forecast=fc, adjusted=adj)
+            self._upsert(company.id, key, year, period_type="FY", value=latest.numeric_value,
+                         source_name="Carry-Forward (letztes Quartal)", source_link=None,
+                         currency=latest.currency or currency,
+                         primary_method="perplexity_consensus", is_forecast=True)
+
+    def _finalize_estimates(self, company, years):
+        """Nach EDGAR + Perplexity: abgeschlossene Jahre Q4=FY−Q1-Q3; laufendes
+        FY = Q1+Q2+Q3+Q4(geschaetzt); net_debt deterministisch aus Komponenten."""
+        from app.values.provider_anchor import _fy_is_closed
+        from app.values.quarter_residual import derive_q4_from_fy_residual
+        run = years[-1]
+        closed = [y for y in years if _fy_is_closed(company, y)]
+        if closed:
+            derive_q4_from_fy_residual(self.db, company, closed)
+        for y in years:
+            if y == run and not _fy_is_closed(company, y):
+                self._running_fy_from_quarters(company, y)
+        self._derive_net_debt(company, years)
+
+    def _running_fy_from_quarters(self, company, year):
+        """Laufendes FY-Flow = Q1+Q2+Q3 (Actuals) + Q4 (Schaetzung). Verankert an
+        die berichtete Realitaet -> FY nie unter YTD, kein negatives Q4."""
+        for key in _FLOW_KEYS:
+            fy_actual = self._existing(company.id, key, year, is_forecast=False)
+            if fy_actual is not None and fy_actual.numeric_value is not None:
+                continue
+            qsum = Decimal("0")
+            cur = None
+            complete = True
+            for q in ("Q1", "Q2", "Q3", "Q4"):
+                r = (self._existing(company.id, key, year, period_type=q, is_forecast=False)
+                     or self._existing(company.id, key, year, period_type=q, is_forecast=True))
+                if r is None or r.numeric_value is None:
+                    complete = False
+                    break
+                qsum += r.numeric_value
+                cur = cur or r.currency
+            if not complete:
+                continue
+            self._upsert(company.id, key, year, period_type="FY",
+                         value=normalize_sign(key, qsum, context=f"fy-from-q {company.ticker} FY{year}"),
+                         source_name="FY = Q1+Q2+Q3+Q4 (Q4 geschätzt)", source_link=None,
+                         currency=cur, primary_method="perplexity_consensus", is_forecast=True)
+
+    def _derive_net_debt(self, company, years):
+        """net_debt = (st_debt + lt_debt) − (cash + st_investments) je Slot, in dem
+        Cash vorliegt. Fehlende Schuld/Investment-Komponenten = 0. Ersetzt die
+        (unzuverlaessige) Perplexity-net_debt-Schaetzung durch eine Ableitung."""
+        for year in years:
+            cash_rows = (self.db.query(CompanyValue)
+                         .filter(CompanyValue.company_id == company.id,
+                                 CompanyValue.value_key == "cash_and_equivalents",
+                                 CompanyValue.period_year == year,
+                                 CompanyValue.numeric_value.isnot(None))
+                         .all())
+            for cr in cash_rows:
+                pt, fc = cr.period_type, cr.is_forecast
+                existing = self._existing(company.id, "net_debt", year, period_type=pt, is_forecast=fc)
+                if existing is not None and (existing.manually_overridden
+                                             or existing.primary_method == "provider"):
+                    continue
+
+                def comp(k, _pt=pt, _fc=fc):
+                    r = self._existing(company.id, k, year, period_type=_pt, is_forecast=_fc)
+                    return r.numeric_value if (r is not None and r.numeric_value is not None) else Decimal("0")
+
+                net_debt = (comp("st_debt") + comp("lt_debt")) - (cr.numeric_value + comp("st_investments"))
+                self._upsert(company.id, "net_debt", year, period_type=pt, value=net_debt,
+                             source_name="Abgeleitet (Schulden − Cash)", source_link=None,
+                             currency=cr.currency, primary_method="derived", is_forecast=fc)
 
     def _derive_calculations(self, company, years):
         # Lazy import: run_and_persist_calculations_for_years lebt in routes.py.
