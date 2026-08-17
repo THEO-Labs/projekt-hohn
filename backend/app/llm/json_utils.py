@@ -1,7 +1,4 @@
-"""Robuste JSON-Extraktion aus LLM-Textantworten.
-
-Genutzt von statement_research und guidance_estimates.
-"""
+"""Robuste JSON-Extraktion aus LLM-Textantworten (Perplexity-Client)."""
 
 import json
 import re

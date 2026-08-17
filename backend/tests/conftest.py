@@ -67,15 +67,6 @@ def no_live_network(monkeypatch):
 
     monkeypatch.setattr(anchor_mod, "get_providers", lambda key: [])
 
-    # Kein Test darf real gegen die Anthropic-API laufen. Tests, die
-    # LLM-Pfade brauchen, mocken get_client bzw. die _call_claude-Ebene.
-    def _no_llm_in_tests():
-        raise RuntimeError("Live-Anthropic-Call in Tests blockiert — mocke get_client")
-
-    import app.llm.claude as claude_mod
-
-    monkeypatch.setattr(claude_mod, "get_client", _no_llm_in_tests)
-
     # Die Bridge zapft fuer frisch berichtete Quartale die Filing-XBRL-Instanz
     # live bei SEC an. In Tests standardmaessig deaktiviert (kein Netz) — Tests,
     # die den Filing-Pfad pruefen, patchen _bridge_from_filing/_filing explizit.

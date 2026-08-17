@@ -1,7 +1,7 @@
 """Duenner Client fuer die Perplexity Sonar API (POST /chat/completions).
 Strukturierte Ausgabe via response_format json_schema; Quellen aus citations;
 Domain-Filter via search_domain_filter; Suchtiefe via web_search_options.
-Keine Gates, kein Retry-Zoo — 429/5xx werden vom Aufrufer/rate_limiter behandelt.
+Keine Gates, kein Retry-Zoo — 429/5xx behandelt der Aufrufer.
 
 Hinweis: Die neue /v1/agent-API akzeptiert die sonar-Modelle NICHT
 ("model sonar-pro is not supported"). Die klassische /chat/completions-API

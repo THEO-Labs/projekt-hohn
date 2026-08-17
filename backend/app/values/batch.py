@@ -2,9 +2,9 @@
 Portfolios mit begrenzter Parallelitaet.
 
 Reuse statt Neubau: pro Firma laeuft exakt der bestehende
-refresh_company_values-Pfad (inkl. Two-Stage, Backfill, net_debt-Ableitung,
-Konsistenz-Pass, Calc-Engine) in einem Worker-Thread mit eigener DB-Session.
-Das globale LLM-Throttling uebernimmt der geteilte claude_limiter.
+refresh_company_values-Pfad (EDGAR-Anker + Filing-XBRL-Bridge + Perplexity-
+Konsens, net_debt-Ableitung, Calc-Engine) in einem Worker-Thread mit eigener
+DB-Session.
 Fortschritt pro Firma kommt weiterhin aus dem bestehenden Job-Store
 (die Cards pollen ihn schon) — hier gibt es nur den Portfolio-Ueberblick.
 """
