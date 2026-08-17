@@ -678,9 +678,21 @@ class ValueOrchestrator:
         self._derive_net_debt(company, years)
 
     def _ttm_gaap_net_margin(self, company_id, year):
-        """GAAP-Nettomarge der letzten 4 BERICHTETEN Quartale (provider),
-        rueckwaerts ab dem juengsten berichteten Quartal. Fallback: letztes
-        vollstaendig berichtetes FY. Anker fuer die NI-Plausibilitaet."""
+        """GAAP-Nettomarge als Anker fuer die NI-Plausibilitaet. Bevorzugt die
+        VOLLJAHRES-Marge des Vorjahres (NI_FY/revenue_FY(year-1)) — die ist
+        saisonneutral. Wichtig fuer Firmen mit stark schwankender Quartals-
+        Profitabilitaet (Intuit: die Steuersaison-Q3 verzerrt eine Teiljahres-
+        TTM-Marge nach oben und blaeht ni_growth auf). Erst danach TTM-Quartale."""
+        def fy_val(key, y):
+            r = (self._existing(company_id, key, y, period_type="FY", is_forecast=False)
+                 or self._existing(company_id, key, y, period_type="FY", is_forecast=True))
+            return r.numeric_value if (r is not None and r.numeric_value is not None) else None
+        for y in (year - 1, year - 2):
+            ni, rv = fy_val("net_income", y), fy_val("revenue", y)
+            # auch Schaetz-FY zulassen (year-1 ist meist Ist Q1-Q3 + kleines Q4);
+            # nur ein positiver Umsatz noetig.
+            if ni is not None and rv is not None and rv > 0:
+                return ni / rv
         quarters = []
         for y in (year, year - 1, year - 2):
             for q in ("Q4", "Q3", "Q2", "Q1"):
