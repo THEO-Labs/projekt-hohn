@@ -1575,14 +1575,18 @@ export function CompanyDashboardPage() {
                         });
                       }
                       const fyIsPartial = fyPartialMissing.length > 0 && cv?.numeric_value != null;
+                      // H-Return rechnerisch nicht aussagekraeftig (Backend-Flag:
+                      // Verlust-/Nahe-Null-Basis oder gedeckeltes Wachstum).
+                      const hohnWarn = (d.key === "hohn_return_simple" || d.key === "hohn_return_detailed")
+                        && cv?.numeric_value != null ? (cv?.consistency_flags || null) : null;
 
                       const sourceTooltip = cv?.source_name
                         ? `Quelle: ${cv.source_name}${cv.source_link ? ` (${cv.source_link})` : ""}`
                         : undefined;
                       return (
                         <td key={`${company.id}-${d.key}`}
-                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""}${groupSep(d.key)}`}
-                          title={fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel)" : sourceTooltip)}
+                          className={`whitespace-nowrap border-r border-border/40 px-3 py-2 tabular ${isCalculated ? "" : "hover:bg-muted/30"} ${isHistoricalQual ? "bg-amber-50/50" : ""} ${isCalculated && !fyTier ? "bg-muted/10" : ""} ${fyTierBg} ${fyIsPartial ? "bg-amber-50/40" : ""} ${hohnWarn ? "bg-orange-50/60" : ""}${groupSep(d.key)}`}
+                          title={hohnWarn ? hohnWarn : (fyIsPartial ? `Partial — fehlende Komponenten: ${fyPartialMissing.join(", ")}` : (isCalculated ? "Berechneter Wert (Formel)" : sourceTooltip))}
                           onDoubleClick={isCalculated ? undefined : (e) => {
                             e.stopPropagation();
                             const currentVal = cv?.numeric_value != null ? String(cv.numeric_value) : "";
@@ -1708,6 +1712,13 @@ export function CompanyDashboardPage() {
                               {fyIsPartial && (
                                 <AlertTriangle className="h-3 w-3 shrink-0 text-amber-600"
                                   aria-label={`Partial: ${fyPartialMissing.join(", ")} fehlen`} />
+                              )}
+                              {hohnWarn && (
+                                <span title={hohnWarn}
+                                  className="shrink-0 inline-flex items-center gap-0.5 rounded border border-orange-400 bg-orange-100 px-1 py-0.5 text-[9px] font-bold uppercase text-orange-700">
+                                  <AlertTriangle className="h-2.5 w-2.5" />
+                                  n. a.
+                                </span>
                               )}
                               {fyAsOfBadge && (
                                 <span

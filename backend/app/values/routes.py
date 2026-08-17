@@ -96,6 +96,30 @@ def _load_adjusted_map(rows: list[CompanyValue]) -> dict[str, Decimal | None]:
     }
 
 
+def _hohn_return_warning(
+    current: dict[str, Decimal | None] | None,
+    previous: dict[str, Decimal | None] | None,
+    fy_calc: dict[str, Decimal | None],
+) -> str | None:
+    """Kurze Warnung, wenn die H-Return rechnerisch nicht aussagekraeftig ist:
+    ni_growth beruht auf einem Verlust/Nahe-Null-Gewinn (Basis oder Prognose)
+    oder wurde gedeckelt (kleiner/negativer Nenner dominiert sonst). Sonst None."""
+    from app.calculations.engine import NI_GROWTH_CAP
+    ni = current.get("net_income") if current else None
+    ni_prev = previous.get("net_income") if previous else None
+    reasons = []
+    if ni_prev is not None and ni_prev <= 0:
+        reasons.append("Vorjahres-Gewinn ≤ 0")
+    if ni is not None and ni <= 0:
+        reasons.append("Gewinn ≤ 0")
+    g = fy_calc.get("ni_growth")
+    if g is not None and abs(g) >= NI_GROWTH_CAP:
+        reasons.append("Gewinnwachstum gedeckelt (±100%)")
+    if not reasons:
+        return None
+    return "H-Return rechnerisch nicht aussagekräftig: " + ", ".join(reasons)
+
+
 def _persist_calc_results(
     db: Session,
     company_id: UUID,
@@ -108,11 +132,16 @@ def _persist_calc_results(
     source_name_override: str | None = None,
     is_forecast_override: bool | None = None,
     calc_results_adjusted: dict[str, Decimal | None] | None = None,
+    hohn_flag: str | None = None,
 ) -> list[CompanyValue]:
     by_key = {row.value_key: row for row in existing_rows}
     updated: list[CompanyValue] = []
     default_source = source_name_override or "Calculated"
     adj_map = calc_results_adjusted or {}
+    # Keys, die eine "H-Return nicht aussagekraeftig"-Warnung tragen (Basis-
+    # /Prognose-Gewinn <=0 oder gedeckeltes Wachstum -> ni_growth und damit
+    # H-Return rechnerisch nicht belastbar).
+    _flagged_keys = HOHN_KEYS | {"ni_growth"}
 
     for key, value in calc_results.items():
         if key not in allowed_keys:
@@ -147,6 +176,8 @@ def _persist_calc_results(
                 existing.is_forecast = is_forecast_override
             if calc_currency and not existing.currency:
                 existing.currency = calc_currency
+            if key in _flagged_keys:
+                existing.consistency_flags = hohn_flag  # None loescht die Warnung
             updated.append(existing)
         else:
             cv = CompanyValue(
@@ -162,6 +193,7 @@ def _persist_calc_results(
                 fetched_at=datetime.now(timezone.utc),
                 currency=calc_currency,
                 is_forecast=bool(is_forecast_override) if is_forecast_override is not None else False,
+                consistency_flags=hohn_flag if key in _flagged_keys else None,
             )
             db.add(cv)
             updated.append(cv)
@@ -274,10 +306,14 @@ def _run_and_persist_calculations(
 
         allowed_fy_keys = FY_CALC_KEYS - HOHN_KEYS if hohn_locked else FY_CALC_KEYS
 
+        # H-Return rechnerisch nicht aussagekraeftig, wenn ni_growth auf einem
+        # Verlust/Nahe-Null-Gewinn beruht oder gedeckelt wurde -> UI-Warnung.
+        _hohn_flag = _hohn_return_warning(current, previous, fy_calc)
+
         updated += _persist_calc_results(
             db, company_id, "FY", period_year,
             current_rows, fy_calc, allowed_fy_keys, company_currency,
-            calc_results_adjusted=fy_calc_adj,
+            calc_results_adjusted=fy_calc_adj, hohn_flag=_hohn_flag,
         )
 
     return updated
