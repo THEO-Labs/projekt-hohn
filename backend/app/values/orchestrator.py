@@ -689,7 +689,10 @@ class ValueOrchestrator:
                 if (ni is not None and ni.numeric_value is not None
                         and rv is not None and rv.numeric_value):
                     quarters.append((ni.numeric_value, rv.numeric_value))
-        if len(quarters) >= 4:
+        if len(quarters) >= 2:
+            # Bis zu 4 juengste berichtete Quartale (TTM); >=2 reichen als
+            # GAAP-Marge-Anker (z.B. Intuit: nur Q1-Q3 des Vorjahres verfuegbar,
+            # da das abgeschlossene FY noch keinen 10-K hat).
             ni_sum = sum(n for n, _ in quarters[:4])
             rv_sum = sum(r for _, r in quarters[:4])
             return (ni_sum / rv_sum) if rv_sum else None
