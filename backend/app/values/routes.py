@@ -697,11 +697,16 @@ def refresh_company_values(
         _progress("quarters", "EDGAR-Quartale")
         try:
             from app.values.provider_anchor import anchor_quarters_with_provider
-            n_q = anchor_quarters_with_provider(db, company, orch.target_years(company))
+            from app.values.quarter_residual import derive_q4_from_fy_residual
+            tgt = orch.target_years(company)
+            n_q = anchor_quarters_with_provider(db, company, tgt)
+            # Q4 fuer Flow-Kennzahlen, die nicht separat berichtet werden
+            # (revenue/net_income/ebitda/eps): Q4 = FY − Q1 − Q2 − Q3.
+            n_r = derive_q4_from_fy_residual(db, company, tgt)
             db.commit()
-            logger.info("quarter anchor %s: %d Zellen", ticker, n_q)
+            logger.info("quarter anchor %s: %d Zellen, Q4-Residual: %d", ticker, n_q, n_r)
         except Exception as e:
-            logger.warning("quarter anchor failed for %s: %s", ticker, e)
+            logger.warning("quarter anchor/residual failed for %s: %s", ticker, e)
             db.rollback()
 
         # Naechster Earnings-Termin (die Batch-Stale-Auswahl haengt daran).
