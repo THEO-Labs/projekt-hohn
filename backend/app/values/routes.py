@@ -293,16 +293,22 @@ def _run_and_persist_calculations(
 
 
 def run_and_persist_calculations_for_years(db: Session, company: Company, years: list[int]) -> None:
-    """Leitet die CALCULATED-Werte (H-Rendite, Multiples, Margen) fuer jedes
-    Jahr ab, indem der bestehende _run_and_persist_calculations-Pfad pro FY
-    aufgerufen wird. Formeln bleiben in engine.py."""
+    """Leitet die CALCULATED-Werte (H-Rendite, Multiples, Margen) pro FY ab,
+    indem der bestehende _run_and_persist_calculations-Pfad je Jahr aufgerufen
+    wird. Ein einzelnes Jahr mit unvollstaendigen Inputs darf den Refresh nicht
+    abbrechen; schlagen aber ALLE Jahre fehl, deutet das auf einen systemischen
+    Fehler hin und wird nicht still geschluckt. Formeln bleiben in engine.py."""
+    failures = 0
+    last_exc = None
     for year in years:
         try:
             _run_and_persist_calculations(db, company.id, "FY", year)
-        except Exception as e:
-            logger.warning(
-                "Calc-Ableitung fehlgeschlagen %s/FY%s: %s", company.ticker, year, e,
-            )
+        except Exception as e:  # noqa: BLE001 - pro Jahr isolieren, s. u.
+            failures += 1
+            last_exc = e
+            logger.warning("calc derive FY%s for company %s failed: %s", year, company.id, e)
+    if years and failures == len(years) and last_exc is not None:
+        raise last_exc
 
 
 def _get_owned_company(db: Session, user: User, company_id: UUID) -> Company:

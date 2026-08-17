@@ -152,7 +152,7 @@ class ValueOrchestrator:
             if actual is not None and (actual.numeric_value is not None
                                        or actual.primary_method in ("manual", "provider")):
                 continue
-            row = self._existing(company_id, k, year, is_forecast=is_forecast)
+            row = actual if not is_forecast else self._existing(company_id, k, year, is_forecast=True)
             if row is None or (row.numeric_value is None
                                and row.primary_method not in ("manual", "provider")):
                 missing.append(k)
