@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     allowed_origins: str = ""
     anthropic_api_key: str = ""
     claude_rate_limit_interval: float = 12.0
+    perplexity_api_key: str | None = None
+    perplexity_model: str = "sonar-pro"
+    perplexity_base_url: str = "https://api.perplexity.ai"
 
     @property
     def origins_list(self) -> list[str]:
