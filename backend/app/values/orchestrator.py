@@ -338,13 +338,29 @@ class ValueOrchestrator:
                          primary_method="perplexity", is_forecast=False, adjusted=adj)
 
     def _estimate_running_fy(self, company, year, currency):
-        """Laufendes FY: nur das Q4-Flow schaetzen (einzelnes Quartal aus
-        Guidance) + Bilanz per Carry-Forward. FY = Q1+Q2+Q3+Q4 rechnet
-        _finalize_estimates."""
+        """Laufendes FY. Zwei Faelle:
+        - Q1-Q3 berichtet (spaet im FY, z.B. Sep-FY im August): nur Q4 schaetzen,
+          FY = Q1+Q2+Q3+Q4 (verankert an die Realitaet).
+        - Q1-Q3 (noch) NICHT berichtet (frueh im FY, z.B. Juni-FY im August):
+          KEIN einsames Q4 — das ganze FY direkt schaetzen (Konsens)."""
         flow_keys = sorted(_FLOW_KEYS)
-        # Alte Q4-/FY-Forecast-Zellen leeren (Q4 wird neu geschaetzt, FY neu berechnet).
         self._clear_forecast_slots(company.id, year, flow_keys + list(_BALANCE_KEYS) + ["net_debt"],
                                    ("Q4", "FY"))
+        reported_q = sum(
+            1 for q in ("Q1", "Q2", "Q3")
+            if self._has_reported(company.id, "revenue", year, q)
+        )
+        if reported_q >= 3:
+            self._estimate_q4(company, year, flow_keys, currency)
+        else:
+            self._estimate_full_fy(company, year, flow_keys, currency)
+        self._carry_forward_balances(company, year, currency)
+
+    def _has_reported(self, company_id, key, year, period_type):
+        r = self._existing(company_id, key, year, period_type=period_type, is_forecast=False)
+        return r is not None and r.numeric_value is not None
+
+    def _estimate_q4(self, company, year, flow_keys, currency):
         try:
             q4 = self.perplexity.fetch_quarter_estimate(
                 company_name=company.name, ticker=company.ticker,
@@ -352,14 +368,29 @@ class ValueOrchestrator:
         except Exception as e:
             logger.warning("perplexity Q4-Schaetzung fehlgeschlagen %s FY%s: %s",
                            getattr(company, "ticker", "?"), year, e)
-            q4 = {}
+            return
         for key, pv in q4.items():
             val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
             self._upsert(company.id, key, year, period_type="Q4", value=val,
                          source_name="Perplexity (Q4-Schätzung)", source_link=pv.source_url,
                          currency=currency, primary_method="perplexity_consensus",
                          is_forecast=True)
-        self._carry_forward_balances(company, year, currency)
+
+    def _estimate_full_fy(self, company, year, flow_keys, currency):
+        try:
+            vals = self.perplexity.fetch_consensus(
+                company_name=company.name, ticker=company.ticker,
+                forward_year=year, keys=flow_keys, currency=currency)
+        except Exception as e:
+            logger.warning("perplexity FY-Schaetzung fehlgeschlagen %s FY%s: %s",
+                           getattr(company, "ticker", "?"), year, e)
+            return
+        for key, pv in vals.items():
+            val = self._unit_fix(company.id, key, Decimal(str(pv.value)))
+            self._upsert(company.id, key, year, period_type="FY", value=val,
+                         source_name="Perplexity (FY-Schätzung)", source_link=pv.source_url,
+                         currency=currency, primary_method="perplexity_consensus",
+                         is_forecast=True)
 
     def _carry_forward_balances(self, company, year, currency):
         """Bilanz-Keys fuers laufende FY: Jahresend-Stichtag ~ letztes berichtetes
