@@ -650,9 +650,9 @@ def refresh_company_values(
 
     # Full-Modus: Geschaeftsjahr-Ende sicherstellen (running_fy_year/
     # target_years haengen daran) -> historische Preis-Anker -> orch.run.
-    # 6 Schritte: FY-Ende, Historik-Anker + die 4 Orchestrator-Phasen
-    # (Stammdaten, EDGAR, Perplexity, Berechnung) via _progress-Callback.
-    start_job(company_id, 6)
+    # 7 Schritte: FY-Ende, Historik-Anker, die 4 Orchestrator-Phasen
+    # (Stammdaten, EDGAR, Perplexity, Berechnung) + EDGAR-Quartale.
+    start_job(company_id, 7)
     try:
         set_phase(company_id, "fiscal_year_end", "Geschaeftsjahr-Ende ermitteln")
         update_job(company_id, "Geschaeftsjahr-Ende")
@@ -689,6 +689,20 @@ def refresh_company_values(
         # orch.run emittiert selbst die Phasen stammdaten/edgar/perplexity/
         # calculating via _progress-Callback (echte fortschreitende Schritte).
         orch.run(company)
+        db.commit()  # EDGAR-FY + Perplexity + Calc gesichert, bevor die Quartale laufen
+
+        # EDGAR-Quartale (nur US): Q1-Q4 exakt aus 10-Q/10-K je Zieljahr, inkl.
+        # laufendem FY (nicht berichtete Quartale bleiben leer). Fehler duerfen
+        # den Refresh nie abbrechen — die FY-Werte sind bereits committet.
+        _progress("quarters", "EDGAR-Quartale")
+        try:
+            from app.values.provider_anchor import anchor_quarters_with_provider
+            n_q = anchor_quarters_with_provider(db, company, orch.target_years(company))
+            db.commit()
+            logger.info("quarter anchor %s: %d Zellen", ticker, n_q)
+        except Exception as e:
+            logger.warning("quarter anchor failed for %s: %s", ticker, e)
+            db.rollback()
 
         # Naechster Earnings-Termin (die Batch-Stale-Auswahl haengt daran).
         _maybe_refresh_next_earnings(db, company, ticker)
