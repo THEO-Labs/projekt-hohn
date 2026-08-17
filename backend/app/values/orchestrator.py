@@ -706,16 +706,16 @@ class ValueOrchestrator:
         return None
 
     def _repair_net_income_gaap(self, company, years):
-        """Der KI-recherchierte net_income kann GAAP/Non-GAAP oder Einheiten
-        verwechseln (Intuit 22B, DT 500M-Hybrid). Gegen einen GAAP-Anker
-        pruefen: letzte berichtete GAAP-Marge × (Konsens-)Umsatz. Ist der
-        Schaetzwert grob unplausibel (NI > Umsatz, >2x/<0.5x Anker, falsches
-        Vorzeichen), auf den Anker reparieren. Der KI-Wert bleibt, wenn er
-        plausibel ist ('KI findet es, wir verifizieren nur')."""
+        """Der KI-recherchierte net_income ist bei SBC-schweren Firmen
+        unzuverlaessig (Intuit: mal 22B Einheiten-Fehler, mal null; DT: GAAP/
+        Non-GAAP-Hybrid). GAAP-Anker: letzte berichtete GAAP-Marge × Umsatz.
+        - NI fehlt ganz -> mit dem Anker fuellen (Overview braucht NI).
+        - NI grob unplausibel (NI>Umsatz, Vorzeichen, >2x/<0.5x) -> reparieren.
+        - NI plausibel -> behalten ('KI findet es, wir verifizieren nur').
+        Nur Schaetzjahre; berichtete Actuals bleiben unangetastet."""
         for year in years:
-            ni = self._existing(company.id, "net_income", year, period_type="FY", is_forecast=True)
-            if ni is None or ni.numeric_value is None:
-                continue  # nur Schaetz-NI pruefen (Actuals unangetastet)
+            if not self._needs_estimate_completion(company, year):
+                continue
             rev = self._existing(company.id, "revenue", year, period_type="FY", is_forecast=False) \
                 or self._existing(company.id, "revenue", year, period_type="FY", is_forecast=True)
             if rev is None or not rev.numeric_value or rev.numeric_value <= 0:
@@ -724,19 +724,30 @@ class ValueOrchestrator:
             if margin is None:
                 continue
             anchor = margin * rev.numeric_value
-            cur = ni.numeric_value
-            ratio = (cur / anchor) if anchor != 0 else None
-            implausible = (
-                abs(cur) > rev.numeric_value                       # NI > Umsatz: unmoeglich
-                or (anchor > 0) != (cur > 0)                       # Vorzeichen kippt
-                or (ratio is not None and (ratio < Decimal("0.5") or ratio > Decimal("2")))
-            )
-            if implausible:
-                logger.info("NI-Repair %s FY%s: KI=%s -> Anker=%s (Marge %.3f)",
-                            company.ticker, year, cur, anchor, float(margin))
-                self._upsert(company.id, "net_income", year, period_type="FY", value=anchor,
-                             source_name="GAAP-Marge × Umsatz (KI-Wert verworfen)", source_link=None,
-                             currency=rev.currency, primary_method=ni.primary_method, is_forecast=True)
+            ni = self._existing(company.id, "net_income", year, period_type="FY", is_forecast=True)
+            cur = ni.numeric_value if (ni is not None) else None
+            if cur is not None:
+                ratio = (cur / anchor) if anchor != 0 else None
+                plausible = (
+                    abs(cur) <= rev.numeric_value
+                    and ((anchor > 0) == (cur > 0))
+                    and (ratio is not None and Decimal("0.5") <= ratio <= Decimal("2"))
+                )
+                if plausible:
+                    continue  # KI-Wert ok
+                label = "GAAP-Marge × Umsatz (KI-Wert verworfen)"
+                method = ni.primary_method
+            else:
+                # NI fehlt -> aus dem Anker ableiten; Markierung wie ein
+                # Schaetzwert (0 berichtete Quartale -> unbestaetigt).
+                label = "GAAP-Marge × Umsatz (KI ohne net_income)"
+                has_q = bool(self._reported_quarters(company.id, "revenue", year))
+                method = "perplexity_consensus" if has_q else "estimate_unanchored"
+            logger.info("NI-Anker %s FY%s: KI=%s -> %s (Marge %.3f)",
+                        company.ticker, year, cur, anchor, float(margin))
+            self._upsert(company.id, "net_income", year, period_type="FY", value=anchor,
+                         source_name=label, source_link=None,
+                         currency=rev.currency, primary_method=method, is_forecast=True)
 
     def _running_fy_from_quarters(self, company, year, currency):
         """Laufendes FY-Flow = Q1+Q2+Q3 (Actuals) + Q4 (Schaetzung). Verankert an
