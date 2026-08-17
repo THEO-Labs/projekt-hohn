@@ -1,4 +1,6 @@
-import respx, httpx, json
+import respx
+import httpx
+import json
 from app.llm.perplexity import PerplexityClient, PerplexityValue
 
 def _resp(payload: dict, citations):
@@ -25,11 +27,13 @@ def test_fetch_period_parses_values_and_citation():
 
 @respx.mock
 def test_fetch_consensus_has_no_domain_filter():
-    respx.post("https://api.perplexity.ai/v1/agent").mock(return_value=httpx.Response(
+    route = respx.post("https://api.perplexity.ai/v1/agent").mock(return_value=httpx.Response(
         200, json=_resp({"revenue": 5000.0}, ["https://finance.example.com/x"])))
     c = PerplexityClient(api_key="pk", model="sonar-pro")
     out = c.fetch_consensus(company_name="Acme", ticker="ACME", forward_year=2026,
                             keys=["revenue"], currency="USD")
+    body = json.loads(route.calls[0].request.content)
+    assert "filters" not in body["tools"][0]
     assert out["revenue"].value == 5000.0
 
 @respx.mock

@@ -3,12 +3,12 @@ Strukturierte Ausgabe via response_format json_schema; Quellen aus citations.
 Keine Gates, kein Retry-Zoo — 429/5xx werden vom Aufrufer/rate_limiter behandelt.
 """
 
-import json
 import logging
 from dataclasses import dataclass
 
 import httpx
 
+from app.llm.json_utils import extract_json
 from app.values.metric_definitions import PERIOD_DOMAIN_ALLOWLIST
 from app.values.schema_builder import build_consensus_schema, build_period_schema
 
@@ -57,8 +57,8 @@ class PerplexityClient:
         if not output_text:
             return {}
         try:
-            return json.loads(output_text)
-        except (json.JSONDecodeError, TypeError):
+            return extract_json(output_text)
+        except (ValueError, TypeError):
             logger.warning("perplexity: output_text not valid JSON")
             return {}
 
@@ -76,7 +76,8 @@ class PerplexityClient:
                 return sr["url"], sr.get("title")
         return None, None
 
-    def _to_values(self, payload: dict, keys: list[str], url, title) -> dict[str, PerplexityValue]:
+    @staticmethod
+    def _to_values(payload: dict, keys: list[str], url, title) -> dict[str, PerplexityValue]:
         out: dict[str, PerplexityValue] = {}
         for k in keys:
             v = payload.get(k)
