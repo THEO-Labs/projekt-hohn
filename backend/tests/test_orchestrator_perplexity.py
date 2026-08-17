@@ -78,3 +78,36 @@ def test_manual_actual_blocks_perplexity_query(db, us_company):
                              edgar_fetch=lambda c, years: {}, perplexity=pplx, history_years=2)
     orch.run(us_company)
     assert all("revenue" not in keys for (fy, keys) in pplx.period_calls if fy == anchored_year)
+
+
+def test_perplexity_failure_keeps_edgar_and_does_not_crash(db, us_company):
+    from app.values.orchestrator import AnchorValue
+
+    class BoomPplx:
+        def fetch_period(self, **k):
+            raise RuntimeError("429")
+
+        def fetch_consensus(self, **k):
+            raise RuntimeError("429")
+
+    orch = ValueOrchestrator(
+        db=db, stammdaten_fetch=lambda c: {"market_cap": (Decimal("1000"), "USD")},
+        edgar_fetch=lambda c, years: {("net_income", years[0]): AnchorValue(
+            Decimal("500"), "SEC EDGAR", "https://sec.gov/x", "USD")},
+        perplexity=BoomPplx(), history_years=2)
+    orch.run(us_company)  # darf NICHT raisen
+    r = db.query(CompanyValue).filter_by(company_id=us_company.id, value_key="net_income").all()
+    assert any(x.numeric_value == Decimal("500") and x.primary_method == "provider" for x in r)
+
+
+def test_no_perplexity_client_skips_gapfill(db, us_company):
+    from app.values.orchestrator import AnchorValue
+
+    orch = ValueOrchestrator(
+        db=db, stammdaten_fetch=lambda c: {},
+        edgar_fetch=lambda c, years: {("net_income", years[0]): AnchorValue(
+            Decimal("500"), "SEC EDGAR", "https://sec.gov/x", "USD")},
+        perplexity=None, history_years=1)
+    orch.run(us_company)  # darf NICHT raisen
+    r = db.query(CompanyValue).filter_by(company_id=us_company.id, value_key="net_income").all()
+    assert len(r) == 1 and r[0].numeric_value == Decimal("500")

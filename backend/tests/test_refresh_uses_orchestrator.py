@@ -26,6 +26,11 @@ def test_refresh_persists_edgar_and_perplexity(db, us_company, monkeypatch):
 
     # Kein Netz: ISIN-Aufloesung + next-earnings laufen ueber get_providers.
     monkeypatch.setattr(routes, "get_providers", lambda key: [])
+    # Client wird nur gebaut wenn ein Key gesetzt ist (Resilienz-Fix) — hier
+    # soll der Perplexity-Pfad ausgeuebt werden, also Key setzen. routes.py
+    # importiert `settings` lazy aus app.config, also dort patchen.
+    import app.config as config_mod
+    monkeypatch.setattr(config_mod.settings, "perplexity_api_key", "pk-test")
 
     running = orch_mod.running_fy_year(us_company)
 

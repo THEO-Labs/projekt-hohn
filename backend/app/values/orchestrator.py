@@ -178,6 +178,10 @@ class ValueOrchestrator:
         return missing
 
     def _apply_perplexity(self, company, years):
+        if self.perplexity is None:
+            logger.warning("kein Perplexity-Client — Gap-Fill uebersprungen fuer %s",
+                           getattr(company, "ticker", "?"))
+            return
         from app.values.provider_anchor import _fy_is_closed
         currency = getattr(company, "currency", None) or "USD"
         run = years[-1]
@@ -186,16 +190,23 @@ class ValueOrchestrator:
             keys = self._missing_fundamental_keys(company.id, year, is_forecast=forward)
             if not keys:
                 continue
-            if forward:
-                vals = self.perplexity.fetch_consensus(
-                    company_name=company.name, ticker=company.ticker,
-                    forward_year=year, keys=keys, currency=currency)
-                method, fc, src = "perplexity_consensus", True, "Perplexity"
-            else:
-                vals = self.perplexity.fetch_period(
-                    company_name=company.name, ticker=company.ticker,
-                    fiscal_year=year, missing_keys=keys, currency=currency)
-                method, fc, src = "perplexity", False, "Perplexity"
+            try:
+                if forward:
+                    vals = self.perplexity.fetch_consensus(
+                        company_name=company.name, ticker=company.ticker,
+                        forward_year=year, keys=keys, currency=currency)
+                    method, fc, src = "perplexity_consensus", True, "Perplexity"
+                else:
+                    vals = self.perplexity.fetch_period(
+                        company_name=company.name, ticker=company.ticker,
+                        fiscal_year=year, missing_keys=keys, currency=currency)
+                    method, fc, src = "perplexity", False, "Perplexity"
+            except Exception as e:
+                logger.warning(
+                    "perplexity fetch fehlgeschlagen %s FY%s: %s — Zellen bleiben offen",
+                    getattr(company, "ticker", "?"), year, e,
+                )
+                continue
             for key, pv in vals.items():
                 self._upsert(company.id, key, year, value=Decimal(str(pv.value)),
                              source_name=src, source_link=pv.source_url, currency=currency,

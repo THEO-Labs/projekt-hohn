@@ -607,10 +607,13 @@ def refresh_company_values(
             db.refresh(cv)
         return rows
 
-    client = PerplexityClient(
-        api_key=settings.perplexity_api_key,
-        model=settings.perplexity_model,
-        base_url=settings.perplexity_base_url,
+    client = (
+        PerplexityClient(
+            api_key=settings.perplexity_api_key,
+            model=settings.perplexity_model,
+            base_url=settings.perplexity_base_url,
+        )
+        if settings.perplexity_api_key else None
     )
     orch = ValueOrchestrator(
         db=db, stammdaten_fetch=yahoo_stammdaten,
