@@ -51,3 +51,45 @@ def test_manual_override_never_touched(db, us_company):
     orch.run(us_company)
     r = _rows(db, us_company.id, "net_income", 2024)
     assert len(r) == 1 and r[0].numeric_value == Decimal("999")  # unveraendert
+
+
+def test_edgar_refresh_updates_provider_row(db, us_company):
+    def run_with(val):
+        ValueOrchestrator(
+            db=db, stammdaten_fetch=lambda c: {},
+            edgar_fetch=lambda c, years: {("net_income", 2024): AnchorValue(
+                Decimal(val), "SEC EDGAR", "https://sec.gov/x", "USD")},
+            perplexity=FakePerplexity(), history_years=1).run(us_company)
+    run_with("500")
+    run_with("600")
+    r = _rows(db, us_company.id, "net_income", 2024)
+    assert len(r) == 1 and r[0].numeric_value == Decimal("600")  # refresh aktualisiert
+
+
+def test_perplexity_method_cannot_overwrite_provider(db, us_company):
+    orch = ValueOrchestrator(
+        db=db, stammdaten_fetch=lambda c: {},
+        edgar_fetch=lambda c, years: {("net_income", 2024): AnchorValue(
+            Decimal("500"), "SEC EDGAR", "https://sec.gov/x", "USD")},
+        perplexity=FakePerplexity(), history_years=1)
+    orch.run(us_company)
+    orch._upsert(us_company.id, "net_income", 2024, value=Decimal("111"),
+                 source_name="Perplexity", source_link="https://x", currency="USD",
+                 primary_method="perplexity")
+    r = _rows(db, us_company.id, "net_income", 2024)
+    assert len(r) == 1 and r[0].numeric_value == Decimal("500") and r[0].primary_method == "provider"
+
+
+def test_actual_deletes_manual_forecast_twin(db, us_company):
+    db.add(CompanyValue(company_id=us_company.id, value_key="net_income", period_type="FY",
+                        period_year=2024, numeric_value=Decimal("42"), is_forecast=True,
+                        source_name="Manual Override", manually_overridden=True,
+                        primary_method="manual"))
+    db.flush()
+    ValueOrchestrator(
+        db=db, stammdaten_fetch=lambda c: {},
+        edgar_fetch=lambda c, years: {("net_income", 2024): AnchorValue(
+            Decimal("500"), "SEC EDGAR", "https://sec.gov/x", "USD")},
+        perplexity=FakePerplexity(), history_years=1).run(us_company)
+    rows = _rows(db, us_company.id, "net_income", 2024)
+    assert len(rows) == 1 and rows[0].is_forecast is False and rows[0].numeric_value == Decimal("500")

@@ -17,6 +17,23 @@ from app.values.provider_anchor import running_fy_year
 
 logger = logging.getLogger(__name__)
 
+# Schreib-Autoritaet pro Methode: hoehere (oder gleiche) Autoritaet darf
+# ueberschreiben — gleiche Autoritaet, damit ein Refresh die eigenen Werte
+# aktualisiert. Manuelle Overrides sind zusaetzlich hart ueber das
+# manually_overridden-Flag geschuetzt.
+_METHOD_RANK = {
+    "manual": 3,
+    "provider": 2,
+    "market_feed": 2,
+    "perplexity": 1,
+    "perplexity_consensus": 1,
+    "not_found": 0,
+}
+
+
+def _rank(method: str | None) -> int:
+    return _METHOD_RANK.get(method or "", 0)
+
 
 @dataclass(frozen=True)
 class AnchorValue:
@@ -46,20 +63,24 @@ class ValueOrchestrator:
                            is_forecast=is_forecast)
                 .one_or_none())
 
-    def _writable(self, row) -> bool:
-        """True wenn eine (nicht vorhandene / nicht manuelle / nicht provider) Zelle
-        beschrieben werden darf."""
+    def _writable(self, row, writer_method: str) -> bool:
+        """Darf writer_method diese Zelle schreiben?
+        - leere Zelle: ja
+        - manuell ueberschrieben (Actual): nie
+        - sonst: nur wenn writer_method mind. gleiche Autoritaet hat wie die
+          bestehende Quelle (EDGAR aktualisiert EDGAR/Perplexity/leer;
+          Perplexity aktualisiert nur Perplexity/leer, nie EDGAR)."""
         if row is None:
             return True
-        if row.manually_overridden or row.primary_method in ("manual", "provider"):
+        if row.manually_overridden:
             return False
-        return True
+        return _rank(writer_method) >= _rank(row.primary_method)
 
     def _upsert(self, company_id, key, year, *, value, source_name, source_link,
                 currency, primary_method, is_forecast=False, adjusted=None,
                 period_type="FY"):
         row = self._existing(company_id, key, year, period_type, is_forecast)
-        if not self._writable(row):
+        if not self._writable(row, primary_method):
             return
         value = normalize_sign(key, value)
         now = datetime.now(timezone.utc)
@@ -71,7 +92,9 @@ class ValueOrchestrator:
             logger.info("currency conflict %s FY%s: %s->%s (overwrite)",
                         key, year, row.currency, currency)
         row.numeric_value = value
-        row.numeric_value_adjusted = Decimal(str(adjusted)) if adjusted is not None else None
+        row.numeric_value_adjusted = (
+            normalize_sign(key, Decimal(str(adjusted))) if adjusted is not None else None
+        )
         row.source_name = source_name
         row.source_link = source_link
         row.currency = currency
@@ -80,11 +103,14 @@ class ValueOrchestrator:
         row.manually_overridden = False
         row.fetched_at = now
         row.last_refresh_attempt = now
-        # Ein berichteter (Actual-)Wert weicht einen etwaigen Forecast-Zwilling
-        # desselben Slots — sonst zeigt das UI stale Schaetzung neben Ist.
+        # Ein berichteter (Actual-)Wert weicht den Forecast-Zwilling desselben
+        # Slots — auch einen manuellen: eine manuelle FORECAST-Zeile war nur ein
+        # Schaetz-Override und wird von berichteten Zahlen ersetzt (Kontrakt wie
+        # in provider_anchor.anchor_fy_with_provider). Manuelle ACTUAL-Zeilen
+        # sind davon nicht betroffen (anderer Slot, oben durch _writable geschuetzt).
         if not is_forecast and year is not None:
             twin = self._existing(company_id, key, year, period_type, is_forecast=True)
-            if twin is not None and not twin.manually_overridden:
+            if twin is not None:
                 self.db.delete(twin)
 
     # ---- flow ------------------------------------------------------------
